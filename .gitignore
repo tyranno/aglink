@@ -1,0 +1,18 @@
+# Build output
+*.exe
+teleclaude
+
+# bkit / IDE local state (not part of the project)
+.bkit/
+.vs/
+.idea/
+*.user
+
+# Local runtime data (lives in %USERPROFILE%\.teleclaude, never committed)
+config.txt
+store.json
+*.tmp
+
+# OS
+Thumbs.db
+.DS_Store

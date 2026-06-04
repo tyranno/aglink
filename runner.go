@@ -36,7 +36,7 @@ type claudeEnvelope struct {
 	StructuredOutput json.RawMessage `json:"structured_output"`
 }
 
-const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"}},"required":["action"]}`
+const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify","status"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"}},"required":["action"]}`
 
 // isolationArgs keep each spawned claude lightweight and isolated:
 //   - --strict-mcp-config: ignore all global MCP servers (no serena/context7/figma/bkend boot)
@@ -198,6 +198,7 @@ func buildRoutePrompt(req RouteRequest) string {
 	b.WriteString("You are a routing assistant for a Telegram-to-Claude tool. ")
 	b.WriteString("Decide which PROJECT and CONVERSATION a user message belongs to. Rules:\n")
 	b.WriteString("- project MUST be one of the registered project names below (exact). If none fits or it's unclear, use action \"clarify\".\n")
+	b.WriteString("- If the user is asking about the current task progress or status (e.g. \"진행 중이야?\", \"살아있어?\", \"얼마나 남았어?\", \"뭐하고 있어?\", \"아직 실행 중?\"), use action \"status\". No project or conversationId needed.\n")
 	b.WriteString("- If the message clearly continues an existing conversation, action \"resume\" with its conversationId.\n")
 	b.WriteString("- If it's a new topic in a known project, action \"new\" with a short Korean newTitle.\n")
 	b.WriteString("- If ambiguous (e.g. \"that thing again\" with multiple candidates), action \"clarify\" with a short Korean question listing options.\n")

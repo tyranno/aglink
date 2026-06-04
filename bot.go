@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -126,6 +129,8 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleProject(chatID, text, fields)
 	case "!chat":
 		b.handleChat(chatID, text, fields)
+	case "!update":
+		b.handleUpdate(chatID)
 	default:
 		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
@@ -278,6 +283,35 @@ func (b *Bot) formatChatList(project string) string {
 	return sb.String()
 }
 
+// handleUpdate builds teleclaude_new.exe and exits with code 42 so launcher.ps1
+// can atomically swap the binary and restart without manual intervention.
+func (b *Bot) handleUpdate(chatID int64) {
+	_ = b.Send(chatID, "🔨 빌드 시작...")
+
+	exe, err := os.Executable()
+	if err != nil {
+		_ = b.Send(chatID, "⚠️ 실행 파일 경로 확인 실패: "+err.Error())
+		return
+	}
+	srcDir := filepath.Dir(exe)
+	newExe := filepath.Join(srcDir, "teleclaude_new.exe")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", newExe, ".")
+	cmd.Dir = srcDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = b.Send(chatID, "⚠️ 빌드 실패:\n"+strings.TrimSpace(string(out)))
+		return
+	}
+
+	_ = b.Send(chatID, "✅ 빌드 성공! launcher.ps1이 교체 후 재시작합니다.")
+	log.Println("[bot] update: exiting with code 42 for launcher hot-swap")
+	os.Exit(42)
+}
+
 func helpText() string {
 	return strings.TrimSpace(`
 🤖 teleclaude — 폰에서 PC의 Claude를 자연어로 쓰세요.
@@ -294,6 +328,7 @@ func helpText() string {
 !chat use <id>               대화 수동 전환
 !status                      현재 활성 대화
 !cancel                      진행 중 작업 취소
+!update                      새 버전 빌드 & 자동 재시작
 !help                        이 도움말
 `)
 }

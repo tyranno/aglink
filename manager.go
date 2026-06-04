@@ -29,12 +29,6 @@ func NewManager(client ClaudeClient, store StoreRepo, cfg *Config) *Manager {
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
 // Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
 func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s MessageSender) {
-	// Check for status queries first (e.g., "진행 중이야?", "살아있어?")
-	if IsStatusQuery(text) {
-		_ = s.Send(chatID, m.DescribeActiveWorkers())
-		return
-	}
-
 	projects := m.store.ListProjects()
 	if len(projects) == 0 {
 		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n/project add <이름> <경로>")
@@ -55,6 +49,9 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 	}
 
 	switch dec.Action {
+	case ActionStatus:
+		_ = s.Send(chatID, m.DescribeActiveWorkers())
+
 	case ActionClarify:
 		msg := dec.Clarify
 		if msg == "" {
@@ -310,29 +307,6 @@ func (m *Manager) DescribeActiveWorkers() string {
 		}
 	}
 	return sb.String()
-}
-
-// IsStatusQuery detects if text is asking about Worker status.
-// Examples: "진행 중이야?", "살아있어?", "얼마나 남았어?", "상태 보여줘"
-func IsStatusQuery(text string) bool {
-	keywords := []string{
-		"진행", "살아", "상태", "실행", "남겼", "얼마나",
-		"어디까지", "어떻게", "진행률", "아직", "뭐하",
-	}
-
-	lowerText := strings.ToLower(text)
-	for _, kw := range keywords {
-		if strings.Contains(lowerText, kw) {
-			// Heuristic: status queries usually end with 야? or 나? or 요? or 어? or 줘
-			return strings.ContainsAny(lowerText, "?？") ||
-				strings.HasSuffix(lowerText, "야") ||
-				strings.HasSuffix(lowerText, "나") ||
-				strings.HasSuffix(lowerText, "요") ||
-				strings.HasSuffix(lowerText, "어") ||
-				strings.HasSuffix(lowerText, "줘")
-		}
-	}
-	return false
 }
 
 // formatCompletion formats the work completion notification with elapsed time.

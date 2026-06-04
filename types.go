@@ -93,6 +93,7 @@ const (
 	ActionResume  = "resume"
 	ActionNew     = "new"
 	ActionClarify = "clarify"
+	ActionStatus  = "status"
 )
 
 // --- Worker run I/O (Design §3.3) ---

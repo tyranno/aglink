@@ -38,9 +38,9 @@ func RunSetup(cfgPath string) error {
 	fmt.Printf("✅ claude 발견: %s\n", claudePath)
 	fmt.Println("   ⚠️ claude가 로그인되어 있어야 합니다. (안 되어 있으면 먼저 `claude` 실행해 로그인)")
 
-	// [1/3] Bot token → validate via getMe.
-	fmt.Println("\n[1/3] Telegram 봇 토큰")
-	fmt.Println("   봇이 없으면: 텔레그램 @BotFather → /newbot → username은 'bot'으로 끝나게 → 토큰 복사")
+	// [1/3] Create bot (guided) + token → validate via getMe.
+	fmt.Println("\n[1/3] Telegram 봇 만들기 + 토큰")
+	printBotFatherGuide()
 	api, err := promptToken(in)
 	if err != nil {
 		return err
@@ -67,6 +67,18 @@ func RunSetup(cfgPath string) error {
 	fmt.Printf("   봇 @%s, 허용 ID %d. 이제 바로 사용할 수 있어요!\n", api.Self.UserName, userID)
 	fmt.Println("=======================================================")
 	return nil
+}
+
+// printBotFatherGuide walks the user through creating a Telegram bot.
+// (Bot creation cannot be automated — it must be done with @BotFather by hand.)
+func printBotFatherGuide() {
+	fmt.Println("   아직 봇이 없다면 텔레그램에서 직접 만드세요 (약 1분):")
+	fmt.Println("     1) 텔레그램에서 @BotFather 검색 → 대화 열기   (https://t.me/BotFather)")
+	fmt.Println("     2) /newbot 전송")
+	fmt.Println("     3) 봇 표시 이름 입력            (예: 내 코드봇)")
+	fmt.Println("     4) 봇 username 입력             (반드시 'bot'으로 끝나야 함, 예: mycode_bot)")
+	fmt.Println("     5) BotFather가 준 토큰 복사     (형식: 123456789:AAH...)")
+	fmt.Println("   이미 봇이 있으면 그 토큰을 바로 붙여넣으세요.")
 }
 
 func promptToken(in *bufio.Reader) (*tgbotapi.BotAPI, error) {

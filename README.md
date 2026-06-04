@@ -22,7 +22,7 @@ go build -o teleclaude.exe .
 ```
 
 처음 실행하면 마법사가 안내합니다 — **설정 파일을 손으로 만들 필요 없음**:
-1. **봇 토큰** 입력 (없으면: 텔레그램 [@BotFather](https://t.me/BotFather) → `/newbot` → 토큰 복사)
+1. **봇 만들기 + 토큰** — 봇이 없으면 마법사가 [@BotFather](https://t.me/BotFather)로 만드는 5단계(/newbot → 이름 → username → 토큰)를 화면에 안내합니다. 토큰을 붙여넣으면 즉시 검증.
 2. **내 계정 연결** — 안내대로 봇에게 메시지 한 번 보내면 **user ID 자동 감지**
 3. **(선택) 첫 프로젝트 폴더** 등록 (나중에 `/project add` 가능)
 

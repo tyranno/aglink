@@ -69,18 +69,25 @@ func main() {
 	}
 }
 
-// killCompetingInstances terminates other teleclaude.exe processes (not self).
+// killCompetingInstances terminates other teleclaude.exe AND teleclaude_new.exe processes (not self).
+// teleclaude_new.exe must also be killed because it may be polling Telegram from a previous !update.
 // Only called on normal startup, not during handoff (where old process self-exits via ready signal).
 func killCompetingInstances() {
 	selfPID := strconv.Itoa(os.Getpid())
-	out, err := exec.Command("taskkill", "/F",
-		"/FI", "IMAGENAME eq teleclaude.exe",
-		"/FI", "PID ne "+selfPID,
-	).CombinedOutput()
-	msg := strings.TrimSpace(string(out))
-	if err == nil && !strings.Contains(strings.ToLower(msg), "no tasks") {
-		log.Printf("[main] terminated competing teleclaude instance(s)")
-		time.Sleep(600 * time.Millisecond) // let Telegram polling clear before we start ours
+	killed := false
+	for _, name := range []string{"teleclaude.exe", "teleclaude_new.exe"} {
+		out, err := exec.Command("taskkill", "/F",
+			"/FI", "IMAGENAME eq "+name,
+			"/FI", "PID ne "+selfPID,
+		).CombinedOutput()
+		msg := strings.TrimSpace(string(out))
+		if err == nil && !strings.Contains(strings.ToLower(msg), "no tasks") {
+			log.Printf("[main] terminated competing instance(s): %s", name)
+			killed = true
+		}
+	}
+	if killed {
+		time.Sleep(1500 * time.Millisecond) // Telegram needs ~1s to release the polling session
 	}
 }
 

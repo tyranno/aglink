@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -214,6 +216,25 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	})
 
 	startTime := time.Now()
+
+	// Heartbeat: notify every 2 minutes while Worker is running.
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				elapsed := time.Since(startTime)
+				mins := int(elapsed.Minutes())
+				secs := int(elapsed.Seconds()) % 60
+				_ = s.Send(chatID, fmt.Sprintf("⏳ 작업 진행 중... (%d분 %d초 경과)", mins, secs))
+			case <-heartbeatDone:
+				return
+			}
+		}
+	}()
+
 	// Pass history only when there is no existing Claude session to resume.
 	// When Started=true, --resume already carries full session history; passing
 	// it again via prompt would double the context and skew the threshold check.
@@ -221,7 +242,8 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	if !workConv.Started {
 		historyForPrompt = workConv.History
 	}
-	prompt := buildContextPrompt(text, parentSummary, historyForPrompt)
+	projectMemory := readProjectMemory(p.Path)
+	prompt := buildContextPrompt(text, parentSummary, projectMemory, historyForPrompt)
 	res, err := m.client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   p.Path,
@@ -229,6 +251,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		Resume:    workConv.Started,
 		Model:     m.cfg.WorkerModel,
 	})
+	close(heartbeatDone)
 	elapsed := time.Since(startTime)
 
 	if err != nil {
@@ -251,7 +274,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		if newC, cerr := m.makeContinuation(project, workConv); cerr == nil {
 			workConv = newC
 			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
-			retryPrompt := buildContextPrompt(text, overflowSummary, nil)
+			retryPrompt := buildContextPrompt(text, overflowSummary, projectMemory, nil)
 			res, err = m.client.Run(ctx, RunRequest{
 				Prompt:    retryPrompt,
 				WorkDir:   p.Path,
@@ -373,10 +396,31 @@ func formatCompletion(elapsed time.Duration) string {
 	return fmt.Sprintf("✅ 작업 완료 (%s)", duration)
 }
 
-// buildContextPrompt prepends conversation history to the current prompt for context continuity.
-// If parentSummary is provided, it's included first (for continuation conversations).
-func buildContextPrompt(currentPrompt, parentSummary string, history []ConversationTurn) string {
+// readProjectMemory reads .teleclaude/memory.md from the project directory.
+// Worker Claude can freely update this file to persist project-level knowledge.
+func readProjectMemory(projectPath string) string {
+	b, err := os.ReadFile(filepath.Join(projectPath, ".teleclaude", "memory.md"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// buildContextPrompt assembles the Worker prompt from available context layers.
+// Only adds sections when content exists — no empty headers.
+func buildContextPrompt(currentPrompt, parentSummary, projectMemory string, history []ConversationTurn) string {
+	hasContext := projectMemory != "" || parentSummary != "" || len(history) > 0
+	if !hasContext {
+		return currentPrompt
+	}
+
 	var sb strings.Builder
+
+	if projectMemory != "" {
+		sb.WriteString("## 프로젝트 메모리\n\n")
+		sb.WriteString(projectMemory)
+		sb.WriteString("\n\n---\n\n")
+	}
 
 	if parentSummary != "" {
 		sb.WriteString("## 이전 대화 요약\n\n")
@@ -387,15 +431,13 @@ func buildContextPrompt(currentPrompt, parentSummary string, history []Conversat
 	if len(history) > 0 {
 		sb.WriteString("## 현재 대화 기록\n\n")
 		for i, turn := range history {
-			sb.WriteString(fmt.Sprintf("**Turn %d** (%s)\n", i+1, turn.Timestamp.Format("2006-01-02 15:04")))
-			sb.WriteString(fmt.Sprintf("**요청:** %s\n", turn.Prompt))
-			sb.WriteString(fmt.Sprintf("**응답:** %s\n\n", turn.Response))
+			fmt.Fprintf(&sb, "**Turn %d** (%s)\n**요청:** %s\n**응답:** %s\n\n",
+				i+1, turn.Timestamp.Format("2006-01-02 15:04"), turn.Prompt, turn.Response)
 		}
 		sb.WriteString("---\n\n")
 	}
 
 	sb.WriteString("## 현재 요청\n\n")
 	sb.WriteString(currentPrompt)
-
 	return sb.String()
 }

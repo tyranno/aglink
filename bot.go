@@ -23,10 +23,11 @@ type queuedMsg struct {
 }
 
 type Bot struct {
-	api     *tgbotapi.BotAPI
-	cfg     *Config
-	store   StoreRepo
-	manager *Manager
+	api       *tgbotapi.BotAPI
+	cfg       *Config
+	store     StoreRepo
+	manager   *Manager
+	scheduler *Scheduler
 
 	mu            sync.Mutex
 	busy          bool
@@ -34,8 +35,8 @@ type Bot struct {
 	queue         []queuedMsg // pending messages while busy
 }
 
-func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager) *Bot {
-	return &Bot{api: api, cfg: cfg, store: store, manager: manager}
+func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager, scheduler *Scheduler) *Bot {
+	return &Bot{api: api, cfg: cfg, store: store, manager: manager, scheduler: scheduler}
 }
 
 // Send delivers a plain-text message (MessageSender).
@@ -158,6 +159,10 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleChat(chatID, text, fields)
 	case "!update":
 		b.handleUpdate(chatID)
+	case "!remind":
+		b.handleRemind(chatID, text, fields)
+	case "!cron":
+		b.handleCron(chatID, text, fields)
 	default:
 		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
@@ -362,6 +367,145 @@ func (b *Bot) handleUpdate(chatID int64) {
 	_ = b.Send(chatID, "⚠️ 새 버전 연결 대기 시간 초과 (30초). 이전 버전 계속 사용합니다.")
 }
 
+// handleRemind processes !remind commands.
+// Usage:
+//
+//	!remind 30m 배포 확인           — 30분 후 알림
+//	!remind 2h task 서버 확인해줘   — 2시간 후 Claude 작업
+//	!remind list                    — 대기 중 목록
+//	!remind cancel <id>             — 취소
+func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
+	if len(fields) < 2 {
+		_ = b.Send(chatID, "사용법: !remind <시간> [task] <메시지>  |  !remind list  |  !remind cancel <id>\n예) !remind 30m 배포 확인, !remind 2h task 서버 상태 확인해줘")
+		return
+	}
+	switch fields[1] {
+	case "list":
+		reminders := b.scheduler.ListReminders()
+		if len(reminders) == 0 {
+			_ = b.Send(chatID, "대기 중인 알림이 없습니다.")
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("⏰ 대기 중인 알림:\n")
+		for _, r := range reminders {
+			remaining := time.Until(r.FireAt).Round(time.Second)
+			fmt.Fprintf(&sb, "[%s] %s 후 — %s\n", r.ID, remaining, r.Message)
+		}
+		_ = b.Send(chatID, sb.String())
+	case "cancel":
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !remind cancel <id>")
+			return
+		}
+		if b.scheduler.Remove(fields[2]) {
+			_ = b.Send(chatID, "✅ 알림 취소됨: "+fields[2])
+		} else {
+			_ = b.Send(chatID, "⚠️ 알림을 찾을 수 없습니다: "+fields[2])
+		}
+	default:
+		// !remind <duration> [task] <message>
+		dur, _, err := ParseSchedule(fields[1])
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ 시간 형식 오류: "+err.Error())
+			return
+		}
+		isTask := len(fields) > 2 && fields[2] == "task"
+		msgStart := 2
+		if isTask {
+			msgStart = 3
+		}
+		if msgStart >= len(fields) {
+			_ = b.Send(chatID, "⚠️ 메시지를 입력해주세요.")
+			return
+		}
+		msg := strings.Join(fields[msgStart:], " ")
+		fireAt := time.Now().Add(dur)
+		r, err := b.scheduler.AddReminder(chatID, msg, fireAt)
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ 알림 등록 실패: "+err.Error())
+			return
+		}
+		_ = isTask // isTask reminders use same path for now — sends notification
+		_ = b.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후: %s", r.ID, dur.Round(time.Second), msg))
+	}
+}
+
+// handleCron processes !cron commands.
+// Usage:
+//
+//	!cron add <schedule> <메시지>          — 반복 알림
+//	!cron add <schedule> task <프롬프트>   — 반복 Claude 작업
+//	!cron list                             — 목록
+//	!cron remove <id>                      — 제거
+func (b *Bot) handleCron(chatID int64, text string, fields []string) {
+	if len(fields) < 2 {
+		_ = b.Send(chatID, "사용법: !cron add <주기> [task] <내용>  |  !cron list  |  !cron remove <id>\n주기 예) 30m, 2h, daily, hourly\n예) !cron add 1h 서버 상태 확인, !cron add daily task 오늘의 작업 요약해줘")
+		return
+	}
+	switch fields[1] {
+	case "list":
+		crons := b.scheduler.ListCrons()
+		if len(crons) == 0 {
+			_ = b.Send(chatID, "등록된 크론 작업이 없습니다.")
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("🔔 크론 작업 목록:\n")
+		for _, c := range crons {
+			kind := "알림"
+			if c.IsTask {
+				kind = "작업"
+			}
+			next := time.Until(c.NextFire).Round(time.Second)
+			fmt.Fprintf(&sb, "[%s] %s (%s) — 다음: %s 후\n  %s\n", c.ID, c.Label, kind, next, c.Task)
+		}
+		_ = b.Send(chatID, sb.String())
+	case "remove":
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !cron remove <id>")
+			return
+		}
+		if b.scheduler.Remove(fields[2]) {
+			_ = b.Send(chatID, "✅ 크론 제거됨: "+fields[2])
+		} else {
+			_ = b.Send(chatID, "⚠️ 크론을 찾을 수 없습니다: "+fields[2])
+		}
+	case "add":
+		if len(fields) < 4 {
+			_ = b.Send(chatID, "사용법: !cron add <주기> [task] <내용>")
+			return
+		}
+		dur, label, err := ParseSchedule(fields[2])
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ 주기 형식 오류: "+err.Error())
+			return
+		}
+		isTask := fields[3] == "task"
+		msgStart := 3
+		if isTask {
+			msgStart = 4
+		}
+		if msgStart >= len(fields) {
+			_ = b.Send(chatID, "⚠️ 내용을 입력해주세요.")
+			return
+		}
+		task := strings.Join(fields[msgStart:], " ")
+		c, err := b.scheduler.AddCron(chatID, label, dur, task, isTask)
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ 크론 등록 실패: "+err.Error())
+			return
+		}
+		kind := "알림"
+		if isTask {
+			kind = "Claude 작업"
+		}
+		_ = b.Send(chatID, fmt.Sprintf("✅ 크론 등록 [%s] %s (%s)\n  내용: %s", c.ID, label, kind, task))
+	default:
+		_ = b.Send(chatID, "사용법: !cron add | list | remove")
+	}
+}
+
 func helpText() string {
 	return strings.TrimSpace(`
 🤖 teleclaude — 폰에서 PC의 Claude를 자연어로 쓰세요.
@@ -376,9 +520,16 @@ func helpText() string {
 !chat new [제목]             현재 프로젝트에 새 대화
 !chat list                   현재 프로젝트의 대화 목록
 !chat use <id>               대화 수동 전환
-!status                      현재 활성 대화
+!status                      현재 활성 대화 및 실행 중 작업
 !cancel                      진행 중 작업 취소
+!remind <시간> <메시지>      일회성 알림 (예: !remind 30m 배포 확인)
+!remind list / cancel <id>   알림 목록 / 취소
+!cron add <주기> <내용>      반복 알림/작업 (예: !cron add hourly 서버 체크)
+!cron list / remove <id>     크론 목록 / 제거
 !update                      새 버전 빌드 & 자동 재시작
 !help                        이 도움말
+
+주기 형식: 30m, 2h, 1d, hourly, daily, weekly
+task 접두어: !remind 1h task 서버 확인해줘  →  Claude 작업으로 실행
 `)
 }

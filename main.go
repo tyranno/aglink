@@ -130,6 +130,19 @@ func run(configOverride, handoffReadyFile string) error {
 	}
 	log.Printf("[main] allowlist: %v, manager=%s, worker=%q", cfg.AllowedUserIDs, cfg.ManagerModel, cfg.WorkerModel)
 
+	// Scheduler: reminders + cron jobs
+	sched := NewScheduler(filepath.Join(dir, "schedule.json"))
+	if err := sched.Load(); err != nil {
+		log.Printf("[main] scheduler load warning: %v", err)
+	}
+
+	bot := NewBot(api, cfg, store, manager, sched)
+
+	// Wire scheduler send/dispatch after bot is created
+	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })
+	sched.SetDispatch(func(chatID int64, text string) { bot.dispatchText(chatID, text) })
+	go sched.Run()
+
 	// Handoff mode: signal old process we're connected, then rename ourselves.
 	if handoffReadyFile != "" {
 		if werr := os.WriteFile(handoffReadyFile, []byte("ready"), 0600); werr != nil {
@@ -140,7 +153,6 @@ func run(configOverride, handoffReadyFile string) error {
 		go selfRename()
 	}
 
-	bot := NewBot(api, cfg, store, manager)
 	bot.Run() // blocks
 	return nil
 }

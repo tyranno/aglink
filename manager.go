@@ -248,8 +248,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	if !workConv.Started {
 		historyForPrompt = workConv.History
 	}
+	globalMemory := readGlobalMemory()
 	projectMemory := readProjectMemory(p.Path)
-	prompt := buildContextPrompt(text, parentSummary, projectMemory, historyForPrompt)
+	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)
 	res, err := m.client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   p.Path,
@@ -280,7 +281,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		if newC, cerr := m.makeContinuation(project, workConv); cerr == nil {
 			workConv = newC
 			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
-			retryPrompt := buildContextPrompt(text, overflowSummary, projectMemory, nil)
+			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, nil)
 			res, err = m.client.Run(ctx, RunRequest{
 				Prompt:    retryPrompt,
 				WorkDir:   p.Path,
@@ -308,12 +309,18 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		workConv.Summary = truncate(res.Text, 80)
 	}
 
-	// Append this turn to conversation history for context preservation
+	// Append this turn to conversation history.
+	// Keep only the most recent maxHistoryTurns (short-term memory).
+	// Older context should be summarised into .teleclaude/memory.md by the Worker.
+	const maxHistoryTurns = 20
 	workConv.History = append(workConv.History, ConversationTurn{
 		Timestamp: time.Now().UTC(),
 		Prompt:    text,
 		Response:  res.Text,
 	})
+	if len(workConv.History) > maxHistoryTurns {
+		workConv.History = workConv.History[len(workConv.History)-maxHistoryTurns:]
+	}
 
 	if err := m.store.UpdateConversation(project, workConv); err != nil {
 		log.Printf("[manager] update conversation: %v", err)
@@ -412,15 +419,35 @@ func readProjectMemory(projectPath string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// readGlobalMemory reads ~/.teleclaude/global-memory.md for cross-project long-term memory.
+func readGlobalMemory() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".teleclaude", "global-memory.md"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // buildContextPrompt assembles the Worker prompt from available context layers.
+// Layer order: global memory → project memory → parent summary → recent history → current request.
 // Only adds sections when content exists — no empty headers.
-func buildContextPrompt(currentPrompt, parentSummary, projectMemory string, history []ConversationTurn) string {
-	hasContext := projectMemory != "" || parentSummary != "" || len(history) > 0
+func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemory string, history []ConversationTurn) string {
+	hasContext := globalMemory != "" || projectMemory != "" || parentSummary != "" || len(history) > 0
 	if !hasContext {
 		return currentPrompt
 	}
 
 	var sb strings.Builder
+
+	if globalMemory != "" {
+		sb.WriteString("## 장기 기억 (글로벌)\n\n")
+		sb.WriteString(globalMemory)
+		sb.WriteString("\n\n---\n\n")
+	}
 
 	if projectMemory != "" {
 		sb.WriteString("## 프로젝트 메모리\n\n")
@@ -435,7 +462,7 @@ func buildContextPrompt(currentPrompt, parentSummary, projectMemory string, hist
 	}
 
 	if len(history) > 0 {
-		sb.WriteString("## 현재 대화 기록\n\n")
+		sb.WriteString("## 최근 대화 기록\n\n")
 		for i, turn := range history {
 			fmt.Fprintf(&sb, "**Turn %d** (%s)\n**요청:** %s\n**응답:** %s\n\n",
 				i+1, turn.Timestamp.Format("2006-01-02 15:04"), turn.Prompt, turn.Response)
@@ -445,6 +472,7 @@ func buildContextPrompt(currentPrompt, parentSummary, projectMemory string, hist
 
 	sb.WriteString("## 현재 요청\n\n")
 	sb.WriteString(currentPrompt)
+	sb.WriteString("\n\n> 중요한 결정/해결책은 .teleclaude/memory.md에 기록해두세요.")
 	return sb.String()
 }
 

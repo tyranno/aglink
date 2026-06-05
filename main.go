@@ -141,6 +141,7 @@ func run(configOverride, handoffReadyFile string) error {
 	// Wire scheduler send/dispatch after bot is created
 	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })
 	sched.SetDispatch(func(chatID int64, text string) { bot.dispatchText(chatID, text) })
+	manager.SetScheduler(sched)
 	go sched.Run()
 
 	// Handoff mode: signal old process we're connected, then rename ourselves.

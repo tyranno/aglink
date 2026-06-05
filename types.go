@@ -82,18 +82,25 @@ type RouteRequest struct {
 type RouteDecision struct {
 	Project        string  `json:"project"`
 	ConversationID string  `json:"conversationId"`
-	Action         string  `json:"action"` // "resume" | "new" | "clarify"
+	Action         string  `json:"action"` // "resume" | "new" | "clarify" | "status" | "schedule"
 	NewTitle       string  `json:"newTitle"`
 	Clarify        string  `json:"clarify"`
 	Confidence     float64 `json:"confidence"`
+
+	// Schedule fields — only set when action == "schedule"
+	ScheduleType     string `json:"scheduleType,omitempty"`     // "remind" | "cron"
+	ScheduleInterval string `json:"scheduleInterval,omitempty"` // "30m", "2h", "hourly", "daily" …
+	ScheduleTask     string `json:"scheduleTask,omitempty"`      // message or Claude prompt
+	ScheduleIsTask   bool   `json:"scheduleIsTask,omitempty"`    // true → dispatch through Worker
 }
 
 // Action constants.
 const (
-	ActionResume  = "resume"
-	ActionNew     = "new"
-	ActionClarify = "clarify"
-	ActionStatus  = "status"
+	ActionResume   = "resume"
+	ActionNew      = "new"
+	ActionClarify  = "clarify"
+	ActionStatus   = "status"
+	ActionSchedule = "schedule"
 )
 
 // --- Worker run I/O (Design §3.3) ---

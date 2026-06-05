@@ -16,6 +16,7 @@ type Manager struct {
 	client       ClaudeClient
 	store        StoreRepo
 	workerStatus WorkerStatusStore
+	scheduler    *Scheduler
 	cfg          *Config
 }
 
@@ -27,6 +28,8 @@ func NewManager(client ClaudeClient, store StoreRepo, cfg *Config) *Manager {
 		cfg:          cfg,
 	}
 }
+
+func (m *Manager) SetScheduler(s *Scheduler) { m.scheduler = s }
 
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
 // Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
@@ -53,6 +56,9 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 	switch dec.Action {
 	case ActionStatus:
 		_ = s.Send(chatID, m.DescribeActiveWorkers())
+
+	case ActionSchedule:
+		m.handleSchedule(chatID, dec, s)
 
 	case ActionClarify:
 		msg := dec.Clarify
@@ -441,3 +447,47 @@ func buildContextPrompt(currentPrompt, parentSummary, projectMemory string, hist
 	sb.WriteString(currentPrompt)
 	return sb.String()
 }
+
+// handleSchedule registers a reminder or cron job decoded from the Manager's routing decision.
+func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSender) {
+	if m.scheduler == nil {
+		_ = s.Send(chatID, "⚠️ 스케줄러가 초기화되지 않았습니다.")
+		return
+	}
+	if dec.ScheduleTask == "" {
+		_ = s.Send(chatID, "🤔 어떤 내용을 언제 알림/실행할지 좀 더 구체적으로 말씀해주세요.")
+		return
+	}
+
+	dur, label, err := ParseSchedule(dec.ScheduleInterval)
+	if err != nil {
+		_ = s.Send(chatID, fmt.Sprintf("🤔 시간을 파악하지 못했어요 (%q). 예) 30분 후에, 매시간, 매일", dec.ScheduleInterval))
+		return
+	}
+
+	switch dec.ScheduleType {
+	case "remind":
+		r, err := m.scheduler.AddReminder(chatID, dec.ScheduleTask, timeNow().Add(dur))
+		if err != nil {
+			_ = s.Send(chatID, "⚠️ 알림 등록 실패: "+err.Error())
+			return
+		}
+		_ = s.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후\n  %s", r.ID, label, dec.ScheduleTask))
+	case "cron":
+		c, err := m.scheduler.AddCron(chatID, label, dur, dec.ScheduleTask, dec.ScheduleIsTask)
+		if err != nil {
+			_ = s.Send(chatID, "⚠️ 크론 등록 실패: "+err.Error())
+			return
+		}
+		kind := "알림"
+		if dec.ScheduleIsTask {
+			kind = "Claude 작업"
+		}
+		_ = s.Send(chatID, fmt.Sprintf("✅ 반복 등록 [%s] %s (%s)\n  %s", c.ID, label, kind, dec.ScheduleTask))
+	default:
+		_ = s.Send(chatID, "🤔 알림(일회성)인지 반복인지 명확하지 않아요. 예) 30분 후에 알림 / 매시간 서버 확인")
+	}
+}
+
+// timeNow is a replaceable clock for testing.
+var timeNow = time.Now

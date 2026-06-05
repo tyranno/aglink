@@ -36,7 +36,7 @@ type claudeEnvelope struct {
 	StructuredOutput json.RawMessage `json:"structured_output"`
 }
 
-const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify","status"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"}},"required":["action"]}`
+const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify","status","schedule"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"},"scheduleType":{"type":"string","enum":["remind","cron"]},"scheduleInterval":{"type":"string"},"scheduleTask":{"type":"string"},"scheduleIsTask":{"type":"boolean"}},"required":["action"]}`
 
 // isolationArgs keep each spawned claude lightweight and isolated:
 //   - --strict-mcp-config: ignore all global MCP servers (no serena/context7/figma/bkend boot)
@@ -199,6 +199,11 @@ func buildRoutePrompt(req RouteRequest) string {
 	b.WriteString("Decide which PROJECT and CONVERSATION a user message belongs to. Rules:\n")
 	b.WriteString("- project MUST be one of the registered project names below (exact). If none fits or it's unclear, use action \"clarify\".\n")
 	b.WriteString("- If the user is asking about the current task progress or status (e.g. \"진행 중이야?\", \"살아있어?\", \"얼마나 남았어?\", \"뭐하고 있어?\", \"아직 실행 중?\"), use action \"status\". No project or conversationId needed.\n")
+	b.WriteString("- If the user wants to set a reminder or schedule a recurring task (e.g. \"30분 후에 알림\", \"1시간마다 서버 확인\", \"매일 배포 체크해줘\", \"2시간 후에 X 해줘\"), use action \"schedule\" with:\n")
+	b.WriteString("  - scheduleType: \"remind\" for one-time delay, \"cron\" for recurring\n")
+	b.WriteString("  - scheduleInterval: time spec like \"30m\", \"2h\", \"1d\", \"hourly\", \"daily\", \"weekly\"\n")
+	b.WriteString("  - scheduleTask: the message text or Claude prompt to execute\n")
+	b.WriteString("  - scheduleIsTask: true only if user wants Claude to actively DO work (e.g. \"확인해줘\", \"분석해줘\"), false for simple notifications\n")
 	b.WriteString("- If the message clearly continues an existing conversation, action \"resume\" with its conversationId.\n")
 	b.WriteString("- If it's a new topic in a known project, action \"new\" with a short Korean newTitle.\n")
 	b.WriteString("- If ambiguous (e.g. \"that thing again\" with multiple candidates), action \"clarify\" with a short Korean question listing options.\n")

@@ -241,13 +241,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		}
 	}()
 
-	// Pass history only when there is no existing Claude session to resume.
-	// When Started=true, --resume already carries full session history; passing
-	// it again via prompt would double the context and skew the threshold check.
-	var historyForPrompt []ConversationTurn
-	if !workConv.Started {
-		historyForPrompt = workConv.History
-	}
+	// Always pass history in the prompt as a restart-safe fallback.
+	// If --resume finds the claude session, the truncated history is a lightweight reminder.
+	// If the session is lost (e.g. after restart or CLI update), history is the only context.
+	historyForPrompt := workConv.History
 	globalMemory := readGlobalMemory()
 	projectMemory := readProjectMemory(p.Path)
 	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)
@@ -464,8 +461,10 @@ func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemor
 	if len(history) > 0 {
 		sb.WriteString("## 최근 대화 기록\n\n")
 		for i, turn := range history {
+			// Truncate response to 300 chars — enough for context, avoids token bloat
+			// when --resume also carries the full session.
 			fmt.Fprintf(&sb, "**Turn %d** (%s)\n**요청:** %s\n**응답:** %s\n\n",
-				i+1, turn.Timestamp.Format("2006-01-02 15:04"), turn.Prompt, turn.Response)
+				i+1, turn.Timestamp.Format("2006-01-02 15:04"), turn.Prompt, truncate(turn.Response, 300))
 		}
 		sb.WriteString("---\n\n")
 	}

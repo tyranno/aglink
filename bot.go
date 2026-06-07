@@ -347,6 +347,16 @@ func (b *Bot) handleUpdate(chatID int64) {
 		return
 	}
 
+	// If we're already running as teleclaude_new.exe, the self-rename from the previous
+	// handoff hasn't completed yet (or failed). teleclaude_new.exe is our own exe file,
+	// so go build cannot overwrite it. Abort and instruct the user.
+	if filepath.Base(exe) == "teleclaude_new.exe" {
+		if _, serr := os.Stat(newExe); serr == nil {
+			_ = b.Send(chatID, "⚠️ 이전 핸드오프의 이름 변경이 아직 완료되지 않았습니다.\n잠시 후 다시 시도하거나 teleclaude_new.exe를 teleclaude.exe로 수동 교체 후 재시작하세요.")
+			return
+		}
+	}
+
 	// Build
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer buildCancel()
@@ -370,8 +380,9 @@ func (b *Bot) handleUpdate(chatID int64) {
 		return
 	}
 
-	// Wait up to 30s for new process to signal Telegram connection
-	deadline := time.Now().Add(30 * time.Second)
+	// Wait up to 60s for new process to signal Telegram connection.
+	// 60s: claude health check is up to 20s, bot init adds more time.
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		if _, serr := os.Stat(readyFile); serr == nil {
@@ -384,7 +395,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 
 	// Timeout — kill new process, keep current running
 	_ = newProc.Process.Kill()
-	_ = b.Send(chatID, "⚠️ 새 버전 연결 대기 시간 초과 (30초). 이전 버전 계속 사용합니다.")
+	_ = b.Send(chatID, "⚠️ 새 버전 연결 대기 시간 초과 (60초). 이전 버전 계속 사용합니다.")
 }
 
 // handleRemind processes !remind commands.

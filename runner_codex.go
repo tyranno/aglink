@@ -84,30 +84,16 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdo
 	return outBuf.String(), errBuf.String(), err
 }
 
-// codexRouteSchema is routeJSONSchema with additionalProperties:false added at the top level.
-// OpenAI structured output (--output-schema) requires this on all object schemas.
-// With --output-schema, Codex outputs the JSON directly without running shell commands.
-const codexRouteSchema = `{"type":"object","additionalProperties":false,"properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify","status","schedule"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"},"scheduleType":{"type":"string","enum":["remind","cron"]},"scheduleInterval":{"type":"string"},"scheduleTask":{"type":"string"},"scheduleIsTask":{"type":"boolean"}},"required":["action"]}`
-
 // Route asks Codex to classify the user message and return a routing decision.
-// Uses --output-schema to force structured JSON output and --sandbox read-only to
-// prevent Codex from executing shell commands (routing is text classification only).
-// A 60-second sub-timeout prevents orphan processes if the schema enforcement fails.
+// Uses --sandbox read-only to prevent shell command execution (routing is text-only).
+// --output-schema is intentionally omitted: OpenAI structured output requires all
+// properties in `required` (including optional ones as nullable), which would complicate
+// the shared schema. parseCodexRouteDecision handles JSON extraction from free-form text.
+// A 60-second sub-timeout prevents orphan processes.
 func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
 	// Route must complete quickly — 60s sub-deadline regardless of worker timeout.
 	routeCtx, routeCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer routeCancel()
-
-	sf, err := os.CreateTemp("", "teleclaude_route_schema_*.json")
-	if err != nil {
-		return RouteDecision{}, fmt.Errorf("codex route schema 임시 파일 생성 실패: %w", err)
-	}
-	schemaFile := sf.Name()
-	sf.Close()
-	defer os.Remove(schemaFile)
-	if err := os.WriteFile(schemaFile, []byte(codexRouteSchema), 0600); err != nil {
-		return RouteDecision{}, fmt.Errorf("codex route schema 쓰기 실패: %w", err)
-	}
 
 	of, err := os.CreateTemp("", "teleclaude_route_out_*.txt")
 	if err != nil {
@@ -120,11 +106,10 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	prompt := buildRoutePrompt(req)
 	args := []string{
 		"exec",
+		"--ignore-user-config", // disables MCP servers (e.g. Serena) from config.toml; auth still works
 		"--skip-git-repo-check",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--ephemeral",
-		"--sandbox", "read-only", // prevent command execution during routing
-		"--output-schema", schemaFile,
 		"--json",
 		"-o", outFile,
 	}
@@ -160,6 +145,7 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	if req.Resume && req.SessionID != "" {
 		args = []string{
 			"exec", "resume", req.SessionID,
+			"--ignore-user-config", // disables MCP servers; auth still works
 			"--dangerously-bypass-approvals-and-sandbox",
 			"--skip-git-repo-check",
 			"--json",
@@ -169,6 +155,7 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 		args = []string{
 			"exec",
 			"-C", req.WorkDir,
+			"--ignore-user-config", // disables MCP servers; auth still works
 			"--dangerously-bypass-approvals-and-sandbox",
 			"--skip-git-repo-check",
 			"--json",

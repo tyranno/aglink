@@ -44,9 +44,10 @@ func TestParseCodexRouteDecision(t *testing.T) {
 }
 
 func TestCodexDefaultModel(t *testing.T) {
+	// Empty CodexModel → return "" so codex uses its own built-in default.
 	cfg := &Config{}
-	if codexDefaultModel(cfg) != "o4-mini" {
-		t.Error("expected o4-mini default")
+	if codexDefaultModel(cfg) != "" {
+		t.Error("expected empty string (let codex choose default)")
 	}
 	cfg.CodexModel = "o3"
 	if codexDefaultModel(cfg) != "o3" {

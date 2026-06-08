@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // codexRunner implements ClaudeClient backed by the local codex CLI.
@@ -64,10 +65,17 @@ func parseCodexRouteDecision(s string) (RouteDecision, error) {
 }
 
 // exec runs codex with process-tree cancellation (Windows-aware).
+// On cancellation, kills the process tree AND any remaining codex child processes
+// by image name to prevent orphan accumulation.
 func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.codexPath, args...)
 	cmd.Dir = dir
-	cmd.Cancel = func() error { return killTree(cmd.Process.Pid) }
+	cmd.Cancel = func() error {
+		err := killTree(cmd.Process.Pid)
+		// Secondary cleanup: kill any codex processes that detached from the tree.
+		exec.Command("taskkill", "/F", "/IM", "codex.exe").Run()
+		return err
+	}
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -76,11 +84,31 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdo
 	return outBuf.String(), errBuf.String(), err
 }
 
+// codexRouteSchema is routeJSONSchema with additionalProperties:false added at the top level.
+// OpenAI structured output (--output-schema) requires this on all object schemas.
+// With --output-schema, Codex outputs the JSON directly without running shell commands.
+const codexRouteSchema = `{"type":"object","additionalProperties":false,"properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify","status","schedule"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"},"scheduleType":{"type":"string","enum":["remind","cron"]},"scheduleInterval":{"type":"string"},"scheduleTask":{"type":"string"},"scheduleIsTask":{"type":"boolean"}},"required":["action"]}`
+
 // Route asks Codex to classify the user message and return a routing decision.
-// Uses plain text output (no --output-schema) because OpenAI structured output requires
-// additionalProperties:false on all nested schemas, which would need schema duplication.
-// parseCodexRouteDecision handles JSON extraction from free-form text.
+// Uses --output-schema to force structured JSON output and --sandbox read-only to
+// prevent Codex from executing shell commands (routing is text classification only).
+// A 60-second sub-timeout prevents orphan processes if the schema enforcement fails.
 func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
+	// Route must complete quickly — 60s sub-deadline regardless of worker timeout.
+	routeCtx, routeCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer routeCancel()
+
+	sf, err := os.CreateTemp("", "teleclaude_route_schema_*.json")
+	if err != nil {
+		return RouteDecision{}, fmt.Errorf("codex route schema 임시 파일 생성 실패: %w", err)
+	}
+	schemaFile := sf.Name()
+	sf.Close()
+	defer os.Remove(schemaFile)
+	if err := os.WriteFile(schemaFile, []byte(codexRouteSchema), 0600); err != nil {
+		return RouteDecision{}, fmt.Errorf("codex route schema 쓰기 실패: %w", err)
+	}
+
 	of, err := os.CreateTemp("", "teleclaude_route_out_*.txt")
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("codex route 출력 임시 파일 생성 실패: %w", err)
@@ -95,6 +123,8 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 		"--skip-git-repo-check",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--ephemeral",
+		"--sandbox", "read-only", // prevent command execution during routing
+		"--output-schema", schemaFile,
 		"--json",
 		"-o", outFile,
 	}
@@ -104,7 +134,7 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	args = append(args, prompt)
 
 	home, _ := os.UserHomeDir()
-	_, stderr, err := r.exec(ctx, home, args)
+	_, stderr, err := r.exec(routeCtx, home, args)
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("codex manager 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
 	}

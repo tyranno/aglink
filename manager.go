@@ -77,6 +77,7 @@ func (m *Manager) CodexAvailable() bool {
 func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s MessageSender) {
 	m.backendMu.RLock()
 	currentBackend := m.backendName
+	currentClient := m.client
 	m.backendMu.RUnlock()
 
 	projects := m.store.ListProjects()
@@ -85,12 +86,12 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 		return
 	}
 
-	dec, ok := m.decide(ctx, text)
+	dec, ok := m.decide(ctx, currentClient, text)
 	if !ok {
 		// Routing failed entirely → fall back to the active conversation, else ask.
 		if active := m.store.GetActive(); active.Project != "" {
 			if c, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-				m.runWorker(ctx, chatID, text, active.Project, c, s)
+				m.runWorker(ctx, chatID, text, active.Project, c, s, currentClient)
 				return
 			}
 		}
@@ -124,7 +125,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 		}
 		c.Backend = currentBackend
 		_ = m.store.UpdateConversation(dec.Project, c)
-		m.runWorker(ctx, chatID, text, dec.Project, c, s)
+		m.runWorker(ctx, chatID, text, dec.Project, c, s, currentClient)
 
 	case ActionResume:
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
@@ -146,10 +147,10 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 			newConv.Backend = currentBackend
 			_ = m.store.UpdateConversation(dec.Project, newConv)
 			_ = m.store.SetActive(dec.Project, newConv.ID)
-			m.runWorker(ctx, chatID, text, dec.Project, newConv, s)
+			m.runWorker(ctx, chatID, text, dec.Project, newConv, s, currentClient)
 			return
 		}
-		m.runWorker(ctx, chatID, text, dec.Project, c, s)
+		m.runWorker(ctx, chatID, text, dec.Project, c, s, currentClient)
 
 	default:
 		_ = s.Send(chatID, "🤔 라우팅 결과를 이해하지 못했어요. !chat use <id> 로 대화를 지정해 주세요.")
@@ -158,7 +159,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 
 // decide returns the routing decision. With ManagerAlways=false it reuses the active
 // conversation without a Manager call when one is set (token-saving optimization).
-func (m *Manager) decide(ctx context.Context, text string) (RouteDecision, bool) {
+func (m *Manager) decide(ctx context.Context, client ClaudeClient, text string) (RouteDecision, bool) {
 	if !m.cfg.ManagerAlways {
 		if active := m.store.GetActive(); active.Project != "" {
 			if _, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
@@ -167,7 +168,7 @@ func (m *Manager) decide(ctx context.Context, text string) (RouteDecision, bool)
 		}
 	}
 	req := m.buildRouteRequest(text)
-	dec, err := m.client.Route(ctx, req)
+	dec, err := client.Route(ctx, req)
 	if err != nil {
 		log.Printf("[manager] route error: %v", err)
 		return RouteDecision{}, false
@@ -237,7 +238,7 @@ func isContextOverflow(text string) bool {
 
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
 // If history grows too large, it auto-creates a continuation conversation.
-func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project string, c *Conversation, s MessageSender) {
+func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project string, c *Conversation, s MessageSender, client ClaudeClient) {
 	p, ok := m.store.GetProject(project)
 	if !ok {
 		_ = s.Send(chatID, "⚠️ 프로젝트를 찾을 수 없습니다: "+project)
@@ -313,7 +314,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	globalMemory := readGlobalMemory()
 	projectMemory := readProjectMemory(p.Path)
 	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)
-	res, err := m.client.Run(ctx, RunRequest{
+	res, err := client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   p.Path,
 		SessionID: workConv.SessionID,
@@ -345,7 +346,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 			workConv = newC
 			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
 			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, nil)
-			res, err = m.client.Run(ctx, RunRequest{
+			res, err = client.Run(ctx, RunRequest{
 				Prompt:    retryPrompt,
 				WorkDir:   p.Path,
 				SessionID: workConv.SessionID,

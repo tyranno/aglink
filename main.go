@@ -202,11 +202,13 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 
 	runner := NewClaudeRunner(claudePath, cfg)
 	var codexRunner ClaudeClient
-	if codexPath, err := findCodex(cfg.CodexPath); err == nil {
+	if codexPath, err := findCodex(cfg.CodexPath); err == nil && codexPath != "" {
 		codexRunner = NewCodexRunner(codexPath, cfg)
 		log.Printf("[main] codex: %s", codexPath)
-	} else {
+	} else if err != nil {
 		log.Printf("[main] codex not available: %v", err)
+	} else {
+		log.Printf("[main] codex: 미설치 (선택적)")
 	}
 	manager := NewManager(runner, codexRunner, store, cfg)
 

@@ -106,6 +106,8 @@ func applyConfigKV(cfg *Config, key, val string) error {
 		cfg.CodexPath = val
 	case "CODEX_MODEL":
 		cfg.CodexModel = val
+	case "CODEX_MANAGER_MODEL":
+		cfg.CodexManagerModel = val
 	}
 	return nil
 }

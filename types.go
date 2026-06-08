@@ -16,8 +16,9 @@ type Config struct {
 	ClaudePath       string // "" = auto-detect
 	TimeoutMinutes   int    // default 10
 	ManagerAlways    bool   // default true (route every text via manager)
-	CodexPath        string // "" = auto-detect
-	CodexModel       string // "" = "o4-mini"
+	CodexPath         string // "" = auto-detect
+	CodexModel        string // worker model (powerful) — "" = codex built-in default
+	CodexManagerModel string // routing model (fast/cheap) — "" = same as CodexModel
 }
 
 // ConversationTurn represents one exchange in a conversation.

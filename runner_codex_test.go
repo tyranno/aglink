@@ -44,14 +44,24 @@ func TestParseCodexRouteDecision(t *testing.T) {
 }
 
 func TestCodexDefaultModel(t *testing.T) {
-	// Empty CodexModel → return "" so codex uses its own built-in default.
+	// Empty CodexModel → "" so codex uses its own built-in default.
 	cfg := &Config{}
-	if codexDefaultModel(cfg) != "" {
+	if codexWorkerModel(cfg) != "" {
 		t.Error("expected empty string (let codex choose default)")
 	}
 	cfg.CodexModel = "o3"
-	if codexDefaultModel(cfg) != "o3" {
+	if codexWorkerModel(cfg) != "o3" {
 		t.Error("expected o3")
+	}
+	// Manager model falls back to worker model when not set.
+	cfg.CodexModel = "gpt-5.4"
+	cfg.CodexManagerModel = ""
+	if codexManagerModel(cfg) != "gpt-5.4" {
+		t.Error("expected fallback to worker model")
+	}
+	cfg.CodexManagerModel = "gpt-4o-mini"
+	if codexManagerModel(cfg) != "gpt-4o-mini" {
+		t.Error("expected manager model override")
 	}
 }
 

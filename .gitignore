@@ -13,6 +13,13 @@ config.txt
 store.json
 *.tmp
 
+# Runtime logs and backup files
+*.log
+*.exe~
+
+# Local test scripts
+test_flow.ps1
+
 # OS
 Thumbs.db
 .DS_Store

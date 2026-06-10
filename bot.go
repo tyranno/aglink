@@ -1096,6 +1096,7 @@ func helpText() string {
 
 그냥 말하세요. 예) "myapp 로그인 버그 이어서 보자", "voice 서버에 헬스체크 추가해줘"
 → 어느 프로젝트의 어느 대화인지 알아서 찾아 작업합니다.
+사진·파일 첨부: 그냥 보내면 Claude가 분석합니다.
 
 명령어:
 !project add <이름> <경로>   프로젝트 등록
@@ -1106,15 +1107,24 @@ func helpText() string {
 !chat use <id>               대화 수동 전환
 !status                      현재 활성 대화 및 실행 중 작업
 !cancel                      진행 중 작업 취소
-!remind <시간> <메시지>      일회성 알림 (예: !remind 30m 배포 확인)
-!remind list / cancel <id>   알림 목록 / 취소
-!cron add <주기> <내용>      반복 알림/작업 (예: !cron add hourly 서버 체크)
-!cron list / remove <id>     크론 목록 / 제거
-!backend [claude|codex]      AI 백엔드 전환 (현재 상태 확인 또는 전환)
+
+스케줄 (통합):
+!task add <주기|cron> [task] <내용>   반복 작업/알림 등록
+!task once <HH:MM> <메시지>           일회성 알림
+!task list [pending|paused|all]       목록
+!task pause|resume|cancel <id>        관리
+!task update <id> --cron|--prompt|--script <값>
+!task help                            상세 도움말
+
+히스토리:
+!history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
+!history list [프로젝트]              날짜 목록
+
+기타:
+!remind <시간> <메시지>      일회성 알림 (구버전 호환)
+!cron add|list|remove        반복 작업 (구버전 호환)
+!backend [claude|codex]      AI 백엔드 전환
 !update                      새 버전 빌드 & 자동 재시작
 !help                        이 도움말
-
-주기 형식: 30m, 2h, 1d, hourly, daily, weekly
-task 접두어: !remind 1h task 서버 확인해줘  →  Claude 작업으로 실행
 `)
 }

@@ -1,54 +1,41 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
-// Reminder fires once after a delay and sends a notification message.
-type Reminder struct {
-	ID      string    `json:"id"`
-	ChatID  int64     `json:"chatId"`
-	Message string    `json:"message"`
-	FireAt  time.Time `json:"fireAt"`
-}
-
-// CronJob fires repeatedly on a fixed interval.
-// IsTask=true routes the task through Manager/Worker like a Telegram message.
-type CronJob struct {
-	ID       string        `json:"id"`
-	ChatID   int64         `json:"chatId"`
-	Label    string        `json:"label"`    // human-readable schedule description
-	Interval time.Duration `json:"interval"` // how often to fire
-	NextFire time.Time     `json:"nextFire"`
-	Task     string        `json:"task"`   // notification text or Claude prompt
-	IsTask   bool          `json:"isTask"` // true → dispatch through Manager
-	Enabled  bool          `json:"enabled"`
-}
-
-type scheduleData struct {
-	Reminders []*Reminder `json:"reminders"`
-	CronJobs  []*CronJob  `json:"cronJobs"`
-}
-
-// Scheduler manages reminders and cron jobs, persisting to a JSON file.
+// Scheduler manages Tasks (one-shot and recurring), persisting to tasks.json.
+// Replaces the old Reminder + CronJob design.
 type Scheduler struct {
-	mu       sync.Mutex
-	path     string
-	data     scheduleData
-	nextID   int
-	send     func(chatID int64, text string)
-	dispatch func(chatID int64, text string)
+	mu          sync.Mutex
+	tasksPath   string
+	tasks       []*Task
+	cronRunner  *cron.Cron
+	cronEntries map[string]cron.EntryID // Task.ID → cron EntryID
+	stopChs     map[string]chan struct{} // Task.ID → cancel channel (one-shot)
+	send        func(chatID int64, text string)
+	dispatch    func(chatID int64, text string)
 }
 
-func NewScheduler(path string) *Scheduler {
-	return &Scheduler{path: path}
+func NewScheduler(tasksPath string) *Scheduler {
+	c := cron.New(cron.WithLocation(time.Local))
+	return &Scheduler{
+		tasksPath:   tasksPath,
+		cronRunner:  c,
+		cronEntries: make(map[string]cron.EntryID),
+		stopChs:     make(map[string]chan struct{}),
+	}
 }
 
 func (s *Scheduler) SetSend(f func(int64, string)) {
@@ -63,165 +50,424 @@ func (s *Scheduler) SetDispatch(f func(int64, string)) {
 	s.mu.Unlock()
 }
 
+// Load reads tasks.json; migrates schedule.json if tasks.json is absent.
 func (s *Scheduler) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := os.ReadFile(s.path)
+
+	b, err := os.ReadFile(s.tasksPath)
 	if os.IsNotExist(err) {
+		schedPath := filepath.Join(filepath.Dir(s.tasksPath), "schedule.json")
+		if _, serr := os.Stat(schedPath); serr == nil {
+			return s.migrateLegacy(schedPath)
+		}
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(b, &s.data); err != nil {
-		return err
-	}
-	for _, r := range s.data.Reminders {
-		if n, _ := strconv.Atoi(r.ID); n > s.nextID {
-			s.nextID = n
-		}
-	}
-	for _, c := range s.data.CronJobs {
-		if n, _ := strconv.Atoi(c.ID); n > s.nextID {
-			s.nextID = n
-		}
-	}
-	return nil
+	return json.Unmarshal(b, &s.tasks)
 }
 
+// save writes tasks atomically. Lock must be held by caller.
 func (s *Scheduler) save() error {
-	b, err := json.MarshalIndent(s.data, "", "  ")
+	b, err := json.MarshalIndent(s.tasks, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
+	tmp := s.tasksPath + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	return os.Rename(tmp, s.tasksPath)
 }
 
-func (s *Scheduler) newID() string {
-	s.nextID++
-	return strconv.Itoa(s.nextID)
-}
-
-func (s *Scheduler) AddReminder(chatID int64, msg string, fireAt time.Time) (*Reminder, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r := &Reminder{ID: s.newID(), ChatID: chatID, Message: msg, FireAt: fireAt}
-	s.data.Reminders = append(s.data.Reminders, r)
-	return r, s.save()
-}
-
-func (s *Scheduler) AddCron(chatID int64, label string, interval time.Duration, task string, isTask bool) (*CronJob, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c := &CronJob{
-		ID:       s.newID(),
-		ChatID:   chatID,
-		Label:    label,
-		Interval: interval,
-		NextFire: time.Now().Add(interval),
-		Task:     task,
-		IsTask:   isTask,
-		Enabled:  true,
-	}
-	s.data.CronJobs = append(s.data.CronJobs, c)
-	return c, s.save()
-}
-
-func (s *Scheduler) Remove(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, r := range s.data.Reminders {
-		if r.ID == id {
-			s.data.Reminders = append(s.data.Reminders[:i], s.data.Reminders[i+1:]...)
-			_ = s.save()
-			return true
-		}
-	}
-	for i, c := range s.data.CronJobs {
-		if c.ID == id {
-			s.data.CronJobs = append(s.data.CronJobs[:i], s.data.CronJobs[i+1:]...)
-			_ = s.save()
-			return true
-		}
-	}
-	return false
-}
-
-func (s *Scheduler) ListReminders() []*Reminder {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*Reminder, len(s.data.Reminders))
-	copy(out, s.data.Reminders)
-	return out
-}
-
-func (s *Scheduler) ListCrons() []*CronJob {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*CronJob, len(s.data.CronJobs))
-	copy(out, s.data.CronJobs)
-	return out
-}
-
-// Run is the background scheduler loop. Call in a goroutine.
+// Run registers all pending tasks and starts the cron runner. Call in a goroutine.
 func (s *Scheduler) Run() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.tick()
+	s.mu.Lock()
+	for _, t := range s.tasks {
+		if t.Status == "pending" {
+			s.register(t)
+		}
 	}
+	s.mu.Unlock()
+	s.cronRunner.Start()
+	select {} // block forever
 }
 
-func (s *Scheduler) tick() {
-	now := time.Now()
-	s.mu.Lock()
-
-	var fired bool
-
-	// Fire pending reminders
-	kept := s.data.Reminders[:0]
-	for _, r := range s.data.Reminders {
-		if now.After(r.FireAt) {
-			chatID, msg := r.ChatID, r.Message
-			go s.send(chatID, "⏰ 알림: "+msg)
-			fired = true
-		} else {
-			kept = append(kept, r)
+// register adds a task to cronRunner (recurring) or starts a timer (one-shot).
+// Lock must be held by caller.
+func (s *Scheduler) register(t *Task) {
+	if t.CronExpr != "" {
+		entryID, err := s.cronRunner.AddFunc(t.CronExpr, func() { s.fire(t.ID) })
+		if err != nil {
+			log.Printf("[scheduler] cron parse error for task %s (%q): %v", t.ID, t.CronExpr, err)
+			return
 		}
+		s.cronEntries[t.ID] = entryID
+		return
 	}
-	s.data.Reminders = kept
-
-	// Fire due cron jobs
-	for _, c := range s.data.CronJobs {
-		if !c.Enabled || now.Before(c.NextFire) {
-			continue
+	if !t.FireAt.IsZero() {
+		stopCh := make(chan struct{})
+		s.stopChs[t.ID] = stopCh
+		taskID := t.ID
+		delay := time.Until(t.FireAt)
+		if delay < 0 {
+			delay = 0
 		}
-		c.NextFire = now.Add(c.Interval)
-		chatID, task, isTask := c.ChatID, c.Task, c.IsTask
 		go func() {
-			if isTask {
-				s.dispatch(chatID, task)
-			} else {
-				s.send(chatID, "🔔 "+task)
+			select {
+			case <-time.After(delay):
+				s.fire(taskID)
+				s.mu.Lock()
+				s.removeByID(taskID)
+				_ = s.save()
+				s.mu.Unlock()
+			case <-stopCh:
 			}
 		}()
-		fired = true
-	}
-
-	s.mu.Unlock()
-
-	if fired {
-		if err := s.save(); err != nil {
-			log.Printf("[scheduler] save error: %v", err)
-		}
 	}
 }
 
-// ParseSchedule parses "30m", "2h", "1d", "hourly", "daily", "weekly" into a duration and label.
+// deregister removes a task from cronRunner or cancels its timer.
+// Lock must be held by caller.
+func (s *Scheduler) deregister(id string) {
+	if entryID, ok := s.cronEntries[id]; ok {
+		s.cronRunner.Remove(entryID)
+		delete(s.cronEntries, id)
+	}
+	if ch, ok := s.stopChs[id]; ok {
+		close(ch)
+		delete(s.stopChs, id)
+	}
+}
+
+// fire executes a task's action (called by cron tick or one-shot goroutine).
+func (s *Scheduler) fire(taskID string) {
+	s.mu.Lock()
+	t := s.findByID(taskID)
+	if t == nil || t.Status != "pending" {
+		s.mu.Unlock()
+		return
+	}
+	t.LastFired = time.Now()
+	chatID, prompt, script, isTask := t.ChatID, t.Prompt, t.Script, t.IsTask
+	_ = s.save()
+	sendFn, dispatchFn := s.send, s.dispatch
+	s.mu.Unlock()
+
+	// Script pre-check: skip turn if wakeAgent == false
+	if script != "" {
+		wake, data := runScriptPrecheck(script)
+		if !wake {
+			log.Printf("[scheduler] task %s: wakeAgent=false — skipping this turn", taskID)
+			return
+		}
+		if len(data) > 0 {
+			b, _ := json.Marshal(data)
+			prompt = prompt + "\n\n[Script data]: " + string(b)
+		}
+	}
+
+	if isTask && dispatchFn != nil {
+		go dispatchFn(chatID, prompt)
+	} else if sendFn != nil {
+		go sendFn(chatID, "🔔 "+prompt)
+	}
+}
+
+// AddTask adds a new Task and registers it with the scheduler.
+func (s *Scheduler) AddTask(t *Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks = append(s.tasks, t)
+	if t.Status == "pending" {
+		s.register(t)
+	}
+	return s.save()
+}
+
+// PauseTask pauses a task (deregisters, sets status="paused").
+func (s *Scheduler) PauseTask(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.findByID(id)
+	if t == nil {
+		return fmt.Errorf("작업 %q 없음", id)
+	}
+	s.deregister(id)
+	t.Status = "paused"
+	return s.save()
+}
+
+// ResumeTask re-activates a paused task.
+func (s *Scheduler) ResumeTask(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.findByID(id)
+	if t == nil {
+		return fmt.Errorf("작업 %q 없음", id)
+	}
+	t.Status = "pending"
+	s.register(t)
+	return s.save()
+}
+
+// CancelTask permanently cancels a task (deregisters, sets status="cancelled").
+func (s *Scheduler) CancelTask(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.findByID(id)
+	if t == nil {
+		return fmt.Errorf("작업 %q 없음", id)
+	}
+	s.deregister(id)
+	t.Status = "cancelled"
+	return s.save()
+}
+
+// UpdateTask updates mutable fields on an active or paused task.
+// Pass empty string to leave a field unchanged.
+func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.findByID(id)
+	if t == nil {
+		return fmt.Errorf("작업 %q 없음", id)
+	}
+	wasActive := t.Status == "pending"
+	if wasActive {
+		s.deregister(id)
+	}
+	if cronExpr != "" {
+		t.CronExpr = cronExpr
+	}
+	if prompt != "" {
+		t.Prompt = prompt
+	}
+	if script != "" {
+		t.Script = script
+	}
+	if wasActive {
+		s.register(t)
+	}
+	return s.save()
+}
+
+// ListTasks returns tasks matching status filter ("pending"|"paused"|"cancelled"|"all"|"").
+// "" and "all" return everything.
+func (s *Scheduler) ListTasks(filter string) []*Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Task
+	for _, t := range s.tasks {
+		if filter == "" || filter == "all" || t.Status == filter {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	return out
+}
+
+// NextFire returns the next scheduled fire time for a recurring task.
+// Returns zero time if not found or not active.
+func (s *Scheduler) NextFire(id string) time.Time {
+	s.mu.Lock()
+	entryID, ok := s.cronEntries[id]
+	s.mu.Unlock()
+	if !ok {
+		return time.Time{}
+	}
+	entry := s.cronRunner.Entry(entryID)
+	return entry.Next
+}
+
+// Remove cancels a task by ID. Returns false if not found.
+// Kept for backward compatibility with !remind / !cron commands.
+func (s *Scheduler) Remove(id string) bool {
+	err := s.CancelTask(id)
+	return err == nil
+}
+
+// AddReminder creates a one-shot notification Task.
+// Kept for backward compatibility with !remind.
+func (s *Scheduler) AddReminder(chatID int64, msg string, fireAt time.Time) (*Task, error) {
+	t := &Task{
+		ID:        newTaskID(),
+		ChatID:    chatID,
+		Prompt:    msg,
+		FireAt:    fireAt,
+		Status:    "pending",
+		IsTask:    false,
+		Label:     "알림: " + msg,
+		CreatedAt: time.Now(),
+	}
+	return t, s.AddTask(t)
+}
+
+// AddCron creates a recurring Task from a duration.
+// Kept for backward compatibility with !cron.
+func (s *Scheduler) AddCron(chatID int64, label string, interval time.Duration, task string, isTask bool) (*Task, error) {
+	t := &Task{
+		ID:        newTaskID(),
+		ChatID:    chatID,
+		Prompt:    task,
+		CronExpr:  durationToCron(interval),
+		Status:    "pending",
+		IsTask:    isTask,
+		Label:     label,
+		CreatedAt: time.Now(),
+	}
+	return t, s.AddTask(t)
+}
+
+// ListReminders returns active one-shot tasks (CronExpr == "").
+// Kept for backward compatibility with !remind list.
+func (s *Scheduler) ListReminders() []*Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Task
+	for _, t := range s.tasks {
+		if t.CronExpr == "" && t.Status == "pending" {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	return out
+}
+
+// ListCrons returns active recurring tasks (CronExpr != "").
+// Kept for backward compatibility with !cron list.
+func (s *Scheduler) ListCrons() []*Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Task
+	for _, t := range s.tasks {
+		if t.CronExpr != "" && t.Status == "pending" {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	return out
+}
+
+// --- Legacy migration ---
+
+type legacyScheduleData struct {
+	Reminders []struct {
+		ID      string    `json:"id"`
+		ChatID  int64     `json:"chatId"`
+		Message string    `json:"message"`
+		FireAt  time.Time `json:"fireAt"`
+	} `json:"reminders"`
+	CronJobs []struct {
+		ID       string        `json:"id"`
+		ChatID   int64         `json:"chatId"`
+		Label    string        `json:"label"`
+		Interval time.Duration `json:"interval"`
+		Task     string        `json:"task"`
+		IsTask   bool          `json:"isTask"`
+		Enabled  bool          `json:"enabled"`
+	} `json:"cronJobs"`
+}
+
+// migrateLegacy converts schedule.json → tasks.json. Lock must be held by caller.
+func (s *Scheduler) migrateLegacy(schedPath string) error {
+	b, err := os.ReadFile(schedPath)
+	if err != nil {
+		return err
+	}
+	var old legacyScheduleData
+	if err := json.Unmarshal(b, &old); err != nil {
+		return fmt.Errorf("schedule.json 마이그레이션 파싱 실패: %w", err)
+	}
+	for _, r := range old.Reminders {
+		s.tasks = append(s.tasks, &Task{
+			ID:        "r-" + r.ID,
+			ChatID:    r.ChatID,
+			Prompt:    r.Message,
+			FireAt:    r.FireAt,
+			Status:    "pending",
+			Label:     "알림: " + r.Message,
+			CreatedAt: time.Now(),
+		})
+	}
+	for _, c := range old.CronJobs {
+		status := "pending"
+		if !c.Enabled {
+			status = "paused"
+		}
+		label := c.Label
+		if label == "" {
+			label = c.Task
+		}
+		s.tasks = append(s.tasks, &Task{
+			ID:        "c-" + c.ID,
+			ChatID:    c.ChatID,
+			Prompt:    c.Task,
+			CronExpr:  durationToCron(c.Interval),
+			Status:    status,
+			IsTask:    c.IsTask,
+			Label:     label,
+			CreatedAt: time.Now(),
+		})
+	}
+	if err := s.save(); err != nil {
+		return err
+	}
+	_ = os.Rename(schedPath, schedPath+".bak")
+	log.Printf("[scheduler] migrated %d reminders + %d cron jobs from schedule.json", len(old.Reminders), len(old.CronJobs))
+	return nil
+}
+
+// durationToCron converts a duration to a 5-field cron expression.
+func durationToCron(d time.Duration) string {
+	switch {
+	case d <= time.Minute:
+		return "* * * * *"
+	case d < time.Hour:
+		return fmt.Sprintf("*/%d * * * *", int(d.Minutes()))
+	case d == time.Hour:
+		return "0 * * * *"
+	case d < 24*time.Hour:
+		return fmt.Sprintf("0 */%d * * *", int(d.Hours()))
+	case d == 24*time.Hour:
+		return "0 0 * * *"
+	case d == 7*24*time.Hour:
+		return "0 0 * * 0"
+	default:
+		return fmt.Sprintf("@every %dm", int(d.Minutes()))
+	}
+}
+
+// --- Script pre-check ---
+
+type scriptResult struct {
+	WakeAgent bool           `json:"wakeAgent"`
+	Data      map[string]any `json:"data"`
+}
+
+// runScriptPrecheck runs a bash script and parses {"wakeAgent": bool, "data": {...}}.
+// Returns wakeAgent=true on any failure (safe fallback: always run when uncertain).
+func runScriptPrecheck(script string) (wakeAgent bool, data map[string]any) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bash", "-c", script).Output()
+	if err != nil {
+		log.Printf("[scheduler] script precheck exec error: %v — defaulting wakeAgent=true", err)
+		return true, nil
+	}
+	var res scriptResult
+	if jerr := json.Unmarshal(out, &res); jerr != nil {
+		log.Printf("[scheduler] script precheck: invalid JSON %q — defaulting wakeAgent=true", strings.TrimSpace(string(out)))
+		return true, nil
+	}
+	return res.WakeAgent, res.Data
+}
+
+// --- ParseSchedule (backward compat for !remind / !cron duration parsing) ---
+
+// ParseSchedule parses "30m", "2h", "1d", "hourly", "daily", "weekly".
 func ParseSchedule(raw string) (time.Duration, string, error) {
 	raw = strings.TrimSpace(strings.ToLower(raw))
 	switch raw {
@@ -236,8 +482,8 @@ func ParseSchedule(raw string) (time.Duration, string, error) {
 		return 0, "", fmt.Errorf("알 수 없는 형식: %q", raw)
 	}
 	unit := raw[len(raw)-1]
-	n, err := strconv.Atoi(raw[:len(raw)-1])
-	if err != nil || n <= 0 {
+	var n int
+	if _, err := fmt.Sscanf(raw[:len(raw)-1], "%d", &n); err != nil || n <= 0 {
 		return 0, "", fmt.Errorf("잘못된 값: %q", raw)
 	}
 	switch unit {
@@ -249,4 +495,28 @@ func ParseSchedule(raw string) (time.Duration, string, error) {
 		return time.Duration(n) * 24 * time.Hour, fmt.Sprintf("%d일마다", n), nil
 	}
 	return 0, "", fmt.Errorf("알 수 없는 단위 '%c' — m/h/d/hourly/daily/weekly 사용", unit)
+}
+
+// --- Helpers ---
+
+func (s *Scheduler) findByID(id string) *Task {
+	for _, t := range s.tasks {
+		if t.ID == id {
+			return t
+		}
+	}
+	return nil
+}
+
+func (s *Scheduler) removeByID(id string) {
+	for i, t := range s.tasks {
+		if t.ID == id {
+			s.tasks = append(s.tasks[:i], s.tasks[i+1:]...)
+			return
+		}
+	}
+}
+
+func newTaskID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }

@@ -423,7 +423,7 @@ func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
 		sb.WriteString("⏰ 대기 중인 알림:\n")
 		for _, r := range reminders {
 			remaining := time.Until(r.FireAt).Round(time.Second)
-			fmt.Fprintf(&sb, "[%s] %s 후 — %s\n", r.ID, remaining, r.Message)
+			fmt.Fprintf(&sb, "[%s] %s 후 — %s\n", r.ID, remaining, r.Prompt)
 		}
 		_ = b.Send(chatID, sb.String())
 	case "cancel":
@@ -490,8 +490,8 @@ func (b *Bot) handleCron(chatID int64, text string, fields []string) {
 			if c.IsTask {
 				kind = "작업"
 			}
-			next := time.Until(c.NextFire).Round(time.Second)
-			fmt.Fprintf(&sb, "[%s] %s (%s) — 다음: %s 후\n  %s\n", c.ID, c.Label, kind, next, c.Task)
+			next := time.Until(b.scheduler.NextFire(c.ID)).Round(time.Second)
+			fmt.Fprintf(&sb, "[%s] %s (%s) — 다음: %s 후\n  %s\n", c.ID, c.Label, kind, next, c.Prompt)
 		}
 		_ = b.Send(chatID, sb.String())
 	case "remove":

@@ -177,7 +177,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		cfg.AllowedUserIDs, activeBackend, activeManagerModel, activeWorkerModel)
 
 	// Scheduler: reminders + cron jobs
-	sched := NewScheduler(filepath.Join(dir, "schedule.json"))
+	sched := NewScheduler(filepath.Join(dir, "tasks.json"))
 	if err := sched.Load(); err != nil {
 		log.Printf("[main] scheduler load warning: %v", err)
 	}

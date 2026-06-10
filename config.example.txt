@@ -1,0 +1,43 @@
+# teleclaude 설정 파일 예제
+# 위치: ~/.teleclaude/config.txt  (Linux/macOS)
+#        %USERPROFILE%\.teleclaude\config.txt  (Windows)
+#
+# 처음 실행 시 설정 마법사가 자동으로 안내합니다:
+#   teleclaude run    (Windows: teleclaude.exe run)
+
+# ─── 필수 ──────────────────────────────────────────────────────────────────────
+
+# Telegram 봇 토큰 (@BotFather 에서 발급)
+TELEGRAM_BOT_TOKEN=123456789:AAH...
+
+# 허용할 Telegram user ID (쉼표 구분, 여러 명 가능)
+# !help → "내 ID: XXXXXXXX" 메시지로 확인 가능
+ALLOWED_USER_IDS=123456789
+
+# ─── 모델 설정 ─────────────────────────────────────────────────────────────────
+
+# 라우팅 매니저용 모델 (빠르고 저렴한 모델 권장)
+# 지원 값: claude-haiku-4-5-20251001, claude-sonnet-4-6, claude-opus-4-8, haiku, sonnet ...
+MANAGER_MODEL=claude-haiku-4-5-20251001
+
+# 실제 작업 워커 모델 (비우면 claude 기본값 사용)
+WORKER_MODEL=claude-sonnet-4-6
+
+# ─── 선택 설정 ─────────────────────────────────────────────────────────────────
+
+# claude CLI 경로 (비우면 PATH에서 자동 탐지)
+# CLAUDE_PATH=/usr/bin/claude
+
+# 작업 타임아웃 (분, 기본 10)
+TIMEOUT_MINUTES=10
+
+# true = 매 메시지마다 Manager가 프로젝트/대화를 라우팅 (더 정확, 토큰 소비↑)
+# false = 활성 대화가 있으면 바로 Worker 호출 (빠름, 토큰 절약)
+MANAGER_ALWAYS=true
+
+# ─── Codex 백엔드 (선택, !backend codex 로 전환) ──────────────────────────────
+
+# DEFAULT_BACKEND=codex
+# CODEX_PATH=
+# CODEX_MODEL=
+# CODEX_MANAGER_MODEL=

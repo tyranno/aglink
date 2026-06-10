@@ -467,13 +467,25 @@ func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
 		}
 		msg := strings.Join(fields[msgStart:], " ")
 		fireAt := time.Now().Add(dur)
-		r, err := b.scheduler.AddReminder(chatID, msg, fireAt)
-		if err != nil {
+		t := &Task{
+			ID:        newTaskID(),
+			ChatID:    chatID,
+			Prompt:    msg,
+			FireAt:    fireAt,
+			Status:    "pending",
+			IsTask:    isTask,
+			Label:     "알림: " + msg,
+			CreatedAt: time.Now(),
+		}
+		if err := b.scheduler.AddTask(t); err != nil {
 			_ = b.Send(chatID, "⚠️ 알림 등록 실패: "+err.Error())
 			return
 		}
-		_ = isTask // isTask reminders use same path for now — sends notification
-		_ = b.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후: %s", r.ID, dur.Round(time.Second), msg))
+		kind := "알림"
+		if isTask {
+			kind = "Claude 작업"
+		}
+		_ = b.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후 (%s): %s", t.ID, dur.Round(time.Second), kind, msg))
 	}
 }
 
@@ -730,7 +742,10 @@ func parseTaskAddArgs(args []string) (cronExpr, script string, isTask bool, prom
 	// Extract --script flag from args before parsing cron/prompt
 	var rest []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--script" && i+1 < len(args) {
+		if args[i] == "--script" {
+			if i+1 >= len(args) {
+				return "", "", false, "", fmt.Errorf("--script 플래그에 값이 필요합니다")
+			}
 			script = args[i+1]
 			i++
 		} else {
@@ -817,6 +832,9 @@ func parseOnceDatetime(tokens []string) (time.Time, int, error) {
 	if len(tokens) >= 2 {
 		combined := tokens[0] + " " + tokens[1]
 		if t, err := time.ParseInLocation("2006-01-02 15:04", combined, time.Local); err == nil {
+			if t.Before(time.Now()) {
+				return time.Time{}, 0, fmt.Errorf("과거 날짜입니다: %s", combined)
+			}
 			return t, 2, nil
 		}
 	}
@@ -946,7 +964,13 @@ func (b *Bot) downloadAttachment(fileID, ext string) (string, error) {
 	}
 	url := tgFile.Link(b.api.Token)
 
-	resp, err := http.Get(url) //nolint:noctx
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer dlCancel()
+	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("요청 생성 실패: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("파일 다운로드 실패: %w", err)
 	}
@@ -1027,6 +1051,10 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 	date := time.Now().Format("2006-01-02")
 	for _, arg := range fields[1:] {
 		if len(arg) == 10 && arg[4] == '-' && arg[7] == '-' {
+			if _, err := time.Parse("2006-01-02", arg); err != nil {
+				_ = b.Send(chatID, "⚠️ 날짜 형식 오류: "+arg+" (YYYY-MM-DD 사용)")
+				return
+			}
 			date = arg
 		} else {
 			project = arg

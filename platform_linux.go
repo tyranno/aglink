@@ -31,30 +31,53 @@ func killByImageName(name string) {
 	exec.Command("pkill", "-f", name).Run()
 }
 
-// killPreviousInstance sends SIGTERM to the previous instance via PID file.
+// killPreviousInstance sends SIGTERM to the previous instance.
+// Tries PID file first; falls back to pkill for instances started without a PID file.
 func killPreviousInstance() {
 	myPID := os.Getpid()
+	killed := false
 
 	if b, err := os.ReadFile(pidFilePath()); err == nil {
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && pid != myPID {
 			if syscall.Kill(pid, syscall.SIGTERM) == nil {
 				log.Printf("[main] sent SIGTERM to previous instance (PID %d)", pid)
 				time.Sleep(3 * time.Second)
+				killed = true
 			}
 		}
+	}
+
+	if !killed {
+		// Use pgrep to enumerate PIDs and skip self — pkill without exclusion would kill us.
+		for _, name := range []string{"teleclaude", "teleclaude_new"} {
+			out, err := exec.Command("pgrep", "-x", name).Output()
+			if err != nil {
+				continue
+			}
+			for _, pidStr := range strings.Fields(string(out)) {
+				if pid, _ := strconv.Atoi(pidStr); pid > 0 && pid != myPID {
+					syscall.Kill(pid, syscall.SIGTERM)
+					log.Printf("[main] sent SIGTERM to previous instance %q (PID %d)", name, pid)
+				}
+			}
+		}
+		time.Sleep(1 * time.Second)
 	}
 }
 
 // waitForProcessExit polls until the given PID is gone, then force-kills on timeout.
-// Uses signal 0 to check process existence without killing it.
+// Uses signal 0 to check process existence. Distinguishes ESRCH (gone) from EPERM
+// (exists but undeliverable) so we don't exit early on a permission error.
 func waitForProcessExit(pid int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(300 * time.Millisecond)
-		if err := syscall.Kill(pid, 0); err != nil {
+		err := syscall.Kill(pid, 0)
+		if err == syscall.ESRCH {
 			log.Printf("[main] old process (PID %d) has exited", pid)
 			return
 		}
+		// err == nil → alive; err == EPERM → alive but can't signal; keep waiting
 	}
 	syscall.Kill(pid, syscall.SIGKILL)
 	log.Printf("[main] force-killed old process (PID %d) after timeout", pid)

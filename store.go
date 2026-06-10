@@ -234,6 +234,21 @@ func sortedConvIDs(convs map[string]*Conversation) []string {
 	return ids
 }
 
+// GetStoredBackend returns the persisted backend name ("claude"|"codex"; "" = claude).
+func (s *fileStore) GetStoredBackend() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.data.ActiveBackend
+}
+
+// SetStoredBackend persists the active backend to store.json.
+func (s *fileStore) SetStoredBackend(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.ActiveBackend = name
+	return s.saveLocked()
+}
+
 // GetParent returns the parent conversation in a chain (used for continuation context).
 func (s *fileStore) GetParent(project, convID string) (*Conversation, bool) {
 	s.mu.Lock()

@@ -24,6 +24,7 @@ type Scheduler struct {
 	cronRunner  *cron.Cron
 	cronEntries map[string]cron.EntryID // Task.ID → cron EntryID
 	stopChs     map[string]chan struct{} // Task.ID → cancel channel (one-shot)
+	done        chan struct{}            // closed by Stop() to unblock Run()
 	send        func(chatID int64, text string)
 	dispatch    func(chatID int64, text string)
 }
@@ -34,6 +35,7 @@ func NewScheduler(tasksPath string) *Scheduler {
 		tasksPath:   tasksPath,
 		cronRunner:  c,
 		cronEntries: make(map[string]cron.EntryID),
+		done:        make(chan struct{}),
 		stopChs:     make(map[string]chan struct{}),
 	}
 }
@@ -83,29 +85,42 @@ func (s *Scheduler) save() error {
 }
 
 // Run registers all pending tasks and starts the cron runner. Call in a goroutine.
+// Returns when Stop() is called.
 func (s *Scheduler) Run() {
 	s.mu.Lock()
 	for _, t := range s.tasks {
 		if t.Status == "pending" {
-			s.register(t)
+			if err := s.register(t); err != nil {
+				log.Printf("[scheduler] startup register error for task %s: %v", t.ID, err)
+			}
 		}
 	}
 	s.mu.Unlock()
 	s.cronRunner.Start()
-	select {} // block forever
+	<-s.done
+	s.cronRunner.Stop()
+}
+
+// Stop gracefully shuts down the scheduler.
+func (s *Scheduler) Stop() {
+	select {
+	case <-s.done: // already closed
+	default:
+		close(s.done)
+	}
 }
 
 // register adds a task to cronRunner (recurring) or starts a timer (one-shot).
+// Returns an error if the cron expression is invalid.
 // Lock must be held by caller.
-func (s *Scheduler) register(t *Task) {
+func (s *Scheduler) register(t *Task) error {
 	if t.CronExpr != "" {
 		entryID, err := s.cronRunner.AddFunc(t.CronExpr, func() { s.fire(t.ID) })
 		if err != nil {
-			log.Printf("[scheduler] cron parse error for task %s (%q): %v", t.ID, t.CronExpr, err)
-			return
+			return fmt.Errorf("cron 식 오류 (%q): %w", t.CronExpr, err)
 		}
 		s.cronEntries[t.ID] = entryID
-		return
+		return nil
 	}
 	if !t.FireAt.IsZero() {
 		stopCh := make(chan struct{})
@@ -127,6 +142,7 @@ func (s *Scheduler) register(t *Task) {
 			}
 		}()
 	}
+	return nil
 }
 
 // deregister removes a task from cronRunner or cancels its timer.
@@ -177,13 +193,16 @@ func (s *Scheduler) fire(taskID string) {
 }
 
 // AddTask adds a new Task and registers it with the scheduler.
+// Returns an error (and does not persist) if cron expression parsing fails.
 func (s *Scheduler) AddTask(t *Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tasks = append(s.tasks, t)
 	if t.Status == "pending" {
-		s.register(t)
+		if err := s.register(t); err != nil {
+			return err
+		}
 	}
+	s.tasks = append(s.tasks, t)
 	return s.save()
 }
 
@@ -209,7 +228,10 @@ func (s *Scheduler) ResumeTask(id string) error {
 		return fmt.Errorf("작업 %q 없음", id)
 	}
 	t.Status = "pending"
-	s.register(t)
+	if err := s.register(t); err != nil {
+		t.Status = "paused"
+		return err
+	}
 	return s.save()
 }
 
@@ -249,7 +271,9 @@ func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string) error {
 		t.Script = script
 	}
 	if wasActive {
-		s.register(t)
+		if err := s.register(t); err != nil {
+			return err
+		}
 	}
 	return s.save()
 }

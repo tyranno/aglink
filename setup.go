@@ -199,7 +199,7 @@ func writeConfigFile(path, token string, userID int64) error {
 		return err
 	}
 	content := fmt.Sprintf(
-		"TELEGRAM_BOT_TOKEN=%s\nALLOWED_USER_IDS=%d\nMANAGER_MODEL=haiku\nWORKER_MODEL=\nTIMEOUT_MINUTES=10\nMANAGER_ALWAYS=true\n",
+		"TELEGRAM_BOT_TOKEN=%s\nALLOWED_USER_IDS=%d\nMANAGER_MODEL=haiku\nWORKER_MODEL=\nTIMEOUT_MINUTES=10\nMANAGER_ALWAYS=true\n# DEFAULT_BACKEND=codex\n# CODEX_PATH=\n# CODEX_MODEL=\n# CODEX_MANAGER_MODEL=\n",
 		token, userID)
 	return os.WriteFile(path, []byte(content), 0o600)
 }

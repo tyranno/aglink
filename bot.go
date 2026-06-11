@@ -236,6 +236,7 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		if qLen > 0 {
 			msg += fmt.Sprintf("\n📋 대기 중: %d개", qLen)
 		}
+		msg += "\n🔧 백엔드: " + strings.ToUpper(b.manager.Backend())
 		_ = b.Send(chatID, msg)
 	case "!project":
 		b.handleProject(chatID, text, fields)
@@ -686,8 +687,13 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			if t.Script != "" {
 				scriptMark = " [스크립트]"
 			}
-			fmt.Fprintf(&sb, "[%s] %s (%s/%s)%s\n  %s%s\n  ▶ %s\n",
-				t.ID, t.Label, t.Status, kind, scriptMark, schedule, nextStr, truncate(t.Prompt, 60))
+			// Show full prompt line only when it's truncated in the label (>30 runes).
+			promptSuffix := ""
+			if len([]rune(t.Prompt)) > 30 {
+				promptSuffix = "\n  ▶ " + truncate(t.Prompt, 80)
+			}
+			fmt.Fprintf(&sb, "[%s] %s (%s/%s)%s\n  %s%s%s\n",
+				t.ID, t.Label, t.Status, kind, scriptMark, schedule, nextStr, promptSuffix)
 		}
 		_ = b.Send(chatID, sb.String())
 
@@ -1104,7 +1110,7 @@ func extFromMIME(mime string) string {
 // handleHistory processes !history commands — date-based conversation log viewer.
 //
 //	!history                          — today's log for active project
-//	!history list [project]           — list available dates
+//	!history list [project|all]       — list available dates (all = all projects)
 //	!history <YYYY-MM-DD>             — specific date, active project
 //	!history <project>                — today's log for named project
 //	!history <project> <YYYY-MM-DD>   — specific project + date
@@ -1113,12 +1119,27 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 	defaultProject := active.Project
 
 	if len(fields) >= 2 && fields[1] == "list" {
+		// "!history list all" → list all projects that have history
+		if len(fields) >= 3 && fields[2] == "all" {
+			projects, err := ListHistoryProjects()
+			if err != nil {
+				_ = b.Send(chatID, "⚠️ 히스토리 프로젝트 목록 조회 실패: "+err.Error())
+				return
+			}
+			if len(projects) == 0 {
+				_ = b.Send(chatID, "📅 기록된 히스토리가 없습니다.")
+				return
+			}
+			_ = b.Send(chatID, "📅 히스토리가 있는 프로젝트:\n"+strings.Join(projects, "\n"))
+			return
+		}
+
 		project := defaultProject
 		if len(fields) >= 3 {
 			project = fields[2]
 		}
 		if project == "" {
-			_ = b.Send(chatID, "활성 프로젝트가 없습니다. !history list <프로젝트명> 형식으로 사용하세요.")
+			_ = b.Send(chatID, "활성 프로젝트가 없습니다. !history list <프로젝트명> 또는 !history list all")
 			return
 		}
 		dates, err := ListHistoryDates(project)
@@ -1236,7 +1257,7 @@ func helpText() string {
 
 히스토리:
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
-!history list [프로젝트]              날짜 목록
+!history list [프로젝트|all]          날짜 목록 (all = 전체 프로젝트)
 
 기타:
 !remind <시간> <메시지>      일회성 알림 (구버전 호환)

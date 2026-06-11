@@ -196,3 +196,127 @@ func TestBuildContextPrompt_MemoryNote(t *testing.T) {
 		t.Errorf("memory reminder missing from prompt")
 	}
 }
+
+// --- parseTaskAddArgs ---
+
+func TestParseTaskAddArgs_FivefieldCron(t *testing.T) {
+	cronExpr, script, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"0", "9", "*", "*", "1-5", "task", "daily standup"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "0 9 * * 1-5" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "0 9 * * 1-5")
+	}
+	if !isTask {
+		t.Error("isTask should be true")
+	}
+	if prompt != "daily standup" {
+		t.Errorf("prompt = %q, want %q", prompt, "daily standup")
+	}
+	if script != "" {
+		t.Errorf("script = %q, want empty", script)
+	}
+}
+
+func TestParseTaskAddArgs_DurationShorthand(t *testing.T) {
+	cronExpr, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"30m", "배포 확인"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 30m → "*/30 * * * *"
+	if cronExpr != "*/30 * * * *" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "*/30 * * * *")
+	}
+	if isTask {
+		t.Error("no 'task' keyword → isTask should be false")
+	}
+	if prompt != "배포 확인" {
+		t.Errorf("prompt = %q, want %q", prompt, "배포 확인")
+	}
+}
+
+func TestParseTaskAddArgs_KoreanDuration(t *testing.T) {
+	cronExpr, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"매시간", "task", "서버 확인"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "0 * * * *" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "0 * * * *")
+	}
+	if !isTask {
+		t.Error("isTask should be true")
+	}
+	if prompt != "서버 확인" {
+		t.Errorf("prompt = %q, want %q", prompt, "서버 확인")
+	}
+}
+
+func TestParseTaskAddArgs_AtEvery(t *testing.T) {
+	cronExpr, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"@every", "30m", "알림"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "@every 30m" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "@every 30m")
+	}
+	if isTask {
+		t.Error("isTask should be false (no 'task' keyword)")
+	}
+	if prompt != "알림" {
+		t.Errorf("prompt = %q, want %q", prompt, "알림")
+	}
+}
+
+func TestParseTaskAddArgs_ScriptFlag(t *testing.T) {
+	cronExpr, script, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"1h", "--script", "echo ok", "task", "do work"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "0 * * * *" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "0 * * * *")
+	}
+	if script != "echo ok" {
+		t.Errorf("script = %q, want %q", script, "echo ok")
+	}
+	if !isTask {
+		t.Error("isTask should be true")
+	}
+	if prompt != "do work" {
+		t.Errorf("prompt = %q, want %q", prompt, "do work")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorNoArgs(t *testing.T) {
+	if _, _, _, _, err := parseTaskAddArgs(nil); err == nil {
+		t.Error("expected error for empty args")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorNoPrompt(t *testing.T) {
+	// Valid schedule but no prompt text.
+	if _, _, _, _, err := parseTaskAddArgs([]string{"30m"}); err == nil {
+		t.Error("expected error when no prompt provided")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorMissingScriptValue(t *testing.T) {
+	if _, _, _, _, err := parseTaskAddArgs([]string{"30m", "--script"}); err == nil {
+		t.Error("expected error when --script has no value")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorInvalidSchedule(t *testing.T) {
+	if _, _, _, _, err := parseTaskAddArgs([]string{"notvalid", "hello"}); err == nil {
+		t.Error("expected error for invalid schedule string")
+	}
+}

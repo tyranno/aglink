@@ -259,6 +259,8 @@ func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string) error {
 		return fmt.Errorf("작업 %q 없음", id)
 	}
 	wasActive := t.Status == "pending"
+	// Snapshot old values so we can roll back if register() fails.
+	oldCronExpr, oldPrompt, oldScript := t.CronExpr, t.Prompt, t.Script
 	if wasActive {
 		s.deregister(id)
 	}
@@ -273,6 +275,10 @@ func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string) error {
 	}
 	if wasActive {
 		if err := s.register(t); err != nil {
+			// Roll back mutations so the task remains consistent.
+			t.CronExpr, t.Prompt, t.Script = oldCronExpr, oldPrompt, oldScript
+			t.Status = "paused" // can't re-register → mark paused to avoid phantom "pending"
+			_ = s.save()
 			return err
 		}
 	}

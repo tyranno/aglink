@@ -9,8 +9,18 @@ import (
 	"time"
 )
 
-// historyDir returns ~/.teleclaude/history (created if needed).
+// historyDirOverride can be set in tests to redirect history I/O to a temp directory.
+var historyDirOverride string
+
+// historyDir returns the history base directory (created if needed).
+// Defaults to ~/.teleclaude/history; overridden by historyDirOverride in tests.
 func historyDir() (string, error) {
+	if historyDirOverride != "" {
+		if err := os.MkdirAll(historyDirOverride, 0o700); err != nil {
+			return "", err
+		}
+		return historyDirOverride, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

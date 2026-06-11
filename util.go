@@ -30,24 +30,27 @@ func truncate(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// estimateTokens returns a rough token count estimate (word-based heuristic).
-// English: ~1.3 tokens/word; Korean: ~1.5 tokens/word. Conservative estimate.
+// estimateTokens returns a rough token count estimate.
+// ASCII: count space-separated words × 1.4. CJK/Korean (ch > 0x1000): each char ≈ 1 token.
 func estimateTokens(text string) int {
 	if text == "" {
 		return 0
 	}
-	// Simple heuristic: count whitespace-separated tokens, multiply by 1.4
 	tokens := 0
-	inWord := false
+	inASCIIWord := false
 	for _, ch := range text {
-		isWordChar := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch > 127 // includes CJK
-		if isWordChar && !inWord {
+		switch {
+		case ch > 0x1000: // CJK, Hangul, etc. — each character is roughly one token
 			tokens++
-			inWord = true
-		} else if !isWordChar {
-			inWord = false
+			inASCIIWord = false
+		case (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'):
+			if !inASCIIWord {
+				tokens++
+				inASCIIWord = true
+			}
+		default:
+			inASCIIWord = false
 		}
 	}
-	// Apply multiplier for subword tokenization
 	return int(float64(tokens) * 1.4)
 }

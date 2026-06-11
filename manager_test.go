@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -163,7 +164,7 @@ func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
 	// Add large history to trigger continuation (with actual characters to count tokens)
 	longPrompt := "여기는 매우 긴 프롬프트입니다. "
 	longResponse := "여기는 매우 긴 응답입니다. "
-	for i := 0; i < 5000; i++ { // ~70k tokens with multiplier
+	for range 5000 { // ~70k tokens with multiplier
 		longPrompt += "긴 텍스트를 반복합니다. "
 		longResponse += "긴 응답을 반복합니다. "
 	}
@@ -324,6 +325,75 @@ func TestSetBackend_Switch(t *testing.T) {
 	}
 	if m.Backend() != "claude" {
 		t.Error("expected claude after switch back")
+	}
+}
+
+func TestHandleScheduledTask_UsesActiveProject(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "done"}}
+	m, st, dir := mgrFixture(t, fc)
+
+	// Create conversation and mark active in "myapp".
+	c, _ := st.NewConversation("myapp", "main chat")
+	c.Started = true
+	_ = st.UpdateConversation("myapp", c)
+	_ = st.SetActive("myapp", c.ID)
+
+	f := &fakeSender{}
+	m.HandleScheduledTask(context.Background(), 1, "daily check", f)
+
+	if fc.runCalls != 1 {
+		t.Fatalf("Run called %d times, want 1", fc.runCalls)
+	}
+	if fc.lastRun.WorkDir != dir {
+		t.Errorf("WorkDir = %q, want %q (active project dir)", fc.lastRun.WorkDir, dir)
+	}
+}
+
+func TestHandleScheduledTask_AlphabeticalFallback(t *testing.T) {
+	// When no active project is set, HandleScheduledTask must fall back to
+	// alphabetically first project — not the map-iteration random one.
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	// Add three projects with names that differ only in first char.
+	zoDir := t.TempDir()
+	alDir := t.TempDir()
+	beDir := t.TempDir()
+	for _, pair := range [][2]string{{"zoo", zoDir}, {"alpha", alDir}, {"beta", beDir}} {
+		if err := st.AddProject(pair[0], pair[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No active project set — Active.Project is "".
+
+	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
+	m := NewManager(fc, nil, st, &Config{ManagerAlways: true})
+	f := &fakeSender{}
+	m.HandleScheduledTask(context.Background(), 1, "morning summary", f)
+
+	if fc.runCalls != 1 {
+		t.Fatalf("Run called %d times, want 1", fc.runCalls)
+	}
+	// "alpha" is alphabetically first.
+	if fc.lastRun.WorkDir != alDir {
+		t.Errorf("WorkDir = %q, want %q (alpha — alphabetically first)", fc.lastRun.WorkDir, alDir)
+	}
+}
+
+func TestHandleScheduledTask_NoProjects(t *testing.T) {
+	fc := &fakeClaude{}
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	_ = st.Load()
+	m := NewManager(fc, nil, st, &Config{})
+	f := &fakeSender{}
+	m.HandleScheduledTask(context.Background(), 1, "hello", f)
+
+	if fc.runCalls != 0 {
+		t.Errorf("Run should not be called when no projects registered")
+	}
+	if !contains(strings.Join(f.sent, ""), "!project add") {
+		t.Errorf("should prompt user to register project, got: %v", f.sent)
 	}
 }
 

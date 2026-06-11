@@ -85,3 +85,34 @@ func TestIsAllowed(t *testing.T) {
 		t.Error("99 should not be allowed")
 	}
 }
+
+func TestLoadConfig_MaxWorkers(t *testing.T) {
+	p := writeTemp(t, "TELEGRAM_BOT_TOKEN=t\nALLOWED_USER_IDS=1\nMAX_WORKERS=5\n")
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxWorkers != 5 {
+		t.Errorf("MaxWorkers = %d, want 5", cfg.MaxWorkers)
+	}
+}
+
+func TestLoadConfig_MaxWorkers_Default(t *testing.T) {
+	p := writeTemp(t, "TELEGRAM_BOT_TOKEN=t\nALLOWED_USER_IDS=1\n")
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxWorkers != 3 {
+		t.Errorf("MaxWorkers default = %d, want 3", cfg.MaxWorkers)
+	}
+}
+
+func TestLoadConfig_MaxWorkers_Invalid(t *testing.T) {
+	for _, bad := range []string{"0", "-1", "abc"} {
+		p := writeTemp(t, "TELEGRAM_BOT_TOKEN=t\nALLOWED_USER_IDS=1\nMAX_WORKERS="+bad+"\n")
+		if _, err := LoadConfig(p); err == nil {
+			t.Errorf("MAX_WORKERS=%q: expected error, got nil", bad)
+		}
+	}
+}

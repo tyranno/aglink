@@ -47,6 +47,7 @@ func LoadConfig(path string) (*Config, error) {
 		ManagerModel:   "haiku",
 		TimeoutMinutes: 10,
 		ManagerAlways:  true,
+		MaxWorkers:     3,
 	}
 
 	sc := bufio.NewScanner(f)
@@ -110,6 +111,14 @@ func applyConfigKV(cfg *Config, key, val string) error {
 		cfg.CodexManagerModel = val
 	case "DEFAULT_BACKEND":
 		cfg.DefaultBackend = strings.ToLower(val)
+	case "MAX_WORKERS":
+		if val != "" {
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				return fmt.Errorf("MAX_WORKERS는 양의 정수여야 합니다: %q", val)
+			}
+			cfg.MaxWorkers = n
+		}
 	}
 	return nil
 }

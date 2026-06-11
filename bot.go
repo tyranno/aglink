@@ -20,10 +20,13 @@ import (
 // Presentation layer; implements MessageSender for relay.
 
 type queuedMsg struct {
-	chatID int64
-	text   string
+	chatID   int64
+	text     string
+	isTask   bool // true = scheduled task (bypass manager routing)
 }
 
+// Bot dispatches Telegram messages to concurrent Workers.
+// Up to cfg.MaxWorkers (default 3) can run at the same time; extras are queued.
 type Bot struct {
 	api       *tgbotapi.BotAPI
 	cfg       *Config
@@ -32,14 +35,22 @@ type Bot struct {
 	scheduler *Scheduler
 	onReady   func() // called once after GetUpdatesChan starts (handoff signal)
 
-	mu            sync.Mutex
-	busy          bool
-	cancelCurrent context.CancelFunc
-	queue         []queuedMsg // pending messages while busy
+	mu          sync.Mutex
+	activeCount int                       // current running workers
+	workerSeq   int                       // monotonic counter for worker IDs
+	cancels     map[int]context.CancelFunc // workerID → cancel (for !cancel)
+	queue       []queuedMsg               // messages waiting for a free slot
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager, scheduler *Scheduler) *Bot {
-	return &Bot{api: api, cfg: cfg, store: store, manager: manager, scheduler: scheduler}
+	return &Bot{
+		api:       api,
+		cfg:       cfg,
+		store:     store,
+		manager:   manager,
+		scheduler: scheduler,
+		cancels:   make(map[int]context.CancelFunc),
+	}
 }
 
 // Send delivers a plain-text message (MessageSender).
@@ -121,83 +132,56 @@ func (b *Bot) Run() {
 }
 
 // dispatchText routes a free-text message through the Manager.
-// If a Worker is already running, the message is queued and processed in order.
+// Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchText(chatID int64, text string) {
-	b.mu.Lock()
-	if b.busy {
-		b.queue = append(b.queue, queuedMsg{chatID: chatID, text: text})
-		pos := len(b.queue)
-		b.mu.Unlock()
-		_ = b.Send(chatID, fmt.Sprintf("📋 대기열 추가 (%d번째) — 현재 작업이 끝나면 순서대로 처리됩니다. !cancel 로 현재 작업을 취소할 수 있어요.", pos))
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.cfg.TimeoutMinutes)*time.Minute)
-	b.busy = true
-	b.cancelCurrent = cancel
-	b.mu.Unlock()
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[bot] panic recovered: %v", r)
-				_ = b.Send(chatID, "⚠️ 내부 오류가 발생했습니다.")
-			}
-			cancel()
-			b.mu.Lock()
-			b.busy = false
-			b.cancelCurrent = nil
-			var next *queuedMsg
-			if len(b.queue) > 0 {
-				n := b.queue[0]
-				next = &n
-				b.queue = b.queue[1:]
-			}
-			b.mu.Unlock()
-
-			if next != nil {
-				_ = b.Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
-				b.dispatchText(next.chatID, next.text)
-			}
-		}()
-
-		b.manager.Handle(ctx, chatID, text, b)
-
-		switch ctx.Err() {
-		case context.DeadlineExceeded:
-			_ = b.Send(chatID, "⏱ 타임아웃으로 작업을 중단했습니다.")
-		case context.Canceled:
-			_ = b.Send(chatID, "🛑 작업이 취소되었습니다.")
-		}
-	}()
+	b.dispatch(queuedMsg{chatID: chatID, text: text})
 }
 
-// dispatchScheduledTask runs a pre-scheduled task in a fresh conversation.
-// Uses Manager.HandleScheduledTask instead of Handle so the prompt is never
-// routed via the Manager LLM and always runs in a clean, new conversation.
+// dispatchScheduledTask runs a pre-scheduled task bypassing Manager LLM routing.
+// Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
+	_ = b.Send(chatID, "⏰ 예약 작업 실행 중: "+truncate(text, 60))
+	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true})
+}
+
+// dispatch is the shared entry point for both text and scheduled-task dispatches.
+// It acquires a worker slot (or queues the message) then runs the appropriate handler.
+func (b *Bot) dispatch(msg queuedMsg) {
 	b.mu.Lock()
-	if b.busy {
-		b.queue = append(b.queue, queuedMsg{chatID: chatID, text: text})
+	if b.activeCount >= b.cfg.MaxWorkers {
+		b.queue = append(b.queue, msg)
+		pos := len(b.queue)
+		maxW := b.cfg.MaxWorkers
 		b.mu.Unlock()
-		log.Printf("[scheduler] 예약 작업 대기열 추가 — Worker 완료 후 실행됩니다.")
-		_ = b.Send(chatID, "📋 예약 작업이 대기열에 추가됨 — 현재 작업이 끝나면 실행됩니다.\n  "+truncate(text, 60))
+		if !msg.isTask {
+			_ = b.Send(msg.chatID, fmt.Sprintf(
+				"📋 대기열 추가 (%d번째) — 동시 처리 중 %d/%d. !cancel 로 취소 가능.",
+				pos, maxW, maxW))
+		} else {
+			log.Printf("[scheduler] 예약 작업 대기열 추가 (%d번째)", pos)
+		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.cfg.TimeoutMinutes)*time.Minute)
-	b.busy = true
-	b.cancelCurrent = cancel
+	b.workerSeq++
+	wid := b.workerSeq
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(b.cfg.TimeoutMinutes)*time.Minute,
+	)
+	b.activeCount++
+	b.cancels[wid] = cancel
 	b.mu.Unlock()
-	_ = b.Send(chatID, "⏰ 예약 작업 실행 중: "+truncate(text, 60))
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[bot] scheduled task panic: %v", r)
+				log.Printf("[bot] panic recovered (wid=%d): %v", wid, r)
+				_ = b.Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
 			}
 			cancel()
 			b.mu.Lock()
-			b.busy = false
-			b.cancelCurrent = nil
+			b.activeCount--
+			delete(b.cancels, wid)
 			var next *queuedMsg
 			if len(b.queue) > 0 {
 				n := b.queue[0]
@@ -206,18 +190,24 @@ func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
 			}
 			b.mu.Unlock()
 			if next != nil {
-				_ = b.Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
-				b.dispatchText(next.chatID, next.text)
+				if !next.isTask {
+					_ = b.Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
+				}
+				b.dispatch(*next)
 			}
 		}()
 
-		b.manager.HandleScheduledTask(ctx, chatID, text, b)
+		if msg.isTask {
+			b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, b)
+		} else {
+			b.manager.Handle(ctx, msg.chatID, msg.text, b)
+		}
 
 		switch ctx.Err() {
 		case context.DeadlineExceeded:
-			_ = b.Send(chatID, "⏱ 타임아웃으로 작업을 중단했습니다.")
+			_ = b.Send(msg.chatID, "⏱ 타임아웃으로 작업을 중단했습니다.")
 		case context.Canceled:
-			_ = b.Send(chatID, "🛑 작업이 취소되었습니다.")
+			_ = b.Send(msg.chatID, "🛑 작업이 취소되었습니다.")
 		}
 	}()
 }
@@ -239,8 +229,12 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 			msg = workers + "\n" + b.manager.describeActive()
 		}
 		b.mu.Lock()
+		active := b.activeCount
 		qLen := len(b.queue)
 		b.mu.Unlock()
+		if active > 0 {
+			msg += fmt.Sprintf("\n⚡ 동시 실행: %d/%d", active, b.cfg.MaxWorkers)
+		}
 		if qLen > 0 {
 			msg += fmt.Sprintf("\n📋 대기 중: %d개", qLen)
 		}
@@ -252,9 +246,9 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleChat(chatID, text, fields)
 	case "!update":
 		b.mu.Lock()
-		busy := b.busy
+		active := b.activeCount
 		b.mu.Unlock()
-		if busy {
+		if active > 0 {
 			_ = b.Send(chatID, "⏳ 작업 중에는 업데이트할 수 없습니다. !cancel 후 다시 시도하세요.")
 			return
 		}
@@ -276,14 +270,19 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 
 func (b *Bot) cancel(chatID int64) {
 	b.mu.Lock()
-	cancel, busy := b.cancelCurrent, b.busy
+	fns := make([]context.CancelFunc, 0, len(b.cancels))
+	for _, fn := range b.cancels {
+		fns = append(fns, fn)
+	}
 	b.mu.Unlock()
-	if busy && cancel != nil {
-		cancel()
-		_ = b.Send(chatID, "🛑 취소 요청을 보냈습니다.")
+	if len(fns) == 0 {
+		_ = b.Send(chatID, "취소할 작업이 없습니다.")
 		return
 	}
-	_ = b.Send(chatID, "취소할 작업이 없습니다.")
+	for _, fn := range fns {
+		fn()
+	}
+	_ = b.Send(chatID, fmt.Sprintf("🛑 %d개 작업 취소 요청됨.", len(fns)))
 }
 
 // handleProject: !project add <name> <path> | remove <name> | list
@@ -1250,9 +1249,9 @@ func (b *Bot) handleBackend(chatID int64, fields []string) {
 	}
 
 	b.mu.Lock()
-	busy := b.busy
+	active := b.activeCount
 	b.mu.Unlock()
-	if busy {
+	if active > 0 {
 		_ = b.Send(chatID, "⏳ 작업 중에는 백엔드를 전환할 수 없습니다. !cancel 후 다시 시도하세요.")
 		return
 	}

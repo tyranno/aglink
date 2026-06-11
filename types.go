@@ -20,6 +20,7 @@ type Config struct {
 	CodexModel        string // worker model (powerful) — "" = codex built-in default
 	CodexManagerModel string // routing model (fast/cheap) — "" = same as CodexModel
 	DefaultBackend    string // "claude" | "codex" — "" = "claude"
+	MaxWorkers        int    // max concurrent Worker goroutines, default 3
 }
 
 // ConversationTurn represents one exchange in a conversation.

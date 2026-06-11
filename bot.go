@@ -679,6 +679,8 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			nextStr := ""
 			if !next.IsZero() {
 				nextStr = fmt.Sprintf(" → %s 후", time.Until(next).Round(time.Second))
+			} else if t.Status == "pending" && !t.FireAt.IsZero() {
+				nextStr = fmt.Sprintf(" → %s 후", time.Until(t.FireAt).Round(time.Second))
 			}
 			scriptMark := ""
 			if t.Script != "" {
@@ -794,8 +796,8 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 		if script != "" {
 			scriptNote = " [스크립트 사전확인 있음]"
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 작업 등록 [%s] %s (%s)%s\n  %s\n  ▶ %s",
-			t.ID, cronExpr, kind, scriptNote, prompt, kind))
+		_ = b.Send(chatID, fmt.Sprintf("✅ 작업 등록 [%s] %s (%s)%s\n  %s",
+			t.ID, cronExpr, kind, scriptNote, prompt))
 
 	default:
 		_ = b.Send(chatID, "알 수 없는 !task 하위 명령. !task help 참조")
@@ -1092,7 +1094,7 @@ func extFromMIME(mime string) string {
 //	!history <project>                — today's log for named project
 //	!history <project> <YYYY-MM-DD>   — specific project + date
 func (b *Bot) handleHistory(chatID int64, fields []string) {
-	active := b.manager.store.GetActive()
+	active := b.store.GetActive()
 	defaultProject := active.Project
 
 	if len(fields) >= 2 && fields[1] == "list" {
@@ -1146,10 +1148,11 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 		_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s: 기록 없음", project, date))
 		return
 	}
-	// Telegram has 4096 char limit per message — send first 3800 chars
-	if len([]rune(content)) > 3800 {
+	// Telegram limit is 4096 chars; header "📅 <project> / <date>:\n" can be ~60 chars.
+	const maxContent = 3900
+	if len([]rune(content)) > maxContent {
 		runes := []rune(content)
-		content = string(runes[:3800]) + "\n...(잘림)"
+		content = string(runes[:maxContent]) + "\n...(잘림)"
 	}
 	_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s:\n%s", project, date, content))
 }

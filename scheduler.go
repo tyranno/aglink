@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -542,5 +543,9 @@ func (s *Scheduler) removeByID(id string) {
 }
 
 func newTaskID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%08x", b)
 }

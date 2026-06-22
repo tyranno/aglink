@@ -7,7 +7,7 @@ import (
 
 func TestWriteConfigFile_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.txt") // also tests dir creation
-	if err := writeConfigFile(path, "123:ABC", 6723802240); err != nil {
+	if err := writeConfigFile(path, "123:ABC", 6723802240, ""); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
 	cfg, err := LoadConfig(path)
@@ -22,5 +22,22 @@ func TestWriteConfigFile_RoundTrip(t *testing.T) {
 	}
 	if cfg.ManagerModel != "haiku" || cfg.TimeoutMinutes != 10 || !cfg.ManagerAlways {
 		t.Errorf("defaults wrong: %+v", cfg)
+	}
+	if cfg.ClaudeOauthToken != "" {
+		t.Errorf("expected no oauth token, got %q", cfg.ClaudeOauthToken)
+	}
+}
+
+func TestWriteConfigFile_WithOauthToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.txt")
+	if err := writeConfigFile(path, "123:ABC", 1, "sk-ant-oat01-TESTONLY"); err != nil {
+		t.Fatalf("writeConfigFile: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClaudeOauthToken != "sk-ant-oat01-TESTONLY" {
+		t.Errorf("oauth token = %q", cfg.ClaudeOauthToken)
 	}
 }

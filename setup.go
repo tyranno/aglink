@@ -2,12 +2,15 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -38,29 +41,36 @@ func RunSetup(cfgPath string) error {
 	fmt.Printf("✅ claude 발견: %s\n", claudePath)
 	fmt.Println("   ⚠️ claude가 로그인되어 있어야 합니다. (안 되어 있으면 먼저 `claude` 실행해 로그인)")
 
-	// [1/3] Create bot (guided) + token → validate via getMe.
-	fmt.Println("\n[1/3] Telegram 봇 만들기 + 토큰")
+	// [1/4] Create bot (guided) + token → validate via getMe.
+	fmt.Println("\n[1/4] Telegram 봇 만들기 + 토큰")
 	printBotFatherGuide()
 	api, err := promptToken(in)
 	if err != nil {
 		return err
 	}
 
-	// [2/3] My Telegram user ID → auto-detect, manual fallback.
-	fmt.Println("\n[2/3] 내 Telegram 계정 연결")
+	// [2/4] My Telegram user ID → auto-detect, manual fallback.
+	fmt.Println("\n[2/4] 내 Telegram 계정 연결")
 	userID, err := promptUserID(in, api)
 	if err != nil {
 		return err
 	}
 
-	// [3/3] First project (optional).
-	fmt.Println("\n[3/3] 첫 프로젝트 등록 (선택, 나중에 /project add 가능)")
+	// [3/4] First project (optional).
+	fmt.Println("\n[3/4] 첫 프로젝트 등록 (선택, 나중에 /project add 가능)")
 	if err := promptFirstProject(in); err != nil {
 		return err
 	}
 
+	// [4/4] claude OAuth token (so headless services authenticate via config — no systemd env setup).
+	fmt.Println("\n[4/4] claude 인증 토큰 (headless 서버용, 선택)")
+	claudeToken, err := promptClaudeToken(in, claudePath)
+	if err != nil {
+		return err
+	}
+
 	// Save config.
-	if err := writeConfigFile(cfgPath, api.Token, userID); err != nil {
+	if err := writeConfigFile(cfgPath, api.Token, userID, claudeToken); err != nil {
 		return fmt.Errorf("설정 저장 실패: %w", err)
 	}
 	fmt.Printf("\n✅ 설정 저장됨: %s\n", cfgPath)
@@ -193,15 +203,68 @@ func promptFirstProject(in *bufio.Reader) error {
 	return nil
 }
 
+// promptClaudeToken optionally captures a CLAUDE_CODE_OAUTH_TOKEN for headless use.
+// Empty result means "use claude's own login" (desktop with interactive claude login).
+func promptClaudeToken(in *bufio.Reader, claudePath string) (string, error) {
+	fmt.Println("   서버(systemd 등 headless)에서 돌릴 거면 claude 인증 토큰을 넣어두면 편합니다.")
+	fmt.Println("   발급: 터미널에서  claude setup-token  실행 → 브라우저 승인 → sk-ant-oat01-... 복사")
+	fmt.Println("   (데스크톱에서 claude가 이미 로그인돼 있으면 Enter로 건너뛰어도 됩니다)")
+	token, err := prompt(in, "   claude 토큰 붙여넣기 (없으면 Enter): ")
+	if err != nil {
+		return "", err
+	}
+	if token == "" {
+		fmt.Println("   건너뜀 (claude 자체 로그인 사용).")
+		return "", nil
+	}
+	fmt.Println("   토큰 검증 중... (수십 초 걸릴 수 있음)")
+	if verr := verifyClaudeToken(claudePath, token); verr != nil {
+		ans, _ := prompt(in, fmt.Sprintf("   ⚠️ 검증 실패(%v). 그래도 저장할까요? [y/N]: ", verr))
+		if s := strings.ToLower(ans); s != "y" && s != "yes" {
+			fmt.Println("   토큰 저장 안 함.")
+			return "", nil
+		}
+	} else {
+		fmt.Println("   ✅ claude 토큰 검증 성공")
+	}
+	return token, nil
+}
+
+// verifyClaudeToken runs a tiny claude call with the token to confirm it authenticates.
+func verifyClaudeToken(claudePath, token string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, claudePath, "-p", "hi", "--output-format", "json")
+	cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+token)
+	out, err := cmd.Output()
+	if err != nil {
+		return err
+	}
+	res, perr := parseRunResult(string(out))
+	if perr != nil {
+		return perr
+	}
+	if res.IsError {
+		return fmt.Errorf("인증 거부(401 등)")
+	}
+	return nil
+}
+
 // writeConfigFile writes a complete config.txt with sensible defaults.
-func writeConfigFile(path, token string, userID int64) error {
+// claudeToken (optional) is persisted as CLAUDE_CODE_OAUTH_TOKEN for headless auth.
+func writeConfigFile(path, token string, userID int64, claudeToken string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	content := fmt.Sprintf(
-		"TELEGRAM_BOT_TOKEN=%s\nALLOWED_USER_IDS=%d\nMANAGER_MODEL=haiku\nWORKER_MODEL=\nTIMEOUT_MINUTES=10\nMANAGER_ALWAYS=true\n# DEFAULT_BACKEND=codex\n# CODEX_PATH=\n# CODEX_MODEL=\n# CODEX_MANAGER_MODEL=\n",
-		token, userID)
-	return os.WriteFile(path, []byte(content), 0o600)
+	var b strings.Builder
+	fmt.Fprintf(&b, "TELEGRAM_BOT_TOKEN=%s\nALLOWED_USER_IDS=%d\nMANAGER_MODEL=haiku\nWORKER_MODEL=\nTIMEOUT_MINUTES=10\nMANAGER_ALWAYS=true\n", token, userID)
+	if claudeToken != "" {
+		fmt.Fprintf(&b, "CLAUDE_CODE_OAUTH_TOKEN=%s\n", claudeToken)
+	} else {
+		b.WriteString("# CLAUDE_CODE_OAUTH_TOKEN=   # headless 서버용: `claude setup-token` 토큰 붙여넣기\n")
+	}
+	b.WriteString("# DEFAULT_BACKEND=codex\n# CODEX_PATH=\n# CODEX_MODEL=\n# CODEX_MANAGER_MODEL=\n")
+	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 // prompt prints a label and reads a trimmed line. Returns the read error on EOF.

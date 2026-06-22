@@ -16,7 +16,7 @@ import (
 
 type Manager struct {
 	client       ClaudeClient
-	backendName  string       // "claude" | "codex"
+	backendName  string // "claude" | "codex"
 	backendMu    sync.RWMutex
 	claudeClient ClaudeClient // preserved for switching back to claude
 	codexClient  ClaudeClient // nil if codex not available

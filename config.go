@@ -95,6 +95,8 @@ func applyConfigKV(cfg *Config, key, val string) error {
 		cfg.WorkerModel = val
 	case "CLAUDE_PATH":
 		cfg.ClaudePath = val
+	case "CLAUDE_CODE_OAUTH_TOKEN":
+		cfg.ClaudeOauthToken = val
 	case "TIMEOUT_MINUTES":
 		if val != "" {
 			n, err := strconv.Atoi(val)

@@ -166,10 +166,10 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 	var cmd *exec.Cmd
 	if ext == ".cmd" || ext == ".bat" {
 		var sb strings.Builder
-		sb.WriteString(`"`)   // outer quote open
-		sb.WriteString(`"`)   // inner path quote open
+		sb.WriteString(`"`) // outer quote open
+		sb.WriteString(`"`) // inner path quote open
 		sb.WriteString(r.codexPath)
-		sb.WriteString(`"`)   // inner path quote close
+		sb.WriteString(`"`) // inner path quote close
 		for _, a := range args {
 			sb.WriteString(" ")
 			if strings.ContainsAny(a, " \t") {
@@ -180,7 +180,7 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 				sb.WriteString(a)
 			}
 		}
-		sb.WriteString(`"`)   // outer quote close
+		sb.WriteString(`"`) // outer quote close
 		cmd = exec.CommandContext(ctx, "cmd.exe")
 		applyCmdLine(cmd, "cmd.exe /C "+sb.String())
 	} else {
@@ -231,8 +231,8 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 	}()
 
 	err = cmd.Wait()
-	pw.Close()  // signal EOF to logging goroutine
-	<-logDone   // wait for all events to be logged
+	pw.Close() // signal EOF to logging goroutine
+	<-logDone  // wait for all events to be logged
 
 	if stderrStr := strings.TrimSpace(errBuf.String()); stderrStr != "" {
 		// Only log first 500 chars of stderr to avoid flooding

@@ -75,8 +75,8 @@ func TestDurationToCron_Boundaries(t *testing.T) {
 		dur  time.Duration
 		want string
 	}{
-		{30 * time.Second, "* * * * *"},  // sub-minute
-		{time.Minute, "* * * * *"},        // exactly 1m
+		{30 * time.Second, "* * * * *"}, // sub-minute
+		{time.Minute, "* * * * *"},      // exactly 1m
 		{30 * time.Minute, "*/30 * * * *"},
 		{time.Hour, "0 * * * *"},
 		{6 * time.Hour, "0 */6 * * *"},
@@ -170,7 +170,7 @@ func TestParseOnceDatetime_EmptyTokens_Error(t *testing.T) {
 func TestWriteConfigFile_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/config.txt"
-	if err := writeConfigFile(path, "testtoken:123", 42); err != nil {
+	if err := writeConfigFile(path, "testtoken:123", 42, ""); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
 	b, err := os.ReadFile(path)

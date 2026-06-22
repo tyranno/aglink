@@ -167,7 +167,7 @@ func TestBuildRoutePrompt_ConversationWithSummary(t *testing.T) {
 	req := RouteRequest{
 		Message: "계속해줘",
 		Projects: []ProjectSummary{{
-			Name: "p",
+			Name:          "p",
 			Conversations: []ConversationSummary{{ID: "1", Title: "작업", Summary: "로그인 버그 수정 중"}},
 		}},
 	}

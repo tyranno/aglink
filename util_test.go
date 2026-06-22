@@ -12,12 +12,12 @@ func TestTruncate(t *testing.T) {
 		n    int
 		want string
 	}{
-		{"hello", 10, "hello"},   // shorter than limit
-		{"hello", 5, "hello"},    // exactly limit
-		{"hello", 4, "hel…"},     // truncated: r[:n-1]+"…" = r[:3]+"…"
-		{"가나다라마", 3, "가나…"},     // Korean multibyte
-		{"ab", 1, "a"},           // n=1: no ellipsis (n<=1 branch)
-		{"abc", 0, ""},           // n=0: empty
+		{"hello", 10, "hello"}, // shorter than limit
+		{"hello", 5, "hello"},  // exactly limit
+		{"hello", 4, "hel…"},   // truncated: r[:n-1]+"…" = r[:3]+"…"
+		{"가나다라마", 3, "가나…"},    // Korean multibyte
+		{"ab", 1, "a"},         // n=1: no ellipsis (n<=1 branch)
+		{"abc", 0, ""},         // n=0: empty
 	}
 	for _, tc := range cases {
 		got := truncate(tc.s, tc.n)
@@ -55,15 +55,15 @@ func TestSanitizeName(t *testing.T) {
 		want string
 	}{
 		{"myapp", "myapp"},
-		{"my app", "my app"},                // spaces are allowed
-		{"my/app", "my_app"},               // slash → underscore
-		{"my\\app", "my_app"},              // backslash → underscore
-		{"my:app", "my_app"},               // colon → underscore
-		{"my*app?", "my_app_"},             // * and ? → underscore
-		{`my"app`, "my_app"},              // quote → underscore
-		{"my<app>", "my_app_"},             // < and > → underscore
-		{"my|app", "my_app"},               // pipe → underscore
-		{"정상이름", "정상이름"},               // Korean: unchanged
+		{"my app", "my app"},   // spaces are allowed
+		{"my/app", "my_app"},   // slash → underscore
+		{"my\\app", "my_app"},  // backslash → underscore
+		{"my:app", "my_app"},   // colon → underscore
+		{"my*app?", "my_app_"}, // * and ? → underscore
+		{`my"app`, "my_app"},   // quote → underscore
+		{"my<app>", "my_app_"}, // < and > → underscore
+		{"my|app", "my_app"},   // pipe → underscore
+		{"정상이름", "정상이름"},       // Korean: unchanged
 	}
 	for _, tc := range cases {
 		got := sanitizeName(tc.in)

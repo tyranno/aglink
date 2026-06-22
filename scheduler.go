@@ -23,7 +23,7 @@ type Scheduler struct {
 	tasksPath   string
 	tasks       []*Task
 	cronRunner  *cron.Cron
-	cronEntries map[string]cron.EntryID // Task.ID → cron EntryID
+	cronEntries map[string]cron.EntryID  // Task.ID → cron EntryID
 	stopChs     map[string]chan struct{} // Task.ID → cancel channel (one-shot)
 	done        chan struct{}            // closed by Stop() to unblock Run()
 	send        func(chatID int64, text string)

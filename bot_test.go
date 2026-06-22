@@ -104,11 +104,11 @@ func TestAllCronFields_Valid(t *testing.T) {
 
 func TestAllCronFields_Invalid(t *testing.T) {
 	cases := [][]string{
-		{"*", "*", "*", "*"},          // only 4 fields
-		{},                            // empty
-		{"abc", "*", "*", "*", "*"},   // invalid char
+		{"*", "*", "*", "*"},           // only 4 fields
+		{},                             // empty
+		{"abc", "*", "*", "*", "*"},    // invalid char
 		{"*", "*", "*", "*", "*", "*"}, // 6 fields (still returns true because checks first 5)
-		{"", "*", "*", "*", "*"},      // empty field
+		{"", "*", "*", "*", "*"},       // empty field
 	}
 	want := []bool{false, false, false, true, false}
 	for i, tokens := range cases {

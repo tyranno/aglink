@@ -20,9 +20,9 @@ import (
 // Presentation layer; implements MessageSender for relay.
 
 type queuedMsg struct {
-	chatID   int64
-	text     string
-	isTask   bool // true = scheduled task (bypass manager routing)
+	chatID int64
+	text   string
+	isTask bool // true = scheduled task (bypass manager routing)
 }
 
 // Bot dispatches Telegram messages to concurrent Workers.
@@ -41,7 +41,7 @@ type Bot struct {
 	activeCount int                        // current running workers
 	workerSeq   int                        // monotonic counter for worker IDs
 	cancels     map[int]context.CancelFunc // workerID → cancel (for !cancel)
-	queue       []queuedMsg               // messages waiting for a free slot
+	queue       []queuedMsg                // messages waiting for a free slot
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {

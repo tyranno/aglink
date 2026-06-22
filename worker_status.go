@@ -11,7 +11,7 @@ import (
 type memoryWorkerStatusStore struct {
 	mu       sync.RWMutex
 	statuses map[string]WorkerStatus // key: "project:convID"
-	recent   []WorkerStatus           // history of completed tasks (FIFO, max 50)
+	recent   []WorkerStatus          // history of completed tasks (FIFO, max 50)
 }
 
 // NewMemoryWorkerStatusStore creates an in-memory Worker status tracker.

@@ -70,8 +70,8 @@ func TestBot_SlotNotExceededUnderLoad(t *testing.T) {
 	b := newParallelTestBot(maxW)
 
 	var (
-		wg     sync.WaitGroup
-		mu     sync.Mutex
+		wg      sync.WaitGroup
+		mu      sync.Mutex
 		maxSeen int
 	)
 

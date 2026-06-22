@@ -96,6 +96,12 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 func (r *claudeRunner) exec(ctx context.Context, dir string, args []string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
 	cmd.Dir = dir
+	// Inject the OAuth token so headless services (systemd, etc.) authenticate without
+	// any external env setup — `config.txt` is the single source of truth. Overrides a
+	// stale/expired ~/.claude/.credentials.json. Empty = use claude's own login.
+	if r.cfg != nil && r.cfg.ClaudeOauthToken != "" {
+		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+r.cfg.ClaudeOauthToken)
+	}
 	// Kill the whole process tree on cancel (claude spawns node child processes on Windows).
 	cmd.Cancel = func() error { return killTree(cmd.Process.Pid) }
 

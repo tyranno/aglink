@@ -9,17 +9,18 @@ import (
 
 // Config holds runtime settings loaded from %USERPROFILE%\.teleclaude\config.txt.
 type Config struct {
-	TelegramBotToken string
-	AllowedUserIDs   []int64
-	ManagerModel     string // default "haiku"
-	WorkerModel      string // "" = claude default
-	ClaudePath       string // "" = auto-detect
-	TimeoutMinutes   int    // default 10
-	ManagerAlways    bool   // default true (route every text via manager)
-	CodexPath         string // "" = auto-detect
-	CodexModel        string // worker model (powerful) — "" = codex built-in default
-	CodexManagerModel string // routing model (fast/cheap) — "" = same as CodexModel
-	DefaultBackend    string // "claude" | "codex" — "" = "claude"
+	TelegramBotToken      string
+	AllowedUserIDs        []int64
+	ManagerModel          string   // default "haiku"
+	WorkerModel           string   // "" = claude default
+	ClaudePath            string   // "" = auto-detect
+	ClaudeOauthToken      string   // CLAUDE_CODE_OAUTH_TOKEN injected into worker env ("" = use claude's own login)
+	TimeoutMinutes        int      // default 10
+	ManagerAlways         bool     // default true (route every text via manager)
+	CodexPath             string   // "" = auto-detect
+	CodexModel            string   // worker model (powerful) — "" = codex built-in default
+	CodexManagerModel     string   // routing model (fast/cheap) — "" = same as CodexModel
+	DefaultBackend        string   // "claude" | "codex" — "" = "claude"
 	MaxWorkers            int      // max concurrent Worker goroutines, default 3
 	RateLimitPerMin       int      // max user messages per minute, 0 = unlimited, default 20
 	AllowScripts          bool     // permit --script in !task add/update, default false
@@ -30,25 +31,25 @@ type Config struct {
 // ConversationTurn represents one exchange in a conversation.
 type ConversationTurn struct {
 	Timestamp time.Time `json:"timestamp"`
-	Prompt    string    `json:"prompt"`    // user input
-	Response  string    `json:"response"`  // claude output
+	Prompt    string    `json:"prompt"`   // user input
+	Response  string    `json:"response"` // claude output
 }
 
 // Conversation is one topic within a project; maps 1:1 to a claude session.
 // Design Ref: §3.1 — SessionID is a UUID we generate (--session-id first turn, --resume after).
 // ParentID chains conversations when context grows too large (auto-continuation).
 type Conversation struct {
-	ID             string              `json:"id"`
-	Title          string              `json:"title"`
-	Summary        string              `json:"summary"`
-	SessionID      string              `json:"sessionId"` // UUID assigned at creation
-	Started        bool                `json:"started"`   // false until first worker turn completes
-	LastActivity   time.Time           `json:"lastActivity"`
-	History        []ConversationTurn  `json:"history"`   // conversation turns for context preservation
-	ParentID       string              `json:"parentId,omitempty"`     // ID of previous conversation in chain
-	ChildID        string              `json:"childId,omitempty"`      // ID of next conversation in chain
-	IsContinuation bool                `json:"isContinuation,omitempty"` // auto-generated continuation
-	Backend        string              `json:"backend,omitempty"`      // "claude"|"codex"|"" (""=claude)
+	ID             string             `json:"id"`
+	Title          string             `json:"title"`
+	Summary        string             `json:"summary"`
+	SessionID      string             `json:"sessionId"` // UUID assigned at creation
+	Started        bool               `json:"started"`   // false until first worker turn completes
+	LastActivity   time.Time          `json:"lastActivity"`
+	History        []ConversationTurn `json:"history"`                  // conversation turns for context preservation
+	ParentID       string             `json:"parentId,omitempty"`       // ID of previous conversation in chain
+	ChildID        string             `json:"childId,omitempty"`        // ID of next conversation in chain
+	IsContinuation bool               `json:"isContinuation,omitempty"` // auto-generated continuation
+	Backend        string             `json:"backend,omitempty"`        // "claude"|"codex"|"" (""=claude)
 }
 
 // Project is a registered directory holding multiple conversations.
@@ -101,8 +102,8 @@ type RouteDecision struct {
 	// Schedule fields — only set when action == "schedule"
 	ScheduleType     string `json:"scheduleType,omitempty"`     // "remind" | "cron"
 	ScheduleInterval string `json:"scheduleInterval,omitempty"` // "30m", "2h", "hourly", "daily" …
-	ScheduleTask     string `json:"scheduleTask,omitempty"`      // message or Claude prompt
-	ScheduleIsTask   bool   `json:"scheduleIsTask,omitempty"`    // true → dispatch through Worker
+	ScheduleTask     string `json:"scheduleTask,omitempty"`     // message or Claude prompt
+	ScheduleIsTask   bool   `json:"scheduleIsTask,omitempty"`   // true → dispatch through Worker
 }
 
 // Task is a unified scheduled item replacing Reminder and CronJob.
@@ -113,11 +114,11 @@ type Task struct {
 	ID        string    `json:"id"`
 	ChatID    int64     `json:"chatId"`
 	Prompt    string    `json:"prompt"`
-	Script    string    `json:"script,omitempty"`     // bash pre-check; empty = skip
-	CronExpr  string    `json:"cronExpr,omitempty"`   // standard 5-field cron
-	FireAt    time.Time `json:"fireAt,omitempty"`     // one-shot: when to fire
+	Script    string    `json:"script,omitempty"`   // bash pre-check; empty = skip
+	CronExpr  string    `json:"cronExpr,omitempty"` // standard 5-field cron
+	FireAt    time.Time `json:"fireAt,omitempty"`   // one-shot: when to fire
 	Status    string    `json:"status"`
-	IsTask    bool      `json:"isTask"`               // true = Claude Worker, false = notify
+	IsTask    bool      `json:"isTask"` // true = Claude Worker, false = notify
 	Label     string    `json:"label"`
 	CreatedAt time.Time `json:"createdAt"`
 	LastFired time.Time `json:"lastFired,omitempty"`
@@ -174,7 +175,7 @@ type WorkerStatus struct {
 type WorkerStatusStore interface {
 	GetStatus(project, convID string) (WorkerStatus, bool)
 	SetStatus(status WorkerStatus) error
-	ListActive() []WorkerStatus // return workers that are still running
+	ListActive() []WorkerStatus          // return workers that are still running
 	ListRecent(limit int) []WorkerStatus // return last N completed workers
 	UpdateStatus(project, convID string, newStatus, errorMsg string) error
 }

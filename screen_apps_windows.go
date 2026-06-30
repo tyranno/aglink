@@ -223,26 +223,38 @@ func windowPID(hwnd uintptr) uint32 {
 }
 
 // defaultAffirmative are the button labels treated as "confirm/proceed" when
-// auto-handling dialogs (Korean + English). Matched case-insensitively as a
-// substring of the button text.
-var defaultAffirmative = []string{"예", "확인", "yes", "ok", "전송", "보내", "send", "apply", "적용"}
+// auto-handling dialogs (Korean + English). Matched by EXACT normalized text (not
+// substring) so a short token never matches an unintended button — e.g. "보내"
+// must NOT match "내보내기"(Export), and "예" must NOT match "예약"(reserve).
+var defaultAffirmative = []string{"예", "확인", "yes", "ok", "전송", "적용", "apply"}
+
+// normalizeButtonText strips a trailing accelerator parenthetical and "&" markers
+// ("예(&Y)" -> "예", "&Yes" -> "yes") and lowercases, so affirmative matching can
+// be an EXACT comparison rather than a loose substring.
+func normalizeButtonText(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '('); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.ReplaceAll(s, "&", "")
+	return strings.ToLower(strings.TrimSpace(s))
+}
 
 // findAffirmativeButton returns the first VISIBLE Button control in hwnd whose
-// label matches one of accept (case-insensitive substring).
+// normalized label EXACTLY equals one of accept (accelerator/case-insensitive).
 func findAffirmativeButton(hwnd uintptr, accept []string) (control, bool) {
+	want := make(map[string]bool, len(accept))
+	for _, a := range accept {
+		if n := normalizeButtonText(a); n != "" {
+			want[n] = true
+		}
+	}
 	for _, c := range enumControls(hwnd, false) {
 		if !strings.Contains(strings.ToLower(c.Class), "button") {
 			continue
 		}
-		lt := strings.ToLower(strings.TrimSpace(c.Text))
-		if lt == "" {
-			continue
-		}
-		for _, a := range accept {
-			a = strings.ToLower(strings.TrimSpace(a))
-			if a != "" && strings.Contains(lt, a) {
-				return c, true
-			}
+		if want[normalizeButtonText(c.Text)] {
+			return c, true
 		}
 	}
 	return control{}, false

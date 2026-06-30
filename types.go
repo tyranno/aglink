@@ -26,6 +26,8 @@ type Config struct {
 	AllowScripts          bool     // permit --script in !task add/update, default false
 	AllowedScriptCommands []string // whitelist of allowed script first-tokens; empty = any
 	AllowedUsernames      []string // Telegram usernames (without @) allowed to use the bot
+	ScreenControl         bool     // screen-control MCP 활성화 (Windows). 기본 false
+	ScreenPresetsFile     string   // 좌표 프리셋 파일 경로. 빈 값이면 ~/.teleclaude/presets.json
 }
 
 // ConversationTurn represents one exchange in a conversation.

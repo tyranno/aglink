@@ -297,5 +297,75 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// ---- UIA (UI Automation) tools — preferred over screenshot/click ----
+
+	// snapshot — read the foreground window's UIA element tree as text.
+	s.AddTool(
+		mcp.NewTool("snapshot",
+			mcp.WithDescription("Read the foreground window's UI Automation element tree as compact text: control type, name, automation id, and capabilities ([invokable]/[editable]/[disabled]). Prefer this over screenshot — it is cheap and reliable for native apps. Optional 'max' caps the number of elements (default 200)."),
+			mcp.WithNumber("max",
+				mcp.Description("Maximum number of elements to return (default 200)."),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			max := req.GetInt("max", 200)
+			text, err := uiaSnapshot(max)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("snapshot failed", err), nil
+			}
+			return mcp.NewToolResultText(text), nil
+		},
+	)
+
+	// invoke — activate an element found by name (or automation id).
+	s.AddTool(
+		mcp.NewTool("invoke",
+			mcp.WithDescription("Find an element by its Name (or AutomationId) in the foreground window and activate it (button/menu item/tree item/checkbox). Use a name reported by snapshot. Preferred over click(x,y)."),
+			mcp.WithString("name",
+				mcp.Description("The element Name or AutomationId to invoke."),
+				mcp.Required(),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			if err := uiaInvoke(name); err != nil {
+				return mcp.NewToolResultErrorFromErr("invoke failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: invoked %q", name)), nil
+		},
+	)
+
+	// set_value — set the text of an editable element found by name.
+	s.AddTool(
+		mcp.NewTool("set_value",
+			mcp.WithDescription("Find an editable element by its Name (or AutomationId) in the foreground window and set its text via the UIA Value pattern. Preferred over click+type for known input fields."),
+			mcp.WithString("name",
+				mcp.Description("The element Name or AutomationId of the input field."),
+				mcp.Required(),
+			),
+			mcp.WithString("text",
+				mcp.Description("The text to set."),
+				mcp.Required(),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			text, err := req.RequireString("text")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'text'"), nil
+			}
+			if err := uiaSetValue(name, text); err != nil {
+				return mcp.NewToolResultErrorFromErr("set_value failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: set %q = %q", name, text)), nil
+		},
+	)
+
 	return server.ServeStdio(s)
 }

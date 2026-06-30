@@ -17,7 +17,8 @@ import (
 // CGO-free Win32 window enumeration and focus via golang.org/x/sys/windows.
 
 var (
-	modUser32 = windows.NewLazySystemDLL("user32.dll")
+	modUser32      = windows.NewLazySystemDLL("user32.dll")
+	modKernel32App = windows.NewLazySystemDLL("kernel32.dll")
 
 	procEnumWindows         = modUser32.NewProc("EnumWindows")
 	procGetWindowTextW      = modUser32.NewProc("GetWindowTextW")
@@ -26,6 +27,11 @@ var (
 	procSetForegroundWindow = modUser32.NewProc("SetForegroundWindow")
 	procShowWindow          = modUser32.NewProc("ShowWindow")
 	procIsIconic            = modUser32.NewProc("IsIconic")
+	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
+	procGetWindowThreadPID  = modUser32.NewProc("GetWindowThreadProcessId")
+	procAttachThreadInput   = modUser32.NewProc("AttachThreadInput")
+	procBringWindowToTop    = modUser32.NewProc("BringWindowToTop")
+	procGetCurrentThreadID  = modKernel32App.NewProc("GetCurrentThreadId")
 )
 
 const swRestore = 9
@@ -117,10 +123,43 @@ func focusWindow(titleOrHwnd string) error {
 	if iconic, _, _ := procIsIconic.Call(target); iconic != 0 {
 		procShowWindow.Call(target, swRestore)
 	}
-	if ok, _, _ := procSetForegroundWindow.Call(target); ok == 0 {
-		return fmt.Errorf("focus_window: SetForegroundWindow failed for %q", s)
+	if err := forceForeground(target); err != nil {
+		return fmt.Errorf("focus_window: %w (window %q)", err, s)
 	}
 	return nil
+}
+
+// forceForeground brings target to the foreground, working around the Windows
+// foreground-lock by attaching our input thread to the current foreground
+// window's thread for the duration of the SetForegroundWindow call.
+func forceForeground(target uintptr) error {
+	// Fast path.
+	if ok, _, _ := procSetForegroundWindow.Call(target); ok != 0 {
+		return nil
+	}
+
+	fg, _, _ := procGetForegroundWindow.Call()
+	curTID, _, _ := procGetCurrentThreadID.Call()
+	fgTID, _, _ := procGetWindowThreadPID.Call(fg, 0)
+	tgtTID, _, _ := procGetWindowThreadPID.Call(target, 0)
+
+	// Attach our thread (and the target's) to the foreground thread so the OS
+	// permits the foreground change.
+	if fgTID != 0 && fgTID != curTID {
+		procAttachThreadInput.Call(curTID, fgTID, 1)
+		defer procAttachThreadInput.Call(curTID, fgTID, 0)
+	}
+	if tgtTID != 0 && tgtTID != curTID && tgtTID != fgTID {
+		procAttachThreadInput.Call(curTID, tgtTID, 1)
+		defer procAttachThreadInput.Call(curTID, tgtTID, 0)
+	}
+
+	procBringWindowToTop.Call(target)
+	procShowWindow.Call(target, swRestore)
+	if ok, _, _ := procSetForegroundWindow.Call(target); ok != 0 {
+		return nil
+	}
+	return fmt.Errorf("SetForegroundWindow failed")
 }
 
 // parseHWND parses "0x.." (hex) or a decimal string into an HWND value.

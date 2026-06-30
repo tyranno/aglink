@@ -53,7 +53,7 @@ func main() {
 		}
 		path := override
 		if path == "" {
-			p, e := defaultConfigPath()
+			p, e := defaultYAMLPath()
 			if e != nil {
 				log.Fatal(e)
 			}
@@ -81,11 +81,17 @@ func writePIDFile() {
 }
 
 func run(configOverride, handoffReadyFile, notifyChat string) error {
+	dir, err := dataDir()
+	if err != nil {
+		return err
+	}
+
+	// cfgPath is the YAML path the wizard writes to (and the path we reload from).
 	cfgPath := configOverride
 	if cfgPath == "" {
-		p, err := defaultConfigPath()
-		if err != nil {
-			return err
+		p, perr := defaultYAMLPath()
+		if perr != nil {
+			return perr
 		}
 		cfgPath = p
 	}
@@ -96,7 +102,18 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		killPreviousInstance()
 	}
 
-	cfg, err := LoadConfig(cfgPath)
+	// Load config. With no explicit override, prefer LoadOrMigrate so an existing
+	// config.txt is auto-migrated to config.yaml; otherwise honor the override path.
+	var cfg *Config
+	if configOverride == "" {
+		var used string
+		cfg, used, err = LoadOrMigrate(dir)
+		if err == nil {
+			cfgPath = used
+		}
+	} else {
+		cfg, err = LoadConfig(cfgPath)
+	}
 	if err != nil {
 		// No (or incomplete) config → run the interactive wizard, then reload.
 		if !isInteractive() {
@@ -121,10 +138,6 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		return fmt.Errorf("claude 헬스체크 실패: %w", err)
 	}
 
-	dir, err := dataDir()
-	if err != nil {
-		return err
-	}
 	store := NewFileStore(filepath.Join(dir, "store.json"))
 	if err := store.Load(); err != nil {
 		return fmt.Errorf("대화 저장소 로드 실패: %w", err)

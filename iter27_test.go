@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -168,20 +168,15 @@ func TestParseOnceDatetime_EmptyTokens_Error(t *testing.T) {
 // --- writeConfigFile ---
 
 func TestWriteConfigFile_CreatesFile(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/config.txt"
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := writeConfigFile(path, "testtoken:123", 42, ""); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
-	b, err := os.ReadFile(path)
+	cfg, err := LoadConfig(path)
 	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+		t.Fatal(err)
 	}
-	content := string(b)
-	if !strings.Contains(content, "TELEGRAM_BOT_TOKEN=testtoken:123") {
-		t.Errorf("expected token in config, got: %s", content)
-	}
-	if !strings.Contains(content, "ALLOWED_USER_IDS=42") {
-		t.Errorf("expected userID in config, got: %s", content)
+	if cfg.TelegramBotToken != "testtoken:123" || cfg.AllowedUserIDs[0] != 42 {
+		t.Errorf("cfg = %+v", cfg)
 	}
 }

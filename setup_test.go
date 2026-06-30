@@ -6,7 +6,7 @@ import (
 )
 
 func TestWriteConfigFile_RoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sub", "config.txt") // also tests dir creation
+	path := filepath.Join(t.TempDir(), "sub", "config.yaml") // also tests dir creation
 	if err := writeConfigFile(path, "123:ABC", 6723802240, ""); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestWriteConfigFile_RoundTrip(t *testing.T) {
 }
 
 func TestWriteConfigFile_WithOauthToken(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.txt")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := writeConfigFile(path, "123:ABC", 1, "sk-ant-oat01-TESTONLY"); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}

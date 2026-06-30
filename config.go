@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,8 +36,55 @@ func defaultConfigPath() (string, error) {
 	return filepath.Join(dir, "config.txt"), nil
 }
 
+// defaultYAMLPath returns ~/.teleclaude/config.yaml.
+func defaultYAMLPath() (string, error) {
+	dir, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.yaml"), nil
+}
+
+// LoadOrMigrate loads config.yaml from dir; if absent but config.txt exists,
+// migrates it to config.yaml (and renames the txt to .bak). Returns the path used.
+func LoadOrMigrate(dir string) (*Config, string, error) {
+	yamlPath := filepath.Join(dir, "config.yaml")
+	txtPath := filepath.Join(dir, "config.txt")
+
+	if b, err := os.ReadFile(yamlPath); err == nil {
+		cfg, perr := unmarshalConfigYAML(b)
+		return cfg, yamlPath, perr
+	}
+	// No YAML — try migrating from txt.
+	if _, err := os.Stat(txtPath); err == nil {
+		cfg, lerr := LoadConfig(txtPath)
+		if lerr != nil {
+			return nil, txtPath, lerr
+		}
+		out, merr := marshalConfigYAML(cfg)
+		if merr != nil {
+			return nil, txtPath, merr
+		}
+		if werr := os.WriteFile(yamlPath, out, 0o600); werr != nil {
+			return nil, txtPath, werr
+		}
+		_ = os.Rename(txtPath, txtPath+".bak")
+		log.Printf("[config] config.txt → config.yaml 마이그레이션 완료 (txt는 .bak로 보존)")
+		return cfg, yamlPath, nil
+	}
+	return nil, yamlPath, fmt.Errorf("설정 파일이 없습니다: %s 또는 %s", yamlPath, txtPath)
+}
+
 // LoadConfig parses a key=value config file. Lines starting with # are comments.
+// If path ends in .yaml/.yml it is parsed as YAML instead.
 func LoadConfig(path string) (*Config, error) {
+	if strings.HasSuffix(strings.ToLower(path), ".yaml") || strings.HasSuffix(strings.ToLower(path), ".yml") {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("설정 파일 열기 실패 (%s): %w", path, err)
+		}
+		return unmarshalConfigYAML(b)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("설정 파일 열기 실패 (%s): %w", path, err)

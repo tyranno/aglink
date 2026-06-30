@@ -250,21 +250,28 @@ func verifyClaudeToken(claudePath, token string) error {
 	return nil
 }
 
-// writeConfigFile writes a complete config.txt with sensible defaults.
-// claudeToken (optional) is persisted as CLAUDE_CODE_OAUTH_TOKEN for headless auth.
+// writeConfigFile writes a complete config.yaml with sensible defaults.
+// claudeToken (optional) is persisted as claude.oauth_token for headless auth.
 func writeConfigFile(path, token string, userID int64, claudeToken string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "TELEGRAM_BOT_TOKEN=%s\nALLOWED_USER_IDS=%d\nMANAGER_MODEL=haiku\nWORKER_MODEL=\nTIMEOUT_MINUTES=10\nMANAGER_ALWAYS=true\n", token, userID)
-	if claudeToken != "" {
-		fmt.Fprintf(&b, "CLAUDE_CODE_OAUTH_TOKEN=%s\n", claudeToken)
-	} else {
-		b.WriteString("# CLAUDE_CODE_OAUTH_TOKEN=   # headless 서버용: `claude setup-token` 토큰 붙여넣기\n")
+	cfg := &Config{
+		TelegramBotToken: token,
+		AllowedUserIDs:   []int64{userID},
+		ManagerModel:     "haiku",
+		TimeoutMinutes:   10,
+		ManagerAlways:    true,
+		MaxWorkers:       3,
+		RateLimitPerMin:  20,
+		ClaudeOauthToken: claudeToken,
+		DefaultBackend:   "claude",
 	}
-	b.WriteString("# DEFAULT_BACKEND=codex\n# CODEX_PATH=\n# CODEX_MODEL=\n# CODEX_MANAGER_MODEL=\n")
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	out, err := marshalConfigYAML(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o600)
 }
 
 // prompt prints a label and reads a trimmed line. Returns the read error on EOF.

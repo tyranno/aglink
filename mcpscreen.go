@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -62,6 +63,29 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultErrorFromErr("focus_window failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("ok: focused %q", target)), nil
+		},
+	)
+
+	// screenshot — capture the full virtual screen and return it as an image so
+	// Claude's vision can read it. Optional 'scale' (0.1–1.0) downscales output.
+	s.AddTool(
+		mcp.NewTool("screenshot",
+			mcp.WithDescription("Capture the entire screen and return it as a PNG image. Use this to see what is currently on screen. Optional 'scale' (0.1–1.0) downscales the image to save tokens."),
+			mcp.WithNumber("scale",
+				mcp.Description("Optional downscale factor between 0.1 and 1.0. Omit or 1.0 for full resolution."),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			scale := req.GetFloat("scale", 1.0)
+			if scale != 0 && (scale < 0.1 || scale > 1.0) {
+				return mcp.NewToolResultError("scale must be between 0.1 and 1.0"), nil
+			}
+			png, err := captureScreenScaled(scale)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("screenshot failed", err), nil
+			}
+			b64 := base64.StdEncoding.EncodeToString(png)
+			return mcp.NewToolResultImage("Screenshot of the current screen.", b64, "image/png"), nil
 		},
 	)
 

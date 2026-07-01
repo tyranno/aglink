@@ -337,9 +337,21 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 	cmdArgs = append(cmdArgs, fields[1])
 	cmdArgs = append(cmdArgs, fields[2:]...)
 
-	out, err := exec.Command(screenBin, cmdArgs...).Output()
+	// Bound the external call: !screen runs synchronously in the command-dispatch
+	// path, so a hung aglink-screen would otherwise freeze message processing.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, screenBin, cmdArgs...).Output()
 	if err != nil {
-		_ = b.Send(chatID, "❌ aglink-screen 실행 실패: "+err.Error())
+		if ctx.Err() == context.DeadlineExceeded {
+			_ = b.Send(chatID, "❌ aglink-screen 응답 시간 초과 (30초)")
+			return
+		}
+		msg := err.Error()
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			msg += ": " + strings.TrimSpace(string(ee.Stderr))
+		}
+		_ = b.Send(chatID, "❌ aglink-screen 실행 실패: "+msg)
 		return
 	}
 	var res struct {

@@ -111,11 +111,28 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 	args := workerBaseArgs(r.cfg(), req, selfExe)
 
 	if req.OnProgress != nil {
-		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, func(line string) {
-			if msg := formatProgressEvent(line); msg != "" {
+		// Deliver progress on a dedicated goroutine via a small buffered channel so
+		// a slow OnProgress (e.g. a Telegram send) can never backpressure the stdout
+		// reader and stall the worker process. Events are dropped if the buffer
+		// fills; ordering is preserved by the single consumer.
+		progressCh := make(chan string, 32)
+		progressDone := make(chan struct{})
+		go func() {
+			for msg := range progressCh {
 				req.OnProgress(msg)
 			}
+			close(progressDone)
+		}()
+		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, func(line string) {
+			if msg := formatProgressEvent(line); msg != "" {
+				select {
+				case progressCh <- msg:
+				default: // consumer busy (slow send) — drop this progress line
+				}
+			}
 		})
+		close(progressCh)
+		<-progressDone
 		if err != nil {
 			if ctx.Err() != nil {
 				return RunResult{}, ctx.Err()

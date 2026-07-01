@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -307,9 +309,10 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 	}
 }
 
-// handleScreen runs a direct !screen subcommand, bypassing LLM routing/worker for
-// fast deterministic screen control. Reuses the in-process Win32 helpers via
-// screenCommand (Windows-only; stubbed elsewhere).
+// handleScreen runs a direct !screen subcommand, bypassing LLM routing/worker
+// for fast deterministic screen control. Shells out to the standalone
+// aglink-screen binary's `cmd` fast-path (see resolveScreenBinaryPath) and
+// parses its JSON {"text","image","error"} result.
 //
 //	!screen list                  visible windows
 //	!screen shot [창이름]          screenshot (cropped to a window, or full screen)
@@ -320,26 +323,52 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 		_ = b.Send(chatID, "사용법: !screen list | !screen shot [창이름] | !screen region <x> <y> <너비> <높이> [창이름] | !screen preset save <이름> | !screen click <프리셋이름>")
 		return
 	}
-	presetsPath := b.cfg().ScreenPresetsFile
-	if presetsPath == "" {
-		if p, err := defaultPresetsPath(); err == nil {
-			presetsPath = p
-		}
-	}
-	text, img, err := screenCommand(fields[1], fields[2:], presetsPath)
-	if err != nil {
-		_ = b.Send(chatID, "❌ "+err.Error())
+	selfExe, _ := os.Executable()
+	screenBin := resolveScreenBinaryPath(b.cfg(), selfExe)
+	if screenBin == "" {
+		_ = b.Send(chatID, "❌ 화면제어 실행파일(aglink-screen)을 찾을 수 없습니다. screen_control.binary_path를 설정하세요.")
 		return
 	}
-	if img != nil {
-		if perr := b.SendPhoto(chatID, img, text); perr != nil {
+
+	cmdArgs := []string{"cmd"}
+	if presetsPath := b.cfg().ScreenPresetsFile; presetsPath != "" {
+		cmdArgs = append(cmdArgs, "--presets", presetsPath)
+	}
+	cmdArgs = append(cmdArgs, fields[1])
+	cmdArgs = append(cmdArgs, fields[2:]...)
+
+	out, err := exec.Command(screenBin, cmdArgs...).Output()
+	if err != nil {
+		_ = b.Send(chatID, "❌ aglink-screen 실행 실패: "+err.Error())
+		return
+	}
+	var res struct {
+		Text  string `json:"text"`
+		Image string `json:"image"`
+		Error string `json:"error"`
+	}
+	if jerr := json.Unmarshal(out, &res); jerr != nil {
+		_ = b.Send(chatID, "❌ aglink-screen 응답 파싱 실패: "+jerr.Error())
+		return
+	}
+	if res.Error != "" {
+		_ = b.Send(chatID, "❌ "+res.Error)
+		return
+	}
+	if res.Image != "" {
+		img, derr := base64.StdEncoding.DecodeString(res.Image)
+		if derr != nil {
+			_ = b.Send(chatID, "❌ 이미지 디코드 실패: "+derr.Error())
+			return
+		}
+		if perr := b.SendPhoto(chatID, img, res.Text); perr != nil {
 			// e.g. image exceeds Telegram's photo size limit — tell the user
 			// instead of silently dropping the capture.
 			_ = b.Send(chatID, "⚠️ 캡처는 됐지만 이미지 전송 실패: "+perr.Error())
 		}
 		return
 	}
-	_ = b.Send(chatID, text)
+	_ = b.Send(chatID, res.Text)
 }
 
 func (b *Bot) cancel(chatID int64) {

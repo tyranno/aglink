@@ -45,6 +45,7 @@ type yamlConfig struct {
 		PresetsFile string `yaml:"presets_file"`
 		Elevated    bool   `yaml:"elevated"`
 		KeepAwake   bool   `yaml:"keep_awake"`
+		BinaryPath  string `yaml:"binary_path"`
 	} `yaml:"screen_control"`
 }
 
@@ -101,6 +102,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.ScreenPresetsFile = y.ScreenControl.PresetsFile
 	c.ScreenElevated = y.ScreenControl.Elevated
 	c.ScreenKeepAwake = y.ScreenControl.KeepAwake
+	c.ScreenBinaryPath = y.ScreenControl.BinaryPath
 	return c
 }
 
@@ -130,6 +132,7 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ScreenControl.PresetsFile = c.ScreenPresetsFile
 	y.ScreenControl.Elevated = c.ScreenElevated
 	y.ScreenControl.KeepAwake = c.ScreenKeepAwake
+	y.ScreenControl.BinaryPath = c.ScreenBinaryPath
 	return y
 }
 

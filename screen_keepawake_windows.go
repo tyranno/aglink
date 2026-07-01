@@ -5,6 +5,8 @@ package main
 import (
 	"log"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // Design Ref: screen_control.keep_awake — prevents the idle-timeout screensaver/
@@ -15,8 +17,7 @@ import (
 // *idle-timeout* locking — it cannot override an explicit Win+L, a GPO-forced
 // re-lock, or a lock triggered by closing a laptop lid.
 
-// modKernel32App is declared in screen_apps_windows.go.
-var procSetThreadExecutionState = modKernel32App.NewProc("SetThreadExecutionState")
+var procSetThreadExecutionState = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetThreadExecutionState")
 
 const (
 	esContinuous      = 0x80000000

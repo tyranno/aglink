@@ -5,7 +5,6 @@ package main
 import (
 	"os"
 	"strings"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -15,8 +14,10 @@ import (
 // Windows UIPI (User Interface Privilege Isolation) silently drops synthetic
 // input (SendInput button events, etc.) sent from a lower-integrity process to a
 // higher-integrity (elevated) window. To drive elevated apps the whole teleclaude
-// chain (teleclaude → claude worker → __mcp-screen server) must itself run
-// elevated. These helpers detect our elevation and re-launch elevated via UAC.
+// chain (teleclaude → claude worker → aglink-screen) must itself run elevated.
+// These helpers detect our elevation and re-launch elevated via UAC; the
+// per-window UIPI detection (windowIsElevated/uipiWarning) now lives in
+// aglink-screen since only its screen tools need it.
 
 // isElevated reports whether the current process token is elevated (admin).
 func isElevated() bool {
@@ -49,35 +50,4 @@ func relaunchElevated() error {
 		return err
 	}
 	return runAsAdmin(exe, strings.Join(os.Args[1:], " "))
-}
-
-// windowIsElevated reports whether the process owning hwnd is elevated. It is
-// best-effort: if we cannot open the process (typical when it is higher
-// integrity than us), we treat it as elevated, which is the useful signal.
-func windowIsElevated(hwnd uintptr) bool {
-	var pid uint32
-	procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-	if pid == 0 {
-		return false
-	}
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return true // can't open → almost certainly higher integrity
-	}
-	defer windows.CloseHandle(h)
-	var tok windows.Token
-	if err := windows.OpenProcessToken(h, windows.TOKEN_QUERY, &tok); err != nil {
-		return true
-	}
-	defer tok.Close()
-	return tok.IsElevated()
-}
-
-// uipiWarning returns a non-empty caveat when a click into target hwnd is likely
-// to be dropped by UIPI (target elevated, we are not). Empty otherwise.
-func uipiWarning(hwnd uintptr) string {
-	if !isElevated() && windowIsElevated(hwnd) {
-		return " — WARNING: target window is elevated but teleclaude is not, so Windows UIPI likely ignored this click. Set screen_control.elevated: true (or run teleclaude as administrator)."
-	}
-	return ""
 }

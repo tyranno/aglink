@@ -17,8 +17,8 @@ func TestScreenSystemPrompt(t *testing.T) {
 }
 
 func TestScreenWorkerArgs(t *testing.T) {
-	const self = "C:\\t\\teleclaude.exe"
-	args := screenWorkerArgs(self)
+	const screenBin = "C:\\t\\aglink-screen.exe"
+	args := screenWorkerArgs(screenBin)
 
 	for _, want := range []string{
 		"--strict-mcp-config",
@@ -39,19 +39,16 @@ func TestScreenWorkerArgs(t *testing.T) {
 	}
 	inline := args[idx+1]
 
-	if !strings.Contains(inline, "__mcp-screen") {
-		t.Errorf("inline JSON missing __mcp-screen: %s", inline)
-	}
 	if !strings.Contains(inline, "screen") {
 		t.Errorf("inline JSON missing server key screen: %s", inline)
 	}
 	// The exe path appears JSON-escaped (backslashes doubled) inside the inline
 	// string, so check via encoding/json to mirror how it was produced.
-	escaped, _ := json.Marshal(self)
+	escaped, _ := json.Marshal(screenBin)
 	// strip surrounding quotes that Marshal adds around the string
 	escapedInner := strings.Trim(string(escaped), `"`)
 	if !strings.Contains(inline, escapedInner) {
-		t.Errorf("inline JSON missing (escaped) exe path %q: %s", escapedInner, inline)
+		t.Errorf("inline JSON missing (escaped) binary path %q: %s", escapedInner, inline)
 	}
 
 	// Must parse back as valid JSON with the expected shape.
@@ -68,10 +65,27 @@ func TestScreenWorkerArgs(t *testing.T) {
 	if !ok {
 		t.Fatalf("parsed JSON has no screen server: %s", inline)
 	}
-	if srv.Command != self {
-		t.Errorf("screen.command = %q, want %q", srv.Command, self)
+	if srv.Command != screenBin {
+		t.Errorf("screen.command = %q, want %q", srv.Command, screenBin)
 	}
-	if !slices.Contains(srv.Args, "__mcp-screen") {
-		t.Errorf("screen.args missing __mcp-screen: %v", srv.Args)
+	if !slices.Contains(srv.Args, "mcp") {
+		t.Errorf("screen.args missing mcp: %v", srv.Args)
+	}
+}
+
+func TestResolveScreenBinaryPath(t *testing.T) {
+	// Explicit override wins regardless of selfExe.
+	if got := resolveScreenBinaryPath(&Config{ScreenBinaryPath: "C:\\custom\\aglink-screen.exe"}, "C:\\t\\teleclaude.exe"); got != "C:\\custom\\aglink-screen.exe" {
+		t.Errorf("override: got %q", got)
+	}
+	// No override, no selfExe → unresolved.
+	if got := resolveScreenBinaryPath(&Config{}, ""); got != "" {
+		t.Errorf("no selfExe: got %q, want \"\"", got)
+	}
+	// No override → same directory as selfExe, named aglink-screen(+exeSuffix).
+	got := resolveScreenBinaryPath(&Config{}, "C:\\t\\teleclaude.exe")
+	want := "C:\\t\\aglink-screen" + exeSuffix
+	if got != want {
+		t.Errorf("default: got %q, want %q", got, want)
 	}
 }

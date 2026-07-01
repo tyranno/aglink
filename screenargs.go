@@ -1,12 +1,15 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"path/filepath"
+)
 
 // Design Ref: §1 (structure), §2 (tool priority / worker system prompt).
 //
-// This file assembles the claude CLI args that load ONLY teleclaude's own screen
-// MCP server (teleclaude re-invoked with the hidden "__mcp-screen" subcommand).
-// Pure functions, no Win32 — testable on any platform.
+// This file assembles the claude CLI args that load the screen MCP server —
+// the standalone "aglink-screen" binary (see https://github.com/tyranno/aglink-screen),
+// not teleclaude itself. Pure functions, no Win32 — testable on any platform.
 
 // screenSystemPrompt returns the worker guidance: prefer the cheap UIA element
 // tree (snapshot + invoke/set_value by name); fall back to the expensive
@@ -47,18 +50,19 @@ type mcpConfig struct {
 	McpServers map[string]mcpServerSpec `json:"mcpServers"`
 }
 
-// screenWorkerArgs returns the claude CLI args that load only teleclaude's own
-// screen MCP server (selfExePath re-invoked with "__mcp-screen"), restrict the
-// allowed tools to mcp__screen__*, and append the UIA-first system prompt.
+// screenWorkerArgs returns the claude CLI args that load the aglink-screen MCP
+// server (screenBinaryPath run in its default "mcp" stdio-server mode),
+// restrict the allowed tools to mcp__screen__*, and append the UIA-first
+// system prompt.
 //
 // The --mcp-config value is built as inline JSON via encoding/json so that
 // backslashes in Windows paths are escaped correctly (no string concatenation).
-func screenWorkerArgs(selfExePath string) []string {
+func screenWorkerArgs(screenBinaryPath string) []string {
 	cfg := mcpConfig{
 		McpServers: map[string]mcpServerSpec{
 			"screen": {
-				Command: selfExePath,
-				Args:    []string{"__mcp-screen"},
+				Command: screenBinaryPath,
+				Args:    []string{"mcp"},
 			},
 		},
 	}
@@ -75,4 +79,19 @@ func screenWorkerArgs(selfExePath string) []string {
 		"--allowedTools", "mcp__screen__*",
 		"--append-system-prompt", screenSystemPrompt(),
 	}
+}
+
+// resolveScreenBinaryPath locates the aglink-screen executable that provides
+// the screen MCP server and the !screen fast-path. cfg.ScreenBinaryPath
+// overrides; otherwise it looks next to teleclaude's own executable (the
+// expected deployment layout: drop aglink-screen(.exe) alongside teleclaude).
+// Returns "" if it cannot be resolved (selfExe unknown and no override set).
+func resolveScreenBinaryPath(cfg *Config, selfExe string) string {
+	if cfg != nil && cfg.ScreenBinaryPath != "" {
+		return cfg.ScreenBinaryPath
+	}
+	if selfExe == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(selfExe), "aglink-screen"+exeSuffix)
 }

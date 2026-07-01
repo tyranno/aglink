@@ -389,10 +389,18 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		}
 	}()
 
-	// Always pass history in the prompt as a restart-safe fallback.
-	// If --resume finds the claude session, the truncated history is a lightweight reminder.
-	// If the session is lost (e.g. after restart or CLI update), history is the only context.
+	// Pass history in the prompt as a restart-safe fallback.
+	// When --resume is in play, the CLI session already carries full context server-side,
+	// so only a short trailing reminder is needed (avoids re-sending the whole history
+	// every turn, which was making prompts — and response times — grow with each message).
+	// Without an existing session (fresh conversation), history is empty anyway.
+	// If the session is ever lost (e.g. after restart or CLI update), the short reminder
+	// is what's available; deeper recovery relies on parentSummary/.teleclaude/memory.md.
+	const maxHistoryInPrompt = 3
 	historyForPrompt := workConv.History
+	if len(historyForPrompt) > maxHistoryInPrompt {
+		historyForPrompt = historyForPrompt[len(historyForPrompt)-maxHistoryInPrompt:]
+	}
 	globalMemory := readGlobalMemory()
 	projectMemory := readProjectMemory(p.Path)
 	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)

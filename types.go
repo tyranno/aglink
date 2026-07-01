@@ -29,6 +29,7 @@ type Config struct {
 	ScreenControl         bool     // screen-control MCP 활성화 (Windows). 기본 false
 	ScreenPresetsFile     string   // 좌표 프리셋 파일 경로. 빈 값이면 ~/.teleclaude/presets.json
 	ScreenElevated        bool     // 관리자 권한으로 실행해 관리자 대상 앱도 제어 (Windows UIPI 우회). 기본 false
+	ScreenKeepAwake       bool     // 화면 유휴 잠금/화면보호기 방지 (SetThreadExecutionState, Windows). 기본 false
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 }
 

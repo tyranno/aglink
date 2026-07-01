@@ -262,6 +262,32 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		}
 	}()
 
+	// Keep-awake: while screen_control + screen_control.keep_awake are both on,
+	// periodically assert ES_DISPLAY_REQUIRED so Windows' idle timer never fires
+	// the screensaver/lock — a locked workstation blocks focus_window/click and
+	// makes capture_window return a black image (see screen_keepawake_windows.go).
+	var stopKeepAwake func()
+	syncKeepAwake := func() {
+		want := holder.Get().ScreenControl && holder.Get().ScreenKeepAwake
+		if want == (stopKeepAwake != nil) {
+			return
+		}
+		if want {
+			stopKeepAwake = startKeepAwake()
+			log.Printf("[keepawake] ON — 유휴 화면보호기/잠금 방지 중")
+		} else {
+			stopKeepAwake()
+			stopKeepAwake = nil
+			log.Printf("[keepawake] OFF")
+		}
+	}
+	syncKeepAwake()
+	defer func() {
+		if stopKeepAwake != nil {
+			stopKeepAwake()
+		}
+	}()
+
 	// Config hot-reload: watch the YAML file and apply changes without restart.
 	hooks := ReloadHooks{
 		OnRateLimit:    func(n int) { bot.rateLimiter.SetLimit(n) },
@@ -275,7 +301,9 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 			for _, id := range holder.Get().AllowedUserIDs {
 				_ = bot.Send(id, "🖥 화면제어 "+state)
 			}
+			syncKeepAwake()
 		},
+		OnKeepAwake: func(bool) { syncKeepAwake() },
 		Notify: func(msg string) {
 			for _, id := range holder.Get().AllowedUserIDs {
 				_ = bot.Send(id, msg)

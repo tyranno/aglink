@@ -13,6 +13,7 @@ type ReloadHooks struct {
 	OnRateLimit     func(int)  // new rate limit
 	OnTokenChanged  func()     // bot token changed (needs restart)
 	OnScreenControl func(bool) // screen_control.enabled toggled
+	OnKeepAwake     func(bool) // screen_control.keep_awake toggled
 	Notify          func(string)
 }
 
@@ -26,6 +27,9 @@ func applyReload(old, nw *Config, h ReloadHooks) {
 	}
 	if old.ScreenControl != nw.ScreenControl && h.OnScreenControl != nil {
 		h.OnScreenControl(nw.ScreenControl)
+	}
+	if old.ScreenKeepAwake != nw.ScreenKeepAwake && h.OnKeepAwake != nil {
+		h.OnKeepAwake(nw.ScreenKeepAwake)
 	}
 }
 

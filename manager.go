@@ -336,6 +336,19 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		workDir = p.Path
 	}
 
+	// Forward tool images (screen MCP screenshot/capture_window/capture_region) to
+	// the chat. Only when screen control is on (images come only from those tools)
+	// and the sender can send photos. Setting OnImage makes the worker stream NDJSON
+	// so tool_result image blocks can be recovered — the final envelope drops them.
+	var onImage func(png []byte, caption string)
+	if m.cfg().ScreenControl {
+		if ps, ok := s.(interface {
+			SendPhoto(int64, []byte, string) error
+		}); ok {
+			onImage = func(png []byte, caption string) { _ = ps.SendPhoto(chatID, png, caption) }
+		}
+	}
+
 	// Check if context is growing too large; auto-create continuation if needed.
 	// Threshold: ~40k tokens (conservative estimate for claude-haiku).
 	const contextThreshold = 40000
@@ -425,6 +438,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		SessionID: workConv.SessionID,
 		Resume:    workConv.Started,
 		Model:     workerModel,
+		OnImage:   onImage,
 	})
 	close(heartbeatDone)
 	elapsed := time.Since(startTime)
@@ -464,6 +478,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 				SessionID: workConv.SessionID,
 				Resume:    false,
 				Model:     workerModel,
+				OnImage:   onImage,
 			})
 			close(recoverDone)
 			elapsed = time.Since(startTime)
@@ -520,6 +535,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 				SessionID: workConv.SessionID,
 				Resume:    false,
 				Model:     workerModel,
+				OnImage:   onImage,
 			})
 			close(retryDone)
 			elapsed = time.Since(startTime)

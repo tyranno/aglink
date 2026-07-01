@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -79,9 +80,10 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 // empty the screen args are skipped (we cannot point the worker at ourselves).
 func workerBaseArgs(cfg *Config, req RunRequest, selfExe string) []string {
 	args := []string{"-p", req.Prompt}
-	if req.OnProgress != nil {
-		// Realtime NDJSON stream so tool-use activity can be relayed as it happens
-		// (see execStream/formatProgressEvent), instead of one envelope at the end.
+	if req.OnProgress != nil || req.OnImage != nil {
+		// Realtime NDJSON stream so tool-use activity (and tool_result images) can
+		// be relayed as it happens (see execStream/formatProgressEvent/
+		// extractToolResultImages), instead of one envelope at the end.
 		args = append(args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
 	} else {
 		args = append(args, "--output-format", "json")
@@ -110,29 +112,58 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 	selfExe, _ := os.Executable()
 	args := workerBaseArgs(r.cfg(), req, selfExe)
 
-	if req.OnProgress != nil {
-		// Deliver progress on a dedicated goroutine via a small buffered channel so
-		// a slow OnProgress (e.g. a Telegram send) can never backpressure the stdout
-		// reader and stall the worker process. Events are dropped if the buffer
-		// fills; ordering is preserved by the single consumer.
+	if req.OnProgress != nil || req.OnImage != nil {
+		// Deliver progress text and images on a dedicated consumer goroutine (via
+		// small buffered channels) so a slow callback — e.g. a Telegram send — can
+		// never backpressure the stdout reader and stall the worker. Text is dropped
+		// if its buffer fills; images use a larger buffer and are also drop-safe.
 		progressCh := make(chan string, 32)
-		progressDone := make(chan struct{})
+		imageCh := make(chan capturedImage, 16)
+		consumerDone := make(chan struct{})
 		go func() {
-			for msg := range progressCh {
-				req.OnProgress(msg)
+			for progressCh != nil || imageCh != nil {
+				select {
+				case msg, ok := <-progressCh:
+					if !ok {
+						progressCh = nil
+						continue
+					}
+					if req.OnProgress != nil {
+						req.OnProgress(msg)
+					}
+				case img, ok := <-imageCh:
+					if !ok {
+						imageCh = nil
+						continue
+					}
+					if req.OnImage != nil {
+						req.OnImage(img.png, img.caption)
+					}
+				}
 			}
-			close(progressDone)
+			close(consumerDone)
 		}()
 		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, func(line string) {
-			if msg := formatProgressEvent(line); msg != "" {
-				select {
-				case progressCh <- msg:
-				default: // consumer busy (slow send) — drop this progress line
+			if req.OnProgress != nil {
+				if msg := formatProgressEvent(line); msg != "" {
+					select {
+					case progressCh <- msg:
+					default: // consumer busy — drop this progress line
+					}
+				}
+			}
+			if req.OnImage != nil {
+				for _, ci := range extractToolResultImages(line) {
+					select {
+					case imageCh <- ci:
+					default: // consumer busy — drop this image
+					}
 				}
 			}
 		})
 		close(progressCh)
-		<-progressDone
+		close(imageCh)
+		<-consumerDone
 		if err != nil {
 			if ctx.Err() != nil {
 				return RunResult{}, ctx.Err()
@@ -285,6 +316,74 @@ func formatProgressEvent(line string) string {
 		return "🔧 " + block.Name
 	}
 	return ""
+}
+
+// capturedImage is a decoded image (PNG bytes) plus any caption text that
+// accompanied it in the same tool_result.
+type capturedImage struct {
+	png     []byte
+	caption string
+}
+
+// extractToolResultImages pulls decoded images out of one stream-json NDJSON line.
+// Tool results (e.g. a screen MCP screenshot/capture_window/capture_region) arrive
+// as a "user" message whose content holds tool_result blocks, each with a content
+// array that may include base64 image blocks. These are dropped by the final
+// result envelope, so we recover them here. Returns nil when the line has none.
+func extractToolResultImages(line string) []capturedImage {
+	var m struct {
+		Type    string `json:"type"`
+		Message *struct {
+			Content []json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal([]byte(line), &m) != nil || m.Type != "user" || m.Message == nil {
+		return nil
+	}
+	var out []capturedImage
+	for _, raw := range m.Message.Content {
+		var tr struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &tr) != nil || tr.Type != "tool_result" || len(tr.Content) == 0 {
+			continue
+		}
+		// tool_result.content may be a plain string or an array of blocks; only the
+		// array form carries images.
+		var blocks []struct {
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			Source *struct {
+				Type      string `json:"type"`
+				MediaType string `json:"media_type"`
+				Data      string `json:"data"`
+			} `json:"source"`
+		}
+		if json.Unmarshal(tr.Content, &blocks) != nil {
+			continue
+		}
+		caption := ""
+		var pngs [][]byte
+		for _, b := range blocks {
+			switch b.Type {
+			case "text":
+				if caption == "" {
+					caption = strings.TrimSpace(b.Text)
+				}
+			case "image":
+				if b.Source != nil && b.Source.Type == "base64" && b.Source.Data != "" {
+					if data, derr := base64.StdEncoding.DecodeString(b.Source.Data); derr == nil && len(data) > 0 {
+						pngs = append(pngs, data)
+					}
+				}
+			}
+		}
+		for _, png := range pngs {
+			out = append(out, capturedImage{png: png, caption: caption})
+		}
+	}
+	return out
 }
 
 // toolUseSummary renders a short (<=80 char) argument preview for common tools.

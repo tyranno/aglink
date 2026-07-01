@@ -154,6 +154,13 @@ type RunRequest struct {
 	// by claudeRunner; codexRunner ignores it (codex already streams JSONL events
 	// via logCodexEvent).
 	OnProgress func(string)
+
+	// OnImage, when non-nil, is called with each image (PNG bytes + caption) that a
+	// tool returns during the turn — e.g. a screen MCP screenshot/capture_window/
+	// capture_region result. Like OnProgress it requires NDJSON streaming; the
+	// image blocks live in tool_result content that the final result envelope drops.
+	// Wired to Telegram (bot.SendPhoto) so conversational captures actually arrive.
+	OnImage func(png []byte, caption string)
 }
 
 type RunResult struct {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -361,5 +362,48 @@ func TestWebChannelBackpressure(t *testing.T) {
 
 	if got := atomic.LoadInt32(&cancelCalls); got != 1 {
 		t.Errorf("cancel must be invoked exactly once via closeOnce even across multiple overflow pushes, got %d", got)
+	}
+}
+
+// TestWSFrameJSONTags locks the wire protocol between the server and app.js:
+// field names and omitempty behavior must not drift silently.
+func TestWSFrameJSONTags(t *testing.T) {
+	imgB, err := json.Marshal(wsFrame{Type: "image", Caption: "c", Data: "ZGF0YQ=="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imgKeys map[string]json.RawMessage
+	if err := json.Unmarshal(imgB, &imgKeys); err != nil {
+		t.Fatal(err)
+	}
+	wantImgKeys := map[string]bool{"type": true, "caption": true, "data": true}
+	if len(imgKeys) != len(wantImgKeys) {
+		t.Fatalf("image frame keys = %v, want exactly %v", imgKeys, wantImgKeys)
+	}
+	for k := range imgKeys {
+		if !wantImgKeys[k] {
+			t.Errorf("unexpected key %q in image frame JSON: %s", k, imgB)
+		}
+	}
+	if _, ok := imgKeys["text"]; ok {
+		t.Errorf("empty text must be omitted via omitempty, got: %s", imgB)
+	}
+
+	textB, err := json.Marshal(wsFrame{Type: "text", Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var textKeys map[string]json.RawMessage
+	if err := json.Unmarshal(textB, &textKeys); err != nil {
+		t.Fatal(err)
+	}
+	wantTextKeys := map[string]bool{"type": true, "text": true}
+	if len(textKeys) != len(wantTextKeys) {
+		t.Fatalf("text frame keys = %v, want exactly %v", textKeys, wantTextKeys)
+	}
+	for k := range textKeys {
+		if !wantTextKeys[k] {
+			t.Errorf("unexpected key %q in text frame JSON: %s", k, textB)
+		}
 	}
 }

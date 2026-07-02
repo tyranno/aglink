@@ -66,3 +66,28 @@ func TestYAMLDefaults(t *testing.T) {
 		t.Errorf("defaults wrong: %+v", got)
 	}
 }
+
+// TestConfigDefaultWebChatAddr verifies that omitting web_chat.addr falls back to the
+// documented default 127.0.0.1:1717, while an explicitly-set addr is preserved as-is.
+func TestConfigDefaultWebChatAddr(t *testing.T) {
+	y := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\nweb_chat:\n  enabled: true\n")
+	got, err := unmarshalConfigYAML(y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.WebChat {
+		t.Errorf("expected WebChat enabled, got %+v", got)
+	}
+	if got.WebChatAddr != "127.0.0.1:1717" {
+		t.Errorf("expected default addr 127.0.0.1:1717, got %q", got.WebChatAddr)
+	}
+
+	y2 := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\nweb_chat:\n  enabled: true\n  addr: 0.0.0.0:9999\n")
+	got2, err := unmarshalConfigYAML(y2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.WebChatAddr != "0.0.0.0:9999" {
+		t.Errorf("expected explicit addr to survive, got %q", got2.WebChatAddr)
+	}
+}

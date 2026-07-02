@@ -283,7 +283,7 @@ func windowPID(hwnd uintptr) uint32 {
 // auto-handling dialogs (Korean + English). Matched by EXACT normalized text (not
 // substring) so a short token never matches an unintended button — e.g. "보내"
 // must NOT match "내보내기"(Export), and "예" must NOT match "예약"(reserve).
-var defaultAffirmative = []string{"예", "확인", "yes", "ok", "전송", "적용", "apply"}
+var defaultAffirmative = []string{"예", "확인", "yes", "ok", "전송", "보내", "send", "적용", "apply"}
 
 // normalizeButtonText strips a trailing accelerator parenthetical and "&" markers
 // ("예(&Y)" -> "예", "&Yes" -> "yes") and lowercases, so affirmative matching can

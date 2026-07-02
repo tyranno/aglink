@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -14,9 +15,10 @@ import (
 
 // Design Ref: §1 (self-spawned stdio MCP server), §2 (tool table), §4 (mcpscreen.go).
 //
-// RunMCPScreen runs the embedded "screen" MCP server over stdio (blocking).
-// teleclaude re-invokes itself with the hidden "__mcp-screen" subcommand to
-// start this server; the claude worker connects to it via --mcp-config.
+// RunMCPScreen runs the "screen" MCP server over stdio (blocking). It is started
+// by this binary's "mcp" subcommand (the default when no subcommand is given);
+// teleclaude points its claude worker's --mcp-config at this binary so the worker
+// connects to the server over stdio.
 //
 // This is the Windows implementation. Tools start with list_windows and
 // focus_window (more added in later tasks: snapshot/screenshot/click/...).
@@ -386,7 +388,11 @@ func RunMCPScreen() error {
 	}
 	presets := NewPresetStore(presetPath)
 	if err := presets.Load(); err != nil {
-		return fmt.Errorf("load presets: %w", err)
+		// A corrupt/unreadable presets file must not brick the whole screen
+		// server (screenshot/click/type/... are the primary function; presets
+		// are secondary). Warn and start with an empty store; a later
+		// preset_save heals the file. Load leaves the store empty on failure.
+		fmt.Fprintf(os.Stderr, "aglink-screen: warning: could not load presets from %s: %v (starting with empty preset store)\n", presetPath, err)
 	}
 
 	// preset_save — store a named (x,y) coordinate.

@@ -205,11 +205,13 @@ func toAbsolute(x, y int) (int32, int32) {
 	height := int(int32(h))
 	ox := int(int32(originX))
 	oy := int(int32(originY))
-	if width <= 1 {
-		width = 1
+	// Clamp to >= 2 so the (width-1)/(height-1) divisors below are never 0
+	// (a degenerate 1px virtual screen would otherwise divide by zero).
+	if width < 2 {
+		width = 2
 	}
-	if height <= 1 {
-		height = 1
+	if height < 2 {
+		height = 2
 	}
 
 	// Normalize relative to the virtual-screen origin. The +1 / (w-1) form maps

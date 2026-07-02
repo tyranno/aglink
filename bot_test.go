@@ -2,6 +2,8 @@ package main
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -338,5 +340,48 @@ func TestIngestAttachment_DefaultCaption(t *testing.T) {
 	b.ingestAttachment(7, "/tmp/x.pdf", "")
 	if !strings.Contains(got, "첨부파일을 분석해줘") || !strings.Contains(got, "[첨부파일: /tmp/x.pdf]") {
 		t.Errorf("prompt = %q", got)
+	}
+}
+
+// --- handleCommand concurrency ---
+
+// TestHandleCommand_SerializedAcrossConcurrentCalls guards the invariant
+// documented on handleCommand ("processes commands synchronously"). Telegram's
+// Run() loop only ever calls handleCommand from a single goroutine, but the
+// web-chat reader loop spawns a goroutine per inbound message (go s.inject),
+// so nothing previously stopped two "!update"-style commands from racing each
+// other (e.g. two overlapping self-rebuild+restart flows sharing one
+// newExe/readyFile path). handleCommand must serialize concurrent callers via
+// cmdMu.
+func TestHandleCommand_SerializedAcrossConcurrentCalls(t *testing.T) {
+	b := &Bot{}
+	var running, maxConcurrent int32
+	b.commandHook = func(_ int64, _ string) {
+		n := atomic.AddInt32(&running, 1)
+		for {
+			old := atomic.LoadInt32(&maxConcurrent)
+			if n <= old {
+				break
+			}
+			if atomic.CompareAndSwapInt32(&maxConcurrent, old, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		atomic.AddInt32(&running, -1)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.handleCommand(7, "!status")
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&maxConcurrent); got != 1 {
+		t.Errorf("handleCommand ran with %d concurrent invocations, want 1 (serialized)", got)
 	}
 }

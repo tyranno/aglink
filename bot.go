@@ -48,6 +48,16 @@ type Bot struct {
 	workerSeq   int                        // monotonic counter for worker IDs
 	cancels     map[int]context.CancelFunc // workerID → cancel (for !cancel)
 	queue       []queuedMsg                // messages waiting for a free slot
+
+	// cmdMu serializes handleCommand. Telegram's Run() loop already calls
+	// handleCommand from a single goroutine, so this is uncontended there.
+	// The web-chat reader loop spawns a goroutine per inbound message
+	// (go s.inject), so without this lock two rapid "!update" (or other
+	// command) messages from the browser could run handleCommand concurrently
+	// — e.g. two overlapping self-rebuild+restart flows racing on the same
+	// newExe/readyFile. handleCommand's doc comment ("processes commands
+	// synchronously") is the invariant this lock restores.
+	cmdMu sync.Mutex
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
@@ -286,8 +296,12 @@ func (b *Bot) dispatch(msg queuedMsg) {
 	}()
 }
 
-// handleCommand processes commands synchronously.
+// handleCommand processes commands synchronously. Serialized via cmdMu so
+// concurrent callers (web-chat's per-message reader goroutines) can never run
+// two commands — e.g. two overlapping !update self-rebuilds — at once.
 func (b *Bot) handleCommand(chatID int64, text string) {
+	b.cmdMu.Lock()
+	defer b.cmdMu.Unlock()
 	if b.commandHook != nil {
 		b.commandHook(chatID, text)
 		return

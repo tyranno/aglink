@@ -573,6 +573,18 @@ func (b *Bot) handleUpdate(chatID int64) {
 		}
 	}
 
+	// Plugins first (fail fast — don't touch teleclaude if a sibling plugin's
+	// source is broken). Skips silently on deployments that don't have
+	// aglink-screen/aglink-web checked out next to teleclaude.
+	pluginReport, perr := updatePlugins(srcDir)
+	if perr != nil {
+		_ = b.Send(chatID, "⚠️ "+perr.Error())
+		return
+	}
+	if len(pluginReport) > 0 {
+		_ = b.Send(chatID, "🔌 플러그인 갱신됨: "+strings.Join(pluginReport, ", "))
+	}
+
 	// Build
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer buildCancel()

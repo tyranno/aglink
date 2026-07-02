@@ -25,6 +25,19 @@ func killByImageName(name string) {
 	exec.Command("taskkill", "/F", "/IM", name).Run()
 }
 
+// restartAglinkWebDaemon force-kills the persistent aglink-web "serve" daemon
+// (identified by command line, not just image name — an "aglink-web mcp"
+// bridge process shares the same image name but is a per-worker-turn child
+// that must not be touched) so the next tool call auto-spawns a fresh daemon
+// from the just-rebuilt binary. No-op if none is currently running.
+func restartAglinkWebDaemon() {
+	exec.Command("powershell", "-NoProfile", "-Command",
+		`Get-CimInstance Win32_Process -Filter "Name='aglink-web.exe'" | `+
+			`Where-Object { $_.CommandLine -like '*serve*' } | `+
+			`ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+	).Run()
+}
+
 // killPreviousInstance terminates any running teleclaude processes (except self).
 func killPreviousInstance() {
 	myPID := os.Getpid()

@@ -161,6 +161,65 @@ MANAGER_ALWAYS=true
 
 ---
 
+## 플러그인 확장 (aglink-*)
+
+teleclaude 본체는 텔레그램 봇/라우팅/스케줄러만 다루고, **실제 화면·브라우저
+조작**은 sibling 저장소로 독립 배포되는 aglink-* 플러그인이 담당합니다. 각자
+자체 GitHub 저장소를 갖는 완전히 독립된 프로젝트지만, teleclaude 옆에
+나란히 두면 워커의 `--mcp-config`에 자동으로 물려 도구로 노출됩니다.
+
+| 플러그인 | 기능 |
+|---|---|
+| [`aglink-screen`](https://github.com/tyranno/aglink-screen) | Windows 화면 제어 (UIA/Win32/GDI — snapshot/invoke/click/screenshot/type 등, Windows 전용) |
+| [`aglink-web`](https://github.com/tyranno/aglink-web) | 실제 Chrome 브라우저 제어 (list_tabs/navigate/get_page_text/click/type/screenshot 등) |
+
+### 설치
+
+각 플러그인을 teleclaude와 **형제 디렉터리**로 clone하고 빌드해서 teleclaude
+실행파일과 같은 폴더에 둡니다:
+
+```
+88.MyProject/
+├── teleclaude/
+│   ├── teleclaude.exe
+│   ├── aglink-screen.exe   ← 여기 나란히
+│   └── aglink-web.exe      ← 여기 나란히
+├── aglink-screen/          ← 소스 (형제 디렉터리)
+└── aglink-web/              ← 소스 (형제 디렉터리)
+```
+
+`config.yaml`에서 켭니다 (레거시 `config.txt` 포맷은 지원하지 않음 — yaml 전용):
+
+```yaml
+screen_control:
+  enabled: true
+  binary_path: ""   # 비우면 teleclaude exe와 같은 폴더에서 자동 탐색
+
+web_control:
+  enabled: true
+  binary_path: ""   # 비우면 teleclaude exe와 같은 폴더에서 자동 탐색
+```
+
+둘 다 켜도 워커의 `--mcp-config`/`--allowedTools`가 자동으로 하나로 병합되어
+노출됩니다 (Claude CLI가 이 플래그들을 1회씩만 받기 때문에, 플러그인마다 따로
+넘기면 나중 것이 앞 것을 덮어씁니다 — teleclaude가 이 병합을 대신 처리).
+
+### `!update`가 셋 다 같이 배포
+
+`!update`는 teleclaude 자체를 빌드하기 전에 형제 디렉터리에 있는
+`aglink-screen`/`aglink-web`도 먼저 `go build`해서 teleclaude 옆에 배치합니다
+— 저장소 3개를 손으로 각각 빌드/복사할 필요 없이 명령 하나로 전부
+최신화됩니다. 플러그인 중 하나라도 빌드가 깨지면 teleclaude 자체 업데이트도
+시작하지 않고 에러만 보고합니다. 형제 디렉터리가 없는 배포(예: 화면제어가
+필요 없는 헤드리스 NanoPi)에서는 조용히 건너뜁니다.
+
+> ⚠️ `aglink-web`의 Chrome 확장(`extension/`)이 바뀐 경우 `!update`가 새
+> 바이너리는 배포해주지만, Chrome에 이미 로드된 확장 자체는 자동으로
+> 리로드되지 않습니다 — `chrome://extensions`에서 수동으로 새로고침해야
+> 반영됩니다.
+
+---
+
 ## 동작 방식
 
 ```

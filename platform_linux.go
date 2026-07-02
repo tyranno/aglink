@@ -31,6 +31,16 @@ func killByImageName(name string) {
 	exec.Command("pkill", "-f", name).Run()
 }
 
+// restartAglinkWebDaemon kills the persistent aglink-web "serve" daemon
+// (matched by full command line, not "aglink-web mcp" bridge children — those
+// belong to an active worker turn and must not be touched) so the next tool
+// call auto-spawns a fresh daemon from the just-rebuilt binary. No-op if none
+// is currently running. aglink-web/aglink-screen are Windows-only in practice
+// today, but this keeps updatePlugins portable if that changes.
+func restartAglinkWebDaemon() {
+	exec.Command("pkill", "-f", "aglink-web serve").Run()
+}
+
 // killPreviousInstance sends SIGTERM to the previous instance.
 // Tries PID file first; falls back to pkill for instances started without a PID file.
 func killPreviousInstance() {

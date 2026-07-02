@@ -68,6 +68,45 @@ func (b *Bot) isAllowed(userID int64, username string) bool {
 		(b.userStore != nil && b.userStore.Contains(userID))
 }
 
+// telegramChannel is the Telegram implementation of ChannelSender. The tgbotapi
+// send bodies live here (moved out of *Bot) so Bot's own Send/SendPhoto/Typing
+// can delegate to the Hub. Registered in the Hub as a global channel — it can
+// address any chatID, so it receives fan-out for every conversation.
+type telegramChannel struct {
+	api *tgbotapi.BotAPI
+}
+
+func newTelegramChannel(api *tgbotapi.BotAPI) *telegramChannel {
+	return &telegramChannel{api: api}
+}
+
+func (t *telegramChannel) Send(chatID int64, text string) error {
+	msg := tgbotapi.NewMessage(chatID, text)
+	_, err := t.api.Send(msg)
+	if err != nil {
+		log.Printf("[tg] send error: %v", err)
+	}
+	return err
+}
+
+func (t *telegramChannel) SendPhoto(chatID int64, png []byte, caption string) error {
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "screen.png", Bytes: png})
+	if caption != "" {
+		photo.Caption = caption
+	}
+	_, err := t.api.Send(photo)
+	if err != nil {
+		log.Printf("[tg] photo send error: %v", err)
+	}
+	return err
+}
+
+func (t *telegramChannel) Typing(chatID int64) {
+	if _, err := t.api.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
+		log.Printf("[tg] typing error: %v", err)
+	}
+}
+
 // Send delivers a plain-text message (MessageSender).
 func (b *Bot) Send(chatID int64, text string) error {
 	msg := tgbotapi.NewMessage(chatID, text)

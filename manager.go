@@ -28,27 +28,48 @@ type Manager struct {
 }
 
 func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *ConfigHolder) *Manager {
-	return &Manager{
-		client:       claude,
-		backendName:  "claude",
+	m := &Manager{
 		claudeClient: claude,
 		codexClient:  codex,
 		store:        store,
 		workerStatus: NewMemoryWorkerStatusStore(),
 		cfgh:         cfgh,
 	}
+	// Default to claude when available (backward-compatible); otherwise fall back
+	// to codex so a codex-only install still boots with a valid active client
+	// instead of a nil m.client.
+	if claude != nil {
+		m.client = claude
+		m.backendName = "claude"
+	} else if codex != nil {
+		m.client = codex
+		m.backendName = "codex"
+	}
+	return m
 }
 
 func (m *Manager) cfg() *Config { return m.cfgh.Get() }
 
 func (m *Manager) SetScheduler(s *Scheduler) { m.scheduler = s }
 
-// SetBackend switches the active AI backend. Returns error if the requested backend is unavailable.
+// SetBackend switches the active AI backend and persists the choice. Returns an
+// error if the requested backend is unavailable.
 func (m *Manager) SetBackend(name string) error {
+	return m.setBackend(name, true)
+}
+
+// setBackend switches the active backend. persist controls whether the choice is
+// written to the store — startup restoration passes false so that falling back to
+// an installed backend (when the preferred one is missing) never clobbers the
+// user's saved preference.
+func (m *Manager) setBackend(name string, persist bool) error {
 	m.backendMu.Lock()
 	defer m.backendMu.Unlock()
 	switch name {
 	case "claude":
+		if m.claudeClient == nil {
+			return fmt.Errorf("Claude가 설치되어 있지 않습니다")
+		}
 		m.client = m.claudeClient
 		m.backendName = "claude"
 		log.Printf("[manager] backend → claude (worker_model=%q)", m.cfg().WorkerModel)
@@ -62,9 +83,10 @@ func (m *Manager) SetBackend(name string) error {
 	default:
 		return fmt.Errorf("알 수 없는 백엔드: %s (claude | codex)", name)
 	}
-	// Persist so the setting survives restarts.
-	if err := m.store.SetStoredBackend(name); err != nil {
-		log.Printf("[manager] backend persist failed: %v", err)
+	if persist {
+		if err := m.store.SetStoredBackend(name); err != nil {
+			log.Printf("[manager] backend persist failed: %v", err)
+		}
 	}
 	return nil
 }

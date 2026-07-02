@@ -446,6 +446,61 @@ func TestHandleScheduledTask_NoProjects(t *testing.T) {
 	}
 }
 
+func TestNewManager_CodexOnlyDefaultsToCodex(t *testing.T) {
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	codex := &fakeClaude{}
+	// claude not installed → nil claude runner.
+	m := NewManager(nil, codex, st, NewConfigHolder(&Config{}))
+	if m.Backend() != "codex" {
+		t.Errorf("codex-only install should default to codex, got %q", m.Backend())
+	}
+}
+
+func TestSetBackend_ClaudeUnavailable(t *testing.T) {
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	codex := &fakeClaude{}
+	m := NewManager(nil, codex, st, NewConfigHolder(&Config{}))
+	if err := m.SetBackend("claude"); err == nil {
+		t.Error("expected error when claude not available")
+	}
+	if m.Backend() != "codex" {
+		t.Errorf("backend should remain codex after failed switch, got %q", m.Backend())
+	}
+}
+
+func TestChooseBackend(t *testing.T) {
+	cases := []struct {
+		name          string
+		preferred     string
+		claude, codex bool
+		want          string
+		wantOK        bool
+	}{
+		{"prefer codex, both installed", "codex", true, true, "codex", true},
+		{"prefer claude, both installed", "claude", true, true, "claude", true},
+		{"prefer codex, only claude → fallback", "codex", true, false, "claude", true},
+		{"prefer claude, only codex → fallback", "claude", false, true, "codex", true},
+		{"empty pref, only codex", "", false, true, "codex", true},
+		{"empty pref, only claude", "", true, false, "claude", true},
+		{"empty pref, both → claude", "", true, true, "claude", true},
+		{"unknown pref, only codex", "weird", false, true, "codex", true},
+		{"neither installed", "claude", false, false, "", false},
+	}
+	for _, c := range cases {
+		got, ok := chooseBackend(c.preferred, c.claude, c.codex)
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("%s: chooseBackend(%q,%v,%v)=(%q,%v), want (%q,%v)",
+				c.name, c.preferred, c.claude, c.codex, got, ok, c.want, c.wantOK)
+		}
+	}
+}
+
 func TestSetBackend_CodexUnavailable(t *testing.T) {
 	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
 	if err := st.Load(); err != nil {

@@ -143,15 +143,6 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		}
 	}
 
-	claudePath, err := findClaude(cfg.ClaudePath)
-	if err != nil {
-		return err
-	}
-	log.Printf("[main] claude: %s", claudePath)
-	if err := claudeHealthCheck(claudePath); err != nil {
-		return fmt.Errorf("claude 헬스체크 실패: %w", err)
-	}
-
 	store := NewFileStore(filepath.Join(dir, "store.json"))
 	if err := store.Load(); err != nil {
 		return fmt.Errorf("대화 저장소 로드 실패: %w", err)
@@ -159,7 +150,22 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 
 	holder := NewConfigHolder(cfg)
 
-	runner := NewClaudeRunner(claudePath, holder)
+	// Resolve both backends; neither is individually required. teleclaude boots as
+	// long as at least one of claude/codex is installed, so a claude-only machine
+	// and a codex-only machine both work. The active backend's binary must exist;
+	// the other is optional and simply can't be switched to.
+	var claudeRunner ClaudeClient
+	if claudePath, err := findClaude(cfg.ClaudePath); err == nil {
+		if herr := claudeHealthCheck(claudePath); herr == nil {
+			claudeRunner = NewClaudeRunner(claudePath, holder)
+			log.Printf("[main] claude: %s", claudePath)
+		} else {
+			log.Printf("[main] claude 헬스체크 실패 → claude 백엔드 비활성화: %v", herr)
+		}
+	} else {
+		log.Printf("[main] claude: 미설치 (선택적) — %v", err)
+	}
+
 	var codexRunner ClaudeClient
 	if codexPath, err := findCodex(cfg.CodexPath); err == nil && codexPath != "" {
 		codexRunner = NewCodexRunner(codexPath, holder)
@@ -169,21 +175,31 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	} else {
 		log.Printf("[main] codex: 미설치 (선택적)")
 	}
-	manager := NewManager(runner, codexRunner, store, holder)
 
-	// Restore backend: persisted choice takes priority, then DEFAULT_BACKEND from config.
-	if saved := store.GetStoredBackend(); saved != "" && saved != "claude" {
-		if err := manager.SetBackend(saved); err != nil {
-			log.Printf("[main] ignoring persisted backend %q: %v", saved, err)
-		} else {
-			log.Printf("[main] restored backend: %s", saved)
-		}
-	} else if saved == "" && cfg.DefaultBackend != "" && cfg.DefaultBackend != "claude" {
-		if err := manager.SetBackend(cfg.DefaultBackend); err != nil {
-			log.Printf("[main] default backend %q failed: %v", cfg.DefaultBackend, err)
-		} else {
-			log.Printf("[main] default backend (config): %s", cfg.DefaultBackend)
-		}
+	if claudeRunner == nil && codexRunner == nil {
+		return fmt.Errorf("claude 또는 codex 중 하나는 설치되어야 합니다 (둘 다 찾지 못함)")
+	}
+
+	manager := NewManager(claudeRunner, codexRunner, store, holder)
+
+	// Choose the active backend: persisted choice first, then DEFAULT_BACKEND, then
+	// fall back to whichever backend is actually installed. Startup selection does
+	// not persist, so a temporary fallback never clobbers the saved preference.
+	preferred := store.GetStoredBackend()
+	if preferred == "" {
+		preferred = cfg.DefaultBackend
+	}
+	backend, ok := chooseBackend(preferred, claudeRunner != nil, codexRunner != nil)
+	if !ok {
+		return fmt.Errorf("사용 가능한 백엔드가 없습니다")
+	}
+	if err := manager.setBackend(backend, false); err != nil {
+		return fmt.Errorf("백엔드 설정 실패: %w", err)
+	}
+	if preferred != "" && backend != preferred {
+		log.Printf("[main] 선호 백엔드 %q 사용 불가 → %s로 대체", preferred, backend)
+	} else {
+		log.Printf("[main] backend: %s", backend)
 	}
 
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
@@ -391,6 +407,27 @@ func selfRename(currentExe string, bot *Bot, notifyChatID int64) {
 	if notifyChatID != 0 {
 		_ = bot.Send(notifyChatID, "⚠️ 이름 변경 실패 — 다음 !update 시 빌드 실패할 수 있습니다: "+lastErr.Error())
 	}
+}
+
+// chooseBackend picks the effective startup backend. It honors the preferred
+// backend (persisted choice or DEFAULT_BACKEND) when that backend is installed;
+// otherwise it falls back to whichever single backend is installed. An empty or
+// unknown preference prefers claude, then codex. Returns ok=false only when
+// neither backend is available.
+func chooseBackend(preferred string, claudeAvail, codexAvail bool) (string, bool) {
+	order := []string{"claude", "codex"}
+	if preferred == "codex" {
+		order = []string{"codex", "claude"}
+	}
+	for _, b := range order {
+		if b == "claude" && claudeAvail {
+			return "claude", true
+		}
+		if b == "codex" && codexAvail {
+			return "codex", true
+		}
+	}
+	return "", false
 }
 
 // claudeHealthCheck verifies the claude CLI responds.

@@ -16,6 +16,40 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
+// TestWebServerStartFailSoft asserts Start() does not panic and returns
+// promptly when net.Listen fails (malformed addr here), leaving the bot
+// alive. A timeout means Start wrongly blocked past the listen-error path.
+func TestWebServerStartFailSoft(t *testing.T) {
+	s := &webServer{addr: "127.0.0.1:999999", token: "secret", ownerChatID: 7, hub: NewHub(), bot: &Bot{}}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Start()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start() blocked past a listen error instead of returning promptly")
+	}
+}
+
+// TestResolveWebOwner covers the three owner-resolution outcomes used at
+// web-chat startup: explicit config wins, else fall back to the first
+// allowed user, else web chat is disabled (ok=false).
+func TestResolveWebOwner(t *testing.T) {
+	if got, ok := resolveWebOwner(42, []int64{1, 2}); got != 42 || !ok {
+		t.Errorf("explicit owner: got (%d, %v), want (42, true)", got, ok)
+	}
+	if got, ok := resolveWebOwner(0, []int64{5, 6}); got != 5 || !ok {
+		t.Errorf("fallback to allowed[0]: got (%d, %v), want (5, true)", got, ok)
+	}
+	if got, ok := resolveWebOwner(0, nil); got != 0 || ok {
+		t.Errorf("no owner: got (%d, %v), want (0, false)", got, ok)
+	}
+}
+
 func TestTokenOK(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/ws?token=secret", nil)
 	if !tokenOK(r, "secret") {

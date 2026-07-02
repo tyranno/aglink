@@ -238,17 +238,14 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	// Web chat transport (localhost only). Starts alongside Telegram; both share
 	// state via the same Hub + owner chatID. Failure here never blocks the bot.
 	if cfg.WebChat {
-		owner := cfg.WebChatOwnerChatID
-		if owner == 0 && len(cfg.AllowedUserIDs) > 0 {
-			owner = cfg.AllowedUserIDs[0]
-		}
+		owner, ownerOK := resolveWebOwner(cfg.WebChatOwnerChatID, cfg.AllowedUserIDs)
 		addr := cfg.WebChatAddr
 		if addr == "" {
 			addr = "127.0.0.1:1717"
 		}
 		if tok, terr := loadOrCreateWebToken(cfg.WebChatToken); terr != nil {
 			log.Printf("[webchat] token init failed: %v — web chat disabled", terr)
-		} else if owner == 0 {
+		} else if !ownerOK {
 			log.Printf("[webchat] no owner chatID (set web_chat.owner_chat_id or allowed_user_ids) — web chat disabled")
 		} else {
 			ws := &webServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}

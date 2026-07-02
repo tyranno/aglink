@@ -217,6 +217,18 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// resolveWebOwner picks the chatID web actions run as: the explicit config value,
+// else the first allowed user ID; ok=false when neither is set (web chat disabled).
+func resolveWebOwner(ownerCfg int64, allowed []int64) (int64, bool) {
+	if ownerCfg != 0 {
+		return ownerCfg, true
+	}
+	if len(allowed) > 0 {
+		return allowed[0], true
+	}
+	return 0, false
+}
+
 func (s *webServer) Start() {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {

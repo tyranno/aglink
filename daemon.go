@@ -26,6 +26,13 @@ type Daemon struct {
 	// AGLINK_WEB_EXT_ID once the unpacked extension's ID is known (see README).
 	expectedExtID string
 
+	// Keepalive timing. pingInterval must stay well under Chrome's ~30s MV3
+	// service-worker idle limit so our pushed pings keep the worker alive;
+	// readTimeout is how long we tolerate silence (missed ping replies) before
+	// declaring the connection dead. Fields (not consts) so tests can shrink them.
+	pingInterval time.Duration
+	readTimeout  time.Duration
+
 	mu      sync.Mutex
 	ext     *websocket.Conn
 	writeMu sync.Mutex // serializes writes to ext (gorilla conns are not write-safe)
@@ -39,6 +46,8 @@ func newDaemon(expectedExtID string) *Daemon {
 	return &Daemon{
 		expectedExtID: expectedExtID,
 		pending:       make(map[uint64]chan Reply),
+		pingInterval:  10 * time.Second,
+		readTimeout:   25 * time.Second,
 		upgrader: websocket.Upgrader{
 			// Origin is validated by checkOrigin below, not the default
 			// same-origin policy (which is meaningless for a native server).
@@ -97,32 +106,78 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 	d.mu.Unlock()
 	log.Printf("aglink-web: extension registered")
 
-	// Read loop: route each Reply to the waiting caller.
+	// Keepalive: push an application-level ping every pingInterval. Received WS
+	// messages reset Chrome's MV3 service-worker idle timer (Chrome 116+), so
+	// this keeps the extension's worker from being terminated; the extension
+	// answers each ping, and that reply refreshes our read deadline below. If
+	// either side dies, no replies arrive, the deadline fires, and we tear the
+	// stale connection down instead of letting commands hang.
+	done := make(chan struct{})
+	go d.pingLoop(conn, done)
+
+	_ = conn.SetReadDeadline(time.Now().Add(d.readTimeout))
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			log.Printf("aglink-web: extension read ended: %v", err)
 			break
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(d.readTimeout))
 		var rep Reply
 		if err := json.Unmarshal(data, &rep); err != nil {
 			log.Printf("aglink-web: bad reply frame: %v", err)
 			continue
 		}
+		if rep.ID == 0 {
+			continue // keepalive ack — nothing is waiting on id 0
+		}
 		d.mu.Lock()
 		ch := d.pending[rep.ID]
+		delete(d.pending, rep.ID)
 		d.mu.Unlock()
 		if ch != nil {
-			ch <- rep // buffered; never blocks the read loop
+			ch <- rep // buffered cap 1, sole sender for this id — never blocks
 		}
 	}
 
+	close(done)
 	d.mu.Lock()
 	if d.ext == conn {
 		d.ext = nil
 	}
+	// Fail any in-flight calls now instead of making them wait out the full
+	// call timeout — the connection they were parked on is gone.
+	for id, ch := range d.pending {
+		ch <- Reply{ID: id, Error: "extension connection lost"}
+		delete(d.pending, id)
+	}
 	d.mu.Unlock()
 	_ = conn.Close()
 	log.Printf("aglink-web: extension disconnected")
+}
+
+// pingMethod is the reserved keepalive method (id 0). The extension replies with
+// {"id":0,"ok":true}, which the read loop drops but uses to refresh the deadline.
+const pingMethod = "__ping"
+
+func (d *Daemon) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
+	t := time.NewTicker(d.pingInterval)
+	defer t.Stop()
+	ping, _ := json.Marshal(Request{ID: 0, Method: pingMethod})
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			d.writeMu.Lock()
+			err := conn.WriteMessage(websocket.TextMessage, ping)
+			d.writeMu.Unlock()
+			if err != nil {
+				_ = conn.Close() // unblocks ReadMessage → triggers cleanup
+				return
+			}
+		}
+	}
 }
 
 // call sends one command to the extension and waits for its reply.
@@ -157,14 +212,18 @@ func (d *Daemon) call(method string, params map[string]any) CallResult {
 	if err != nil {
 		return CallResult{Error: fmt.Sprintf("send to extension: %v", err)}
 	}
+	log.Printf("aglink-web: → ext #%d %s", id, method)
 
 	select {
 	case rep := <-ch:
 		if !rep.OK {
+			log.Printf("aglink-web: ← ext #%d error: %s", id, rep.Error)
 			return CallResult{Error: rep.Error}
 		}
+		log.Printf("aglink-web: ← ext #%d ok (%d bytes)", id, len(rep.Text))
 		return CallResult{OK: true, Text: rep.Text}
 	case <-time.After(callTimeout):
+		log.Printf("aglink-web: ✗ ext #%d %s timed out", id, method)
 		return CallResult{Error: "browser did not respond within timeout"}
 	}
 }

@@ -17,23 +17,40 @@ let backoffMs = 1000;
 const MAX_BACKOFF_MS = 30000;
 
 function connect() {
+  // Idempotent: never open a second socket while one is connecting/open.
+  // onInstalled, onStartup, the keepalive alarm, and the initial load all call
+  // connect(); without this guard they would race into several sockets that the
+  // daemon's "newest wins" then churns.
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+    return;
+  }
+
+  let socket;
   try {
-    ws = new WebSocket(WS_URL);
+    socket = new WebSocket(WS_URL);
   } catch (e) {
     scheduleReconnect();
     return;
   }
+  ws = socket;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
     console.log("aglink-web: connected to daemon");
     backoffMs = 1000;
   };
 
-  ws.onmessage = async (event) => {
+  socket.onmessage = async (event) => {
     let req;
     try {
       req = JSON.parse(event.data);
     } catch (e) {
+      return;
+    }
+    // Keepalive ping from the daemon (id 0): reply so the daemon can refresh its
+    // read deadline, and — because sending/receiving a WS message resets the MV3
+    // service-worker idle timer — this exchange keeps this worker alive.
+    if (req.method === "__ping") {
+      send(socket, { id: req.id, ok: true });
       return;
     }
     const reply = { id: req.id, ok: false };
@@ -43,19 +60,27 @@ function connect() {
     } catch (e) {
       reply.error = String(e && e.message ? e.message : e);
     }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(reply));
+    send(socket, reply);
+  };
+
+  socket.onclose = () => {
+    // Only react to the socket we currently own; a superseded older socket
+    // closing must not trigger a reconnect loop.
+    if (ws === socket) {
+      ws = null;
+      scheduleReconnect();
     }
   };
 
-  ws.onclose = () => {
-    ws = null;
-    scheduleReconnect();
-  };
-
-  ws.onerror = () => {
+  socket.onerror = () => {
     // onclose fires next and drives reconnection.
   };
+}
+
+function send(socket, obj) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(obj));
+  }
 }
 
 function scheduleReconnect() {

@@ -25,6 +25,32 @@ func TestTokenOK(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateWebToken(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	tok1, err := loadOrCreateWebToken("")
+	if err != nil {
+		t.Fatalf("first call: unexpected error: %v", err)
+	}
+	if tok1 == "" {
+		t.Fatal("first call: expected non-empty token")
+	}
+
+	tok2, err := loadOrCreateWebToken("")
+	if err != nil {
+		t.Fatalf("second call: unexpected error: %v", err)
+	}
+	if tok2 != tok1 {
+		t.Errorf("token not persisted across calls: first=%q second=%q", tok1, tok2)
+	}
+
+	if got, err := loadOrCreateWebToken("explicit"); err != nil || got != "explicit" {
+		t.Errorf("loadOrCreateWebToken(%q) = (%q, %v), want (%q, nil)", "explicit", got, err, "explicit")
+	}
+}
+
 func TestOriginOK(t *testing.T) {
 	cases := []struct {
 		origin string

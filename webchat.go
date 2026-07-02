@@ -17,11 +17,11 @@ func loadOrCreateWebToken(cfgToken string) (string, error) {
 	if cfgToken != "" {
 		return cfgToken, nil
 	}
-	home, err := os.UserHomeDir()
+	dir, err := dataDir()
 	if err != nil {
 		return "", err
 	}
-	p := filepath.Join(home, ".teleclaude", "web_chat.token")
+	p := filepath.Join(dir, "web_chat.token")
 	if b, rerr := os.ReadFile(p); rerr == nil {
 		if tok := strings.TrimSpace(string(b)); tok != "" {
 			return tok, nil
@@ -32,7 +32,9 @@ func loadOrCreateWebToken(cfgToken string) (string, error) {
 		return "", rerr
 	}
 	tok := hex.EncodeToString(buf)
-	_ = os.WriteFile(p, []byte(tok), 0o600)
+	if werr := os.WriteFile(p, []byte(tok), 0o600); werr != nil {
+		return "", werr
+	}
 	return tok, nil
 }
 
@@ -62,6 +64,6 @@ func originOK(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	host := u.Hostname()
+	host := strings.ToLower(u.Hostname())
 	return host == "127.0.0.1" || host == "localhost"
 }

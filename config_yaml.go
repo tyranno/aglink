@@ -47,6 +47,10 @@ type yamlConfig struct {
 		KeepAwake   bool   `yaml:"keep_awake"`
 		BinaryPath  string `yaml:"binary_path"`
 	} `yaml:"screen_control"`
+	WebControl struct {
+		Enabled    bool   `yaml:"enabled"`
+		BinaryPath string `yaml:"binary_path"`
+	} `yaml:"web_control"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -103,6 +107,8 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.ScreenElevated = y.ScreenControl.Elevated
 	c.ScreenKeepAwake = y.ScreenControl.KeepAwake
 	c.ScreenBinaryPath = y.ScreenControl.BinaryPath
+	c.WebControl = y.WebControl.Enabled
+	c.WebBinaryPath = y.WebControl.BinaryPath
 	return c
 }
 
@@ -133,6 +139,8 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ScreenControl.Elevated = c.ScreenElevated
 	y.ScreenControl.KeepAwake = c.ScreenKeepAwake
 	y.ScreenControl.BinaryPath = c.ScreenBinaryPath
+	y.WebControl.Enabled = c.WebControl
+	y.WebControl.BinaryPath = c.WebBinaryPath
 	return y
 }
 

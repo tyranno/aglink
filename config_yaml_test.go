@@ -23,6 +23,8 @@ func TestYAMLRoundTrip(t *testing.T) {
 		ScreenElevated:      true,
 		ScreenKeepAwake:     true,
 		ScreenBinaryPath:    "C:\\tools\\aglink-screen.exe",
+		WebControl:          true,
+		WebBinaryPath:       "C:\\tools\\aglink-web.exe",
 		ConversationTTLDays: 45,
 	}
 	b, err := marshalConfigYAML(c)
@@ -39,7 +41,9 @@ func TestYAMLRoundTrip(t *testing.T) {
 		got.ClaudeOauthToken != "sk-ant-oat01-X" || got.DefaultBackend != "claude" ||
 		got.MaxWorkers != 3 || got.RateLimitPerMin != 20 || got.ScreenControl != true ||
 		got.ScreenElevated != true || got.ScreenKeepAwake != true ||
-		got.ScreenBinaryPath != "C:\\tools\\aglink-screen.exe" || got.ConversationTTLDays != 45 {
+		got.ScreenBinaryPath != "C:\\tools\\aglink-screen.exe" ||
+		got.WebControl != true || got.WebBinaryPath != "C:\\tools\\aglink-web.exe" ||
+		got.ConversationTTLDays != 45 {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 }

@@ -50,6 +50,35 @@ func TestCodexScreenArgs(t *testing.T) {
 	}
 }
 
+// ---- codexWebArgs ----
+
+func TestCodexWebArgs(t *testing.T) {
+	const bin = "C:\\t\\aglink-web.exe"
+	args := codexWebArgs(bin)
+
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "mcp_servers.web.command=") {
+		t.Errorf("missing command override in %v", args)
+	}
+	if !strings.Contains(joined, "mcp_servers.web.args=") {
+		t.Errorf("missing args override in %v", args)
+	}
+
+	var cmdVal string
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, "mcp_servers.web.command="); ok {
+			cmdVal = v
+		}
+	}
+	var gotPath string
+	if err := json.Unmarshal([]byte(cmdVal), &gotPath); err != nil {
+		t.Fatalf("command value not valid JSON: %q (%v)", cmdVal, err)
+	}
+	if gotPath != bin {
+		t.Errorf("command path = %q, want %q", gotPath, bin)
+	}
+}
+
 // ---- extractCodexToolResultImages ----
 
 func TestExtractCodexToolResultImages_Image(t *testing.T) {

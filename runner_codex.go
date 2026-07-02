@@ -78,7 +78,7 @@ func codexWorkerModel(cfg *Config) string {
 
 // codexScreenArgs returns the codex `-c` config overrides that inject the
 // aglink-screen MCP server inline (the Codex analogue of Claude's
-// screenWorkerArgs / --mcp-config). Codex has no inline-JSON flag; instead it
+// pluginWorkerArgs / --mcp-config). Codex has no inline-JSON flag; instead it
 // takes dotted-path TOML overrides via `-c key=value`. Combined with the
 // existing --ignore-user-config, this needs no static config.toml file:
 //
@@ -100,6 +100,27 @@ func codexScreenArgs(screenBinaryPath string) []string {
 	return []string{
 		"-c", "mcp_servers.screen.command=" + string(cmdVal),
 		"-c", "mcp_servers.screen.args=" + string(argsVal),
+	}
+}
+
+// codexWebArgs is the aglink-web analogue of codexScreenArgs: it injects the
+// "web" MCP server (list_tabs/navigate/get_page_text over the user's real
+// Chrome) via the same `-c mcp_servers.<key>.*` mechanism. Unlike Claude's
+// single --mcp-config JSON blob, codex's `-c` overrides are independent
+// per-key flags, so this can simply be appended alongside codexScreenArgs
+// without any merging.
+func codexWebArgs(webBinaryPath string) []string {
+	cmdVal, err := json.Marshal(webBinaryPath)
+	if err != nil {
+		return nil
+	}
+	argsVal, err := json.Marshal([]string{"mcp"})
+	if err != nil {
+		return nil
+	}
+	return []string{
+		"-c", "mcp_servers.web.command=" + string(cmdVal),
+		"-c", "mcp_servers.web.args=" + string(argsVal),
 	}
 }
 
@@ -424,11 +445,14 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	if model != "" {
 		args = append(args, "-m", model)
 	}
-	// Inject the aglink-screen MCP server inline (same gating as the Claude path)
-	// so codex-backed workers can drive the screen too.
+	// Inject the aglink-screen/aglink-web MCP servers inline (same gating as the
+	// Claude path) so codex-backed workers can drive the screen / real Chrome too.
 	selfExe, _ := os.Executable()
 	if screenBin := resolveScreenBinaryPath(r.cfg(), selfExe); r.cfg().ScreenControl && screenBin != "" {
 		args = append(args, codexScreenArgs(screenBin)...)
+	}
+	if webBin := resolveWebBinaryPath(r.cfg(), selfExe); r.cfg().WebControl && webBin != "" {
+		args = append(args, codexWebArgs(webBin)...)
 	}
 	args = append(args, req.Prompt)
 

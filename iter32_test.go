@@ -100,7 +100,7 @@ func TestParseStreamResult_NoResultLine_Errors(t *testing.T) {
 
 func TestWorkerBaseArgs_OnProgress_UsesStreamJSON(t *testing.T) {
 	req := RunRequest{Prompt: "hi", SessionID: "11111111-1111-1111-1111-111111111111", OnProgress: func(string) {}}
-	args := workerBaseArgs(&Config{}, req, "")
+	args := workerBaseArgs(&Config{}, req, "", "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--output-format stream-json") {
 		t.Errorf("expected stream-json output format, got: %v", args)
@@ -115,7 +115,7 @@ func TestWorkerBaseArgs_OnProgress_UsesStreamJSON(t *testing.T) {
 
 func TestWorkerBaseArgs_NoOnProgress_UsesJSON(t *testing.T) {
 	req := RunRequest{Prompt: "hi", SessionID: "11111111-1111-1111-1111-111111111111"}
-	args := workerBaseArgs(&Config{}, req, "")
+	args := workerBaseArgs(&Config{}, req, "", "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--output-format json") {
 		t.Errorf("expected json output format, got: %v", args)

@@ -1,16 +1,19 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 )
 
 // Design Ref: §1 (structure), §2 (tool priority / worker system prompt).
 //
-// This file assembles the claude CLI args that load the screen MCP server —
-// the standalone "aglink-screen" binary (see https://github.com/tyranno/aglink-screen),
-// not teleclaude itself. Pure functions, no Win32 — testable on any platform.
+// This file assembles the worker guidance and binary resolution for the screen
+// MCP server — the standalone "aglink-screen" binary (see
+// https://github.com/tyranno/aglink-screen), not teleclaude itself. The actual
+// CLI args (--mcp-config/--allowedTools/--append-system-prompt) are assembled
+// in mcpargs.go, which merges this with any other enabled aglink-* plugin
+// (e.g. aglink-web) into one combined set — the claude CLI only accepts one of
+// each flag. Pure functions, no Win32 — testable on any platform.
 
 // screenSystemPrompt returns the worker guidance: prefer the cheap UIA element
 // tree (snapshot + invoke/set_value by name); fall back to the expensive
@@ -38,48 +41,6 @@ func screenSystemPrompt() string {
 		"조작하면 그 데스크톱으로 자동 전환된다(안 그러면 캡처·클릭이 엉뚱한 데스크톱을 대상으로 함). 작업이 끝나면 return_desktop을 " +
 		"호출해 사용자가 있던 원래 데스크톱으로 되돌려라.\n" +
 		"Always prefer snapshot/invoke, then win_controls/click_control, then screenshot+click as the last resort."
-}
-
-// mcpServerSpec is one entry under mcpServers in an inline --mcp-config.
-type mcpServerSpec struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-}
-
-// mcpConfig is the inline --mcp-config document shape.
-type mcpConfig struct {
-	McpServers map[string]mcpServerSpec `json:"mcpServers"`
-}
-
-// screenWorkerArgs returns the claude CLI args that load the aglink-screen MCP
-// server (screenBinaryPath run in its default "mcp" stdio-server mode),
-// restrict the allowed tools to mcp__screen__*, and append the UIA-first
-// system prompt.
-//
-// The --mcp-config value is built as inline JSON via encoding/json so that
-// backslashes in Windows paths are escaped correctly (no string concatenation).
-func screenWorkerArgs(screenBinaryPath string) []string {
-	cfg := mcpConfig{
-		McpServers: map[string]mcpServerSpec{
-			"screen": {
-				Command: screenBinaryPath,
-				Args:    []string{"mcp"},
-			},
-		},
-	}
-
-	inline, err := json.Marshal(cfg)
-	if err != nil {
-		// cfg is a fixed, marshalable shape; this can't realistically fail.
-		inline = []byte(`{"mcpServers":{}}`)
-	}
-
-	return []string{
-		"--strict-mcp-config",
-		"--mcp-config", string(inline),
-		"--allowedTools", "mcp__screen__*",
-		"--append-system-prompt", screenSystemPrompt(),
-	}
 }
 
 // resolveScreenBinaryPath locates the aglink-screen executable that provides

@@ -70,15 +70,16 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 }
 
 // workerBaseArgs builds the claude CLI args for a Worker turn. It is a pure
-// function (no exec, no os state beyond the supplied screenBin) so the screen-
-// control injection is unit-testable. When cfg.ScreenControl is true, the
-// aglink-screen MCP server args (screenWorkerArgs) are appended so the worker
-// can drive the Windows desktop; when false they are omitted.
+// function (no exec, no os state beyond the supplied screenBin/webBin) so the
+// plugin-MCP injection is unit-testable. When cfg.ScreenControl/WebControl are
+// true, the corresponding aglink-* MCP server is merged in via
+// pluginWorkerArgs so the worker can drive the Windows desktop / real Chrome;
+// when false (or the binary is unresolved) that plugin is omitted.
 //
-// screenBin is the resolved path to the aglink-screen executable (see
-// resolveScreenBinaryPath). If it is empty the screen args are skipped (we
-// don't know where the screen MCP server binary is).
-func workerBaseArgs(cfg *Config, req RunRequest, screenBin string) []string {
+// screenBin/webBin are the resolved paths to the aglink-screen/aglink-web
+// executables (see resolveScreenBinaryPath/resolveWebBinaryPath). An empty
+// path skips that plugin (we don't know where its MCP server binary is).
+func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin string) []string {
 	args := []string{"-p", req.Prompt}
 	if req.OnProgress != nil || req.OnImage != nil {
 		// Realtime NDJSON stream so tool-use activity (and tool_result images) can
@@ -98,9 +99,7 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin string) []string {
 	} else {
 		args = append(args, "--session-id", req.SessionID)
 	}
-	if cfg != nil && cfg.ScreenControl && screenBin != "" {
-		args = append(args, screenWorkerArgs(screenBin)...)
-	}
+	args = append(args, pluginWorkerArgs(cfg, screenBin, webBin)...)
 	return args
 }
 
@@ -111,7 +110,8 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin string) []string {
 func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	selfExe, _ := os.Executable()
 	screenBin := resolveScreenBinaryPath(r.cfg(), selfExe)
-	args := workerBaseArgs(r.cfg(), req, screenBin)
+	webBin := resolveWebBinaryPath(r.cfg(), selfExe)
+	args := workerBaseArgs(r.cfg(), req, screenBin, webBin)
 
 	if req.OnProgress != nil || req.OnImage != nil {
 		// Deliver progress text and images on a dedicated consumer goroutine (via

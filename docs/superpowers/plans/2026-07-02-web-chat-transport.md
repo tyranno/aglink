@@ -1179,9 +1179,7 @@ func TestHandleUpload_Ingests(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", w.Code)
 	}
-	if !strings.Contains(gotText, "이거 봐줘") || !strings.Contains(gotText, "note.txt") == false {
-		// prompt must contain caption and the saved path (which ends in .txt)
-	}
+	// The ingest prompt must contain the caption and the saved path (ends in .txt).
 	if !strings.Contains(gotText, "이거 봐줘") || !strings.Contains(gotText, ".txt]") {
 		t.Errorf("ingest prompt = %q", gotText)
 	}

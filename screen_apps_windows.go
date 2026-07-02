@@ -406,7 +406,7 @@ func clickControl(window, text string, nth int) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("clicked %s %q at (%d,%d) [%d match(es); nth=%d]%s",
-		c.Class, c.Text, c.CenterX(), c.CenterY(), len(matches), nth, uipiWarning(top)), nil
+		c.Class, c.Text, c.CenterX(), c.CenterY(), len(matches), nth, uipiWarning(top, "click")), nil
 }
 
 // forceForeground brings target to the foreground, working around the Windows

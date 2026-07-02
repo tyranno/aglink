@@ -376,7 +376,7 @@ func RunMCPScreen() error {
 			if err := scroll(dx, dy); err != nil {
 				return mcp.NewToolResultErrorFromErr("scroll failed", err), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("ok: scrolled dx=%d dy=%d", dx, dy)), nil
+			return mcp.NewToolResultText(fmt.Sprintf("ok: scrolled dx=%d dy=%d%s", dx, dy, uipiWarning(windowUnderCursor(), "scroll"))), nil
 		},
 	)
 

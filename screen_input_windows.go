@@ -26,7 +26,20 @@ var (
 	procVkKeyScanW         = modUser32In.NewProc("VkKeyScanW")
 	procMapVirtualKeyW     = modUser32In.NewProc("MapVirtualKeyW")
 	procGetCursorPos       = modUser32In.NewProc("GetCursorPos")
+	procWindowFromPoint    = modUser32In.NewProc("WindowFromPoint")
 )
+
+// windowUnderCursor returns the window handle currently under the mouse cursor —
+// the actual routing target of a wheel event — or 0 if none. Used to warn (via
+// uipiWarning) when a scroll is likely to be silently dropped by UIPI.
+func windowUnderCursor() uintptr {
+	x, y := cursorPos()
+	// POINT is two 32-bit LONGs packed into one 64-bit register on amd64:
+	// low dword = x, high dword = y (both interpreted signed).
+	pt := uintptr(uint32(int32(x))) | uintptr(uint32(int32(y)))<<32
+	h, _, _ := procWindowFromPoint.Call(pt)
+	return h
+}
 
 // cursorPos returns the current mouse cursor position in screen pixels.
 func cursorPos() (int, int) {
@@ -474,23 +487,50 @@ func resolveKeyVK(key string) (uint16, bool) {
 	return 0, false
 }
 
-// scroll scrolls the mouse wheel. dy>0 scrolls up, dy<0 down; dx>0 right, dx<0
-// left. Values are in "lines" (one wheelDelta per unit).
+// scrollHoverSettle is how long we wait after re-asserting the cursor position
+// before emitting the wheel, so a Chromium/Electron target's message loop can
+// process the WM_MOUSEMOVE and update its hover/scroll target first.
+const scrollHoverSettle = 40 * time.Millisecond
+
+// scroll scrolls the mouse wheel at the current cursor position. dy>0 scrolls up,
+// dy<0 down; dx>0 right, dx<0 left. Values are in "lines" (one wheelDelta per unit).
+//
+// Before the wheel we re-assert an absolute MOVE to the current cursor position and
+// wait a short settle — exactly as mouseClick/mouseDrag/mouseDouble position with a
+// MOVE before their button events. scroll() used to be the lone input primitive
+// that emitted a bare event with no positioning move. Chromium/Electron targets
+// (VS Code webviews, browsers, Slack, ...) route a wheel to the element under the
+// pointer using a hover position that is refreshed by WM_MOUSEMOVE, so a fresh move
+// immediately before the wheel makes the gesture behave like a real hovering mouse
+// wheel and removes a class of "wheel went nowhere" failures caused by a stale or
+// unexpected hover/cursor state at wheel time.
 func scroll(dx, dy int) error {
 	ensureDPIAware()
-
-	var buf []byte
-	count := 0
-	if dy != 0 {
-		buf = append(buf, mouseEvent(0, 0, uint32(int32(dy*wheelDelta)), mouseeventfWheel)...)
-		count++
-	}
-	if dx != 0 {
-		buf = append(buf, mouseEvent(0, 0, uint32(int32(dx*wheelDelta)), mouseeventfHWheel)...)
-		count++
-	}
-	if count == 0 {
+	if dx == 0 && dy == 0 {
 		return nil
 	}
-	return sendInputs(buf, count)
+
+	// Re-assert hover at the current cursor position so Chromium-based targets
+	// refresh their scroll target before the wheel arrives.
+	x, y := cursorPos()
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+	if err := sendInputs(mouseEvent(ax, ay, 0, mouseeventfMove|abs), 1); err != nil {
+		return err
+	}
+	time.Sleep(scrollHoverSettle)
+
+	// Wheel events carry the delta in mouseData; position comes from the cursor
+	// we just re-asserted (no MOVE/ABSOLUTE flag on the wheel itself).
+	if dy != 0 {
+		if err := sendInputs(mouseEvent(0, 0, uint32(int32(dy*wheelDelta)), mouseeventfWheel), 1); err != nil {
+			return err
+		}
+	}
+	if dx != 0 {
+		if err := sendInputs(mouseEvent(0, 0, uint32(int32(dx*wheelDelta)), mouseeventfHWheel), 1); err != nil {
+			return err
+		}
+	}
+	return nil
 }

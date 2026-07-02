@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -62,11 +63,12 @@ func windowIsElevated(hwnd uintptr) bool {
 	return tok.IsElevated()
 }
 
-// uipiWarning returns a non-empty caveat when a click into target hwnd is likely
-// to be dropped by UIPI (target elevated, we are not). Empty otherwise.
-func uipiWarning(hwnd uintptr) string {
+// uipiWarning returns a non-empty caveat when synthetic input (action, e.g.
+// "click" or "scroll") into target hwnd is likely to be dropped by UIPI (target
+// elevated, we are not). Empty otherwise.
+func uipiWarning(hwnd uintptr, action string) string {
 	if !isElevated() && windowIsElevated(hwnd) {
-		return " — WARNING: target window is elevated but aglink-screen is not, so Windows UIPI likely ignored this click. Set screen_control.elevated: true (or run teleclaude, and thus aglink-screen, as administrator)."
+		return fmt.Sprintf(" — WARNING: target window is elevated but aglink-screen is not, so Windows UIPI likely ignored this %s. Set screen_control.elevated: true (or run teleclaude, and thus aglink-screen, as administrator).", action)
 	}
 	return ""
 }

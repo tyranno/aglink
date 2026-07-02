@@ -1,0 +1,7 @@
+# Build artifacts
+/aglink-web
+/aglink-web.exe
+*.exe
+
+# bkit local state (not part of the project)
+/.bkit/

@@ -127,7 +127,7 @@ func (h *Hub) Typing(chatID int64)
 ```yaml
 web_chat:
   enabled: false          # 기본 off
-  addr: "127.0.0.1:8765"  # 로컬 전용
+  addr: "127.0.0.1:1717"  # 로컬 전용
   token: ""               # 비면 최초 실행 시 자동 생성 후 파일 저장
   owner_chat_id: 0        # 0이면 allowed_user_ids[0] 사용
 ```
@@ -157,7 +157,7 @@ Config 구조체 필드: `WebChat bool`, `WebChatAddr string`, `WebChatToken str
 
 - **127.0.0.1 바인딩만** (0.0.0.0 금지).
 - **토큰**: 최초 실행 시 생성(암호학적 난수) → `~/.teleclaude/web_chat.token`(0600) 저장 +
-  로그에 접속 URL `http://127.0.0.1:8765/?token=…` 출력. 브라우저는 localStorage에 보관하고
+  로그에 접속 URL `http://127.0.0.1:1717/?token=…` 출력. 브라우저는 localStorage에 보관하고
   WS/POST에 `?token=` 또는 헤더로 첨부. 서버는 상수시간 비교(`subtle.ConstantTimeCompare`).
 - **Origin 검증**: WS/POST의 Origin 헤더가 `http://127.0.0.1:<port>` 또는 `http://localhost:<port>`가
   아니면 거부 → 다른 사이트 JS의 로컬 WS 탈취(CSWSH)·DNS 리바인딩 차단.

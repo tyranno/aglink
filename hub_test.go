@@ -81,3 +81,23 @@ func TestHubErrorIsolation(t *testing.T) {
 		t.Errorf("a failing channel must not block others, got %v", good.texts)
 	}
 }
+
+func TestBotHubAccessorRegistersTelegram(t *testing.T) {
+	// A freshly constructed Bot must expose a Hub that already has the Telegram
+	// global channel registered, so registering a web channel + sending reaches both.
+	// We only assert the web side here (Telegram needs a live API), proving Bot.Send
+	// delegates to the Hub rather than calling tgbotapi directly.
+	b := &Bot{}
+	b.out = NewHub() // mimic NewBot's hub init without a real tgbotapi client
+	w := &recCh{}
+	b.out.Register(55, w)
+	if err := b.Send(55, "via hub"); err != nil {
+		t.Fatal(err)
+	}
+	if b.Hub() != b.out {
+		t.Error("Hub() must return the bot's hub")
+	}
+	if len(w.texts) != 1 || w.texts[0] != "via hub" {
+		t.Errorf("Bot.Send must delegate to Hub, got %v", w.texts)
+	}
+}

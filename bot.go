@@ -38,6 +38,7 @@ type Bot struct {
 	rateLimiter *RateLimiter
 	userStore   *UserStore
 	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
+	out         *Hub   // output fan-out: telegram (global) + web channels (per-chat)
 
 	mu          sync.Mutex
 	activeCount int                        // current running workers
@@ -47,6 +48,8 @@ type Bot struct {
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
+	hub := NewHub()
+	hub.RegisterGlobal(newTelegramChannel(api))
 	return &Bot{
 		api:         api,
 		cfgh:        cfgh,
@@ -56,6 +59,7 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 		rateLimiter: NewRateLimiter(cfgh.Get().RateLimitPerMin),
 		userStore:   userStore,
 		cancels:     make(map[int]context.CancelFunc),
+		out:         hub,
 	}
 }
 
@@ -107,35 +111,24 @@ func (t *telegramChannel) Typing(chatID int64) {
 	}
 }
 
-// Send delivers a plain-text message (MessageSender).
+// Send delivers a plain-text message, fanning out to all channels (MessageSender).
 func (b *Bot) Send(chatID int64, text string) error {
-	msg := tgbotapi.NewMessage(chatID, text)
-	_, err := b.api.Send(msg)
-	if err != nil {
-		log.Printf("[bot] send error: %v", err)
-	}
-	return err
+	return b.out.Send(chatID, text)
 }
 
-// SendPhoto delivers a PNG image (e.g. a screenshot) with an optional caption.
+// SendPhoto delivers a PNG image with optional caption to all channels.
 func (b *Bot) SendPhoto(chatID int64, png []byte, caption string) error {
-	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "screen.png", Bytes: png})
-	if caption != "" {
-		photo.Caption = caption
-	}
-	_, err := b.api.Send(photo)
-	if err != nil {
-		log.Printf("[bot] photo send error: %v", err)
-	}
-	return err
+	return b.out.SendPhoto(chatID, png, caption)
 }
 
-// Typing shows the "typing…" indicator (MessageSender).
+// Typing shows the "typing…" indicator on all channels (MessageSender).
 func (b *Bot) Typing(chatID int64) {
-	if _, err := b.api.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
-		log.Printf("[bot] typing error: %v", err)
-	}
+	b.out.Typing(chatID)
 }
+
+// Hub returns the output fan-out hub so other transports (web chat) can register
+// their own channels.
+func (b *Bot) Hub() *Hub { return b.out }
 
 // Run starts the long-polling loop. Blocks until the process exits.
 // Uses GetUpdates directly (not GetUpdatesChan) so Conflict errors are visible

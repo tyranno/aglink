@@ -145,6 +145,124 @@ func TestHandleUpload_Ingests(t *testing.T) {
 	}
 }
 
+// TestOriginOK_Rejects checks originOK against spoofed/hostile Origin headers
+// (subdomain confusables, the sandboxed "null" origin, and a bare foreign
+// host) as well as the loopback origins that must still be allowed.
+func TestOriginOK_Rejects(t *testing.T) {
+	cases := []struct {
+		origin string
+		want   bool
+	}{
+		{"null", false},
+		{"http://127.0.0.1.evil.com", false},
+		{"http://localhost.evil.com", false},
+		{"http://evil.com", false},
+		{"http://127.0.0.1:1717", true},
+		{"http://localhost:1717", true},
+		{"", true},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodGet, "/ws", nil)
+		if c.origin != "" {
+			r.Header.Set("Origin", c.origin)
+		}
+		if got := originOK(r); got != c.want {
+			t.Errorf("originOK(%q) = %v, want %v", c.origin, got, c.want)
+		}
+	}
+}
+
+// TestWS_Unauthorized asserts the WS handshake is rejected for a wrong or
+// missing token, and that no per-chat channel is left registered in the Hub
+// as a result of the rejected attempts.
+func TestWS_Unauthorized(t *testing.T) {
+	b := &Bot{}
+	hub := NewHub()
+	b.out = hub
+	s := &webServer{token: "secret", ownerChatID: 7, hub: hub, bot: b}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", s.handleWS)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	dialAndExpectReject := func(name, url string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c, resp, err := websocket.Dial(ctx, url, nil)
+		if err == nil {
+			c.Close(websocket.StatusNormalClosure, "")
+			t.Errorf("%s: expected dial to be rejected, got success", name)
+			return
+		}
+		if resp != nil && resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s: response status = %d, want %d", name, resp.StatusCode, http.StatusUnauthorized)
+		}
+	}
+
+	dialAndExpectReject("wrong token", "ws://"+host+"/ws?token=wrong")
+	dialAndExpectReject("no token", "ws://"+host+"/ws")
+
+	if n := len(hub.perChat[7]); n != 0 {
+		t.Errorf("hub.perChat[7] has %d channel(s) after rejected handshakes, want 0", n)
+	}
+}
+
+// TestUpload_Unauthorized asserts /api/upload rejects wrong/missing tokens
+// and non-POST methods with 401, and never reaches ingestAttachment
+// (dispatchHook) for any rejected request.
+func TestUpload_Unauthorized(t *testing.T) {
+	var dispatchCount int
+	b := &Bot{}
+	b.out = NewHub()
+	b.dispatchHook = func(_ int64, _ string) { dispatchCount++ }
+	s := &webServer{ownerChatID: 7, token: "secret", bot: b, hub: b.out}
+
+	newUploadBody := func() (*bytes.Buffer, string) {
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		fw, _ := mw.CreateFormFile("file", "note.txt")
+		_, _ = fw.Write([]byte("hello"))
+		_ = mw.Close()
+		return &body, mw.FormDataContentType()
+	}
+
+	// Wrong token, POST.
+	body, ct := newUploadBody()
+	r := httptest.NewRequest(http.MethodPost, "/api/upload?token=wrong", body)
+	r.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+	s.handleUpload(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("wrong token: status = %d, want 401", w.Code)
+	}
+
+	// No token, POST.
+	body, ct = newUploadBody()
+	r = httptest.NewRequest(http.MethodPost, "/api/upload", body)
+	r.Header.Set("Content-Type", ct)
+	w = httptest.NewRecorder()
+	s.handleUpload(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", w.Code)
+	}
+
+	// Valid token, wrong method (GET): method guard must reject before auth
+	// would otherwise allow it through.
+	r = httptest.NewRequest(http.MethodGet, "/api/upload?token=secret", nil)
+	w = httptest.NewRecorder()
+	s.handleUpload(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("wrong method: status = %d, want 401", w.Code)
+	}
+
+	if dispatchCount != 0 {
+		t.Errorf("dispatchHook called %d time(s) on rejected requests, want 0", dispatchCount)
+	}
+}
+
 // TestWSRoundTrip exercises the full browser <-> server pipeline over a real
 // WebSocket connection: an inbound {"type":"send"} frame must reach the bot's
 // dispatch pipeline, and a Hub broadcast to the registered chatID must arrive

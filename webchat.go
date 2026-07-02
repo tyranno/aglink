@@ -7,6 +7,8 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -214,7 +216,7 @@ func (s *webServer) Start() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
-	mux.HandleFunc("/api/upload", s.handleUpload) // implemented in Task 7
+	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.HandleFunc("/", s.handleIndex)
 
@@ -230,7 +232,46 @@ func (s *webServer) Start() {
 	}
 }
 
-// handleUpload is implemented in Task 7.
+// handleUpload saves an uploaded multipart file under ~/.teleclaude/attachments
+// and feeds it into the shared ingestAttachment pipeline.
 func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	if r.Method != http.MethodPost || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "no file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "no home", http.StatusInternalServerError)
+		return
+	}
+	dir := filepath.Join(home, ".teleclaude", "attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		http.Error(w, "mkdir failed", http.StatusInternalServerError)
+		return
+	}
+	ext := filepath.Ext(hdr.Filename)
+	savePath := filepath.Join(dir, fmt.Sprintf("%d%s", time.Now().UnixMilli(), ext))
+	out, err := os.Create(savePath)
+	if err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, file); err != nil {
+		http.Error(w, "write failed", http.StatusInternalServerError)
+		return
+	}
+	s.bot.ingestAttachment(s.ownerChatID, savePath, r.FormValue("caption"))
+	w.WriteHeader(http.StatusNoContent)
 }

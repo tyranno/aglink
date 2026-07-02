@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -90,5 +93,33 @@ func TestWebInjectRouting(t *testing.T) {
 	}
 	if gotText != "hello world" {
 		t.Errorf("text not routed to dispatchText, got %q", gotText)
+	}
+}
+
+func TestHandleUpload_Ingests(t *testing.T) {
+	var gotText string
+	b := &Bot{}
+	b.out = NewHub()
+	b.dispatchHook = func(_ int64, text string) { gotText = text }
+	s := &webServer{ownerChatID: 7, token: "secret", bot: b, hub: b.out}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("caption", "이거 봐줘")
+	fw, _ := mw.CreateFormFile("file", "note.txt")
+	_, _ = fw.Write([]byte("hello"))
+	_ = mw.Close()
+
+	r := httptest.NewRequest(http.MethodPost, "/api/upload?token=secret", &body)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	s.handleUpload(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+	// The ingest prompt must contain the caption and the saved path (ends in .txt).
+	if !strings.Contains(gotText, "이거 봐줘") || !strings.Contains(gotText, ".txt]") {
+		t.Errorf("ingest prompt = %q", gotText)
 	}
 }

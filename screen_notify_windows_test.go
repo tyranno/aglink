@@ -29,3 +29,44 @@ func TestNoticeDue(t *testing.T) {
 		}
 	}
 }
+
+func TestNoticeLeadMS(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want int
+	}{
+		{"default (empty)", "", noticeDefaultLeadMS},
+		{"explicit", "1500", 1500},
+		{"zero disables", "0", 0},
+		{"negative clamps to 0", "-200", 0},
+		{"over max clamps", "999999", noticeMaxLeadMS},
+		{"invalid falls back to default", "abc", noticeDefaultLeadMS},
+	}
+	for _, c := range cases {
+		t.Setenv("AGLINK_NOTICE_LEAD_MS", c.env)
+		if got := noticeLeadMS(); got != c.want {
+			t.Errorf("%s: noticeLeadMS() with env %q = %d, want %d", c.name, c.env, got, c.want)
+		}
+	}
+}
+
+func TestNoticeDurationMS(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want int
+	}{
+		{"default (empty)", "", noticeDefaultMS},
+		{"explicit", "4500", 4500},
+		{"below min clamps", "500", noticeMinMS},
+		{"over max clamps", "999999", noticeMaxMS},
+		{"invalid falls back to default", "xyz", noticeDefaultMS},
+	}
+	for _, c := range cases {
+		t.Setenv("AGLINK_NOTICE_DURATION_MS", c.env)
+		if got := noticeDurationMS(); got != c.want {
+			t.Errorf("%s: noticeDurationMS() with env %q = %d, want %d", c.name, c.env, got, c.want)
+		}
+	}
+}

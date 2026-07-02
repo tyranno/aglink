@@ -32,12 +32,19 @@ import (
 // control; TRANSPARENT lets real user clicks pass through. A rounded window region
 // + drop shadow + accent border + a fade envelope (driven by a ~60fps timer) make
 // it look like a designed toast rather than a flashing text box. It runs on its
-// own OS-locked goroutine with a message pump, so ensureControlNotice() returns
-// immediately and never delays the input itself. (A colored icon is drawn as a GDI
+// own OS-locked goroutine with a message pump. (A colored icon is drawn as a GDI
 // accent dot rather than an emoji, since classic GDI cannot render color emoji.)
+//
+// Lead time: at session start, ensureControlNotice() shows the notice and then
+// briefly BLOCKS (noticeLeadMS) before returning, so synthetic input begins only
+// after the user has had a moment to see the warning and pause their own typing/
+// clicking. This lead applies ONLY on session start (the first input, or after an
+// idle gap) — continuous control within a session proceeds with no delay, so it
+// stays responsive.
 //
 //	AGLINK_NO_CONTROL_NOTICE=1      disable entirely (headless / no user present)
 //	AGLINK_NOTICE_DURATION_MS=4500  override the on-screen time (clamped 1500..15000)
+//	AGLINK_NOTICE_LEAD_MS=1500      override the session-start lead delay (clamped 0..5000)
 
 const (
 	// controlNoticeGap is the idle time after which a new control session is
@@ -53,6 +60,12 @@ const (
 	noticeFadeInMS  = 170
 	noticeFadeOutMS = 340
 	noticeMaxAlpha  = 244
+
+	// noticeDefaultLeadMS is how long, at session start, we hold off synthetic
+	// input after showing the notice so the user can notice it and pause. Only
+	// applied on session start, never mid-session.
+	noticeDefaultLeadMS = 1000
+	noticeMaxLeadMS     = 5000
 )
 
 var noticeText = "aglink-screen 자동 제어 중 — 입력 잠시 멈춤"
@@ -81,6 +94,25 @@ func noticeDurationMS() int {
 	return d
 }
 
+// noticeLeadMS returns the session-start lead delay in ms, honoring
+// AGLINK_NOTICE_LEAD_MS (clamped 0..noticeMaxLeadMS) and defaulting to
+// noticeDefaultLeadMS. 0 disables the delay.
+func noticeLeadMS() int {
+	d := noticeDefaultLeadMS
+	if v := os.Getenv("AGLINK_NOTICE_LEAD_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			d = n
+		}
+	}
+	if d < 0 {
+		d = 0
+	}
+	if d > noticeMaxLeadMS {
+		d = noticeMaxLeadMS
+	}
+	return d
+}
+
 // ensureControlNotice is called at the entry of every function that synthesizes
 // input. It records the input time and, if this is the first input of a new
 // control session (>= controlNoticeGap since the previous one), shows the overlay.
@@ -93,6 +125,12 @@ func ensureControlNotice() {
 	}
 	if noticeDue(prev, now) {
 		showControlNotice()
+		// Session start: hold off briefly so the user sees the notice and can
+		// pause their own input before synthetic control begins. Mid-session
+		// calls skip this (noticeDue is false), so control stays responsive.
+		if lead := noticeLeadMS(); lead > 0 {
+			time.Sleep(time.Duration(lead) * time.Millisecond)
+		}
 	}
 }
 

@@ -338,14 +338,28 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 	}
 	log.Printf("[codex] started PID %d: %s %s", cmd.Process.Pid, r.codexPath, strings.Join(shown, " "))
 
-	// Goroutine: drain pipe and log events as they arrive
+	// Goroutine: drain pipe and log events as they arrive.
+	//
+	// Codex --json can emit very long NDJSON lines (e.g. a tool_result carrying a
+	// base64 image from a screen/web MCP tool). bufio.Scanner's default 64KB token
+	// cap would make Scan() stop with an error, after which this goroutine would
+	// stop reading pr — and the stdout copier's next pw.Write would block forever
+	// on the unread pipe. That deadlocks cmd.Wait(): the worker never returns and,
+	// because the block is on the pipe (not the process), even ctx-timeout killing
+	// codex can't unblock it — the turn hangs indefinitely with no completion and
+	// no timeout. Fix: allow large lines, and ALWAYS drain any remainder so the
+	// copier can never block.
 	logDone := make(chan struct{})
 	go func() {
 		defer close(logDone)
 		scanner := bufio.NewScanner(pr)
+		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		for scanner.Scan() {
 			logCodexEvent(scanner.Text())
 		}
+		// If Scan stopped early (line still over the cap, or a read error), keep
+		// draining so the pipe writer never blocks.
+		_, _ = io.Copy(io.Discard, pr)
 	}()
 
 	err = cmd.Wait()

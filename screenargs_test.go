@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -82,10 +84,17 @@ func TestResolveScreenBinaryPath(t *testing.T) {
 	if got := resolveScreenBinaryPath(&Config{}, ""); got != "" {
 		t.Errorf("no selfExe: got %q, want \"\"", got)
 	}
-	// No override → same directory as selfExe, named aglink-screen(+exeSuffix).
-	got := resolveScreenBinaryPath(&Config{}, "C:\\t\\teleclaude.exe")
-	want := "C:\\t\\aglink-screen" + exeSuffix
-	if got != want {
-		t.Errorf("default: got %q, want %q", got, want)
+	// No override → aglink-screen next to selfExe, but only when it exists.
+	dir := t.TempDir()
+	self := filepath.Join(dir, "teleclaude"+exeSuffix)
+	agl := filepath.Join(dir, "aglink-screen"+exeSuffix)
+	if got := resolveScreenBinaryPath(&Config{}, self); got != "" {
+		t.Errorf("default (binary absent): got %q, want \"\"", got)
+	}
+	if err := os.WriteFile(agl, []byte("stub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveScreenBinaryPath(&Config{}, self); got != agl {
+		t.Errorf("default (binary present): got %q, want %q", got, agl)
 	}
 }

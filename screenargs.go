@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 )
 
@@ -83,9 +84,12 @@ func screenWorkerArgs(screenBinaryPath string) []string {
 
 // resolveScreenBinaryPath locates the aglink-screen executable that provides
 // the screen MCP server and the !screen fast-path. cfg.ScreenBinaryPath
-// overrides; otherwise it looks next to teleclaude's own executable (the
-// expected deployment layout: drop aglink-screen(.exe) alongside teleclaude).
-// Returns "" if it cannot be resolved (selfExe unknown and no override set).
+// overrides (honored as-is, so a misconfigured path surfaces the real exec error);
+// otherwise it looks next to teleclaude's own executable (the expected deployment
+// layout: drop aglink-screen(.exe) alongside teleclaude) and only claims it when
+// the file actually exists. Returns "" when unresolved — the worker then simply
+// runs without screen tools, and !screen reports the binary is missing, rather
+// than pointing claude/the shell at a nonexistent path.
 func resolveScreenBinaryPath(cfg *Config, selfExe string) string {
 	if cfg != nil && cfg.ScreenBinaryPath != "" {
 		return cfg.ScreenBinaryPath
@@ -93,5 +97,9 @@ func resolveScreenBinaryPath(cfg *Config, selfExe string) string {
 	if selfExe == "" {
 		return ""
 	}
-	return filepath.Join(filepath.Dir(selfExe), "aglink-screen"+exeSuffix)
+	path := filepath.Join(filepath.Dir(selfExe), "aglink-screen"+exeSuffix)
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
 }

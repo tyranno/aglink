@@ -342,7 +342,19 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, screenBin, cmdArgs...).Output()
-	if err != nil {
+
+	// aglink-screen prints its {"text","image","error"} JSON to stdout even when it
+	// exits non-zero on a command error, so parse stdout FIRST and surface that
+	// error; fall back to the raw exec error only when there is no usable JSON
+	// (binary missing, crash, timeout).
+	var res struct {
+		Text  string `json:"text"`
+		Image string `json:"image"`
+		Error string `json:"error"`
+	}
+	parsed := json.Unmarshal(out, &res) == nil
+
+	if err != nil && !parsed {
 		if ctx.Err() == context.DeadlineExceeded {
 			_ = b.Send(chatID, "❌ aglink-screen 응답 시간 초과 (30초)")
 			return
@@ -354,13 +366,8 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 		_ = b.Send(chatID, "❌ aglink-screen 실행 실패: "+msg)
 		return
 	}
-	var res struct {
-		Text  string `json:"text"`
-		Image string `json:"image"`
-		Error string `json:"error"`
-	}
-	if jerr := json.Unmarshal(out, &res); jerr != nil {
-		_ = b.Send(chatID, "❌ aglink-screen 응답 파싱 실패: "+jerr.Error())
+	if !parsed {
+		_ = b.Send(chatID, "❌ aglink-screen 응답 파싱 실패")
 		return
 	}
 	if res.Error != "" {

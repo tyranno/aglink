@@ -41,6 +41,7 @@ type Bot struct {
 	out         *Hub   // output fan-out: telegram (global) + web channels (per-chat)
 
 	dispatchHook func(chatID int64, text string) // test seam; nil in production
+	commandHook  func(chatID int64, text string) // test seam; nil in production
 
 	mu          sync.Mutex
 	activeCount int                        // current running workers
@@ -287,6 +288,10 @@ func (b *Bot) dispatch(msg queuedMsg) {
 
 // handleCommand processes commands synchronously.
 func (b *Bot) handleCommand(chatID int64, text string) {
+	if b.commandHook != nil {
+		b.commandHook(chatID, text)
+		return
+	}
 	fields := strings.Fields(text)
 	switch fields[0] {
 	case "!start", "!help":

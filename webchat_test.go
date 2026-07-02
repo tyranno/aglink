@@ -73,3 +73,22 @@ func TestOriginOK(t *testing.T) {
 		}
 	}
 }
+
+func TestWebInjectRouting(t *testing.T) {
+	var gotCmd, gotText string
+	b := &Bot{}
+	b.out = NewHub()
+	b.commandHook = func(_ int64, text string) { gotCmd = text }
+	b.dispatchHook = func(_ int64, text string) { gotText = text }
+	s := &webServer{ownerChatID: 7, bot: b, hub: b.out}
+
+	s.inject("!help")
+	s.inject("hello world")
+
+	if gotCmd != "!help" {
+		t.Errorf("command not routed to handleCommand, got %q", gotCmd)
+	}
+	if gotText != "hello world" {
+		t.Errorf("text not routed to dispatchText, got %q", gotText)
+	}
+}

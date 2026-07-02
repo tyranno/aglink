@@ -511,6 +511,7 @@ func findByName(uia *ole.IUnknown, root *ole.IUnknown, name string) (*ole.IUnkno
 // uiaInvoke finds an element by Name (or AutomationId) and activates it via the
 // most appropriate pattern (Invoke → SelectionItem → Toggle → ExpandCollapse).
 func uiaInvoke(name string) error {
+	ensureControlNotice()
 	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := foregroundElement(uia)
 		if err != nil {
@@ -565,6 +566,7 @@ func uiaInvoke(name string) error {
 // uiaSetValue finds an element by Name (or AutomationId) and sets its text via
 // the Value pattern.
 func uiaSetValue(name, text string) error {
+	ensureControlNotice()
 	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := foregroundElement(uia)
 		if err != nil {

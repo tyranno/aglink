@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,6 +74,100 @@ func NewCodexRunner(codexPath string, cfgh *ConfigHolder) *codexRunner {
 // codexWorkerModel returns the model for actual work (Run). "" = codex built-in default.
 func codexWorkerModel(cfg *Config) string {
 	return cfg.CodexModel
+}
+
+// codexScreenArgs returns the codex `-c` config overrides that inject the
+// aglink-screen MCP server inline (the Codex analogue of Claude's
+// screenWorkerArgs / --mcp-config). Codex has no inline-JSON flag; instead it
+// takes dotted-path TOML overrides via `-c key=value`. Combined with the
+// existing --ignore-user-config, this needs no static config.toml file:
+//
+//	-c mcp_servers.screen.command="<path>"
+//	-c mcp_servers.screen.args=["mcp"]
+//
+// The values are produced with encoding/json so a Windows path's backslashes are
+// escaped correctly inside the TOML string/array literal (JSON string/array
+// syntax is a valid TOML basic-string / array literal here) — no manual concat.
+func codexScreenArgs(screenBinaryPath string) []string {
+	cmdVal, err := json.Marshal(screenBinaryPath)
+	if err != nil {
+		return nil
+	}
+	argsVal, err := json.Marshal([]string{"mcp"})
+	if err != nil {
+		return nil
+	}
+	return []string{
+		"-c", "mcp_servers.screen.command=" + string(cmdVal),
+		"-c", "mcp_servers.screen.args=" + string(argsVal),
+	}
+}
+
+// extractCodexToolResultImages pulls decoded images out of codex's --json NDJSON
+// stream (the Codex analogue of Claude's extractToolResultImages). Screen MCP
+// images arrive in an "item.completed" event whose item.type == "mcp_tool_call",
+// inside item.result.content[] as {"type":"image","data":"<base64>"} blocks
+// (a sibling {"type":"text",...} becomes the caption). Returns nil when none.
+func extractCodexToolResultImages(ndjson string) []capturedImage {
+	var out []capturedImage
+	for _, line := range strings.Split(ndjson, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			Type string `json:"type"`
+			Item *struct {
+				Type   string          `json:"type"`
+				Result json.RawMessage `json:"result"`
+			} `json:"item"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		if ev.Type != "item.completed" || ev.Item == nil || ev.Item.Type != "mcp_tool_call" || len(ev.Item.Result) == 0 {
+			continue
+		}
+		// result may be an object with a content array, or a bare string for
+		// text-only tool results — only the object form carries images.
+		var res struct {
+			Content []struct {
+				Type   string `json:"type"`
+				Text   string `json:"text"`
+				Data   string `json:"data"`
+				Source *struct {
+					Data string `json:"data"`
+				} `json:"source"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(ev.Item.Result, &res) != nil {
+			continue
+		}
+		caption := ""
+		var pngs [][]byte
+		for _, b := range res.Content {
+			switch b.Type {
+			case "text":
+				if caption == "" {
+					caption = strings.TrimSpace(b.Text)
+				}
+			case "image":
+				data := b.Data
+				if data == "" && b.Source != nil {
+					data = b.Source.Data
+				}
+				if data != "" {
+					if dec, derr := base64.StdEncoding.DecodeString(data); derr == nil && len(dec) > 0 {
+						pngs = append(pngs, dec)
+					}
+				}
+			}
+		}
+		for _, png := range pngs {
+			out = append(out, capturedImage{png: png, caption: caption})
+		}
+	}
+	return out
 }
 
 // codexManagerModel returns the model for routing (Route). Falls back to worker model.
@@ -329,12 +424,29 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	if model != "" {
 		args = append(args, "-m", model)
 	}
+	// Inject the aglink-screen MCP server inline (same gating as the Claude path)
+	// so codex-backed workers can drive the screen too.
+	selfExe, _ := os.Executable()
+	if screenBin := resolveScreenBinaryPath(r.cfg(), selfExe); r.cfg().ScreenControl && screenBin != "" {
+		args = append(args, codexScreenArgs(screenBin)...)
+	}
 	args = append(args, req.Prompt)
 
 	log.Printf("[codex] run: model=%q session=%s resume=%v dir=%s prompt=%d chars",
 		model, req.SessionID, req.Resume, req.WorkDir, len(req.Prompt))
 
 	stdout, stderr, err := r.exec(ctx, req.WorkDir, args, "")
+
+	// Relay any tool images (screen MCP screenshot/capture_*) to the caller —
+	// codex exec is blocking, so we extract from the finished NDJSON stream (unlike
+	// the Claude path which streams live). Fired regardless of exit so images
+	// captured before an error still arrive.
+	if req.OnImage != nil {
+		for _, ci := range extractCodexToolResultImages(stdout) {
+			req.OnImage(ci.png, ci.caption)
+		}
+	}
+
 	if err != nil {
 		if ctx.Err() != nil {
 			log.Printf("[codex] run: context cancelled/timed out")

@@ -320,3 +320,23 @@ func TestParseTaskAddArgs_ErrorInvalidSchedule(t *testing.T) {
 		t.Error("expected error for invalid schedule string")
 	}
 }
+
+// --- ingestAttachment ---
+
+func TestIngestAttachment_BuildsPrompt(t *testing.T) {
+	var got string
+	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
+	b.ingestAttachment(7, "C:\\a\\file.png", "설명해줘")
+	if !strings.Contains(got, "설명해줘") || !strings.Contains(got, "[첨부파일: C:\\a\\file.png]") {
+		t.Errorf("prompt = %q", got)
+	}
+}
+
+func TestIngestAttachment_DefaultCaption(t *testing.T) {
+	var got string
+	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
+	b.ingestAttachment(7, "/tmp/x.pdf", "")
+	if !strings.Contains(got, "첨부파일을 분석해줘") || !strings.Contains(got, "[첨부파일: /tmp/x.pdf]") {
+		t.Errorf("prompt = %q", got)
+	}
+}

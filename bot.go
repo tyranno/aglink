@@ -40,6 +40,8 @@ type Bot struct {
 	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
 	out         *Hub   // output fan-out: telegram (global) + web channels (per-chat)
 
+	dispatchHook func(chatID int64, text string) // test seam; nil in production
+
 	mu          sync.Mutex
 	activeCount int                        // current running workers
 	workerSeq   int                        // monotonic counter for worker IDs
@@ -201,6 +203,10 @@ func (b *Bot) Run() {
 // dispatchText routes a free-text message through the Manager.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchText(chatID int64, text string) {
+	if b.dispatchHook != nil {
+		b.dispatchHook(chatID, text)
+		return
+	}
 	b.dispatch(queuedMsg{chatID: chatID, text: text})
 }
 
@@ -1283,6 +1289,13 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 		return
 	}
 
+	b.ingestAttachment(chatID, savePath, caption)
+}
+
+// ingestAttachment builds a prompt from a saved file path + caption and dispatches
+// it. Shared by the Telegram attachment path and the web upload endpoint so both
+// behave identically.
+func (b *Bot) ingestAttachment(chatID int64, savePath, caption string) {
 	prompt := caption
 	if prompt == "" {
 		prompt = "첨부파일을 분석해줘"

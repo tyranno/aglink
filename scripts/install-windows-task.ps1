@@ -1,14 +1,22 @@
 # teleclaude Windows 작업 스케줄러 등록 스크립트
-# 관리자 권한 불필요 (현재 사용자 세션에 등록)
-# 사용법: .\scripts\install-windows-task.ps1 [-BinaryPath <경로>] [-Uninstall]
+# 사용법: .\scripts\install-windows-task.ps1 [-BinaryDir <경로>] [-Elevated] [-Uninstall]
 #
 # 특징:
-#   - 로그온 시 자동 시작 (Task Scheduler, 현재 사용자)
+#   - 로그온 시 자동 시작 (Task Scheduler, 현재 사용자, session 1 = 대화형 데스크톱)
 #   - launcher.ps1 을 통해 hot-swap 업데이트 지원 (!update 명령)
-#   - 관리자 권한 불필요
+#   - 창 없이 실행 (powershell -WindowStyle Hidden)
+#
+# -Elevated (기본값 $true):
+#   RunLevel Highest 로 등록 → 로그온 시 UAC 프롬프트 없이 승격 상태로 시작.
+#   화면제어(aglink-screen)는 UIPI 때문에 승격이 필요하고, 세션 0 서비스로는
+#   사용자 데스크톱을 조작할 수 없으므로 이 방식(session 1 + Highest)이 정답.
+#   승격 상태로 시작하면 teleclaude 가 스스로 UAC 재실행을 하지 않아 창/프롬프트가
+#   전혀 뜨지 않는다. 화면제어가 필요 없으면 -Elevated:$false 로 비승격 등록 가능.
+#   (Highest 로 등록하려면 이 스크립트를 관리자 PowerShell 에서 실행해야 한다.)
 
 param(
     [string]$BinaryDir = (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)),
+    [bool]$Elevated = $true,
     [switch]$Uninstall
 )
 
@@ -71,10 +79,11 @@ $Settings = New-ScheduledTaskSettingsSet `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1)
 
+$RunLevel = if ($Elevated) { "Highest" } else { "Limited" }
 $Principal = New-ScheduledTaskPrincipal `
     -UserId $env:USERNAME `
     -LogonType Interactive `
-    -RunLevel Limited
+    -RunLevel $RunLevel
 
 Register-ScheduledTask `
     -TaskName $TaskName `
@@ -84,7 +93,7 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Description "Teleclaude - Telegram Claude Agent (자동 시작)" | Out-Null
 
-Write-Host "✅ 작업 스케줄러 등록 완료: $TaskName"
+Write-Host "✅ 작업 스케줄러 등록 완료: $TaskName (RunLevel=$RunLevel, session 1, 창 숨김)"
 Write-Host ""
 Write-Host "  지금 시작:   Start-ScheduledTask -TaskName '$TaskName'"
 Write-Host "  중단:        Stop-ScheduledTask  -TaskName '$TaskName'"

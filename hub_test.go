@@ -82,6 +82,33 @@ func TestHubErrorIsolation(t *testing.T) {
 	}
 }
 
+func TestHubFanOut_MultipleWebChannels(t *testing.T) {
+	h := NewHub()
+	g := &recCh{}     // telegram-like global
+	w1 := &recCh{}    // web tab #1 on chat 7
+	w2 := &recCh{}    // web tab #2 on chat 7
+	other := &recCh{} // web tab on a different chat (8)
+	h.RegisterGlobal(g)
+	h.Register(7, w1)
+	h.Register(7, w2)
+	h.Register(8, other)
+
+	_ = h.Send(7, "hi")
+
+	if len(g.texts) != 1 || g.texts[0] != "hi" {
+		t.Errorf("global should get the text, got %v", g.texts)
+	}
+	if len(w1.texts) != 1 || w1.texts[0] != "hi" {
+		t.Errorf("chat-7 tab #1 should receive, got %v", w1.texts)
+	}
+	if len(w2.texts) != 1 || w2.texts[0] != "hi" {
+		t.Errorf("chat-7 tab #2 should receive, got %v", w2.texts)
+	}
+	if len(other.texts) != 0 {
+		t.Errorf("chat-8 channel must NOT receive chat-7 traffic, got %v", other.texts)
+	}
+}
+
 func TestBotHubAccessorRegistersTelegram(t *testing.T) {
 	// A freshly constructed Bot must expose a Hub that already has the Telegram
 	// global channel registered, so registering a web channel + sending reaches both.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,5 +316,50 @@ func TestWSRoundTrip(t *testing.T) {
 	}
 	if frame.Type != "text" || frame.Text != "reply" {
 		t.Errorf("broadcast frame = %+v, want {Type:text Text:reply}", frame)
+	}
+}
+
+// TestWebChannelBackpressure proves a slow/dead client is dropped rather than
+// blocking the Hub: once the small send buffer is full, further pushes must
+// not block, and the overflow must close the channel (via cancel) exactly
+// once even across multiple overflow pushes.
+func TestWebChannelBackpressure(t *testing.T) {
+	send := make(chan wsFrame, 1) // small buffer, deliberately never drained
+	var cancelCalls int32
+	done := make(chan struct{})
+	ch := &webChannel{
+		send: send,
+		cancel: func() {
+			atomic.AddInt32(&cancelCalls, 1)
+			close(done)
+		},
+	}
+
+	// Fill the one-slot buffer; no reader goroutine drains it.
+	ch.push(wsFrame{Type: "text", Text: "1"})
+
+	// Further pushes/Sends must not block even though the buffer stays full
+	// and the overflow path is hit repeatedly.
+	overflowDone := make(chan struct{})
+	go func() {
+		ch.push(wsFrame{Type: "text", Text: "2"}) // overflow #1 -> triggers close()
+		_ = ch.Send(7, "overflow-3")              // overflow #2 -> close() again, but closeOnce guards
+		close(overflowDone)
+	}()
+
+	select {
+	case <-overflowDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("push/Send blocked on a full buffer; overflow must be non-blocking")
+	}
+
+	select {
+	case <-done:
+	default:
+		t.Fatal("overflow push should have triggered close()/cancel")
+	}
+
+	if got := atomic.LoadInt32(&cancelCalls); got != 1 {
+		t.Errorf("cancel must be invoked exactly once via closeOnce even across multiple overflow pushes, got %d", got)
 	}
 }

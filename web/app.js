@@ -55,7 +55,8 @@
       fd.append("file", fileEl.files[0]);
       fd.append("caption", input.value.trim());
       add("user", "📎 " + fileEl.files[0].name + (input.value.trim() ? " — " + input.value.trim() : ""));
-      await fetch("/api/upload", { method: "POST", headers: { Authorization: "Bearer " + token }, body: fd });
+      const resp = await fetch("/api/upload", { method: "POST", headers: { Authorization: "Bearer " + token }, body: fd });
+      if (!resp.ok) add("system", "업로드 실패: " + resp.status);
       fileEl.value = ""; input.value = "";
       return;
     }

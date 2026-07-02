@@ -96,6 +96,22 @@ func TestWebInjectRouting(t *testing.T) {
 	}
 }
 
+func TestWebInjectRateLimited(t *testing.T) {
+	var dispatchCount int
+	b := &Bot{}
+	b.out = NewHub()
+	b.rateLimiter = NewRateLimiter(1) // allow 1 per minute
+	b.dispatchHook = func(_ int64, _ string) { dispatchCount++ }
+	s := &webServer{ownerChatID: 7, bot: b, hub: b.out}
+
+	s.inject("hi")
+	s.inject("hi again")
+
+	if dispatchCount != 1 {
+		t.Errorf("dispatch count = %d, want 1 (second call should have been rate-limited)", dispatchCount)
+	}
+}
+
 func TestHandleUpload_Ingests(t *testing.T) {
 	var gotText string
 	b := &Bot{}

@@ -132,6 +132,8 @@ func (w *webChannel) SendPhoto(_ int64, png []byte, caption string) error {
 func (w *webChannel) Typing(_ int64) { w.push(wsFrame{Type: "typing"}) }
 
 // inject feeds a browser message into the same pipeline Telegram uses.
+// Non-command text is subject to the same per-user rate limit as the
+// Telegram path (design §3.3); commands are never rate-limited.
 func (s *webServer) inject(text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -139,9 +141,13 @@ func (s *webServer) inject(text string) {
 	}
 	if strings.HasPrefix(text, "!") {
 		s.bot.handleCommand(s.ownerChatID, text)
-	} else {
-		s.bot.dispatchText(s.ownerChatID, text)
+		return
 	}
+	if s.bot.rateLimiter != nil && !s.bot.rateLimiter.Allow(s.ownerChatID) {
+		_ = s.bot.Send(s.ownerChatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+		return
+	}
+	s.bot.dispatchText(s.ownerChatID, text)
 }
 
 func (s *webServer) authOK(r *http.Request) bool { return originOK(r) && tokenOK(r, s.token) }
@@ -243,6 +249,13 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	// Parts larger than the in-memory threshold above spill to temp files that
+	// Go does not clean up automatically; remove them once the handler returns.
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "no file", http.StatusBadRequest)

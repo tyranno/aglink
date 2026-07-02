@@ -26,6 +26,10 @@ func TestYAMLRoundTrip(t *testing.T) {
 		WebControl:          true,
 		WebBinaryPath:       "C:\\tools\\aglink-web.exe",
 		ConversationTTLDays: 45,
+		WebChat:             true,
+		WebChatAddr:         "127.0.0.1:1717",
+		WebChatToken:        "tok-abc",
+		WebChatOwnerChatID:  6723802240,
 	}
 	b, err := marshalConfigYAML(c)
 	if err != nil {
@@ -43,7 +47,9 @@ func TestYAMLRoundTrip(t *testing.T) {
 		got.ScreenElevated != true || got.ScreenKeepAwake != true ||
 		got.ScreenBinaryPath != "C:\\tools\\aglink-screen.exe" ||
 		got.WebControl != true || got.WebBinaryPath != "C:\\tools\\aglink-web.exe" ||
-		got.ConversationTTLDays != 45 {
+		got.ConversationTTLDays != 45 ||
+		got.WebChat != true || got.WebChatAddr != "127.0.0.1:1717" ||
+		got.WebChatToken != "tok-abc" || got.WebChatOwnerChatID != 6723802240 {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 }

@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 func TestTokenOK(t *testing.T) {
@@ -137,5 +142,60 @@ func TestHandleUpload_Ingests(t *testing.T) {
 	// The ingest prompt must contain the caption and the saved path (ends in .txt).
 	if !strings.Contains(gotText, "이거 봐줘") || !strings.Contains(gotText, ".txt]") {
 		t.Errorf("ingest prompt = %q", gotText)
+	}
+}
+
+// TestWSRoundTrip exercises the full browser <-> server pipeline over a real
+// WebSocket connection: an inbound {"type":"send"} frame must reach the bot's
+// dispatch pipeline, and a Hub broadcast to the registered chatID must arrive
+// back at the client as a {"type":"text"} frame.
+func TestWSRoundTrip(t *testing.T) {
+	dispatched := make(chan string, 1)
+
+	b := &Bot{}
+	hub := NewHub()
+	b.out = hub
+	b.dispatchHook = func(_ int64, text string) { dispatched <- text }
+	s := &webServer{token: "secret", ownerChatID: 7, hub: hub, bot: b}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", s.handleWS)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	c, _, err := websocket.Dial(ctx, "ws://"+host+"/ws?token=secret", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	if werr := wsjson.Write(ctx, c, inMsg{Type: "send", Text: "hello"}); werr != nil {
+		t.Fatalf("write: %v", werr)
+	}
+
+	select {
+	case text := <-dispatched:
+		if text != "hello" {
+			t.Errorf("dispatched text = %q, want %q", text, "hello")
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for inbound frame to reach dispatchHook")
+	}
+
+	// By the time dispatchHook fired, the server's reader loop was already
+	// running, which only starts after hub.Register — so the channel is
+	// guaranteed registered before this broadcast.
+	_ = s.hub.Send(7, "reply")
+
+	var frame wsFrame
+	if rerr := wsjson.Read(ctx, c, &frame); rerr != nil {
+		t.Fatalf("read: %v", rerr)
+	}
+	if frame.Type != "text" || frame.Text != "reply" {
+		t.Errorf("broadcast frame = %+v, want {Type:text Text:reply}", frame)
 	}
 }

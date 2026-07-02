@@ -94,7 +94,7 @@ type webServer struct {
 
 // wsFrame is the JSON envelope sent to browsers.
 type wsFrame struct {
-	Type    string `json:"type"`              // "text" | "image" | "typing"
+	Type    string `json:"type"` // "text" | "image" | "typing"
 	Text    string `json:"text,omitempty"`
 	Caption string `json:"caption,omitempty"`
 	Data    string `json:"data,omitempty"` // base64 PNG for images
@@ -124,7 +124,10 @@ func (w *webChannel) push(f wsFrame) {
 }
 func (w *webChannel) close() { w.closeOnce.Do(func() { w.cancel() }) }
 
-func (w *webChannel) Send(_ int64, text string) error { w.push(wsFrame{Type: "text", Text: text}); return nil }
+func (w *webChannel) Send(_ int64, text string) error {
+	w.push(wsFrame{Type: "text", Text: text})
+	return nil
+}
 func (w *webChannel) SendPhoto(_ int64, png []byte, caption string) error {
 	w.push(wsFrame{Type: "image", Caption: caption, Data: base64.StdEncoding.EncodeToString(png)})
 	return nil

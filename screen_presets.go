@@ -29,6 +29,12 @@ type PresetStore struct {
 
 	mu sync.RWMutex
 	m  map[string]coord
+
+	// saveMu serializes the whole snapshot→write→rename sequence in Save so two
+	// concurrent Set/Save calls cannot interleave their renames. Without it an
+	// older snapshot could be renamed onto disk after a newer one and silently
+	// drop a preset. mu still guards the map; saveMu only orders disk writes.
+	saveMu sync.Mutex
 }
 
 // NewPresetStore returns a store backed by the given JSON file path. The file is
@@ -67,8 +73,14 @@ func (s *PresetStore) Load() error {
 	return nil
 }
 
-// Save writes the in-memory map to disk atomically (temp file + rename).
+// Save writes the in-memory map to disk atomically (temp file + rename). The
+// snapshot and the rename are serialized by saveMu so overlapping saves apply in
+// a well-defined order — the last save to run observes every completed mutation,
+// so no preset is lost to a stale snapshot winning the rename race.
 func (s *PresetStore) Save() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
 	s.mu.RLock()
 	data, err := json.MarshalIndent(s.m, "", "  ")
 	s.mu.RUnlock()

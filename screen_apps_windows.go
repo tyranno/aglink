@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // Design Ref: §2 (list_windows / focus_window), §4 (screen_apps_windows.go).
@@ -132,18 +133,38 @@ func findTopWindow(titleOrHwnd string) (uintptr, bool) {
 	if s == "" {
 		return 0, false
 	}
-	if h, ok := parseHWND(s); ok {
+	// An explicit hex handle ("0x1234") is unambiguous — honor it directly.
+	if h, ok := parseHexHWND(s); ok {
 		return h, true
 	}
-	wins := enumWindows()
-	needle := strings.ToLower(s)
+	// Prefer a title match next, so a window literally titled "123" or "2024" is
+	// reachable by name. Only if no title matches do we fall back to treating an
+	// all-digit string as a decimal HWND (otherwise numeric titles would be
+	// unaddressable, since parsing always succeeds first).
+	if h, ok := matchWindowTitle(enumWindows(), s); ok {
+		return h, true
+	}
+	if h, ok := parseDecimalHWND(s); ok {
+		return h, true
+	}
+	return 0, false
+}
+
+// matchWindowTitle returns the handle of the window whose title matches needle
+// (case-insensitive); an exact title wins over a substring match. Logic-only
+// (no Win32), so it is unit-testable with a fabricated window list.
+func matchWindowTitle(wins []win, needle string) (uintptr, bool) {
+	n := strings.ToLower(strings.TrimSpace(needle))
+	if n == "" {
+		return 0, false
+	}
 	var exact, partial uintptr
 	for _, w := range wins {
 		lt := strings.ToLower(w.Title)
-		if lt == needle && exact == 0 {
+		if lt == n && exact == 0 {
 			exact = w.HWND
 		}
-		if strings.Contains(lt, needle) && partial == 0 {
+		if strings.Contains(lt, n) && partial == 0 {
 			partial = w.HWND
 		}
 	}
@@ -538,13 +559,48 @@ func launchApp(name string, elevated bool) (string, error) {
 		}
 	}
 
-	// 4) Last resort: shell resolve (covers UWP App Paths etc.).
-	if err := shellStart(name); err == nil {
-		return fmt.Sprintf("launched via shell resolve: %s", name), nil
+	// 4) App Paths registry (registered apps like "chrome"/"code"): resolve to a
+	//    concrete executable and launch it directly. Unlike a blind `start "" name`
+	//    — which returns nil as soon as cmd.exe spawns, even when the target never
+	//    resolves — this only reports success once we have a real exe to run, so an
+	//    unknown name reaches the failure return below instead of a false success.
+	if p, ok := resolveAppPath(name); ok {
+		if err := runDetached(p); err == nil {
+			return fmt.Sprintf("launched via App Paths: %s -> %s", name, p), nil
+		}
+		tried = append(tried, "App Paths "+p)
+	} else {
+		tried = append(tried, "no App Paths entry")
 	}
-	tried = append(tried, "shell start "+name)
 
 	return "", fmt.Errorf("launch_app: could not launch %q; tried: %s", name, strings.Join(tried, "; "))
+}
+
+// resolveAppPath looks up name (and name.exe) in the Windows "App Paths"
+// registry keys under HKCU and HKLM — the same mechanism the shell uses to
+// resolve a bare app name to its executable. It returns the concrete path so the
+// caller can launch and verify it, rather than trusting a blind shell start.
+func resolveAppPath(name string) (string, bool) {
+	const base = `SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\`
+	roots := []registry.Key{registry.CURRENT_USER, registry.LOCAL_MACHINE}
+	for _, cand := range []string{name, name + ".exe"} {
+		for _, root := range roots {
+			k, err := registry.OpenKey(root, base+cand, registry.QUERY_VALUE)
+			if err != nil {
+				continue
+			}
+			val, _, err := k.GetStringValue("") // default value holds the full exe path
+			k.Close()
+			if err != nil {
+				continue
+			}
+			val = strings.Trim(strings.TrimSpace(val), `"`)
+			if val != "" {
+				return val, true
+			}
+		}
+	}
+	return "", false
 }
 
 // runDetached starts an executable directly (no shell), detached from this
@@ -599,8 +655,8 @@ func shellStart(target string) error {
 	return exec.Command("cmd", "/c", "start", "", target).Start()
 }
 
-// parseHWND parses "0x.." (hex) or a decimal string into an HWND value.
-func parseHWND(s string) (uintptr, bool) {
+// parseHexHWND parses a "0x.."/"0X.." hex handle string into an HWND value.
+func parseHexHWND(s string) (uintptr, bool) {
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 		v, err := strconv.ParseUint(s[2:], 16, 64)
 		if err != nil {
@@ -608,7 +664,11 @@ func parseHWND(s string) (uintptr, bool) {
 		}
 		return uintptr(v), true
 	}
-	// Plain decimal — only treat as HWND if it's all digits.
+	return 0, false
+}
+
+// parseDecimalHWND parses an all-digit decimal string into an HWND value.
+func parseDecimalHWND(s string) (uintptr, bool) {
 	if v, err := strconv.ParseUint(s, 10, 64); err == nil {
 		return uintptr(v), true
 	}

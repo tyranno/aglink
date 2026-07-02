@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -72,5 +74,51 @@ func TestPresetSaveReload(t *testing.T) {
 	}
 	if len(fresh.List()) != 2 {
 		t.Fatalf("reloaded List() len = %d, want 2", len(fresh.List()))
+	}
+}
+
+// TestPresetConcurrentSetNoLoss guards the save-serialization fix: many
+// overlapping Set calls (each of which persists) must never drop a preset by
+// letting a stale snapshot win the temp-file rename race. Run with -race.
+func TestPresetConcurrentSetNoLoss(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "presets.json")
+	s := NewPresetStore(path)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			if err := s.Set(fmt.Sprintf("p%02d", i), i, i*2); err != nil {
+				t.Errorf("Set(p%02d): %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// The in-memory map must hold every preset...
+	if got := len(s.List()); got != n {
+		t.Fatalf("in-memory List() len = %d, want %d", got, n)
+	}
+	// ...and so must the last snapshot that actually reached disk: reload a fresh
+	// store from the file and confirm nothing was clobbered by an overlapping save.
+	fresh := NewPresetStore(path)
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("reload Load: %v", err)
+	}
+	if got := len(fresh.List()); got != n {
+		t.Fatalf("reloaded List() len = %d, want %d (a save dropped presets)", got, n)
+	}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("p%02d", i)
+		p, ok := fresh.Get(name)
+		if !ok || p.X != i || p.Y != i*2 {
+			t.Fatalf("reloaded %s = %+v ok=%v, want {%s %d %d}", name, p, ok, name, i, i*2)
+		}
 	}
 }

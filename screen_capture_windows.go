@@ -119,6 +119,13 @@ func captureWindow(titleOrHwnd string) (png []byte, left, top, width, height int
 		_ = bringToFront(hwnd)
 		time.Sleep(300 * time.Millisecond) // let the desktop switch + repaint settle
 	}
+	// A minimized window's GetWindowRect is the iconic placeholder (off-screen,
+	// ~-32000,-32000) with a small positive size, so the zero-size guard below
+	// won't catch it and BitBlt would capture unrelated off-screen pixels. Reject
+	// it explicitly (as listControls does) instead of returning nonsense.
+	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+		return nil, 0, 0, 0, 0, fmt.Errorf("captureWindow: window %q is minimized (its rect is an off-screen placeholder); focus_window it first", titleOrHwnd)
+	}
 	rc := windowRect(hwnd)
 	width = int(rc.Right - rc.Left)
 	height = int(rc.Bottom - rc.Top)
@@ -152,6 +159,11 @@ func captureRegionAt(window string, x, y, width, height int) (png []byte, absX, 
 		if isWindowOnAnotherDesktop(hwnd) {
 			_ = bringToFront(hwnd)
 			time.Sleep(300 * time.Millisecond)
+		}
+		// Window-relative coords are meaningless against a minimized window's
+		// off-screen iconic rect — reject rather than capture bogus pixels.
+		if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+			return nil, 0, 0, fmt.Errorf("capture_region: window %q is minimized (window-relative coords would be bogus); focus_window it first", window)
 		}
 		rc := windowRect(hwnd)
 		absX = int(rc.Left) + x

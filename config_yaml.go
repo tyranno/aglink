@@ -51,6 +51,12 @@ type yamlConfig struct {
 		Enabled    bool   `yaml:"enabled"`
 		BinaryPath string `yaml:"binary_path"`
 	} `yaml:"web_control"`
+	WebChat struct {
+		Enabled     bool   `yaml:"enabled"`
+		Addr        string `yaml:"addr"`
+		Token       string `yaml:"token"`
+		OwnerChatID int64  `yaml:"owner_chat_id"`
+	} `yaml:"web_chat"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -109,6 +115,13 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.ScreenBinaryPath = y.ScreenControl.BinaryPath
 	c.WebControl = y.WebControl.Enabled
 	c.WebBinaryPath = y.WebControl.BinaryPath
+	c.WebChat = y.WebChat.Enabled
+	c.WebChatAddr = y.WebChat.Addr
+	if c.WebChatAddr == "" {
+		c.WebChatAddr = "127.0.0.1:1717"
+	}
+	c.WebChatToken = y.WebChat.Token
+	c.WebChatOwnerChatID = y.WebChat.OwnerChatID
 	return c
 }
 
@@ -141,6 +154,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ScreenControl.BinaryPath = c.ScreenBinaryPath
 	y.WebControl.Enabled = c.WebControl
 	y.WebControl.BinaryPath = c.WebBinaryPath
+	y.WebChat.Enabled = c.WebChat
+	y.WebChat.Addr = c.WebChatAddr
+	y.WebChat.Token = c.WebChatToken
+	y.WebChat.OwnerChatID = c.WebChatOwnerChatID
 	return y
 }
 

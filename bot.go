@@ -38,15 +38,31 @@ type Bot struct {
 	rateLimiter *RateLimiter
 	userStore   *UserStore
 	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
+	out         *Hub   // output fan-out: telegram (global) + web channels (per-chat)
+
+	dispatchHook func(chatID int64, text string) // test seam; nil in production
+	commandHook  func(chatID int64, text string) // test seam; nil in production
 
 	mu          sync.Mutex
 	activeCount int                        // current running workers
 	workerSeq   int                        // monotonic counter for worker IDs
 	cancels     map[int]context.CancelFunc // workerID → cancel (for !cancel)
 	queue       []queuedMsg                // messages waiting for a free slot
+
+	// cmdMu serializes handleCommand. Telegram's Run() loop already calls
+	// handleCommand from a single goroutine, so this is uncontended there.
+	// The web-chat reader loop spawns a goroutine per inbound message
+	// (go s.inject), so without this lock two rapid "!update" (or other
+	// command) messages from the browser could run handleCommand concurrently
+	// — e.g. two overlapping self-rebuild+restart flows racing on the same
+	// newExe/readyFile. handleCommand's doc comment ("processes commands
+	// synchronously") is the invariant this lock restores.
+	cmdMu sync.Mutex
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
+	hub := NewHub()
+	hub.RegisterGlobal(newTelegramChannel(api))
 	return &Bot{
 		api:         api,
 		cfgh:        cfgh,
@@ -56,6 +72,7 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 		rateLimiter: NewRateLimiter(cfgh.Get().RateLimitPerMin),
 		userStore:   userStore,
 		cancels:     make(map[int]context.CancelFunc),
+		out:         hub,
 	}
 }
 
@@ -68,35 +85,63 @@ func (b *Bot) isAllowed(userID int64, username string) bool {
 		(b.userStore != nil && b.userStore.Contains(userID))
 }
 
-// Send delivers a plain-text message (MessageSender).
-func (b *Bot) Send(chatID int64, text string) error {
+// telegramChannel is the Telegram implementation of ChannelSender. The tgbotapi
+// send bodies live here (moved out of *Bot) so Bot's own Send/SendPhoto/Typing
+// can delegate to the Hub. Registered in the Hub as a global channel — it can
+// address any chatID, so it receives fan-out for every conversation.
+type telegramChannel struct {
+	api *tgbotapi.BotAPI
+}
+
+func newTelegramChannel(api *tgbotapi.BotAPI) *telegramChannel {
+	return &telegramChannel{api: api}
+}
+
+func (t *telegramChannel) Send(chatID int64, text string) error {
 	msg := tgbotapi.NewMessage(chatID, text)
-	_, err := b.api.Send(msg)
+	_, err := t.api.Send(msg)
 	if err != nil {
-		log.Printf("[bot] send error: %v", err)
+		log.Printf("[tg] send error: %v", err)
 	}
 	return err
 }
 
-// SendPhoto delivers a PNG image (e.g. a screenshot) with an optional caption.
-func (b *Bot) SendPhoto(chatID int64, png []byte, caption string) error {
+func (t *telegramChannel) SendPhoto(chatID int64, png []byte, caption string) error {
 	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "screen.png", Bytes: png})
 	if caption != "" {
 		photo.Caption = caption
 	}
-	_, err := b.api.Send(photo)
+	_, err := t.api.Send(photo)
 	if err != nil {
-		log.Printf("[bot] photo send error: %v", err)
+		log.Printf("[tg] photo send error: %v", err)
 	}
 	return err
 }
 
-// Typing shows the "typing…" indicator (MessageSender).
-func (b *Bot) Typing(chatID int64) {
-	if _, err := b.api.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
-		log.Printf("[bot] typing error: %v", err)
+func (t *telegramChannel) Typing(chatID int64) {
+	if _, err := t.api.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
+		log.Printf("[tg] typing error: %v", err)
 	}
 }
+
+// Send delivers a plain-text message, fanning out to all channels (MessageSender).
+func (b *Bot) Send(chatID int64, text string) error {
+	return b.out.Send(chatID, text)
+}
+
+// SendPhoto delivers a PNG image with optional caption to all channels.
+func (b *Bot) SendPhoto(chatID int64, png []byte, caption string) error {
+	return b.out.SendPhoto(chatID, png, caption)
+}
+
+// Typing shows the "typing…" indicator on all channels (MessageSender).
+func (b *Bot) Typing(chatID int64) {
+	b.out.Typing(chatID)
+}
+
+// Hub returns the output fan-out hub so other transports (web chat) can register
+// their own channels.
+func (b *Bot) Hub() *Hub { return b.out }
 
 // Run starts the long-polling loop. Blocks until the process exits.
 // Uses GetUpdates directly (not GetUpdatesChan) so Conflict errors are visible
@@ -169,6 +214,10 @@ func (b *Bot) Run() {
 // dispatchText routes a free-text message through the Manager.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchText(chatID int64, text string) {
+	if b.dispatchHook != nil {
+		b.dispatchHook(chatID, text)
+		return
+	}
 	b.dispatch(queuedMsg{chatID: chatID, text: text})
 }
 
@@ -247,8 +296,16 @@ func (b *Bot) dispatch(msg queuedMsg) {
 	}()
 }
 
-// handleCommand processes commands synchronously.
+// handleCommand processes commands synchronously. Serialized via cmdMu so
+// concurrent callers (web-chat's per-message reader goroutines) can never run
+// two commands — e.g. two overlapping !update self-rebuilds — at once.
 func (b *Bot) handleCommand(chatID int64, text string) {
+	b.cmdMu.Lock()
+	defer b.cmdMu.Unlock()
+	if b.commandHook != nil {
+		b.commandHook(chatID, text)
+		return
+	}
 	fields := strings.Fields(text)
 	switch fields[0] {
 	case "!start", "!help":
@@ -1251,6 +1308,13 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 		return
 	}
 
+	b.ingestAttachment(chatID, savePath, caption)
+}
+
+// ingestAttachment builds a prompt from a saved file path + caption and dispatches
+// it. Shared by the Telegram attachment path and the web upload endpoint so both
+// behave identically.
+func (b *Bot) ingestAttachment(chatID int64, savePath, caption string) {
 	prompt := caption
 	if prompt == "" {
 		prompt = "첨부파일을 분석해줘"

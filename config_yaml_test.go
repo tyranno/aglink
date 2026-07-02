@@ -26,6 +26,10 @@ func TestYAMLRoundTrip(t *testing.T) {
 		WebControl:          true,
 		WebBinaryPath:       "C:\\tools\\aglink-web.exe",
 		ConversationTTLDays: 45,
+		WebChat:             true,
+		WebChatAddr:         "127.0.0.1:1717",
+		WebChatToken:        "tok-abc",
+		WebChatOwnerChatID:  6723802240,
 	}
 	b, err := marshalConfigYAML(c)
 	if err != nil {
@@ -43,7 +47,9 @@ func TestYAMLRoundTrip(t *testing.T) {
 		got.ScreenElevated != true || got.ScreenKeepAwake != true ||
 		got.ScreenBinaryPath != "C:\\tools\\aglink-screen.exe" ||
 		got.WebControl != true || got.WebBinaryPath != "C:\\tools\\aglink-web.exe" ||
-		got.ConversationTTLDays != 45 {
+		got.ConversationTTLDays != 45 ||
+		got.WebChat != true || got.WebChatAddr != "127.0.0.1:1717" ||
+		got.WebChatToken != "tok-abc" || got.WebChatOwnerChatID != 6723802240 {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 }
@@ -58,5 +64,30 @@ func TestYAMLDefaults(t *testing.T) {
 	if got.ManagerModel != "haiku" || got.TimeoutMinutes != 10 || got.MaxWorkers != 3 ||
 		got.RateLimitPerMin != 20 || got.ManagerAlways != true || got.ConversationTTLDays != 30 {
 		t.Errorf("defaults wrong: %+v", got)
+	}
+}
+
+// TestConfigDefaultWebChatAddr verifies that omitting web_chat.addr falls back to the
+// documented default 127.0.0.1:1717, while an explicitly-set addr is preserved as-is.
+func TestConfigDefaultWebChatAddr(t *testing.T) {
+	y := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\nweb_chat:\n  enabled: true\n")
+	got, err := unmarshalConfigYAML(y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.WebChat {
+		t.Errorf("expected WebChat enabled, got %+v", got)
+	}
+	if got.WebChatAddr != "127.0.0.1:1717" {
+		t.Errorf("expected default addr 127.0.0.1:1717, got %q", got.WebChatAddr)
+	}
+
+	y2 := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\nweb_chat:\n  enabled: true\n  addr: 0.0.0.0:9999\n")
+	got2, err := unmarshalConfigYAML(y2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.WebChatAddr != "0.0.0.0:9999" {
+		t.Errorf("expected explicit addr to survive, got %q", got2.WebChatAddr)
 	}
 }

@@ -34,6 +34,10 @@ type Config struct {
 	WebControl            bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
 	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 teleclaude 실행파일과 같은 폴더에서 찾음
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
+	WebChat               bool     // local web chat transport enabled
+	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:1717
+	WebChatToken          string   // web chat auth token; empty → auto-generated + persisted
+	WebChatOwnerChatID    int64    // chatID web actions run as; 0 → first AllowedUserIDs
 }
 
 // ConversationTurn represents one exchange in a conversation.

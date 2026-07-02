@@ -26,7 +26,11 @@ func isElevated() bool {
 
 // runAsAdmin launches target (an exe path, a .lnk, or an app name the shell can
 // resolve) elevated via the "runas" verb, triggering a UAC prompt the user must
-// approve. args may be empty.
+// approve. args may be empty. The elevated process is started with SW_HIDE so no
+// console window pops up — teleclaude is a background bot and its only caller is
+// the self-elevation relaunch (relaunchElevated); a visible console for the
+// elevated instance is just noise. Logs still go to the (hidden) console's
+// stderr, so redirect via the launcher/scheduled task if you need to capture them.
 func runAsAdmin(target, args string) error {
 	verbPtr, _ := windows.UTF16PtrFromString("runas")
 	tgtPtr, err := windows.UTF16PtrFromString(target)
@@ -37,8 +41,8 @@ func runAsAdmin(target, args string) error {
 	if args != "" {
 		argsPtr, _ = windows.UTF16PtrFromString(args)
 	}
-	const swShowNormal = 1
-	return windows.ShellExecute(0, verbPtr, tgtPtr, argsPtr, nil, swShowNormal)
+	const swHide = 0
+	return windows.ShellExecute(0, verbPtr, tgtPtr, argsPtr, nil, swHide)
 }
 
 // relaunchElevated re-launches this executable with the same arguments under the

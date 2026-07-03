@@ -128,6 +128,15 @@ func (t *telegramChannel) Typing(chatID int64) {
 // Done is a no-op for Telegram — it has no persistent "working" indicator to clear.
 func (t *telegramChannel) Done(int64) {}
 
+// EchoUser relays user input that originated from the web to Telegram. A Telegram
+// user's own message is already visible in their client, so telegram-origin is a
+// no-op. Bots can't post as the user, so web input arrives as a bot-authored line.
+func (t *telegramChannel) EchoUser(chatID int64, text, origin string) {
+	if origin == OriginWeb {
+		_ = t.Send(chatID, "🌐 (웹) "+text)
+	}
+}
+
 // Send delivers a plain-text message, fanning out to all channels (MessageSender).
 func (b *Bot) Send(chatID int64, text string) error {
 	return b.out.Send(chatID, text)
@@ -223,6 +232,12 @@ func (b *Bot) Run() {
 // dispatchText routes a free-text message through the Manager.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchText(chatID int64, text, origin string) {
+	// Mirror the user's input to the OTHER channel so both web and Telegram show
+	// what was typed, wherever it was entered. Each channel no-ops for its own
+	// origin (ChannelSender.EchoUser), so the origin channel never double-echoes.
+	if b.out != nil {
+		b.out.EchoUser(chatID, text, origin)
+	}
 	if b.dispatchHook != nil {
 		b.dispatchHook(chatID, text)
 		return

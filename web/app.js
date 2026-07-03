@@ -241,6 +241,7 @@
       let f; try { f = JSON.parse(ev.data); } catch { return; }
       if (f.type === "text") add("assistant", f.text);
       else if (f.type === "image") addImage(f.caption || "", f.data);
+      else if (f.type === "user") add("user", f.text); // input echoed from another channel (e.g. Telegram)
       else if (f.type === "typing") showWorking();
       else if (f.type === "done") hideWorking();
     };

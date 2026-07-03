@@ -13,6 +13,12 @@ type ChannelSender interface {
 	SendPhoto(chatID int64, png []byte, caption string) error
 	Typing(chatID int64)
 	Done(chatID int64)
+	// EchoUser mirrors a user's *input* text to the OTHER channel so both sides
+	// see what was typed. origin is the channel the text came from; each channel
+	// acts only when it is NOT that origin (Telegram relays web input as a bot
+	// message; web shows Telegram input as a user bubble), so fanning to every
+	// channel never double-echoes the origin channel.
+	EchoUser(chatID int64, text, origin string)
 }
 
 // Hub fans outgoing messages to every registered channel. Global channels
@@ -95,5 +101,15 @@ func (h *Hub) Typing(chatID int64) {
 func (h *Hub) Done(chatID int64) {
 	for _, ch := range h.targets(chatID) {
 		ch.Done(chatID)
+	}
+}
+
+// EchoUser fans a user-input echo to every channel for chatID. Each channel
+// no-ops when the origin is its own kind, so the origin channel is never
+// double-echoed (the web tab already showed it locally; the Telegram client
+// already shows the user's own message).
+func (h *Hub) EchoUser(chatID int64, text, origin string) {
+	for _, ch := range h.targets(chatID) {
+		ch.EchoUser(chatID, text, origin)
 	}
 }

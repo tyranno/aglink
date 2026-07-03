@@ -12,6 +12,7 @@ type recCh struct {
 	texts   []string
 	photos  int
 	typings int
+	echoes  []string // "origin:text" for each EchoUser call
 	sendErr error
 }
 
@@ -33,6 +34,11 @@ func (r *recCh) Typing(_ int64) {
 	r.typings++
 }
 func (r *recCh) Done(_ int64) {}
+func (r *recCh) EchoUser(_ int64, text, origin string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.echoes = append(r.echoes, origin+":"+text)
+}
 
 func TestHubFanOut_GlobalPlusPerChat(t *testing.T) {
 	h := NewHub()

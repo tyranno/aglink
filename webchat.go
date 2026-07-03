@@ -181,6 +181,15 @@ func (w *webChannel) SendPhoto(_ int64, png []byte, caption string) error {
 func (w *webChannel) Typing(_ int64) { w.push(wsFrame{Type: "typing"}) }
 func (w *webChannel) Done(_ int64)   { w.push(wsFrame{Type: "done"}) }
 
+// EchoUser shows input that came from Telegram as a user bubble on the web side.
+// web-origin is a no-op — the sending tab already rendered it locally, and other
+// tabs don't mirror each other's typed input.
+func (w *webChannel) EchoUser(_ int64, text, origin string) {
+	if origin == OriginTelegram {
+		w.push(wsFrame{Type: "user", Text: text})
+	}
+}
+
 // inject feeds a browser message into the same pipeline Telegram uses.
 // Non-command text is subject to the same per-user rate limit as the
 // Telegram path (design §3.3); commands are never rate-limited.

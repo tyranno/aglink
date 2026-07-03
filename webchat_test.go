@@ -7,6 +7,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -178,6 +180,272 @@ func TestHandleUpload_Ingests(t *testing.T) {
 	// The ingest prompt must contain the caption and the saved path (ends in .txt).
 	if !strings.Contains(gotText, "이거 봐줘") || !strings.Contains(gotText, ".txt]") {
 		t.Errorf("ingest prompt = %q", gotText)
+	}
+}
+
+func TestHandleConversationsListsActiveTopics(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "store.json")
+	st := NewFileStore(storePath)
+	if err := st.Load(); err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+	projectDir := filepath.Join(dir, "alpha")
+	if err := os.Mkdir(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	if err := st.AddProject("alpha", projectDir); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+
+	oldConv, err := st.NewConversation("alpha", "오래된 주제")
+	if err != nil {
+		t.Fatalf("new old conversation: %v", err)
+	}
+	oldConv.Summary = "예전 작업 요약"
+	oldConv.LastActivity = time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	oldConv.Started = true
+	if err := st.UpdateConversation("alpha", oldConv); err != nil {
+		t.Fatalf("update old conversation: %v", err)
+	}
+
+	activeConv, err := st.NewConversation("alpha", "현재 주제")
+	if err != nil {
+		t.Fatalf("new active conversation: %v", err)
+	}
+	activeConv.Summary = "현재 작업 요약"
+	activeConv.LastActivity = time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	activeConv.Started = true
+	activeConv.Backend = "codex"
+	if err := st.UpdateConversation("alpha", activeConv); err != nil {
+		t.Fatalf("update active conversation: %v", err)
+	}
+	if err := st.SetActive("alpha", activeConv.ID); err != nil {
+		t.Fatalf("set active: %v", err)
+	}
+
+	b := &Bot{store: st}
+	s := &webServer{token: "secret", bot: b}
+	r := httptest.NewRequest(http.MethodGet, "/api/conversations?token=secret", nil)
+	w := httptest.NewRecorder()
+	s.handleConversations(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+
+	var got struct {
+		Active struct {
+			Project        string `json:"project"`
+			ConversationID string `json:"conversationId"`
+		} `json:"active"`
+		Projects []struct {
+			Name          string `json:"name"`
+			Path          string `json:"path"`
+			Conversations []struct {
+				ID           string `json:"id"`
+				Title        string `json:"title"`
+				Summary      string `json:"summary"`
+				Started      bool   `json:"started"`
+				Backend      string `json:"backend"`
+				Active       bool   `json:"active"`
+				LastActivity string `json:"lastActivity"`
+			} `json:"conversations"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json decode: %v\nbody=%s", err, w.Body.String())
+	}
+	if got.Active.Project != "alpha" || got.Active.ConversationID != activeConv.ID {
+		t.Fatalf("active = %+v, want alpha/%s", got.Active, activeConv.ID)
+	}
+	if len(got.Projects) != 1 {
+		t.Fatalf("projects len = %d, want 1", len(got.Projects))
+	}
+	if got.Projects[0].Name != "alpha" || got.Projects[0].Path != projectDir {
+		t.Fatalf("project = %+v, want alpha/%s", got.Projects[0], projectDir)
+	}
+	if len(got.Projects[0].Conversations) != 2 {
+		t.Fatalf("conversation len = %d, want 2", len(got.Projects[0].Conversations))
+	}
+	first := got.Projects[0].Conversations[0]
+	if first.ID != activeConv.ID || first.Title != "현재 주제" || !first.Active || first.Summary != "현재 작업 요약" || first.Backend != "codex" {
+		t.Fatalf("first conversation = %+v, want active conversation first", first)
+	}
+	if first.LastActivity == "" {
+		t.Fatal("lastActivity should be populated")
+	}
+}
+
+func TestHandleConversationsGroupsContinuationChains(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "store.json")
+	st := NewFileStore(storePath)
+	if err := st.Load(); err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+	projectDir := filepath.Join(dir, "alpha")
+	if err := os.Mkdir(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	if err := st.AddProject("alpha", projectDir); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+
+	root, err := st.NewConversation("alpha", "긴 작업")
+	if err != nil {
+		t.Fatalf("new root conversation: %v", err)
+	}
+	root.Summary = "첫 구간"
+	root.LastActivity = time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	root.Started = true
+
+	cont, err := st.NewConversation("alpha", "긴 작업 (시리즈 2)")
+	if err != nil {
+		t.Fatalf("new continuation conversation: %v", err)
+	}
+	cont.ParentID = root.ID
+	cont.IsContinuation = true
+	cont.Summary = "이어진 구간"
+	cont.LastActivity = time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	cont.Started = true
+	cont.Backend = "claude"
+	root.ChildID = cont.ID
+	if err := st.UpdateConversation("alpha", root); err != nil {
+		t.Fatalf("update root conversation: %v", err)
+	}
+	if err := st.UpdateConversation("alpha", cont); err != nil {
+		t.Fatalf("update continuation conversation: %v", err)
+	}
+
+	other, err := st.NewConversation("alpha", "다른 작업")
+	if err != nil {
+		t.Fatalf("new other conversation: %v", err)
+	}
+	other.Summary = "별도 주제"
+	other.LastActivity = time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	other.Started = true
+	if err := st.UpdateConversation("alpha", other); err != nil {
+		t.Fatalf("update other conversation: %v", err)
+	}
+	if err := st.SetActive("alpha", cont.ID); err != nil {
+		t.Fatalf("set active: %v", err)
+	}
+
+	b := &Bot{store: st}
+	s := &webServer{token: "secret", bot: b}
+	r := httptest.NewRequest(http.MethodGet, "/api/conversations?token=secret", nil)
+	w := httptest.NewRecorder()
+	s.handleConversations(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var got struct {
+		Projects []struct {
+			Conversations []struct {
+				ID      string `json:"id"`
+				Title   string `json:"title"`
+				Summary string `json:"summary"`
+				Backend string `json:"backend"`
+				Active  bool   `json:"active"`
+			} `json:"conversations"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json decode: %v\nbody=%s", err, w.Body.String())
+	}
+	if len(got.Projects) != 1 {
+		t.Fatalf("projects len = %d, want 1", len(got.Projects))
+	}
+	convs := got.Projects[0].Conversations
+	if len(convs) != 2 {
+		t.Fatalf("conversation len = %d, want 2 grouped topics; body=%s", len(convs), w.Body.String())
+	}
+	first := convs[0]
+	if first.ID != cont.ID || first.Title != "긴 작업" || first.Summary != "이어진 구간" || first.Backend != "claude" || !first.Active {
+		t.Fatalf("grouped continuation topic = %+v, want active latest child under root title", first)
+	}
+	for _, conv := range convs {
+		if conv.Title == "긴 작업 (시리즈 2)" {
+			t.Fatalf("continuation child should not be listed as a separate topic: %+v", convs)
+		}
+	}
+}
+
+func TestWebUIUsesAutosizingTextarea(t *testing.T) {
+	html, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	app, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	css, err := webFS.ReadFile("web/style.css")
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+
+	htmlText := string(html)
+	if !strings.Contains(htmlText, `<textarea id="input"`) {
+		t.Fatalf("composer should use an autosizing textarea, html=%s", htmlText)
+	}
+	if strings.Contains(htmlText, `<input id="input" type="text"`) {
+		t.Fatal("composer must not use a single-line text input")
+	}
+	if !strings.Contains(htmlText, `rows="1"`) {
+		t.Fatal("textarea should start at one row")
+	}
+
+	appText := string(app)
+	if !strings.Contains(appText, "resizeInput") || !strings.Contains(appText, "input.scrollHeight") {
+		t.Fatal("app.js should resize the textarea from its scrollHeight")
+	}
+
+	cssText := string(css)
+	if !strings.Contains(cssText, "--input-line-height") || !strings.Contains(cssText, "max-height: calc(var(--input-line-height) * 10") {
+		t.Fatal("style.css should cap the composer textarea at about 10 lines")
+	}
+}
+
+func TestWebUIHasConversationTopicList(t *testing.T) {
+	html, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	app, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	css, err := webFS.ReadFile("web/style.css")
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+
+	htmlText := string(html)
+	if !strings.Contains(htmlText, `id="topics"`) || !strings.Contains(htmlText, `id="topic-list"`) {
+		t.Fatalf("index should include a conversation topic list sidebar, html=%s", htmlText)
+	}
+
+	appText := string(app)
+	if !strings.Contains(appText, "loadConversations") || !strings.Contains(appText, "/api/conversations") {
+		t.Fatal("app.js should load and render conversation topics from /api/conversations")
+	}
+	if !strings.Contains(appText, "topic-project") {
+		t.Fatal("app.js should render project-group headers in the topic list")
+	}
+	if !strings.Contains(appText, "!chat use") {
+		t.Fatal("app.js should switch conversations through the existing !chat use command")
+	}
+
+	cssText := string(css)
+	if !strings.Contains(cssText, "#topics") || !strings.Contains(cssText, "#topic-list") || !strings.Contains(cssText, ".topic-project") {
+		t.Fatal("style.css should style the conversation topic list")
 	}
 }
 

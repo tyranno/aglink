@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +29,52 @@ func TestParseOnceDatetime_HHMM_Future(t *testing.T) {
 	// fireAt should be >= now (advanced to tomorrow if already past)
 	if fireAt.Before(time.Now()) {
 		t.Errorf("fireAt %v is before now", fireAt)
+	}
+}
+
+func TestHandleChatUseQualifiedProjectConversation(t *testing.T) {
+	dir := t.TempDir()
+	st := NewFileStore(filepath.Join(dir, "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+	alphaDir := filepath.Join(dir, "alpha")
+	betaDir := filepath.Join(dir, "beta")
+	if err := os.Mkdir(alphaDir, 0o700); err != nil {
+		t.Fatalf("mkdir alpha: %v", err)
+	}
+	if err := os.Mkdir(betaDir, 0o700); err != nil {
+		t.Fatalf("mkdir beta: %v", err)
+	}
+	if err := st.AddProject("alpha", alphaDir); err != nil {
+		t.Fatalf("add alpha: %v", err)
+	}
+	if err := st.AddProject("beta", betaDir); err != nil {
+		t.Fatalf("add beta: %v", err)
+	}
+	alphaConv, err := st.NewConversation("alpha", "alpha topic")
+	if err != nil {
+		t.Fatalf("new alpha conversation: %v", err)
+	}
+	betaConv, err := st.NewConversation("beta", "beta topic")
+	if err != nil {
+		t.Fatalf("new beta conversation: %v", err)
+	}
+	if err := st.SetActive("alpha", alphaConv.ID); err != nil {
+		t.Fatalf("set active alpha: %v", err)
+	}
+
+	b := &Bot{store: st, out: NewHub()}
+	w := &recCh{}
+	b.out.Register(55, w)
+	b.handleChat(55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID))
+
+	active := st.GetActive()
+	if active.Project != "beta" || active.ConversationID != betaConv.ID {
+		t.Fatalf("active = %+v, want beta/%s", active, betaConv.ID)
+	}
+	if len(w.texts) != 1 || !strings.Contains(w.texts[0], "beta topic") {
+		t.Fatalf("sent = %v, want beta topic confirmation", w.texts)
 	}
 }
 

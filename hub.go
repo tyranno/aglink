@@ -12,6 +12,7 @@ type ChannelSender interface {
 	Send(chatID int64, text string) error
 	SendPhoto(chatID int64, png []byte, caption string) error
 	Typing(chatID int64)
+	Done(chatID int64)
 }
 
 // Hub fans outgoing messages to every registered channel. Global channels
@@ -88,5 +89,11 @@ func (h *Hub) SendPhoto(chatID int64, png []byte, caption string) error {
 func (h *Hub) Typing(chatID int64) {
 	for _, ch := range h.targets(chatID) {
 		ch.Typing(chatID)
+	}
+}
+
+func (h *Hub) Done(chatID int64) {
+	for _, ch := range h.targets(chatID) {
+		ch.Done(chatID)
 	}
 }

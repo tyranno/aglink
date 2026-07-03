@@ -88,3 +88,4 @@ type recordSender struct {
 
 func (r *recordSender) Send(chatID int64, text string) error { return r.sendFn(chatID, text) }
 func (r *recordSender) Typing(_ int64)                       {}
+func (r *recordSender) Done(_ int64)                         {}

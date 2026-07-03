@@ -349,6 +349,11 @@ func (m *Manager) workerModelForBackend() string {
 // workDir overrides the project's path as the Claude CLI working directory (e.g. a git worktree).
 // Pass "" to use the project's registered path.
 func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, workDir string, c *Conversation, s MessageSender, client ClaudeClient) {
+	// Signal turn completion on every exit path (success, error, timeout, or the
+	// early "project not found" return) so channels with a live "working"
+	// indicator (web chat) always get a matching Done for their Typing.
+	defer s.Done(chatID)
+
 	p, ok := m.store.GetProject(project)
 	if !ok {
 		_ = s.Send(chatID, "⚠️ 프로젝트를 찾을 수 없습니다: "+project)

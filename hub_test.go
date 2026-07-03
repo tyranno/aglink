@@ -32,6 +32,7 @@ func (r *recCh) Typing(_ int64) {
 	defer r.mu.Unlock()
 	r.typings++
 }
+func (r *recCh) Done(_ int64) {}
 
 func TestHubFanOut_GlobalPlusPerChat(t *testing.T) {
 	h := NewHub()

@@ -124,6 +124,9 @@ func (t *telegramChannel) Typing(chatID int64) {
 	}
 }
 
+// Done is a no-op for Telegram — it has no persistent "working" indicator to clear.
+func (t *telegramChannel) Done(int64) {}
+
 // Send delivers a plain-text message, fanning out to all channels (MessageSender).
 func (b *Bot) Send(chatID int64, text string) error {
 	return b.out.Send(chatID, text)
@@ -137,6 +140,11 @@ func (b *Bot) SendPhoto(chatID int64, png []byte, caption string) error {
 // Typing shows the "typing…" indicator on all channels (MessageSender).
 func (b *Bot) Typing(chatID int64) {
 	b.out.Typing(chatID)
+}
+
+// Done signals turn completion on all channels (MessageSender).
+func (b *Bot) Done(chatID int64) {
+	b.out.Done(chatID)
 }
 
 // Hub returns the output fan-out hub so other transports (web chat) can register
@@ -530,19 +538,19 @@ func (b *Bot) formatProjectList() string {
 	return sb.String()
 }
 
-// handleChat: !chat new [title] | list | use <id> — operates on the active project.
+// handleChat: !chat new [title] | list | use <id> | use <project> <id>.
 func (b *Bot) handleChat(chatID int64, text string, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id>")
+		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id>")
 		return
 	}
 	active := b.store.GetActive()
-	if active.Project == "" {
-		_ = b.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
-		return
-	}
 	switch fields[1] {
 	case "new":
+		if active.Project == "" {
+			_ = b.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
+			return
+		}
 		title := ""
 		if parts := strings.SplitN(text, " ", 3); len(parts) == 3 {
 			title = strings.TrimSpace(parts[2])
@@ -555,21 +563,35 @@ func (b *Bot) handleChat(chatID int64, text string, fields []string) {
 		_ = b.store.SetActive(active.Project, c.ID)
 		_ = b.Send(chatID, fmt.Sprintf("🆕 새 대화 [%s] %s (활성화됨)", c.ID, c.Title))
 	case "list":
+		if active.Project == "" {
+			_ = b.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
+			return
+		}
 		_ = b.Send(chatID, b.formatChatList(active.Project))
 	case "use":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !chat use <id>")
+			_ = b.Send(chatID, "사용법: !chat use <id> | !chat use <프로젝트> <id>")
 			return
 		}
-		c, ok := b.store.GetConversation(active.Project, fields[2])
+		project := active.Project
+		convID := fields[2]
+		if len(fields) >= 4 {
+			project = fields[2]
+			convID = fields[3]
+		}
+		if project == "" {
+			_ = b.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
+			return
+		}
+		c, ok := b.store.GetConversation(project, convID)
 		if !ok {
-			_ = b.Send(chatID, "해당 대화를 찾을 수 없습니다: "+fields[2])
+			_ = b.Send(chatID, "해당 대화를 찾을 수 없습니다: "+project+"/"+convID)
 			return
 		}
-		_ = b.store.SetActive(active.Project, c.ID)
+		_ = b.store.SetActive(project, c.ID)
 		_ = b.Send(chatID, fmt.Sprintf("✅ 대화 전환 [%s] %s", c.ID, c.Title))
 	default:
-		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id>")
+		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id>")
 	}
 }
 
@@ -1689,7 +1711,7 @@ func helpText() string {
 !project list                프로젝트·대화 목록
 !chat new [제목]             현재 프로젝트에 새 대화
 !chat list                   현재 프로젝트의 대화 목록
-!chat use <id>               대화 수동 전환
+!chat use <id|프로젝트 id>    대화 수동 전환
 !status                      실행 중 작업 + 활성 대화 + 백엔드
 !cancel                      진행 중 작업 취소
 

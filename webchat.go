@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -16,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -94,7 +96,7 @@ type webServer struct {
 
 // wsFrame is the JSON envelope sent to browsers.
 type wsFrame struct {
-	Type    string `json:"type"` // "text" | "image" | "typing"
+	Type    string `json:"type"` // "text" | "image" | "typing" | "done"
 	Text    string `json:"text,omitempty"`
 	Caption string `json:"caption,omitempty"`
 	Data    string `json:"data,omitempty"` // base64 PNG for images
@@ -104,6 +106,35 @@ type wsFrame struct {
 type inMsg struct {
 	Type string `json:"type"` // "send"
 	Text string `json:"text"`
+}
+
+type webConversationTopic struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Summary      string `json:"summary,omitempty"`
+	Started      bool   `json:"started"`
+	Backend      string `json:"backend,omitempty"`
+	Active       bool   `json:"active"`
+	LastActivity string `json:"lastActivity,omitempty"`
+}
+
+type webProjectTopics struct {
+	Name          string                 `json:"name"`
+	Path          string                 `json:"path"`
+	Conversations []webConversationTopic `json:"conversations"`
+}
+
+type webConversationsResponse struct {
+	Active   ActiveRef          `json:"active"`
+	Projects []webProjectTopics `json:"projects"`
+}
+
+type webConversationGroup struct {
+	root     *Conversation
+	selected *Conversation
+	active   bool
+	started  bool
+	last     time.Time
 }
 
 // webChannel is one browser connection as a ChannelSender. Frames go through a
@@ -133,6 +164,7 @@ func (w *webChannel) SendPhoto(_ int64, png []byte, caption string) error {
 	return nil
 }
 func (w *webChannel) Typing(_ int64) { w.push(wsFrame{Type: "typing"}) }
+func (w *webChannel) Done(_ int64)   { w.push(wsFrame{Type: "done"}) }
 
 // inject feeds a browser message into the same pipeline Telegram uses.
 // Non-command text is subject to the same per-user rate limit as the
@@ -217,6 +249,122 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+func (s *webServer) handleConversations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.bot == nil || s.bot.store == nil {
+		http.Error(w, "conversation store unavailable", http.StatusInternalServerError)
+		return
+	}
+	active := s.bot.store.GetActive()
+	projects := s.bot.store.ListProjects()
+	names := make([]string, 0, len(projects))
+	for name := range projects {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	resp := webConversationsResponse{Active: active, Projects: make([]webProjectTopics, 0, len(names))}
+	for _, name := range names {
+		p := projects[name]
+		item := webProjectTopics{Name: name, Path: p.Path}
+		item.Conversations = webTopicsForProject(name, p.Conversations, active)
+		resp.Projects = append(resp.Projects, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func webTopicsForProject(project string, convs map[string]*Conversation, active ActiveRef) []webConversationTopic {
+	groups := map[string]*webConversationGroup{}
+	for _, id := range sortedConvIDsByActivity(convs) {
+		c := convs[id]
+		rootID := webConversationRootID(convs, c)
+		root := convs[rootID]
+		if root == nil {
+			root = c
+		}
+		g := groups[rootID]
+		if g == nil {
+			g = &webConversationGroup{root: root, selected: c, last: c.LastActivity}
+			groups[rootID] = g
+		}
+		if c.LastActivity.After(g.last) {
+			g.last = c.LastActivity
+		}
+		g.started = g.started || c.Started
+
+		isActive := project == active.Project && c.ID == active.ConversationID
+		if isActive {
+			g.active = true
+			g.selected = c
+			continue
+		}
+		if !g.active && c.LastActivity.After(g.selected.LastActivity) {
+			g.selected = c
+		}
+	}
+
+	ordered := make([]*webConversationGroup, 0, len(groups))
+	for _, g := range groups {
+		ordered = append(ordered, g)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].last.After(ordered[j].last)
+	})
+
+	topics := make([]webConversationTopic, 0, len(ordered))
+	for _, g := range ordered {
+		c := g.selected
+		if c == nil {
+			continue
+		}
+		title := c.Title
+		if g.root != nil && g.root.Title != "" {
+			title = g.root.Title
+		}
+		lastActivity := ""
+		if !g.last.IsZero() {
+			lastActivity = g.last.UTC().Format(time.RFC3339)
+		}
+		topics = append(topics, webConversationTopic{
+			ID:           c.ID,
+			Title:        title,
+			Summary:      c.Summary,
+			Started:      g.started,
+			Backend:      c.Backend,
+			Active:       g.active,
+			LastActivity: lastActivity,
+		})
+	}
+	return topics
+}
+
+func webConversationRootID(convs map[string]*Conversation, c *Conversation) string {
+	if c == nil {
+		return ""
+	}
+	rootID := c.ID
+	seen := map[string]bool{}
+	cur := c
+	for cur != nil && cur.ParentID != "" {
+		if seen[cur.ID] {
+			break
+		}
+		seen[cur.ID] = true
+		parent, ok := convs[cur.ParentID]
+		if !ok {
+			break
+		}
+		rootID = parent.ID
+		cur = parent
+	}
+	return rootID
+}
+
 // resolveWebOwner picks the chatID web actions run as: the explicit config value,
 // else the first allowed user ID; ok=false when neither is set (web chat disabled).
 func resolveWebOwner(ownerCfg int64, allowed []int64) (int64, bool) {
@@ -238,6 +386,7 @@ func (s *webServer) Start() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/api/upload", s.handleUpload)
+	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.HandleFunc("/", s.handleIndex)
 

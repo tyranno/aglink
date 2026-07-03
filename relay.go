@@ -13,6 +13,10 @@ const telegramMaxLen = 4096
 type MessageSender interface {
 	Send(chatID int64, text string) error
 	Typing(chatID int64)
+	// Done signals that the current Worker turn has finished (success, error,
+	// or cancellation) so channels that show a live "working" indicator (web
+	// chat) can clear it. Telegram has no such indicator, so it's a no-op there.
+	Done(chatID int64)
 }
 
 // sendChunked splits text and sends it as one or more Telegram messages.

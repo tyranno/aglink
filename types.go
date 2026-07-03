@@ -50,6 +50,13 @@ type ConversationTurn struct {
 // Conversation is one topic within a project; maps 1:1 to a claude session.
 // Design Ref: §3.1 — SessionID is a UUID we generate (--session-id first turn, --resume after).
 // ParentID chains conversations when context grows too large (auto-continuation).
+// Conversation origin channels. Empty string is treated as OriginTelegram for
+// backward compatibility with conversations created before this field existed.
+const (
+	OriginTelegram = "telegram"
+	OriginWeb      = "web"
+)
+
 type Conversation struct {
 	ID             string             `json:"id"`
 	Title          string             `json:"title"`
@@ -62,6 +69,7 @@ type Conversation struct {
 	ChildID        string             `json:"childId,omitempty"`        // ID of next conversation in chain
 	IsContinuation bool               `json:"isContinuation,omitempty"` // auto-generated continuation
 	Backend        string             `json:"backend,omitempty"`        // "claude"|"codex"|"" (""=claude)
+	Origin         string             `json:"origin,omitempty"`         // "telegram"|"web"|"" (""=telegram, back-compat)
 }
 
 // Project is a registered directory holding multiple conversations.
@@ -215,7 +223,7 @@ type StoreRepo interface {
 	AddProject(name, path string) error
 	RemoveProject(name string) error
 	GetProject(name string) (*Project, bool)
-	NewConversation(project, title string) (*Conversation, error)
+	NewConversation(project, title, origin string) (*Conversation, error)
 	GetConversation(project, convID string) (*Conversation, bool)
 	UpdateConversation(project string, c *Conversation) error
 	SetActive(project, convID string) error

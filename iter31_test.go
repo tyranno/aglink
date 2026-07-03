@@ -15,7 +15,7 @@ func TestPruneOldConversations_RemovesOldKeepsRecent(t *testing.T) {
 	if err := s.AddProject("myapp", dir); err != nil {
 		t.Fatalf("AddProject: %v", err)
 	}
-	old, err := s.NewConversation("myapp", "old")
+	old, err := s.NewConversation("myapp", "old", "")
 	if err != nil {
 		t.Fatalf("NewConversation: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestPruneOldConversations_RemovesOldKeepsRecent(t *testing.T) {
 	if err := s.UpdateConversation("myapp", old); err != nil {
 		t.Fatal(err)
 	}
-	recent, err := s.NewConversation("myapp", "recent")
+	recent, err := s.NewConversation("myapp", "recent", "")
 	if err != nil {
 		t.Fatalf("NewConversation: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestPruneOldConversations_SkipsActiveConversation(t *testing.T) {
 	if err := s.AddProject("myapp", dir); err != nil {
 		t.Fatalf("AddProject: %v", err)
 	}
-	c, err := s.NewConversation("myapp", "active-but-old")
+	c, err := s.NewConversation("myapp", "active-but-old", "")
 	if err != nil {
 		t.Fatalf("NewConversation: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestPruneOldConversations_ProtectsActiveAncestorChain(t *testing.T) {
 		t.Fatalf("AddProject: %v", err)
 	}
 	// Old parent conversation — would normally be pruned...
-	parent, err := s.NewConversation("myapp", "old-parent")
+	parent, err := s.NewConversation("myapp", "old-parent", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestPruneOldConversations_ProtectsActiveAncestorChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ...but it is the ancestor of the (also old) active continuation.
-	child, err := s.NewConversation("myapp", "active-child")
+	child, err := s.NewConversation("myapp", "active-child", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestPruneOldConversations_TTLZeroDisables(t *testing.T) {
 	if err := s.AddProject("myapp", dir); err != nil {
 		t.Fatalf("AddProject: %v", err)
 	}
-	c, err := s.NewConversation("myapp", "ancient")
+	c, err := s.NewConversation("myapp", "ancient", "")
 	if err != nil {
 		t.Fatalf("NewConversation: %v", err)
 	}

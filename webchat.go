@@ -116,6 +116,21 @@ type webConversationTopic struct {
 	Backend      string `json:"backend,omitempty"`
 	Active       bool   `json:"active"`
 	LastActivity string `json:"lastActivity,omitempty"`
+	// Channel is the conversation series' origin: "web" for chats explicitly
+	// created from the web UI (shown only in the web sidebar), "telegram" for
+	// everything else (legacy/shared/telegram). The web UI shows web + the active
+	// conversation by default and tucks the rest behind a "telegram" toggle.
+	Channel string `json:"channel"`
+}
+
+// conversationChannel maps a conversation's Origin to a display channel. Empty
+// Origin (legacy/auto-created/telegram) is treated as "telegram"; only an
+// explicit "web" origin counts as web.
+func conversationChannel(c *Conversation) string {
+	if c != nil && c.Origin == OriginWeb {
+		return OriginWeb
+	}
+	return OriginTelegram
 }
 
 type webProjectTopics struct {
@@ -175,14 +190,14 @@ func (s *webServer) inject(text string) {
 		return
 	}
 	if strings.HasPrefix(text, "!") {
-		s.bot.handleCommand(s.ownerChatID, text)
+		s.bot.handleCommand(s.ownerChatID, text, OriginWeb)
 		return
 	}
 	if s.bot.rateLimiter != nil && !s.bot.rateLimiter.Allow(s.ownerChatID) {
 		_ = s.bot.Send(s.ownerChatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
 		return
 	}
-	s.bot.dispatchText(s.ownerChatID, text)
+	s.bot.dispatchText(s.ownerChatID, text, OriginWeb)
 }
 
 func (s *webServer) authOK(r *http.Request) bool { return originOK(r) && tokenOK(r, s.token) }
@@ -338,6 +353,7 @@ func webTopicsForProject(project string, convs map[string]*Conversation, active 
 			Backend:      c.Backend,
 			Active:       g.active,
 			LastActivity: lastActivity,
+			Channel:      conversationChannel(g.root),
 		})
 	}
 	return topics
@@ -449,6 +465,6 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "write failed", http.StatusInternalServerError)
 		return
 	}
-	s.bot.ingestAttachment(s.ownerChatID, savePath, r.FormValue("caption"))
+	s.bot.ingestAttachment(s.ownerChatID, savePath, r.FormValue("caption"), OriginWeb)
 	w.WriteHeader(http.StatusNoContent)
 }

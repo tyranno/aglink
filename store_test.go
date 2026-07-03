@@ -63,11 +63,11 @@ func TestStore_NewConversation_UniqueIDsAndUUID(t *testing.T) {
 	if err := s.AddProject("a", dir); err != nil {
 		t.Fatal(err)
 	}
-	c1, err := s.NewConversation("a", "first")
+	c1, err := s.NewConversation("a", "first", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := s.NewConversation("a", "second")
+	c2, err := s.NewConversation("a", "second", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestStore_UpdateAndGetConversation(t *testing.T) {
 	_ = s.Load()
 	dir := t.TempDir()
 	_ = s.AddProject("a", dir)
-	c, _ := s.NewConversation("a", "t")
+	c, _ := s.NewConversation("a", "t", "")
 	c.Started = true
 	c.Summary = "done"
 	if err := s.UpdateConversation("a", c); err != nil {

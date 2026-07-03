@@ -207,11 +207,11 @@ func TestFileStore_NewConversation_IncrementingIDs(t *testing.T) {
 	s := NewFileStore(filepath.Join(dir, "store.json"))
 	_ = s.AddProject("p", dir)
 
-	c1, err := s.NewConversation("p", "first")
+	c1, err := s.NewConversation("p", "first", "")
 	if err != nil {
 		t.Fatalf("NewConversation: %v", err)
 	}
-	c2, err := s.NewConversation("p", "second")
+	c2, err := s.NewConversation("p", "second", "")
 	if err != nil {
 		t.Fatalf("NewConversation: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestFileStore_SetGetActive(t *testing.T) {
 	dir := t.TempDir()
 	s := NewFileStore(filepath.Join(dir, "store.json"))
 	_ = s.AddProject("p", dir)
-	c, _ := s.NewConversation("p", "")
+	c, _ := s.NewConversation("p", "", "")
 
 	if err := s.SetActive("p", c.ID); err != nil {
 		t.Fatalf("SetActive: %v", err)
@@ -242,7 +242,7 @@ func TestFileStore_RemoveProject_ClearsActive(t *testing.T) {
 	dir := t.TempDir()
 	s := NewFileStore(filepath.Join(dir, "store.json"))
 	_ = s.AddProject("p", dir)
-	c, _ := s.NewConversation("p", "")
+	c, _ := s.NewConversation("p", "", "")
 	_ = s.SetActive("p", c.ID)
 
 	_ = s.RemoveProject("p")

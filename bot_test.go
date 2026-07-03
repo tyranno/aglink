@@ -52,11 +52,11 @@ func TestHandleChatUseQualifiedProjectConversation(t *testing.T) {
 	if err := st.AddProject("beta", betaDir); err != nil {
 		t.Fatalf("add beta: %v", err)
 	}
-	alphaConv, err := st.NewConversation("alpha", "alpha topic")
+	alphaConv, err := st.NewConversation("alpha", "alpha topic", "")
 	if err != nil {
 		t.Fatalf("new alpha conversation: %v", err)
 	}
-	betaConv, err := st.NewConversation("beta", "beta topic")
+	betaConv, err := st.NewConversation("beta", "beta topic", "")
 	if err != nil {
 		t.Fatalf("new beta conversation: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestHandleChatUseQualifiedProjectConversation(t *testing.T) {
 	b := &Bot{store: st, out: NewHub()}
 	w := &recCh{}
 	b.out.Register(55, w)
-	b.handleChat(55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID))
+	b.handleChat(55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID), "")
 
 	active := st.GetActive()
 	if active.Project != "beta" || active.ConversationID != betaConv.ID {
@@ -376,7 +376,7 @@ func TestParseTaskAddArgs_ErrorInvalidSchedule(t *testing.T) {
 func TestIngestAttachment_BuildsPrompt(t *testing.T) {
 	var got string
 	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
-	b.ingestAttachment(7, "C:\\a\\file.png", "설명해줘")
+	b.ingestAttachment(7, "C:\\a\\file.png", "설명해줘", "")
 	if !strings.Contains(got, "설명해줘") || !strings.Contains(got, "[첨부파일: C:\\a\\file.png]") {
 		t.Errorf("prompt = %q", got)
 	}
@@ -385,7 +385,7 @@ func TestIngestAttachment_BuildsPrompt(t *testing.T) {
 func TestIngestAttachment_DefaultCaption(t *testing.T) {
 	var got string
 	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
-	b.ingestAttachment(7, "/tmp/x.pdf", "")
+	b.ingestAttachment(7, "/tmp/x.pdf", "", "")
 	if !strings.Contains(got, "첨부파일을 분석해줘") || !strings.Contains(got, "[첨부파일: /tmp/x.pdf]") {
 		t.Errorf("prompt = %q", got)
 	}
@@ -424,7 +424,7 @@ func TestHandleCommand_SerializedAcrossConcurrentCalls(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			b.handleCommand(7, "!status")
+			b.handleCommand(7, "!status", "")
 		}()
 	}
 	wg.Wait()

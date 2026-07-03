@@ -132,7 +132,7 @@ func (s *fileStore) GetProject(name string) (*Project, bool) {
 }
 
 // NewConversation creates a conversation in a project, assigning a numeric ID and a session UUID.
-func (s *fileStore) NewConversation(project, title string) (*Conversation, error) {
+func (s *fileStore) NewConversation(project, title, origin string) (*Conversation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -150,6 +150,7 @@ func (s *fileStore) NewConversation(project, title string) (*Conversation, error
 		SessionID:    newUUID(),
 		Started:      false,
 		LastActivity: time.Now().UTC(),
+		Origin:       origin,
 	}
 	p.Conversations[id] = c
 	if err := s.saveLocked(); err != nil {

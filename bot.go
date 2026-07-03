@@ -24,7 +24,8 @@ import (
 type queuedMsg struct {
 	chatID int64
 	text   string
-	isTask bool // true = scheduled task (bypass manager routing)
+	isTask bool   // true = scheduled task (bypass manager routing)
+	origin string // "telegram"|"web" — channel that sent it (tags new conversations)
 }
 
 // Bot dispatches Telegram messages to concurrent Workers.
@@ -211,29 +212,29 @@ func (b *Bot) Run() {
 				continue
 			}
 			if strings.HasPrefix(text, "!") {
-				b.handleCommand(chatID, text)
+				b.handleCommand(chatID, text, OriginTelegram)
 				continue
 			}
-			b.dispatchText(chatID, text)
+			b.dispatchText(chatID, text, OriginTelegram)
 		}
 	}
 }
 
 // dispatchText routes a free-text message through the Manager.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
-func (b *Bot) dispatchText(chatID int64, text string) {
+func (b *Bot) dispatchText(chatID int64, text, origin string) {
 	if b.dispatchHook != nil {
 		b.dispatchHook(chatID, text)
 		return
 	}
-	b.dispatch(queuedMsg{chatID: chatID, text: text})
+	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: origin})
 }
 
 // dispatchScheduledTask runs a pre-scheduled task bypassing Manager LLM routing.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
 	_ = b.Send(chatID, "⏰ 예약 작업 실행 중: "+truncate(text, 60))
-	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true})
+	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true, origin: OriginTelegram})
 }
 
 // dispatch is the shared entry point for both text and scheduled-task dispatches.
@@ -292,7 +293,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 		if msg.isTask {
 			b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, b)
 		} else {
-			b.manager.Handle(ctx, msg.chatID, msg.text, b)
+			b.manager.Handle(ctx, msg.chatID, msg.text, msg.origin, b)
 		}
 
 		switch ctx.Err() {
@@ -307,7 +308,10 @@ func (b *Bot) dispatch(msg queuedMsg) {
 // handleCommand processes commands synchronously. Serialized via cmdMu so
 // concurrent callers (web-chat's per-message reader goroutines) can never run
 // two commands — e.g. two overlapping !update self-rebuilds — at once.
-func (b *Bot) handleCommand(chatID int64, text string) {
+// handleCommand runs a "!" command. origin ("telegram"|"web") is the channel it
+// came from; it is forwarded to handlers that create conversations (handleChat's
+// "!chat new", handleParallel) so those get tagged with the right origin.
+func (b *Bot) handleCommand(chatID int64, text, origin string) {
 	b.cmdMu.Lock()
 	defer b.cmdMu.Unlock()
 	if b.commandHook != nil {
@@ -343,7 +347,7 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 	case "!project":
 		b.handleProject(chatID, text, fields)
 	case "!chat":
-		b.handleChat(chatID, text, fields)
+		b.handleChat(chatID, text, fields, origin)
 	case "!update":
 		b.mu.Lock()
 		active := b.activeCount
@@ -366,7 +370,7 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 	case "!user":
 		b.handleUser(chatID, fields)
 	case "!parallel":
-		b.handleParallel(chatID, text)
+		b.handleParallel(chatID, text, origin)
 	case "!screen":
 		b.handleScreen(chatID, fields)
 	default:
@@ -539,7 +543,9 @@ func (b *Bot) formatProjectList() string {
 }
 
 // handleChat: !chat new [title] | list | use <id> | use <project> <id>.
-func (b *Bot) handleChat(chatID int64, text string, fields []string) {
+// origin tags a "!chat new" conversation with the channel that created it so the
+// two channels' chat lists can be managed separately.
+func (b *Bot) handleChat(chatID int64, text string, fields []string, origin string) {
 	if len(fields) < 2 {
 		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id>")
 		return
@@ -555,7 +561,7 @@ func (b *Bot) handleChat(chatID int64, text string, fields []string) {
 		if parts := strings.SplitN(text, " ", 3); len(parts) == 3 {
 			title = strings.TrimSpace(parts[2])
 		}
-		c, err := b.store.NewConversation(active.Project, title)
+		c, err := b.store.NewConversation(active.Project, title, origin)
 		if err != nil {
 			_ = b.Send(chatID, "⚠️ "+err.Error())
 			return
@@ -606,8 +612,14 @@ func (b *Bot) formatChatList(project string) string {
 	active := b.store.GetActive()
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "💬 %s 대화 목록\n", project)
+	shown := 0
 	for _, id := range sortedConvIDs(p.Conversations) {
 		c := p.Conversations[id]
+		// Conversations explicitly created from the web UI are managed there only;
+		// keep them out of the Telegram chat list (continuations inherit the origin).
+		if c.Origin == OriginWeb {
+			continue
+		}
 		cm := ""
 		if id == active.ConversationID {
 			cm = " ⭐"
@@ -617,6 +629,10 @@ func (b *Bot) formatChatList(project string) string {
 			line += " — " + c.Summary
 		}
 		sb.WriteString(line + "\n")
+		shown++
+	}
+	if shown == 0 {
+		return fmt.Sprintf("📂 %s: 대화가 없습니다. !chat new [제목]", project)
 	}
 	return sb.String()
 }
@@ -1318,7 +1334,7 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 	fileID, ext := attachFileInfo(msg)
 	if fileID == "" {
 		if caption != "" {
-			b.dispatchText(chatID, caption)
+			b.dispatchText(chatID, caption, OriginTelegram)
 		}
 		return
 	}
@@ -1330,19 +1346,19 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 		return
 	}
 
-	b.ingestAttachment(chatID, savePath, caption)
+	b.ingestAttachment(chatID, savePath, caption, OriginTelegram)
 }
 
 // ingestAttachment builds a prompt from a saved file path + caption and dispatches
 // it. Shared by the Telegram attachment path and the web upload endpoint so both
 // behave identically.
-func (b *Bot) ingestAttachment(chatID int64, savePath, caption string) {
+func (b *Bot) ingestAttachment(chatID int64, savePath, caption, origin string) {
 	prompt := caption
 	if prompt == "" {
 		prompt = "첨부파일을 분석해줘"
 	}
 	prompt = prompt + "\n\n[첨부파일: " + savePath + "]"
-	b.dispatchText(chatID, prompt)
+	b.dispatchText(chatID, prompt, origin)
 }
 
 // attachFileInfo extracts the Telegram file ID and extension for the first attachment found.
@@ -1567,7 +1583,7 @@ func (b *Bot) handleBackend(chatID int64, fields []string) {
 // handleParallel dispatches multiple independent prompts concurrently.
 // Syntax: !parallel <prompt1> | <prompt2> | ...
 // Each |-separated prompt becomes its own worker; responses arrive independently.
-func (b *Bot) handleParallel(chatID int64, text string) {
+func (b *Bot) handleParallel(chatID int64, text, origin string) {
 	rest := strings.TrimSpace(strings.TrimPrefix(text, "!parallel"))
 	if rest == "" {
 		_ = b.Send(chatID, "사용법: !parallel <프롬프트1> | <프롬프트2> | ...\n예) !parallel 테스트 작성해줘 | 문서 업데이트해줘")
@@ -1594,12 +1610,12 @@ func (b *Bot) handleParallel(chatID int64, text string) {
 		prompts = prompts[:maxP]
 	}
 	if len(prompts) == 1 {
-		b.dispatchText(chatID, prompts[0])
+		b.dispatchText(chatID, prompts[0], origin)
 		return
 	}
 	_ = b.Send(chatID, fmt.Sprintf("🔀 %d개 병렬 작업 시작합니다...", len(prompts)))
 	for _, p := range prompts {
-		b.dispatchText(chatID, p)
+		b.dispatchText(chatID, p, origin)
 	}
 }
 

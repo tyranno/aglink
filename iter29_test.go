@@ -120,7 +120,7 @@ func TestNewConversation_EmptyTitle_GetsDefault(t *testing.T) {
 	dir := t.TempDir()
 	s := NewFileStore(filepath.Join(dir, "store.json"))
 	_ = s.AddProject("p", dir)
-	c, err := s.NewConversation("p", "")
+	c, err := s.NewConversation("p", "", "")
 	if err != nil {
 		t.Fatalf("NewConversation: %v", err)
 	}
@@ -165,8 +165,8 @@ func TestGetParent_WithChain(t *testing.T) {
 	s := NewFileStore(filepath.Join(dir, "store.json"))
 	_ = s.AddProject("p", dir)
 
-	parent, _ := s.NewConversation("p", "parent")
-	child, _ := s.NewConversation("p", "child")
+	parent, _ := s.NewConversation("p", "parent", "")
+	child, _ := s.NewConversation("p", "child", "")
 	child.ParentID = parent.ID
 	_ = s.UpdateConversation("p", child)
 
@@ -183,7 +183,7 @@ func TestGetParent_NoParent(t *testing.T) {
 	dir := t.TempDir()
 	s := NewFileStore(filepath.Join(dir, "store.json"))
 	_ = s.AddProject("p", dir)
-	c, _ := s.NewConversation("p", "solo")
+	c, _ := s.NewConversation("p", "solo", "")
 	_, ok := s.GetParent("p", c.ID)
 	if ok {
 		t.Error("GetParent on root conversation should return false")

@@ -14,6 +14,7 @@
   const attachBtn = document.getElementById("attach-btn");
   const topicList = document.getElementById("topic-list");
   const refreshTopics = document.getElementById("refresh-topics");
+  const newChat = document.getElementById("new-chat");
   const shell = document.getElementById("shell");
   const toggleSidebar = document.getElementById("toggle-sidebar");
   const workingEl = document.getElementById("working");
@@ -95,6 +96,34 @@
     return true;
   }
 
+  function makeConvButton(project, conv) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "topic";
+    if (conv.active) button.classList.add("active");
+    button.dataset.id = conv.id || "";
+
+    const title = document.createElement("span");
+    title.className = "topic-title";
+    title.textContent = conv.title || conv.id || "제목 없음";
+    button.appendChild(title);
+
+    if (conv.summary) {
+      const summary = document.createElement("span");
+      summary.className = "topic-summary";
+      summary.textContent = conv.summary;
+      button.appendChild(summary);
+    }
+
+    button.addEventListener("click", () => {
+      if (!conv.id || conv.active) return;
+      if (sendText("!chat use " + project.name + " " + conv.id, true)) {
+        window.setTimeout(loadConversations, 500);
+      }
+    });
+    return button;
+  }
+
   function renderConversations(data) {
     if (!topicList) return;
     topicList.replaceChildren();
@@ -144,32 +173,37 @@
         continue;
       }
 
+      // Web-created chats and the shared active conversation are shown by default;
+      // other (telegram/legacy) conversations tuck behind a toggle so the web
+      // sidebar isn't cluttered with chats made from Telegram.
+      const webConvs = [];
+      const tgConvs = [];
       for (const conv of conversations) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "topic";
-        if (conv.active) button.classList.add("active");
-        button.dataset.id = conv.id || "";
+        if (conv.active || conv.channel === "web") webConvs.push(conv);
+        else tgConvs.push(conv);
+      }
 
-        const title = document.createElement("span");
-        title.className = "topic-title";
-        title.textContent = conv.title || conv.id || "제목 없음";
-        button.appendChild(title);
+      for (const conv of webConvs) group.appendChild(makeConvButton(project, conv));
 
-        if (conv.summary) {
-          const summary = document.createElement("span");
-          summary.className = "topic-summary";
-          summary.textContent = conv.summary;
-          button.appendChild(summary);
-        }
+      if (tgConvs.length > 0) {
+        let open = false;
+        const holder = document.createElement("div");
+        holder.className = "topic-section";
+        holder.hidden = true;
+        for (const conv of tgConvs) holder.appendChild(makeConvButton(project, conv));
 
-        button.addEventListener("click", () => {
-          if (!conv.id || conv.active) return;
-          if (sendText("!chat use " + project.name + " " + conv.id, true)) {
-            window.setTimeout(loadConversations, 500);
-          }
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "topic-section-toggle";
+        const label = () => (open ? "▾ " : "▸ ") + "텔레그램 대화 (" + tgConvs.length + ")";
+        toggle.textContent = label();
+        toggle.addEventListener("click", () => {
+          open = !open;
+          holder.hidden = !open;
+          toggle.textContent = label();
         });
-        group.appendChild(button);
+        group.appendChild(toggle);
+        group.appendChild(holder);
       }
 
       topicList.appendChild(group);
@@ -244,6 +278,10 @@
     }
   });
   if (refreshTopics) refreshTopics.addEventListener("click", loadConversations);
+  if (newChat) newChat.addEventListener("click", () => {
+    // A web-created chat is managed only in the web sidebar (origin=web tagging).
+    if (sendText("!chat new", true)) window.setTimeout(loadConversations, 500);
+  });
   resizeInput();
   loadConversations();
   connect();

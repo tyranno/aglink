@@ -133,7 +133,10 @@ func detectBackendSwitchIntent(text string) string {
 
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
 // Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
-func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s MessageSender) {
+// Handle routes a free-text message to a worker. origin ("telegram"|"web") tags
+// any conversation newly created for this request so the two channels' chat lists
+// can be managed separately; continuations inherit their parent's origin.
+func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string, s MessageSender) {
 	// Pre-check: auto-switch backend if the message mentions it.
 	if target := detectBackendSwitchIntent(text); target != "" && target != m.Backend() {
 		if err := m.SetBackend(target); err != nil {
@@ -202,7 +205,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 			_ = s.Send(chatID, "🤔 어느 프로젝트인지 분명하지 않아요. !project list 를 확인해 주세요.")
 			return
 		}
-		c, err := m.store.NewConversation(dec.Project, dec.NewTitle)
+		c, err := m.store.NewConversation(dec.Project, dec.NewTitle, origin)
 		if err != nil {
 			_ = s.Send(chatID, "⚠️ 새 대화 생성 실패: "+err.Error())
 			return
@@ -215,7 +218,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
 		if !exists {
 			// Conversation was deleted or never existed — start a new one instead of erroring.
-			newC, cerr := m.store.NewConversation(dec.Project, "새 대화")
+			newC, cerr := m.store.NewConversation(dec.Project, "새 대화", origin)
 			if cerr != nil {
 				_ = s.Send(chatID, "⚠️ 대화를 찾을 수 없어 새 대화 생성도 실패했습니다: "+cerr.Error())
 				return
@@ -231,7 +234,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 		}
 		if convBackend != currentBackend {
 			_ = s.Send(chatID, fmt.Sprintf("⚠️ 백엔드 변경으로 새 대화를 시작합니다. [%s]", strings.ToUpper(currentBackend)))
-			newConv, cerr := m.store.NewConversation(dec.Project, "새 대화 ("+currentBackend+")")
+			newConv, cerr := m.store.NewConversation(dec.Project, "새 대화 ("+currentBackend+")", origin)
 			if cerr != nil {
 				_ = s.Send(chatID, "⚠️ 새 대화 생성 실패: "+cerr.Error())
 				return
@@ -307,7 +310,8 @@ func (m *Manager) chainInfo(project string, c *Conversation) (string, int) {
 // makeContinuation creates a new continuation conversation linked to parent.
 func (m *Manager) makeContinuation(project string, parent *Conversation) (*Conversation, error) {
 	baseTitle, seriesNum := m.chainInfo(project, parent)
-	newC, err := m.store.NewConversation(project, fmt.Sprintf("%s (시리즈 %d)", baseTitle, seriesNum))
+	// A continuation belongs to the same channel as its parent series.
+	newC, err := m.store.NewConversation(project, fmt.Sprintf("%s (시리즈 %d)", baseTitle, seriesNum), parent.Origin)
 	if err != nil {
 		return nil, err
 	}
@@ -852,7 +856,7 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text st
 		projectName = names[0]
 	}
 
-	c, err := m.store.NewConversation(projectName, "📅 "+truncate(text, 28))
+	c, err := m.store.NewConversation(projectName, "📅 "+truncate(text, 28), OriginTelegram)
 	if err != nil {
 		_ = s.Send(chatID, "⚠️ 예약 작업 대화 생성 실패: "+err.Error())
 		return

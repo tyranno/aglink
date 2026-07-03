@@ -50,7 +50,7 @@ func TestManager_New_CreatesConversationAndRuns(t *testing.T) {
 	m, st, _ := mgrFixture(t, fc)
 	f := &fakeSender{}
 
-	m.Handle(context.Background(), 1, "로그인 고쳐줘", f)
+	m.Handle(context.Background(), 1, "로그인 고쳐줘", "", f)
 
 	if fc.runCalls != 1 {
 		t.Fatalf("Run called %d times", fc.runCalls)
@@ -79,13 +79,13 @@ func TestManager_New_CreatesConversationAndRuns(t *testing.T) {
 func TestManager_Resume_UsesExistingSession(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "이어서 처리"}}
 	m, st, _ := mgrFixture(t, fc)
-	c, _ := st.NewConversation("myapp", "기존 대화")
+	c, _ := st.NewConversation("myapp", "기존 대화", "")
 	c.Started = true
 	_ = st.UpdateConversation("myapp", c)
 
 	fc.decision = RouteDecision{Action: ActionResume, Project: "myapp", ConversationID: c.ID}
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "계속하자", f)
+	m.Handle(context.Background(), 1, "계속하자", "", f)
 
 	if !fc.lastRun.Resume {
 		t.Error("existing started conversation should Resume")
@@ -99,7 +99,7 @@ func TestManager_Clarify_DoesNotRun(t *testing.T) {
 	fc := &fakeClaude{decision: RouteDecision{Action: ActionClarify, Clarify: "1) A 2) B"}}
 	m, _, _ := mgrFixture(t, fc)
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "그거 다시", f)
+	m.Handle(context.Background(), 1, "그거 다시", "", f)
 
 	if fc.runCalls != 0 {
 		t.Error("clarify must not run worker")
@@ -112,13 +112,13 @@ func TestManager_Clarify_DoesNotRun(t *testing.T) {
 func TestManager_RouteError_FallsBackToActive(t *testing.T) {
 	fc := &fakeClaude{routeErr: errors.New("boom"), runRes: RunResult{Text: "fallback ok"}}
 	m, st, _ := mgrFixture(t, fc)
-	c, _ := st.NewConversation("myapp", "활성 대화")
+	c, _ := st.NewConversation("myapp", "활성 대화", "")
 	c.Started = true
 	_ = st.UpdateConversation("myapp", c)
 	_ = st.SetActive("myapp", c.ID)
 
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "뭔가 해줘", f)
+	m.Handle(context.Background(), 1, "뭔가 해줘", "", f)
 
 	if fc.runCalls != 1 {
 		t.Errorf("expected fallback run, got %d calls", fc.runCalls)
@@ -129,7 +129,7 @@ func TestManager_RouteError_NoActive_Asks(t *testing.T) {
 	fc := &fakeClaude{routeErr: errors.New("boom")}
 	m, _, _ := mgrFixture(t, fc)
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "뭔가 해줘", f)
+	m.Handle(context.Background(), 1, "뭔가 해줘", "", f)
 
 	if fc.runCalls != 0 {
 		t.Error("should not run without active conversation")
@@ -145,7 +145,7 @@ func TestManager_NoProjects_Guides(t *testing.T) {
 	_ = st.Load()
 	m := NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "hi", f)
+	m.Handle(context.Background(), 1, "hi", "", f)
 	if len(f.sent) != 1 || !contains(f.sent[0], "!project add") {
 		t.Errorf("messages = %v", f.sent)
 	}
@@ -159,13 +159,13 @@ func TestManager_EmptyProject_FallsBackToActive(t *testing.T) {
 		runRes:   RunResult{Text: "이어서 처리"},
 	}
 	m, st, _ := mgrFixture(t, fc)
-	c, _ := st.NewConversation("myapp", "활성 대화")
+	c, _ := st.NewConversation("myapp", "활성 대화", "")
 	c.Started = true
 	_ = st.UpdateConversation("myapp", c)
 	_ = st.SetActive("myapp", c.ID)
 
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "가능한지 확인해봐", f)
+	m.Handle(context.Background(), 1, "가능한지 확인해봐", "", f)
 
 	if fc.runCalls != 1 {
 		t.Fatalf("expected resume of active conversation, got %d run calls", fc.runCalls)
@@ -185,7 +185,7 @@ func TestManager_EmptyProject_NoActive_Clarifies(t *testing.T) {
 	fc := &fakeClaude{decision: RouteDecision{Action: ActionResume, Project: ""}}
 	m, _, _ := mgrFixture(t, fc) // project registered but no active set
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "가능한지 확인해봐", f)
+	m.Handle(context.Background(), 1, "가능한지 확인해봐", "", f)
 
 	if fc.runCalls != 0 {
 		t.Errorf("should not run worker, got %d", fc.runCalls)
@@ -206,7 +206,7 @@ func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
 	m, st, _ := mgrFixture(t, fc)
 
 	// Create initial conversation with large history
-	c, _ := st.NewConversation("myapp", "큰 프로젝트")
+	c, _ := st.NewConversation("myapp", "큰 프로젝트", "")
 	c.Started = true
 	c.Summary = "이전에 많은 작업을 했습니다"
 
@@ -236,7 +236,7 @@ func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
 
 	fc.decision = RouteDecision{Action: ActionResume, Project: "myapp", ConversationID: c.ID}
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "계속 작업해줘", f)
+	m.Handle(context.Background(), 1, "계속 작업해줘", "", f)
 
 	// Verify continuation was created
 	p, _ := st.GetProject("myapp")
@@ -309,7 +309,7 @@ func TestManager_StatusAction_ReturnsActiveWorkers(t *testing.T) {
 	m, st, _ := mgrFixture(t, fc)
 
 	// Create conversation and mark as started
-	c, _ := st.NewConversation("myapp", "작업 중")
+	c, _ := st.NewConversation("myapp", "작업 중", "")
 	c.Started = true
 	_ = st.UpdateConversation("myapp", c)
 
@@ -323,7 +323,7 @@ func TestManager_StatusAction_ReturnsActiveWorkers(t *testing.T) {
 	})
 
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "진행 중이야?", f)
+	m.Handle(context.Background(), 1, "진행 중이야?", "", f)
 
 	if fc.runCalls != 0 {
 		t.Errorf("ActionStatus must not run Worker, got %d calls", fc.runCalls)
@@ -382,7 +382,7 @@ func TestHandleScheduledTask_UsesActiveProject(t *testing.T) {
 	m, st, dir := mgrFixture(t, fc)
 
 	// Create conversation and mark active in "myapp".
-	c, _ := st.NewConversation("myapp", "main chat")
+	c, _ := st.NewConversation("myapp", "main chat", "")
 	c.Started = true
 	_ = st.UpdateConversation("myapp", c)
 	_ = st.SetActive("myapp", c.ID)

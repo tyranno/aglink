@@ -84,7 +84,7 @@ func TestManagerWorkerStatus(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "작업 완료"}}
 	m, st, _ := mgrFixture(t, fc)
 
-	c, _ := st.NewConversation("myapp", "테스트 작업")
+	c, _ := st.NewConversation("myapp", "테스트 작업", "")
 	c.Started = true // Set to started so Handle uses this conversation
 	_ = st.UpdateConversation("myapp", c)
 

@@ -198,7 +198,7 @@ func TestHandleConversationsListsActiveTopics(t *testing.T) {
 		t.Fatalf("add project: %v", err)
 	}
 
-	oldConv, err := st.NewConversation("alpha", "오래된 주제")
+	oldConv, err := st.NewConversation("alpha", "오래된 주제", "")
 	if err != nil {
 		t.Fatalf("new old conversation: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestHandleConversationsListsActiveTopics(t *testing.T) {
 		t.Fatalf("update old conversation: %v", err)
 	}
 
-	activeConv, err := st.NewConversation("alpha", "현재 주제")
+	activeConv, err := st.NewConversation("alpha", "현재 주제", "")
 	if err != nil {
 		t.Fatalf("new active conversation: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestHandleConversationsGroupsContinuationChains(t *testing.T) {
 		t.Fatalf("add project: %v", err)
 	}
 
-	root, err := st.NewConversation("alpha", "긴 작업")
+	root, err := st.NewConversation("alpha", "긴 작업", "")
 	if err != nil {
 		t.Fatalf("new root conversation: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestHandleConversationsGroupsContinuationChains(t *testing.T) {
 	root.LastActivity = time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	root.Started = true
 
-	cont, err := st.NewConversation("alpha", "긴 작업 (시리즈 2)")
+	cont, err := st.NewConversation("alpha", "긴 작업 (시리즈 2)", "")
 	if err != nil {
 		t.Fatalf("new continuation conversation: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestHandleConversationsGroupsContinuationChains(t *testing.T) {
 		t.Fatalf("update continuation conversation: %v", err)
 	}
 
-	other, err := st.NewConversation("alpha", "다른 작업")
+	other, err := st.NewConversation("alpha", "다른 작업", "")
 	if err != nil {
 		t.Fatalf("new other conversation: %v", err)
 	}

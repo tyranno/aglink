@@ -13,6 +13,10 @@
   const fileNameEl = document.getElementById("file-name");
   const attachBtn = document.getElementById("attach-btn");
   const topicList = document.getElementById("topic-list");
+  const currentTopic = document.getElementById("current-topic");
+  const currentProject = document.getElementById("current-project");
+  const currentTitle = document.getElementById("current-title");
+  const currentId = document.getElementById("current-id");
   const refreshTopics = document.getElementById("refresh-topics");
   const newChat = document.getElementById("new-chat");
   const shell = document.getElementById("shell");
@@ -210,15 +214,61 @@
     }
   }
 
+  // Locate the active conversation in a list_conversations payload: prefer the
+  // explicit active ref (project + conversationId), fall back to the per-conv
+  // active flag. Returns { project, conv } or null.
+  function findActiveConversation(data) {
+    const projects = Array.isArray(data && data.projects) ? data.projects : [];
+    const activeProject = data && data.active && data.active.project;
+    const activeId = data && data.active && data.active.conversationId;
+    if (activeProject && activeId) {
+      for (const p of projects) {
+        const convs = Array.isArray(p.conversations) ? p.conversations : [];
+        for (const c of convs) {
+          if (p.name === activeProject && c.id === activeId) return { project: p.name, conv: c };
+        }
+      }
+    }
+    for (const p of projects) {
+      const convs = Array.isArray(p.conversations) ? p.conversations : [];
+      for (const c of convs) {
+        if (c.active) return { project: p.name, conv: c };
+      }
+    }
+    return null;
+  }
+
+  // Always-visible header showing which conversation is active, so it stays
+  // legible even when the sidebar is collapsed or scrolled.
+  function updateCurrentTopic(data) {
+    if (!currentTopic) return;
+    const found = findActiveConversation(data);
+    if (!found) {
+      if (currentProject) currentProject.textContent = "";
+      if (currentId) currentId.textContent = "";
+      if (currentTitle) { currentTitle.textContent = "대화 미선택"; currentTitle.classList.add("empty"); }
+      return;
+    }
+    const { project, conv } = found;
+    if (currentProject) currentProject.textContent = project || "";
+    if (currentTitle) {
+      currentTitle.textContent = conv.title || conv.id || "제목 없음";
+      currentTitle.classList.remove("empty");
+    }
+    if (currentId) currentId.textContent = conv.id ? "#" + conv.id : "";
+  }
+
   async function loadConversations() {
-    if (!topicList) return;
     try {
       const resp = await fetch("/api/conversations", {
         headers: { Authorization: "Bearer " + token },
       });
       if (!resp.ok) throw new Error("status " + resp.status);
-      renderConversations(await resp.json());
+      const data = await resp.json();
+      renderConversations(data);
+      updateCurrentTopic(data);
     } catch (err) {
+      if (!topicList) return;
       topicList.replaceChildren();
       const d = document.createElement("div");
       d.className = "topic-empty";

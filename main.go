@@ -392,6 +392,25 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		}
 	}
 
+	// Chat control API (loopback only) — lets a separate aglink-chat process serve
+	// the browser UI. Off by default; enabling it does not affect the embedded
+	// web_chat server above (both register their own channels with the same Hub).
+	if cfg.ChatControl {
+		owner, ownerOK := resolveWebOwner(cfg.ChatControlOwnerChatID, cfg.AllowedUserIDs)
+		addr := cfg.ChatControlAddr
+		if addr == "" {
+			addr = "127.0.0.1:17170"
+		}
+		if tok, terr := loadOrCreateToken(cfg.ChatControlToken, "chat_control.token"); terr != nil {
+			log.Printf("[chatcontrol] token init failed: %v — chat control disabled", terr)
+		} else if !ownerOK {
+			log.Printf("[chatcontrol] no owner chatID (set chat_control.owner_chat_id or allowed_user_ids) — chat control disabled")
+		} else {
+			cs := &chatControlServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}
+			go cs.Start()
+		}
+	}
+
 	// onReady fires after GetUpdatesChan — polling is confirmed active.
 	bot.onReady = func() {
 		log.Printf("[main] polling active, PID %d", os.Getpid())

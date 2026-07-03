@@ -29,6 +29,13 @@ import (
 // loadOrCreateWebToken returns cfgToken if set, otherwise reads (or creates and
 // persists) ~/.teleclaude/web_chat.token with 0600 perms.
 func loadOrCreateWebToken(cfgToken string) (string, error) {
+	return loadOrCreateToken(cfgToken, "web_chat.token")
+}
+
+// loadOrCreateToken returns cfgToken if set, otherwise reads (or creates and
+// persists) ~/.teleclaude/<filename> with 0600 perms. Used for both the web_chat
+// and chat_control shared tokens.
+func loadOrCreateToken(cfgToken, filename string) (string, error) {
 	if cfgToken != "" {
 		return cfgToken, nil
 	}
@@ -36,7 +43,7 @@ func loadOrCreateWebToken(cfgToken string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p := filepath.Join(dir, "web_chat.token")
+	p := filepath.Join(dir, filename)
 	if b, rerr := os.ReadFile(p); rerr == nil {
 		if tok := strings.TrimSpace(string(b)); tok != "" {
 			return tok, nil
@@ -282,8 +289,16 @@ func (s *webServer) handleConversations(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "conversation store unavailable", http.StatusInternalServerError)
 		return
 	}
-	active := s.bot.store.GetActive()
-	projects := s.bot.store.ListProjects()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(buildConversationsResponse(s.bot.store))
+}
+
+// buildConversationsResponse assembles the /api/conversations payload (project +
+// grouped-topic list with per-topic channel tags). Shared by the embedded web
+// server and the chat-control API so both report identical data.
+func buildConversationsResponse(store StoreRepo) webConversationsResponse {
+	active := store.GetActive()
+	projects := store.ListProjects()
 	names := make([]string, 0, len(projects))
 	for name := range projects {
 		names = append(names, name)
@@ -297,9 +312,7 @@ func (s *webServer) handleConversations(w http.ResponseWriter, r *http.Request) 
 		item.Conversations = webTopicsForProject(name, p.Conversations, active)
 		resp.Projects = append(resp.Projects, item)
 	}
-
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(resp)
+	return resp
 }
 
 func webTopicsForProject(project string, convs map[string]*Conversation, active ActiveRef) []webConversationTopic {

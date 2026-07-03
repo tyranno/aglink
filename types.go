@@ -38,6 +38,13 @@ type Config struct {
 	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:1717
 	WebChatToken          string   // web chat auth token; empty → auto-generated + persisted
 	WebChatOwnerChatID    int64    // chatID web actions run as; 0 → first AllowedUserIDs
+
+	// chat_control: loopback control API a separate aglink-chat process connects to.
+	// Off by default — enabling it never affects the embedded web_chat above.
+	ChatControl            bool   // loopback control-API server for aglink-chat enabled
+	ChatControlAddr        string // control-API bind address (loopback only), default 127.0.0.1:17170
+	ChatControlToken       string // control-API auth token; empty → auto-generated + persisted
+	ChatControlOwnerChatID int64  // chatID aglink-chat actions run as; 0 → first AllowedUserIDs
 }
 
 // ConversationTurn represents one exchange in a conversation.

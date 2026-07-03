@@ -57,6 +57,12 @@ type yamlConfig struct {
 		Token       string `yaml:"token"`
 		OwnerChatID int64  `yaml:"owner_chat_id"`
 	} `yaml:"web_chat"`
+	ChatControl struct {
+		Enabled     bool   `yaml:"enabled"`
+		Addr        string `yaml:"addr"`
+		Token       string `yaml:"token"`
+		OwnerChatID int64  `yaml:"owner_chat_id"`
+	} `yaml:"chat_control"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -122,6 +128,13 @@ func yamlToConfig(y *yamlConfig) *Config {
 	}
 	c.WebChatToken = y.WebChat.Token
 	c.WebChatOwnerChatID = y.WebChat.OwnerChatID
+	c.ChatControl = y.ChatControl.Enabled
+	c.ChatControlAddr = y.ChatControl.Addr
+	if c.ChatControlAddr == "" {
+		c.ChatControlAddr = "127.0.0.1:17170"
+	}
+	c.ChatControlToken = y.ChatControl.Token
+	c.ChatControlOwnerChatID = y.ChatControl.OwnerChatID
 	return c
 }
 
@@ -158,6 +171,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.WebChat.Addr = c.WebChatAddr
 	y.WebChat.Token = c.WebChatToken
 	y.WebChat.OwnerChatID = c.WebChatOwnerChatID
+	y.ChatControl.Enabled = c.ChatControl
+	y.ChatControl.Addr = c.ChatControlAddr
+	y.ChatControl.Token = c.ChatControlToken
+	y.ChatControl.OwnerChatID = c.ChatControlOwnerChatID
 	return y
 }
 

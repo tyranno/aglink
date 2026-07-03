@@ -1,0 +1,83 @@
+package main
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+func drainControlOut(ch chan controlOut) []controlOut {
+	var out []controlOut
+	for {
+		select {
+		case o := <-ch:
+			out = append(out, o)
+		default:
+			return out
+		}
+	}
+}
+
+// remoteChatChannel serializes Hub output to control frames; web-origin echo is a
+// no-op (mirrors webChannel).
+func TestRemoteChatChannel_Frames(t *testing.T) {
+	r := &remoteChatChannel{send: make(chan controlOut, 16), cancel: func() {}}
+	_ = r.Send(7, "hi")
+	r.Typing(7)
+	r.Done(7)
+	r.EchoUser(7, "from telegram", OriginTelegram)
+	r.EchoUser(7, "from web", OriginWeb) // no-op
+
+	outs := drainControlOut(r.send)
+	if len(outs) != 4 {
+		t.Fatalf("expected 4 frames (web-origin echo is a no-op), got %d: %+v", len(outs), outs)
+	}
+	if outs[0].Kind != "frame" || outs[0].Frame == nil || outs[0].Frame.Type != "text" || outs[0].Frame.Text != "hi" {
+		t.Errorf("send frame = %+v", outs[0])
+	}
+	if outs[1].Frame.Type != "typing" || outs[2].Frame.Type != "done" {
+		t.Errorf("typing/done wrong: %+v %+v", outs[1].Frame, outs[2].Frame)
+	}
+	if outs[3].Frame.Type != "user" || outs[3].Frame.Text != "from telegram" {
+		t.Errorf("echo frame = %+v", outs[3].Frame)
+	}
+}
+
+// send_text routes into the Bot's dispatch pipeline.
+func TestChatControl_SendText_Dispatches(t *testing.T) {
+	var got string
+	b := &Bot{}
+	b.out = NewHub()
+	b.dispatchHook = func(_ int64, text string) { got = text }
+	s := &chatControlServer{ownerChatID: 7, bot: b, hub: b.out}
+	ch := &remoteChatChannel{send: make(chan controlOut, 4), cancel: func() {}}
+
+	s.handleInbound(ch, controlIn{Type: "send_text", Text: "hello", Origin: OriginWeb})
+
+	deadline := time.Now().Add(2 * time.Second) // dispatch runs in a goroutine
+	for got == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got != "hello" {
+		t.Errorf("send_text should dispatch text, got %q", got)
+	}
+}
+
+// list_conversations returns a reply carrying the conversations payload.
+func TestChatControl_ListConversations_Replies(t *testing.T) {
+	st := originStore(t) // registers one project "p"
+	b := &Bot{store: st}
+	s := &chatControlServer{ownerChatID: 7, bot: b}
+	ch := &remoteChatChannel{send: make(chan controlOut, 4), cancel: func() {}}
+
+	s.handleInbound(ch, controlIn{Type: "list_conversations", ReqID: "r1"})
+
+	outs := drainControlOut(ch.send)
+	if len(outs) != 1 || outs[0].Kind != "reply" || outs[0].ReqID != "r1" {
+		t.Fatalf("expected one reply for r1, got %+v", outs)
+	}
+	var resp webConversationsResponse
+	if err := json.Unmarshal(outs[0].Data, &resp); err != nil {
+		t.Fatalf("reply data is not a conversations response: %v", err)
+	}
+}

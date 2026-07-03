@@ -162,7 +162,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 		// Routing failed entirely → fall back to the active conversation, else ask.
 		if active := m.store.GetActive(); active.Project != "" {
 			if c, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-				m.runWorker(ctx, chatID, text, active.Project, "", c, s, currentClient)
+				m.runWorker(ctx, chatID, text, active.Project, "", c, s, currentClient, currentBackend)
 				return
 			}
 		}
@@ -176,7 +176,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 			}
 			if c, cerr := m.store.NewConversation(only, "새 대화", origin); cerr == nil {
 				_ = m.store.SetActive(only, c.ID)
-				m.runWorker(ctx, chatID, text, only, "", c, s, currentClient)
+				m.runWorker(ctx, chatID, text, only, "", c, s, currentClient, currentBackend)
 				return
 			}
 		}
@@ -191,7 +191,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 		if _, pok := m.store.GetProject(dec.Project); !pok {
 			if active := m.store.GetActive(); active.Project != "" {
 				if ac, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-					m.runWorker(ctx, chatID, text, active.Project, "", ac, s, currentClient)
+					m.runWorker(ctx, chatID, text, active.Project, "", ac, s, currentClient, currentBackend)
 					return
 				}
 			}
@@ -226,7 +226,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 		}
 		c.Backend = currentBackend
 		_ = m.store.UpdateConversation(dec.Project, c)
-		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, currentClient)
+		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, currentClient, currentBackend)
 
 	case ActionResume:
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
@@ -239,31 +239,29 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 			}
 			newC.Backend = currentBackend
 			_ = m.store.UpdateConversation(dec.Project, newC)
-			m.runWorker(ctx, chatID, text, dec.Project, "", newC, s, currentClient)
+			m.runWorker(ctx, chatID, text, dec.Project, "", newC, s, currentClient, currentBackend)
 			return
 		}
 		convBackend := c.Backend
 		if convBackend == "" {
 			convBackend = "claude"
 		}
+		// Resuming an explicitly chosen conversation always uses that conversation's
+		// own backend — the global active backend (set via !backend) governs only new
+		// conversations and auto-routing, never an existing one the user picked. This
+		// is what makes "reopen an old codex/claude chat" actually continue it instead
+		// of silently forking a new conversation on the current backend.
+		resumeClient := currentClient
 		if convBackend != currentBackend {
-			// A backend switch can't resume the other backend's session, so a fresh
-			// conversation is started internally. The backend switch itself is already
-			// confirmed to the user when they trigger it; don't add conversation-
-			// management noise here — just log.
-			log.Printf("[manager] backend %s→%s: starting fresh conversation for resume", convBackend, currentBackend)
-			newConv, cerr := m.store.NewConversation(dec.Project, "새 대화 ("+currentBackend+")", origin)
-			if cerr != nil {
-				_ = s.Send(chatID, "⚠️ 새 대화 생성 실패: "+cerr.Error())
+			resumeClient = m.clientForBackend(convBackend)
+			if resumeClient == nil {
+				_ = s.Send(chatID, fmt.Sprintf("⚠️ 이 대화는 %s로 만들어졌는데 %s가 지금 설치되어 있지 않습니다.\n해당 백엔드를 설치하거나 `!backend %s`로 전환한 뒤 다시 시도해 주세요.",
+					strings.ToUpper(convBackend), strings.ToUpper(convBackend), convBackend))
 				return
 			}
-			newConv.Backend = currentBackend
-			_ = m.store.UpdateConversation(dec.Project, newConv)
-			_ = m.store.SetActive(dec.Project, newConv.ID)
-			m.runWorker(ctx, chatID, text, dec.Project, "", newConv, s, currentClient)
-			return
+			log.Printf("[manager] resume conv %s/%s on its own backend %s (active backend is %s)", dec.Project, c.ID, convBackend, currentBackend)
 		}
-		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, currentClient)
+		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, resumeClient, convBackend)
 
 	default:
 		_ = s.Send(chatID, "🤔 라우팅 결과를 이해하지 못했어요. !chat use <id> 로 대화를 지정해 주세요.")
@@ -361,16 +359,43 @@ func isSessionNotFound(text string) bool {
 
 // workerModelForBackend returns the right model string based on the active backend.
 func (m *Manager) workerModelForBackend() string {
-	if m.Backend() == "codex" {
+	return m.workerModelForBackendName(m.Backend())
+}
+
+// workerModelForBackendName returns the worker model for a specific backend,
+// independent of the globally active backend — so a conversation resumed on its
+// own backend uses that backend's model, not the currently selected one.
+func (m *Manager) workerModelForBackendName(backend string) string {
+	if backend == "codex" {
 		return m.cfg().CodexModel
 	}
 	return m.cfg().WorkerModel
 }
 
+// clientForBackend returns the CLI client for a backend name, or nil if that
+// backend is not installed. Used to resume a conversation on the backend it was
+// created with, regardless of the current global backend selection.
+func (m *Manager) clientForBackend(name string) ClaudeClient {
+	m.backendMu.RLock()
+	defer m.backendMu.RUnlock()
+	switch name {
+	case "codex":
+		return m.codexClient
+	case "claude":
+		return m.claudeClient
+	default:
+		return nil
+	}
+}
+
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
 // workDir overrides the project's path as the Claude CLI working directory (e.g. a git worktree).
 // Pass "" to use the project's registered path.
-func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, workDir string, c *Conversation, s MessageSender, client ClaudeClient) {
+// backend names the AI backend this turn runs on and MUST match `client`. It is
+// passed explicitly (rather than read from the global active backend) so a
+// conversation resumed on its own backend uses the right model, logging, and
+// continuation tagging even when the global backend differs.
+func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, workDir string, c *Conversation, s MessageSender, client ClaudeClient, backend string) {
 	// Signal turn completion on every exit path (success, error, timeout, or the
 	// early "project not found" return) so channels with a live "working"
 	// indicator (web chat) always get a matching Done for their Typing.
@@ -420,7 +445,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		if newC, err := m.makeContinuation(project, c); err != nil {
 			log.Printf("[manager] auto-continuation failed: %v", err)
 		} else {
-			newC.Backend = m.Backend()
+			newC.Backend = backend
 			parentSummary = summary
 			workConv = newC
 			// Internal context-length split: the conversation continues seamlessly
@@ -485,8 +510,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 	projectMemory := readProjectMemory(p.Path)
 	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)
 
-	backend := m.Backend()
-	workerModel := m.workerModelForBackend()
+	workerModel := m.workerModelForBackendName(backend)
 	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
 		backend, workerModel, project, workConv.ID, workConv.Started, len(prompt))
 
@@ -908,7 +932,7 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text st
 	}
 
 	log.Printf("[manager] scheduled task → project=%s conv=%s workDir=%s", projectName, c.ID, workDir)
-	m.runWorker(ctx, chatID, text, projectName, workDir, c, s, currentClient)
+	m.runWorker(ctx, chatID, text, projectName, workDir, c, s, currentClient, currentBackend)
 }
 
 // timeNow is a replaceable clock for testing.

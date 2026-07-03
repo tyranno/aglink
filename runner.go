@@ -51,14 +51,15 @@ var isolationArgs = []string{"--strict-mcp-config", "--setting-sources", "projec
 // Route asks the Manager model to decide routing. Runs in a neutral cwd with no tools/permissions.
 func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
 	prompt := buildRoutePrompt(req)
-	args := []string{"-p", prompt, "--output-format", "json", "--json-schema", routeJSONSchema}
+	// Prompt via stdin, not argv (Windows command-line length limit).
+	args := []string{"-p", "--output-format", "json", "--json-schema", routeJSONSchema}
 	args = append(args, isolationArgs...)
 	if r.cfg().ManagerModel != "" {
 		args = append(args, "--model", r.cfg().ManagerModel)
 	}
 
 	home, _ := os.UserHomeDir()
-	stdout, stderr, err := r.exec(ctx, home, args)
+	stdout, stderr, err := r.exec(ctx, home, args, prompt)
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("manager 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
 	}
@@ -80,7 +81,11 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 // executables (see resolveScreenBinaryPath/resolveWebBinaryPath). An empty
 // path skips that plugin (we don't know where its MCP server binary is).
 func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin string) []string {
-	args := []string{"-p", req.Prompt}
+	// The prompt is piped to claude via stdin (see Run/exec), NOT passed as a
+	// command-line arg. Large prompts (full history + memory + MCP config) would
+	// otherwise blow past the Windows command-line length limit (~32767 chars),
+	// failing with "The filename or extension is too long".
+	args := []string{"-p"}
 	if req.OnProgress != nil || req.OnImage != nil {
 		// Realtime NDJSON stream so tool-use activity (and tool_result images) can
 		// be relayed as it happens (see execStream/formatProgressEvent/
@@ -144,7 +149,7 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 			}
 			close(consumerDone)
 		}()
-		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, func(line string) {
+		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, req.Prompt, func(line string) {
 			if req.OnProgress != nil {
 				if msg := formatProgressEvent(line); msg != "" {
 					select {
@@ -177,7 +182,7 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 		return parseStreamResult(stdout)
 	}
 
-	stdout, stderr, err := r.exec(ctx, req.WorkDir, args)
+	stdout, stderr, err := r.exec(ctx, req.WorkDir, args, req.Prompt)
 	if err != nil {
 		if ctx.Err() != nil {
 			return RunResult{}, ctx.Err() // cancelled or timed out
@@ -192,9 +197,12 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 }
 
 // exec runs the claude CLI with process-tree cancellation (Windows-aware).
-func (r *claudeRunner) exec(ctx context.Context, dir string, args []string) (stdout, stderr string, err error) {
+func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdin string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
 	cmd.Dir = dir
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	// Inject the OAuth token so headless services (systemd, etc.) authenticate without
 	// any external env setup — `config.txt` is the single source of truth. Overrides a
 	// stale/expired ~/.claude/.credentials.json. Empty = use claude's own login.
@@ -215,9 +223,12 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string) (std
 // stdout as it arrives (used for stream-json progress relay). Returns the full
 // stdout once the process exits, so the caller can still fall back to parsing it
 // (e.g. on non-zero exit).
-func (r *claudeRunner) execStream(ctx context.Context, dir string, args []string, onLine func(line string)) (stdout, stderr string, err error) {
+func (r *claudeRunner) execStream(ctx context.Context, dir string, args []string, stdin string, onLine func(line string)) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
 	cmd.Dir = dir
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	if c := r.cfg(); c != nil && c.ClaudeOauthToken != "" {
 		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.ClaudeOauthToken)
 	}

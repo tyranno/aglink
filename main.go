@@ -235,24 +235,6 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 
 	bot := NewBot(api, holder, store, manager, sched, userStore)
 
-	// Web chat transport (localhost only). Starts alongside Telegram; both share
-	// state via the same Hub + owner chatID. Failure here never blocks the bot.
-	if cfg.WebChat {
-		owner, ownerOK := resolveWebOwner(cfg.WebChatOwnerChatID, cfg.AllowedUserIDs)
-		addr := cfg.WebChatAddr
-		if addr == "" {
-			addr = "127.0.0.1:1717"
-		}
-		if tok, terr := loadOrCreateWebToken(cfg.WebChatToken); terr != nil {
-			log.Printf("[webchat] token init failed: %v — web chat disabled", terr)
-		} else if !ownerOK {
-			log.Printf("[webchat] no owner chatID (set web_chat.owner_chat_id or allowed_user_ids) — web chat disabled")
-		} else {
-			ws := &webServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}
-			go ws.Start()
-		}
-	}
-
 	// Wire scheduler send/dispatch after bot is created
 	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })
 	sched.SetDispatch(func(chatID int64, text string) { bot.dispatchScheduledTask(chatID, text) })
@@ -387,6 +369,28 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 
 	// Write PID before bot.Run so the NEXT startup can find and kill us.
 	writePIDFile()
+
+	// Web chat transport (localhost only). Started here — AFTER the previous
+	// instance is gone (killPreviousInstance for a normal start, or the handoff
+	// wait above for --handoff-ready) — so it can actually bind the port. If it
+	// started earlier (right after NewBot), a still-running old instance would
+	// hold 127.0.0.1:1717 and bind would fail, silently disabling web chat on the
+	// new process. Both channels share state via the same Hub + owner chatID.
+	if cfg.WebChat {
+		owner, ownerOK := resolveWebOwner(cfg.WebChatOwnerChatID, cfg.AllowedUserIDs)
+		addr := cfg.WebChatAddr
+		if addr == "" {
+			addr = "127.0.0.1:1717"
+		}
+		if tok, terr := loadOrCreateWebToken(cfg.WebChatToken); terr != nil {
+			log.Printf("[webchat] token init failed: %v — web chat disabled", terr)
+		} else if !ownerOK {
+			log.Printf("[webchat] no owner chatID (set web_chat.owner_chat_id or allowed_user_ids) — web chat disabled")
+		} else {
+			ws := &webServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}
+			go ws.Start()
+		}
+	}
 
 	// onReady fires after GetUpdatesChan — polling is confirmed active.
 	bot.onReady = func() {

@@ -166,6 +166,20 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 				return
 			}
 		}
+		// No active conversation and routing failed. If there is exactly one project,
+		// just start there instead of making the user pick — only ask when the target
+		// is genuinely ambiguous (multiple projects).
+		if len(projects) == 1 {
+			var only string
+			for name := range projects {
+				only = name
+			}
+			if c, cerr := m.store.NewConversation(only, "새 대화", origin); cerr == nil {
+				_ = m.store.SetActive(only, c.ID)
+				m.runWorker(ctx, chatID, text, only, "", c, s, currentClient)
+				return
+			}
+		}
 		_ = s.Send(chatID, "🤔 어느 프로젝트/대화에서 할지 모르겠어요. !project list 로 확인하거나 !chat use <id> 로 지정해 주세요.")
 		return
 	}
@@ -233,7 +247,11 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 			convBackend = "claude"
 		}
 		if convBackend != currentBackend {
-			_ = s.Send(chatID, fmt.Sprintf("⚠️ 백엔드 변경으로 새 대화를 시작합니다. [%s]", strings.ToUpper(currentBackend)))
+			// A backend switch can't resume the other backend's session, so a fresh
+			// conversation is started internally. The backend switch itself is already
+			// confirmed to the user when they trigger it; don't add conversation-
+			// management noise here — just log.
+			log.Printf("[manager] backend %s→%s: starting fresh conversation for resume", convBackend, currentBackend)
 			newConv, cerr := m.store.NewConversation(dec.Project, "새 대화 ("+currentBackend+")", origin)
 			if cerr != nil {
 				_ = s.Send(chatID, "⚠️ 새 대화 생성 실패: "+cerr.Error())
@@ -405,13 +423,22 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 			newC.Backend = m.Backend()
 			parentSummary = summary
 			workConv = newC
-			_ = s.Send(chatID, "📝 대화가 길어져서 새 시리즈를 시작합니다...")
+			// Internal context-length split: the conversation continues seamlessly
+			// (summary carried forward), so don't expose the series boundary to the
+			// user — just log it for debugging.
+			log.Printf("[manager] context length → new series (conv %s → %s)", c.ID, newC.ID)
 		}
 	}
 
 	s.Typing(chatID)
 	isNewConv := !workConv.Started
-	_ = s.Send(chatID, routingHeader(project, workConv.Title, isNewConv))
+	// Show the "📂 project · 💬 conversation" header only when a genuinely new topic
+	// begins — never on a resume, and never for an internal continuation (a
+	// context-length series split). This keeps Telegram feeling like one continuous
+	// chat while the backend still manages conversations/series behind the scenes.
+	if isNewConv && !workConv.IsContinuation {
+		_ = s.Send(chatID, routingHeader(project, workConv.Title, isNewConv))
+	}
 
 	// Record Worker status as running
 	_ = m.workerStatus.SetStatus(WorkerStatus{
@@ -485,8 +512,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		// prompt already carries the recent-history reminder, so the conversation
 		// continues seamlessly instead of dead-ending on an error.
 		if workConv.Started && isSessionNotFound(err.Error()) {
+			// Session store was lost (bot restart / CLI update). Retry as a fresh
+			// session — the prompt carries a recent-history reminder so the chat
+			// continues seamlessly. This is internal recovery; don't tell the user.
 			log.Printf("[worker] session lost (%v) — retrying once without --resume", err)
-			_ = s.Send(chatID, "🔄 세션을 새로 시작해 대화를 이어갑니다...")
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
@@ -541,7 +570,8 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		if newC, cerr := m.makeContinuation(project, workConv); cerr == nil {
 			newC.Backend = m.Backend()
 			workConv = newC
-			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
+			// Reactive context-overflow split: continue seamlessly in a new series
+			// (summary carried); keep it internal — logged below, not sent to the user.
 			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, nil)
 			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
 

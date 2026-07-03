@@ -127,12 +127,18 @@ func TestManager_RouteError_FallsBackToActive(t *testing.T) {
 
 func TestManager_RouteError_NoActive_Asks(t *testing.T) {
 	fc := &fakeClaude{routeErr: errors.New("boom")}
-	m, _, _ := mgrFixture(t, fc)
+	m, st, _ := mgrFixture(t, fc)
+	// A second project makes the target genuinely ambiguous, so the manager must
+	// ask instead of guessing. (With a single project it auto-runs — see
+	// TestManager_RouteError_SingleProject_AutoRuns.)
+	if err := st.AddProject("other", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeSender{}
 	m.Handle(context.Background(), 1, "뭔가 해줘", "", f)
 
 	if fc.runCalls != 0 {
-		t.Error("should not run without active conversation")
+		t.Error("should not run when multiple projects and no active conversation")
 	}
 	if len(f.sent) == 0 {
 		t.Error("should ask the user")

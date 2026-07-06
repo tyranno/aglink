@@ -30,7 +30,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | upload_attachment
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -177,6 +177,17 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		data, err := json.Marshal(buildConversationsResponse(s.bot.store))
 		if err != nil {
 			log.Printf("[chatcontrol] list_conversations marshal: %v", err)
+			return
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "get_history":
+		tgt := Target{Kind: "telegram"}
+		if m.Target != nil {
+			tgt = *m.Target
+		}
+		data, err := json.Marshal(buildHistoryResponse(s.bot.store, tgt))
+		if err != nil {
+			log.Printf("[chatcontrol] get_history marshal: %v", err)
 			return
 		}
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})

@@ -147,8 +147,17 @@ type webProjectTopics struct {
 	Conversations []webConversationTopic `json:"conversations"`
 }
 
+type webTelegramEntry struct {
+	Title   string `json:"title"`
+	ID      string `json:"id"`
+	Active  bool   `json:"active"`
+	Backend string `json:"backend,omitempty"`
+	Project string `json:"project,omitempty"` // current working-dir project
+}
+
 type webConversationsResponse struct {
 	Active   ActiveRef          `json:"active"`
+	Telegram *webTelegramEntry  `json:"telegram,omitempty"`
 	Projects []webProjectTopics `json:"projects"`
 }
 
@@ -296,6 +305,19 @@ func (s *webServer) handleConversations(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(buildConversationsResponse(s.bot.store))
 }
 
+func (s *webServer) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	tgt := Target{Kind: r.URL.Query().Get("kind"), Project: r.URL.Query().Get("project"), ID: r.URL.Query().Get("id")}
+	if tgt.Kind == "" {
+		tgt.Kind = "telegram"
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(buildHistoryResponse(s.bot.store, tgt))
+}
+
 // buildConversationsResponse assembles the /api/conversations payload (project +
 // grouped-topic list with per-topic channel tags). Shared by the embedded web
 // server and the chat-control API so both report identical data.
@@ -314,6 +336,47 @@ func buildConversationsResponse(store StoreRepo) webConversationsResponse {
 		item := webProjectTopics{Name: name, Path: p.Path}
 		item.Conversations = webTopicsForProject(name, p.Conversations, active)
 		resp.Projects = append(resp.Projects, item)
+	}
+	if tc := store.TelegramConversation(); tc != nil {
+		resp.Telegram = &webTelegramEntry{
+			Title:   tc.Title,
+			ID:      tc.ID,
+			Backend: tc.Backend,
+			Project: store.TelegramActiveProject(),
+		}
+	}
+	return resp
+}
+
+type historyTurn struct {
+	Role string `json:"role"` // "user" | "assistant"
+	Text string `json:"text"`
+}
+type historyResponse struct {
+	Turns []historyTurn `json:"turns"`
+}
+
+// buildHistoryResponse expands a conversation's stored turns into a flat
+// user/assistant sequence for the web log. Shared by /api/history and the
+// chat-control get_history request.
+func buildHistoryResponse(store StoreRepo, tgt Target) historyResponse {
+	var conv *Conversation
+	if tgt.Kind == "telegram" {
+		conv = store.TelegramConversation()
+	} else if c, ok := store.GetConversation(tgt.Project, tgt.ID); ok {
+		conv = c
+	}
+	resp := historyResponse{Turns: []historyTurn{}}
+	if conv == nil {
+		return resp
+	}
+	for _, turn := range conv.History {
+		if turn.Prompt != "" {
+			resp.Turns = append(resp.Turns, historyTurn{Role: "user", Text: turn.Prompt})
+		}
+		if turn.Response != "" {
+			resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Text: turn.Response})
+		}
 	}
 	return resp
 }
@@ -428,6 +491,7 @@ func (s *webServer) Start() {
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
+	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.HandleFunc("/", s.handleIndex)
 

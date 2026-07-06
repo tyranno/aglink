@@ -111,9 +111,12 @@ type wsFrame struct {
 
 // inMsg is a message from the browser.
 type inMsg struct {
-	Type   string  `json:"type"` // "send"
+	Type   string  `json:"type"` // "send" | "web_new" | "web_setdir" | "web_rename"
 	Text   string  `json:"text"`
 	Target *Target `json:"target,omitempty"`
+	ID     string  `json:"id,omitempty"`
+	Path   string  `json:"path,omitempty"`
+	Title  string  `json:"title,omitempty"`
 }
 
 type webConversationTopic struct {
@@ -159,6 +162,18 @@ type webConversationsResponse struct {
 	Active   ActiveRef          `json:"active"`
 	Telegram *webTelegramEntry  `json:"telegram,omitempty"`
 	Projects []webProjectTopics `json:"projects"`
+	WebConvs []webWebConv       `json:"webConvs"`
+}
+
+// webWebConv is a top-level web conversation entry (Task 2's store.WebConvs),
+// distinct from webProjectTopics/webConversationTopic which describe
+// project-scoped (Telegram-origin) conversation trees.
+type webWebConv struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	WorkDir string `json:"workDir,omitempty"`
+	Active  bool   `json:"active"`
+	Backend string `json:"backend,omitempty"`
 }
 
 type webConversationGroup struct {
@@ -271,8 +286,15 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		if rerr := wsjson.Read(ctx, c, &m); rerr != nil {
 			break
 		}
-		if m.Type == "send" {
+		switch m.Type {
+		case "send":
 			go s.inject(m.Text, m.Target)
+		case "web_new":
+			go s.bot.webNew(s.ownerChatID, m.Title)
+		case "web_setdir":
+			go s.bot.webSetDir(s.ownerChatID, m.ID, m.Path)
+		case "web_rename":
+			go s.bot.webRename(s.ownerChatID, m.ID, m.Title)
 		}
 	}
 	cancel()
@@ -348,6 +370,22 @@ func buildConversationsResponse(store StoreRepo) webConversationsResponse {
 			Backend: tc.Backend,
 			Project: store.TelegramActiveProject(),
 		}
+	}
+
+	webConvs := store.ListWebConvs()
+	ids := make([]string, 0, len(webConvs))
+	for id := range webConvs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return webConvs[ids[i]].LastActivity.After(webConvs[ids[j]].LastActivity) })
+	resp.WebConvs = make([]webWebConv, 0, len(ids))
+	for _, id := range ids {
+		c := webConvs[id]
+		resp.WebConvs = append(resp.WebConvs, webWebConv{
+			ID: c.ID, Title: c.Title, WorkDir: c.WorkDir,
+			Active:  active.Project == "" && active.ConversationID == c.ID,
+			Backend: c.Backend,
+		})
 	}
 	return resp
 }

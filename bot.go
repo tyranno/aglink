@@ -1833,3 +1833,66 @@ func helpText() string {
 !help                        이 도움말
 `)
 }
+
+// validateDir confirms path exists and is a directory. Used by webSetDir so a
+// per-conversation WorkDir is never set to a missing/non-directory path.
+func validateDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("경로가 비어 있습니다")
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("경로를 찾을 수 없습니다: %s", path)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("디렉토리가 아닙니다: %s", path)
+	}
+	return nil
+}
+
+// webNew creates a new top-level web conversation and makes it the active one
+// so the web UI can select it immediately.
+func (b *Bot) webNew(chatID int64, title string) {
+	c, err := b.store.NewWebConv(title)
+	if err != nil {
+		_ = b.Send(chatID, "⚠️ 새 웹 대화 생성 실패: "+err.Error())
+		return
+	}
+	_ = b.store.SetActive("", c.ID)
+	_ = b.Send(chatID, "🆕 새 웹 대화: "+c.Title)
+}
+
+// webSetDir sets the working directory for a web conversation, validating the
+// path exists and is a directory first (never persist a non-existent WorkDir).
+func (b *Bot) webSetDir(chatID int64, id, path string) {
+	c, ok := b.store.GetWebConv(id)
+	if !ok {
+		_ = b.Send(chatID, "웹 대화를 찾을 수 없습니다.")
+		return
+	}
+	if err := validateDir(path); err != nil {
+		_ = b.Send(chatID, "⚠️ "+err.Error())
+		return
+	}
+	c.WorkDir = path
+	if err := b.store.UpdateWebConv(c); err != nil {
+		_ = b.Send(chatID, "⚠️ 설정 실패: "+err.Error())
+		return
+	}
+	_ = b.Send(chatID, "📁 작업 폴더 설정: "+path)
+}
+
+// webRename renames a web conversation.
+func (b *Bot) webRename(chatID int64, id, title string) {
+	c, ok := b.store.GetWebConv(id)
+	if !ok || title == "" {
+		_ = b.Send(chatID, "이름 변경 실패: 대화가 없거나 제목이 비었습니다.")
+		return
+	}
+	c.Title = title
+	if err := b.store.UpdateWebConv(c); err != nil {
+		_ = b.Send(chatID, "⚠️ 이름 변경 실패: "+err.Error())
+		return
+	}
+	_ = b.Send(chatID, "✏️ 이름 변경: "+title)
+}

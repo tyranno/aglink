@@ -30,7 +30,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment | web_new | web_setdir | web_rename
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -38,6 +38,8 @@ type controlIn struct {
 	Path    string  `json:"path,omitempty"`
 	Caption string  `json:"caption,omitempty"`
 	Target  *Target `json:"target,omitempty"`
+	ID      string  `json:"id,omitempty"`
+	Title   string  `json:"title,omitempty"`
 }
 
 // controlOut is a message to aglink-chat: either a Hub-driven browser frame
@@ -193,6 +195,12 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "upload_attachment":
 		go s.bot.ingestAttachment(chatID, m.Path, m.Caption, origin)
+	case "web_new":
+		go s.bot.webNew(chatID, m.Title)
+	case "web_setdir":
+		go s.bot.webSetDir(chatID, m.ID, m.Path)
+	case "web_rename":
+		go s.bot.webRename(chatID, m.ID, m.Title)
 	default:
 		log.Printf("[chatcontrol] unknown control message type %q", m.Type)
 	}

@@ -3,15 +3,18 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func TestResolveHomeDir_DefaultCreatesTeleclaudeUnderHome(t *testing.T) {
-	cfg := &Config{} // no HomeDir → default
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome) // Windows
+	t.Setenv("HOME", tmpHome)        // Unix
+	cfg := &Config{}                 // no HomeDir → default
 	got := resolveHomeDir(cfg)
-	if !strings.HasSuffix(filepath.Clean(got), filepath.Join("", "teleclaude")) && filepath.Base(got) != "teleclaude" {
-		t.Fatalf("default home should end in /teleclaude, got %q", got)
+	want := filepath.Join(tmpHome, "teleclaude")
+	if got != want {
+		t.Fatalf("default home = %q, want %q", got, want)
 	}
 	if fi, err := os.Stat(got); err != nil || !fi.IsDir() {
 		t.Errorf("resolveHomeDir must create the directory, stat err=%v", err)

@@ -4,6 +4,7 @@ import "testing"
 
 func TestYAMLRoundTrip(t *testing.T) {
 	c := &Config{
+		HomeDir:             "C:\\tools\\teleclaude-home",
 		TelegramBotToken:    "123:ABC",
 		AllowedUserIDs:      []int64{111, 222},
 		AllowedUsernames:    []string{"alice"},
@@ -39,7 +40,8 @@ func TestYAMLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.TelegramBotToken != c.TelegramBotToken ||
+	if got.HomeDir != c.HomeDir ||
+		got.TelegramBotToken != c.TelegramBotToken ||
 		len(got.AllowedUserIDs) != 2 || got.AllowedUserIDs[1] != 222 ||
 		got.WorkerModel != "sonnet" || got.ManagerAlways != false ||
 		got.ClaudeOauthToken != "sk-ant-oat01-X" || got.DefaultBackend != "claude" ||

@@ -286,23 +286,61 @@ func (m *Manager) resolveTelegramProject(chatID int64, text, hint string, s Mess
 	return "", false
 }
 
-// handleWeb is a temporary stub (replaced in Task 5). It routes to the active web
-// topic if one exists.
+// handleWeb handles a web send with no explicit target (legacy path): default to
+// the telegram stream, the always-present conversation.
 func (m *Manager) handleWeb(ctx context.Context, chatID int64, text string, s MessageSender) {
-	active := m.store.GetActive()
-	if active.Project == "" {
-		_ = s.Send(chatID, "웹 토픽을 먼저 선택하거나 생성하세요.")
+	m.HandleWebTarget(ctx, chatID, text, Target{Kind: "telegram"}, s)
+}
+
+// HandleWebTarget routes a web send to its explicit target: the global telegram
+// stream or a specific web topic. Web never does LLM project routing.
+func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string, tgt Target, s MessageSender) {
+	if tgt.Kind == "telegram" {
+		project := m.store.TelegramActiveProject()
+		p, ok := m.store.GetProject(project)
+		if !ok {
+			// Fall back to a single project, else ask.
+			names := projectNames(m.store)
+			if len(names) == 1 {
+				project = names[0]
+				_ = m.store.SetTelegramActiveProject(project)
+				p, _ = m.store.GetProject(project)
+			} else {
+				_ = s.Send(chatID, "🤔 텔레그램 대화의 작업 프로젝트가 정해지지 않았습니다. 텔레그램에서 \"이제 <프로젝트명> 하자\"로 먼저 지정해 주세요.")
+				return
+			}
+		}
+		tc := m.store.TelegramConversation()
+		backend := tc.Backend
+		if backend == "" {
+			backend = "claude"
+		}
+		client := m.clientForBackend(backend)
+		if client == nil {
+			_ = s.Send(chatID, fmt.Sprintf("⚠️ 텔레그램 대화는 %s로 생성됐는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
+			return
+		}
+		m.runWorker(ctx, chatID, text, m.telegramSink(project), p.Path, tc, s, client, backend)
 		return
 	}
-	c, ok := m.store.GetConversation(active.Project, active.ConversationID)
+
+	// Web topic target.
+	c, ok := m.store.GetConversation(tgt.Project, tgt.ID)
 	if !ok {
-		_ = s.Send(chatID, "웹 토픽을 찾을 수 없습니다.")
+		_ = s.Send(chatID, "웹 토픽을 찾을 수 없습니다: "+tgt.Project+"/"+tgt.ID)
 		return
 	}
-	m.backendMu.RLock()
-	client, backend := m.client, m.backendName
-	m.backendMu.RUnlock()
-	m.runWorker(ctx, chatID, text, m.projectSink(active.Project), "", c, s, client, backend)
+	backend := c.Backend
+	if backend == "" {
+		backend = "claude"
+	}
+	client := m.clientForBackend(backend)
+	if client == nil {
+		_ = s.Send(chatID, fmt.Sprintf("⚠️ 이 토픽은 %s로 만들어졌는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
+		return
+	}
+	_ = m.store.SetActive(tgt.Project, c.ID)
+	m.runWorker(ctx, chatID, text, m.projectSink(tgt.Project), "", c, s, client, backend)
 }
 
 func (m *Manager) buildRouteRequest(text string) RouteRequest {

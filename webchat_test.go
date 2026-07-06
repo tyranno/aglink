@@ -120,38 +120,43 @@ func TestOriginOK(t *testing.T) {
 	}
 }
 
+// Non-command text with no explicit target now routes through dispatchTargeted
+// (default: telegram stream) instead of the LLM-routed dispatchText/dispatchHook
+// path (Task 5), so routing is observed via the telegram conversation's history
+// rather than dispatchHook.
 func TestWebInjectRouting(t *testing.T) {
-	var gotCmd, gotText string
-	b := &Bot{}
+	var gotCmd string
+	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
+	m, st, _ := webTgtManager(t, fc)
+	b := &Bot{manager: m, store: st}
 	b.out = NewHub()
 	b.commandHook = func(_ int64, text string) { gotCmd = text }
-	b.dispatchHook = func(_ int64, text string) { gotText = text }
 	s := &webServer{ownerChatID: 7, bot: b, hub: b.out}
 
-	s.inject("!help")
-	s.inject("hello world")
+	s.inject("!help", nil)
+	s.inject("hello world", nil)
 
 	if gotCmd != "!help" {
 		t.Errorf("command not routed to handleCommand, got %q", gotCmd)
 	}
-	if gotText != "hello world" {
-		t.Errorf("text not routed to dispatchText, got %q", gotText)
+	if len(st.TelegramConversation().History) != 1 {
+		t.Errorf("text not routed to telegram target via dispatchTargeted, history len=%d", len(st.TelegramConversation().History))
 	}
 }
 
 func TestWebInjectRateLimited(t *testing.T) {
-	var dispatchCount int
-	b := &Bot{}
+	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
+	m, st, _ := webTgtManager(t, fc)
+	b := &Bot{manager: m, store: st}
 	b.out = NewHub()
 	b.rateLimiter = NewRateLimiter(1) // allow 1 per minute
-	b.dispatchHook = func(_ int64, _ string) { dispatchCount++ }
 	s := &webServer{ownerChatID: 7, bot: b, hub: b.out}
 
-	s.inject("hi")
-	s.inject("hi again")
+	s.inject("hi", nil)
+	s.inject("hi again", nil)
 
-	if dispatchCount != 1 {
-		t.Errorf("dispatch count = %d, want 1 (second call should have been rate-limited)", dispatchCount)
+	if len(st.TelegramConversation().History) != 1 {
+		t.Errorf("history len = %d, want 1 (second call should have been rate-limited)", len(st.TelegramConversation().History))
 	}
 }
 
@@ -568,16 +573,16 @@ func TestUpload_Unauthorized(t *testing.T) {
 }
 
 // TestWSRoundTrip exercises the full browser <-> server pipeline over a real
-// WebSocket connection: an inbound {"type":"send"} frame must reach the bot's
-// dispatch pipeline, and a Hub broadcast to the registered chatID must arrive
-// back at the client as a {"type":"text"} frame.
+// WebSocket connection: an inbound {"type":"send"} frame with no explicit
+// target must reach the Manager via dispatchTargeted's telegram default (Task
+// 5), and a Hub broadcast to the registered chatID must arrive back at the
+// client as a {"type":"text"} frame.
 func TestWSRoundTrip(t *testing.T) {
-	dispatched := make(chan string, 1)
-
-	b := &Bot{}
+	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
+	m, st, _ := webTgtManager(t, fc)
+	b := &Bot{manager: m, store: st}
 	hub := NewHub()
 	b.out = hub
-	b.dispatchHook = func(_ int64, text string) { dispatched <- text }
 	s := &webServer{token: "secret", ownerChatID: 7, hub: hub, bot: b}
 
 	mux := http.NewServeMux()
@@ -599,26 +604,29 @@ func TestWSRoundTrip(t *testing.T) {
 		t.Fatalf("write: %v", werr)
 	}
 
-	select {
-	case text := <-dispatched:
-		if text != "hello" {
-			t.Errorf("dispatched text = %q, want %q", text, "hello")
-		}
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for inbound frame to reach dispatchHook")
+	deadline := time.Now().Add(3 * time.Second)
+	for len(st.TelegramConversation().History) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(st.TelegramConversation().History) != 1 {
+		t.Fatalf("timeout waiting for inbound frame to reach the manager, history len=%d", len(st.TelegramConversation().History))
 	}
 
-	// By the time dispatchHook fired, the server's reader loop was already
-	// running, which only starts after hub.Register — so the channel is
-	// guaranteed registered before this broadcast.
+	// hub.Register happens synchronously in handleWS before the reader loop, so
+	// the channel is guaranteed registered well before this broadcast. The real
+	// worker run above also emits its own frames (typing/response/completion)
+	// to the same channel, so scan past those for the explicit "reply" frame.
 	_ = s.hub.Send(7, "reply")
 
-	var frame wsFrame
-	if rerr := wsjson.Read(ctx, c, &frame); rerr != nil {
-		t.Fatalf("read: %v", rerr)
-	}
-	if frame.Type != "text" || frame.Text != "reply" {
-		t.Errorf("broadcast frame = %+v, want {Type:text Text:reply}", frame)
+	found := false
+	for !found {
+		var frame wsFrame
+		if rerr := wsjson.Read(ctx, c, &frame); rerr != nil {
+			t.Fatalf("read: %v (waiting for reply frame)", rerr)
+		}
+		if frame.Type == "text" && frame.Text == "reply" {
+			found = true
+		}
 	}
 }
 

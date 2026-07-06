@@ -30,13 +30,14 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string `json:"type"` // send_text | handle_command | list_conversations | upload_attachment
-	ReqID   string `json:"reqID,omitempty"`
-	ChatID  int64  `json:"chatID,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Origin  string `json:"origin,omitempty"`
-	Path    string `json:"path,omitempty"`
-	Caption string `json:"caption,omitempty"`
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | upload_attachment
+	ReqID   string  `json:"reqID,omitempty"`
+	ChatID  int64   `json:"chatID,omitempty"`
+	Text    string  `json:"text,omitempty"`
+	Origin  string  `json:"origin,omitempty"`
+	Path    string  `json:"path,omitempty"`
+	Caption string  `json:"caption,omitempty"`
+	Target  *Target `json:"target,omitempty"`
 }
 
 // controlOut is a message to aglink-chat: either a Hub-driven browser frame
@@ -169,7 +170,7 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 			_ = s.bot.Send(chatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
 			return
 		}
-		go s.bot.dispatchText(chatID, text, origin)
+		go s.bot.dispatchTargeted(chatID, text, m.Target)
 	case "handle_command":
 		go s.bot.handleCommand(chatID, m.Text, origin)
 	case "list_conversations":

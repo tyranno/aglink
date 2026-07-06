@@ -245,6 +245,20 @@ func (b *Bot) dispatchText(chatID int64, text, origin string) {
 	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: origin})
 }
 
+// dispatchTargeted routes a web message to its explicit target: the global
+// telegram stream (kind "telegram") or a specific web topic (kind "web"). A nil
+// tgt (a web client that hasn't yet been updated to send a target) defaults to
+// the telegram stream. Unlike dispatchText this calls the Manager directly —
+// no worker-slot queue and no per-turn timeout context — since per-target web
+// sends are independent of the shared telegram worker-slot count.
+func (b *Bot) dispatchTargeted(chatID int64, text string, tgt *Target) {
+	t := Target{Kind: "telegram"}
+	if tgt != nil {
+		t = *tgt
+	}
+	b.manager.HandleWebTarget(context.Background(), chatID, text, t, b)
+}
+
 // dispatchScheduledTask runs a pre-scheduled task bypassing Manager LLM routing.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchScheduledTask(chatID int64, text string) {

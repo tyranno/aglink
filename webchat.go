@@ -111,8 +111,9 @@ type wsFrame struct {
 
 // inMsg is a message from the browser.
 type inMsg struct {
-	Type string `json:"type"` // "send"
-	Text string `json:"text"`
+	Type   string  `json:"type"` // "send"
+	Text   string  `json:"text"`
+	Target *Target `json:"target,omitempty"`
 }
 
 type webConversationTopic struct {
@@ -199,8 +200,10 @@ func (w *webChannel) EchoUser(_ int64, text, origin string) {
 
 // inject feeds a browser message into the same pipeline Telegram uses.
 // Non-command text is subject to the same per-user rate limit as the
-// Telegram path (design §3.3); commands are never rate-limited.
-func (s *webServer) inject(text string) {
+// Telegram path (design §3.3); commands are never rate-limited. tgt, when
+// non-nil, routes the send to an explicit target (telegram stream or a web
+// topic) via dispatchTargeted rather than the LLM-routed dispatchText path.
+func (s *webServer) inject(text string, tgt *Target) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -213,7 +216,7 @@ func (s *webServer) inject(text string) {
 		_ = s.bot.Send(s.ownerChatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
 		return
 	}
-	s.bot.dispatchText(s.ownerChatID, text, OriginWeb)
+	s.bot.dispatchTargeted(s.ownerChatID, text, tgt)
 }
 
 func (s *webServer) authOK(r *http.Request) bool { return originOK(r) && tokenOK(r, s.token) }
@@ -260,7 +263,7 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if m.Type == "send" {
-			go s.inject(m.Text)
+			go s.inject(m.Text, m.Target)
 		}
 	}
 	cancel()

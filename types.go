@@ -157,6 +157,14 @@ type Task struct {
 	DependsOn []string  `json:"dependsOn,omitempty"` // task IDs that must complete before this fires
 }
 
+// Target identifies what a web send continues: the global telegram stream, or a
+// specific web topic. Kind is "telegram" or "web".
+type Target struct {
+	Kind    string `json:"kind"`
+	Project string `json:"project,omitempty"`
+	ID      string `json:"id,omitempty"`
+}
+
 // Action constants.
 const (
 	ActionResume   = "resume"

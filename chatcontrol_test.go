@@ -43,23 +43,25 @@ func TestRemoteChatChannel_Frames(t *testing.T) {
 	}
 }
 
-// send_text routes into the Bot's dispatch pipeline.
+// send_text with no explicit target routes through dispatchTargeted (default:
+// telegram stream) rather than the LLM-routed dispatchText/dispatchHook path
+// (Task 5), so routing is observed via the telegram conversation's history.
 func TestChatControl_SendText_Dispatches(t *testing.T) {
-	var got string
-	b := &Bot{}
+	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
+	m, st, _ := webTgtManager(t, fc)
+	b := &Bot{manager: m, store: st}
 	b.out = NewHub()
-	b.dispatchHook = func(_ int64, text string) { got = text }
 	s := &chatControlServer{ownerChatID: 7, bot: b, hub: b.out}
 	ch := &remoteChatChannel{send: make(chan controlOut, 4), cancel: func() {}}
 
 	s.handleInbound(ch, controlIn{Type: "send_text", Text: "hello", Origin: OriginWeb})
 
 	deadline := time.Now().Add(2 * time.Second) // dispatch runs in a goroutine
-	for got == "" && time.Now().Before(deadline) {
+	for len(st.TelegramConversation().History) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got != "hello" {
-		t.Errorf("send_text should dispatch text, got %q", got)
+	if len(st.TelegramConversation().History) != 1 {
+		t.Errorf("send_text should route to telegram target via dispatchTargeted, history len=%d", len(st.TelegramConversation().History))
 	}
 }
 

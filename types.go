@@ -21,6 +21,7 @@ type Config struct {
 	CodexModel            string   // worker model (powerful) — "" = codex built-in default
 	CodexManagerModel     string   // routing model (fast/cheap) — "" = same as CodexModel
 	DefaultBackend        string   // "claude" | "codex" — "" = "claude"
+	HomeDir               string   // 서비스 기본 작업 홈 (yaml home_dir); "" → <userHome>/teleclaude
 	MaxWorkers            int      // max concurrent Worker goroutines, default 3
 	RateLimitPerMin       int      // max user messages per minute, 0 = unlimited, default 20
 	AllowScripts          bool     // permit --script in !task add/update, default false

@@ -10,6 +10,7 @@ import (
 // yamlConfig is the on-disk YAML shape. Pointers/omitempty keep output tidy and
 // let us detect "unset" so defaults apply.
 type yamlConfig struct {
+	HomeDir string `yaml:"home_dir"`
 	Telegram struct {
 		BotToken         string   `yaml:"bot_token"`
 		AllowedUserIDs   []int64  `yaml:"allowed_user_ids"`
@@ -76,6 +77,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 		AllowScripts:        false,
 		ConversationTTLDays: 30,
 	}
+	c.HomeDir = y.HomeDir
 	c.TelegramBotToken = y.Telegram.BotToken
 	c.AllowedUserIDs = y.Telegram.AllowedUserIDs
 	for _, u := range y.Telegram.AllowedUsernames {
@@ -140,6 +142,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 
 func configToYAML(c *Config) *yamlConfig {
 	y := &yamlConfig{}
+	y.HomeDir = c.HomeDir
 	y.Telegram.BotToken = c.TelegramBotToken
 	y.Telegram.AllowedUserIDs = c.AllowedUserIDs
 	y.Telegram.AllowedUsernames = c.AllowedUsernames

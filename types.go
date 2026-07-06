@@ -78,6 +78,7 @@ type Conversation struct {
 	IsContinuation bool               `json:"isContinuation,omitempty"` // auto-generated continuation
 	Backend        string             `json:"backend,omitempty"`        // "claude"|"codex"|"" (""=claude)
 	Origin         string             `json:"origin,omitempty"`         // "telegram"|"web"|"" (""=telegram, back-compat)
+	WorkDir        string             `json:"workDir,omitempty"`        // per-conversation working directory; "" → service home
 }
 
 // Project is a registered directory holding multiple conversations.
@@ -102,6 +103,8 @@ type StoreData struct {
 	// 전역 단일 텔레그램 대화 (프로젝트 무관).
 	TelegramConv          *Conversation `json:"telegramConv,omitempty"`
 	TelegramActiveProject string        `json:"telegramActiveProject,omitempty"`
+
+	WebConvs map[string]*Conversation `json:"webConvs,omitempty"` // top-level web conversations (project-independent)
 }
 
 // --- Manager routing I/O (Design §3.2) ---
@@ -260,4 +263,9 @@ type StoreRepo interface {
 	// under the store lock, so callers can read history without racing a
 	// worker that is appending to the live conversation.
 	HistorySnapshot(tgt Target) []ConversationTurn
+	NewWebConv(title string) (*Conversation, error)
+	GetWebConv(id string) (*Conversation, bool)
+	UpdateWebConv(c *Conversation) error
+	ListWebConvs() map[string]*Conversation
+	DeleteWebConv(id string) error
 }

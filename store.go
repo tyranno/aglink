@@ -18,7 +18,7 @@ import (
 // storeSchemaVersion is bumped whenever StoreData's shape changes in a way that
 // isn't safely forward-compatible. On mismatch, Load backs up the old file and
 // starts fresh rather than migrating — see Load for rationale.
-const storeSchemaVersion = 2
+const storeSchemaVersion = 3
 
 // fileStore is a JSON-file backed StoreRepo (MVP). Safe for concurrent use.
 type fileStore struct {
@@ -68,12 +68,15 @@ func (s *fileStore) Load() error {
 			p.Conversations = map[string]*Conversation{}
 		}
 	}
+	if d.WebConvs == nil {
+		d.WebConvs = map[string]*Conversation{}
+	}
 	s.data = d
 	return nil
 }
 
 func newEmptyStore() StoreData {
-	return StoreData{SchemaVersion: storeSchemaVersion, Projects: map[string]*Project{}}
+	return StoreData{SchemaVersion: storeSchemaVersion, Projects: map[string]*Project{}, WebConvs: map[string]*Conversation{}}
 }
 
 // Save writes store.json atomically (temp file + rename).
@@ -390,10 +393,15 @@ func (s *fileStore) HistorySnapshot(tgt Target) []ConversationTurn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var conv *Conversation
-	if tgt.Kind == "telegram" {
+	switch {
+	case tgt.Kind == "telegram":
 		conv = s.data.TelegramConv
-	} else if p, ok := s.data.Projects[tgt.Project]; ok {
-		conv = p.Conversations[tgt.ID]
+	case tgt.Kind == "web" && tgt.Project == "":
+		conv = s.data.WebConvs[tgt.ID]
+	default: // legacy project-scoped topic (kept for safety)
+		if p, ok := s.data.Projects[tgt.Project]; ok {
+			conv = p.Conversations[tgt.ID]
+		}
 	}
 	if conv == nil {
 		return nil
@@ -401,4 +409,75 @@ func (s *fileStore) HistorySnapshot(tgt Target) []ConversationTurn {
 	out := make([]ConversationTurn, len(conv.History))
 	copy(out, conv.History)
 	return out
+}
+
+// NewWebConv creates a top-level, project-independent web conversation.
+func (s *fileStore) NewWebConv(title string) (*Conversation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.WebConvs == nil {
+		s.data.WebConvs = map[string]*Conversation{}
+	}
+	id := nextConvID(s.data.WebConvs)
+	if title == "" {
+		title = "웹 대화 " + id
+	}
+	backend := s.data.ActiveBackend
+	if backend == "" {
+		backend = "claude"
+	}
+	c := &Conversation{
+		ID:           id,
+		Title:        title,
+		SessionID:    newUUID(),
+		Started:      false,
+		LastActivity: time.Now().UTC(),
+		Backend:      backend,
+		Origin:       OriginWeb,
+	}
+	s.data.WebConvs[id] = c
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// GetWebConv returns a top-level web conversation by ID.
+func (s *fileStore) GetWebConv(id string) (*Conversation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.data.WebConvs[id]
+	return c, ok
+}
+
+// UpdateWebConv persists changes to a top-level web conversation.
+func (s *fileStore) UpdateWebConv(c *Conversation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.WebConvs == nil {
+		s.data.WebConvs = map[string]*Conversation{}
+	}
+	s.data.WebConvs[c.ID] = c
+	return s.saveLocked()
+}
+
+// ListWebConvs returns a shallow copy of the top-level web conversation map.
+func (s *fileStore) ListWebConvs() map[string]*Conversation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]*Conversation, len(s.data.WebConvs))
+	maps.Copy(out, s.data.WebConvs)
+	return out
+}
+
+// DeleteWebConv removes a top-level web conversation, clearing Active if it
+// pointed at the deleted conversation.
+func (s *fileStore) DeleteWebConv(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data.WebConvs, id)
+	if s.data.Active.ConversationID == id && s.data.Active.Project == "" {
+		s.data.Active = ActiveRef{}
+	}
+	return s.saveLocked()
 }

@@ -25,6 +25,8 @@ type Manager struct {
 	workerStatus WorkerStatusStore
 	scheduler    *Scheduler
 	cfgh         *ConfigHolder
+
+	telegramMu sync.Mutex // serializes turns on the single global telegram conversation
 }
 
 func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *ConfigHolder) *Manager {
@@ -242,6 +244,8 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 			strings.ToUpper(backend), strings.ToUpper(backend)))
 		return
 	}
+	m.telegramMu.Lock()
+	defer m.telegramMu.Unlock()
 	m.runWorker(ctx, chatID, text, m.telegramSink(project), p.Path, tc, s, client, backend)
 }
 
@@ -322,6 +326,8 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 			_ = s.Send(chatID, fmt.Sprintf("⚠️ 텔레그램 대화는 %s로 생성됐는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
 			return
 		}
+		m.telegramMu.Lock()
+		defer m.telegramMu.Unlock()
 		m.runWorker(ctx, chatID, text, m.telegramSink(project), p.Path, tc, s, client, backend)
 		return
 	}

@@ -1,9 +1,11 @@
 (function () {
-  // Token: from ?token= (persist to localStorage) or previously stored.
+  // Token: explicit ?token= wins, then the token the server injects into the page
+  // (always the current valid one), then previously stored. The injected token
+  // makes the page authenticate regardless of stale localStorage or which URL
+  // (localhost / 127.0.0.1) was opened.
   const params = new URLSearchParams(location.search);
-  let token = params.get("token");
+  let token = params.get("token") || window.__TC_TOKEN__ || localStorage.getItem("tc_token") || "";
   if (token) localStorage.setItem("tc_token", token);
-  else token = localStorage.getItem("tc_token") || "";
 
   const log = document.getElementById("log");
   const statusEl = document.getElementById("status");

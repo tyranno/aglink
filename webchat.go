@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -310,6 +311,14 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ui missing", http.StatusInternalServerError)
 		return
 	}
+	// Inject the current valid token so the page always authenticates its WS/API
+	// calls, regardless of the URL's ?token=, stale localStorage, or which loopback
+	// host was opened. Safe: the endpoint is loopback-only and same-origin — a
+	// cross-origin page cannot read this response (CORS), and any local process
+	// could already read the token file. json.Marshal escapes it for the <script>.
+	tokJSON, _ := json.Marshal(s.token)
+	inject := []byte("<script>window.__TC_TOKEN__=" + string(tokJSON) + ";</script></head>")
+	b = bytes.Replace(b, []byte("</head>"), inject, 1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(b)
 }

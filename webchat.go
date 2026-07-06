@@ -310,6 +310,10 @@ func (s *webServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if s.bot == nil || s.bot.store == nil {
+		http.Error(w, "conversation store unavailable", http.StatusInternalServerError)
+		return
+	}
 	tgt := Target{Kind: r.URL.Query().Get("kind"), Project: r.URL.Query().Get("project"), ID: r.URL.Query().Get("id")}
 	if tgt.Kind == "" {
 		tgt.Kind = "telegram"
@@ -360,17 +364,13 @@ type historyResponse struct {
 // user/assistant sequence for the web log. Shared by /api/history and the
 // chat-control get_history request.
 func buildHistoryResponse(store StoreRepo, tgt Target) historyResponse {
-	var conv *Conversation
-	if tgt.Kind == "telegram" {
-		conv = store.TelegramConversation()
-	} else if c, ok := store.GetConversation(tgt.Project, tgt.ID); ok {
-		conv = c
-	}
 	resp := historyResponse{Turns: []historyTurn{}}
-	if conv == nil {
-		return resp
-	}
-	for _, turn := range conv.History {
+	// Take a copy of the history under the store lock instead of reaching into
+	// a live *Conversation — a worker may concurrently be appending to (and
+	// reslicing) the same conversation's History slice, especially for the
+	// shared global telegram conversation.
+	turns := store.HistorySnapshot(tgt)
+	for _, turn := range turns {
 		if turn.Prompt != "" {
 			resp.Turns = append(resp.Turns, historyTurn{Role: "user", Text: turn.Prompt})
 		}

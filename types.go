@@ -255,4 +255,8 @@ type StoreRepo interface {
 	UpdateTelegramConversation(c *Conversation) error
 	TelegramActiveProject() string
 	SetTelegramActiveProject(name string) error
+	// HistorySnapshot returns a copy of the target conversation's turns taken
+	// under the store lock, so callers can read history without racing a
+	// worker that is appending to the live conversation.
+	HistorySnapshot(tgt Target) []ConversationTurn
 }

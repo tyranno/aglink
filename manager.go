@@ -225,7 +225,7 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 		hint = dec.Project
 	}
 
-	project, ok := m.resolveTelegramProject(chatID, text, hint, s)
+	project, ok := m.resolveTelegramProject(ctx, chatID, text, hint, s)
 	if !ok {
 		return
 	}
@@ -249,7 +249,7 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 // A switch intent (keyword first, then the LLM hint, then a project-only LLM
 // fallback) updates the stored pointer; otherwise the current pointer is used.
 // Falls back to the single project, or asks when ambiguous.
-func (m *Manager) resolveTelegramProject(chatID int64, text, hint string, s MessageSender) (string, bool) {
+func (m *Manager) resolveTelegramProject(ctx context.Context, chatID int64, text, hint string, s MessageSender) (string, bool) {
 	names := projectNames(m.store)
 	if len(names) == 0 {
 		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n!project add <이름> <경로>")
@@ -265,7 +265,7 @@ func (m *Manager) resolveTelegramProject(chatID int64, text, hint string, s Mess
 		m.backendMu.RLock()
 		client := m.client
 		m.backendMu.RUnlock()
-		switched, ok = m.routeProjectOnly(context.Background(), client, text)
+		switched, ok = m.routeProjectOnly(ctx, client, text)
 	}
 	if ok {
 		if switched != m.store.TelegramActiveProject() {

@@ -382,3 +382,23 @@ func (s *fileStore) SetTelegramActiveProject(name string) error {
 	s.data.TelegramActiveProject = name
 	return s.saveLocked()
 }
+
+// HistorySnapshot returns a copy of the target conversation's turns taken
+// under the store lock, so callers can read history without racing a worker
+// that is appending to the live conversation.
+func (s *fileStore) HistorySnapshot(tgt Target) []ConversationTurn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var conv *Conversation
+	if tgt.Kind == "telegram" {
+		conv = s.data.TelegramConv
+	} else if p, ok := s.data.Projects[tgt.Project]; ok {
+		conv = p.Conversations[tgt.ID]
+	}
+	if conv == nil {
+		return nil
+	}
+	out := make([]ConversationTurn, len(conv.History))
+	copy(out, conv.History)
+	return out
+}

@@ -38,6 +38,45 @@ func TestBuildHistoryResponse_WebTopic(t *testing.T) {
 	}
 }
 
+// TestHistorySnapshot_ReturnsCopy guards against the /api/history data race:
+// buildHistoryResponse must read a defensive copy of a conversation's History,
+// not the live slice a worker may concurrently be appending to. It checks both
+// directions — mutating the returned snapshot must not corrupt the live
+// conversation, and appending to the live conversation after the snapshot was
+// taken must not retroactively change the snapshot.
+func TestHistorySnapshot_ReturnsCopy(t *testing.T) {
+	st := histStore(t)
+	tc := st.TelegramConversation()
+	tc.History = []ConversationTurn{{Prompt: "p1", Response: "r1"}}
+	_ = st.UpdateTelegramConversation(tc)
+
+	snap := st.HistorySnapshot(Target{Kind: "telegram"})
+	if len(snap) != 1 || snap[0].Prompt != "p1" {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+
+	// Mutating the snapshot must not leak back into the live conversation.
+	snap[0].Prompt = "mutated"
+	live := st.TelegramConversation()
+	if live.History[0].Prompt != "p1" {
+		t.Errorf("mutating snapshot corrupted live history: %+v", live.History)
+	}
+
+	// Appending to the live conversation after the snapshot was taken must not
+	// retroactively grow the already-taken snapshot (simulates runWorker's
+	// concurrent append while a handler still holds an older snapshot).
+	live.History = append(live.History, ConversationTurn{Prompt: "p2", Response: "r2"})
+	_ = st.UpdateTelegramConversation(live)
+	if len(snap) != 1 {
+		t.Errorf("snapshot length changed after live append: got %d turns, want 1", len(snap))
+	}
+
+	resp := buildHistoryResponse(st, Target{Kind: "telegram"})
+	if len(resp.Turns) != 4 {
+		t.Errorf("buildHistoryResponse should reflect the latest live history (4 turns), got %d: %+v", len(resp.Turns), resp.Turns)
+	}
+}
+
 func TestBuildConversationsResponse_IncludesTelegram(t *testing.T) {
 	st := histStore(t)
 	_ = st.TelegramConversation()

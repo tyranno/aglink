@@ -29,20 +29,21 @@ func TestHandleWebTarget_Telegram(t *testing.T) {
 	}
 }
 
-// A web send targeting a web topic continues that topic only.
+// A web send targeting a top-level web conversation continues that conversation
+// only — never a project topic and never the telegram stream.
 func TestHandleWebTarget_WebTopic(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	m, st, _ := webTgtManager(t, fc)
-	c, _ := st.NewConversation("myapp", "웹 토픽", OriginWeb)
+	c, _ := st.NewWebConv("웹 대화")
 	f := &fakeSender{}
 
-	m.HandleWebTarget(context.Background(), 1, "이 토픽 이어서", Target{Kind: "web", Project: "myapp", ID: c.ID}, f)
+	m.HandleWebTarget(context.Background(), 1, "이 대화 이어서", Target{Kind: "web", ID: c.ID}, f)
 
-	got, _ := st.GetConversation("myapp", c.ID)
+	got, _ := st.GetWebConv(c.ID)
 	if len(got.History) != 1 {
-		t.Errorf("web topic target should append to that topic, got %d", len(got.History))
+		t.Errorf("web conv target should append to that conversation, got %d", len(got.History))
 	}
 	if len(st.TelegramConversation().History) != 0 {
-		t.Errorf("web topic target must not touch telegram conversation")
+		t.Errorf("web conv target must not touch telegram conversation")
 	}
 }

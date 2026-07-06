@@ -208,12 +208,6 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 		}
 	}
 
-	names := projectNames(m.store)
-	if len(names) == 0 {
-		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n!project add <이름> <경로>")
-		return
-	}
-
 	// One manager LLM call: honor a schedule request; otherwise keep the project hint.
 	m.backendMu.RLock()
 	routeClient := m.client
@@ -227,13 +221,41 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 		hint = dec.Project
 	}
 
-	project, ok := m.resolveTelegramProject(ctx, chatID, text, hint, s)
-	if !ok {
-		return
+	// Working directory: the active project's path if set & valid, else the service
+	// home. No project is required — telegram always works, defaulting to home. A
+	// switch intent (keyword, then the LLM hint) only moves the working-dir pointer;
+	// the conversation stays one continuous stream.
+	project := m.store.TelegramActiveProject()
+	if sw, ok := detectProjectSwitchIntent(text, projectNames(m.store)); ok {
+		if sw != project {
+			_ = m.store.SetTelegramActiveProject(sw)
+			_ = s.Send(chatID, "📂 이제 "+sw+"에서 진행합니다.")
+		}
+		project = sw
+	} else if hint != "" {
+		if _, exists := m.store.GetProject(hint); exists && hint != project {
+			_ = m.store.SetTelegramActiveProject(hint)
+			_ = s.Send(chatID, "📂 이제 "+hint+"에서 진행합니다.")
+			project = hint
+		}
 	}
-
-	p, _ := m.store.GetProject(project)
+	// A stale active pointer (project since removed) must not reach runWorker, which
+	// would error "프로젝트를 찾을 수 없습니다"; treat it as no project → run in home.
+	if project != "" {
+		if _, exists := m.store.GetProject(project); !exists {
+			project = ""
+		}
+	}
+	workDir := resolveHomeDir(m.cfg())
+	if project != "" {
+		if p, ok := m.store.GetProject(project); ok {
+			workDir = p.Path
+		}
+	}
 	tc := m.store.TelegramConversation()
+	if tc.WorkDir != "" {
+		workDir = tc.WorkDir
+	}
 	backend := tc.Backend
 	if backend == "" {
 		backend = "claude"
@@ -246,48 +268,7 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	}
 	m.telegramMu.Lock()
 	defer m.telegramMu.Unlock()
-	m.runWorker(ctx, chatID, text, m.telegramSink(project), p.Path, tc, s, client, backend)
-}
-
-// resolveTelegramProject returns the working-directory project for this turn.
-// A switch intent (keyword first, then the LLM hint, then a project-only LLM
-// fallback) updates the stored pointer; otherwise the current pointer is used.
-// Falls back to the single project, or asks when ambiguous.
-func (m *Manager) resolveTelegramProject(ctx context.Context, chatID int64, text, hint string, s MessageSender) (string, bool) {
-	names := projectNames(m.store)
-	if len(names) == 0 {
-		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n!project add <이름> <경로>")
-		return "", false
-	}
-	switched, ok := detectProjectSwitchIntent(text, names)
-	if !ok && hint != "" {
-		if _, exists := m.store.GetProject(hint); exists {
-			switched, ok = hint, true
-		}
-	}
-	if !ok && len(names) > 1 {
-		m.backendMu.RLock()
-		client := m.client
-		m.backendMu.RUnlock()
-		switched, ok = m.routeProjectOnly(ctx, client, text)
-	}
-	if ok {
-		if switched != m.store.TelegramActiveProject() {
-			_ = m.store.SetTelegramActiveProject(switched)
-			_ = s.Send(chatID, "📂 이제 "+switched+"에서 진행합니다.")
-		}
-		return switched, true
-	}
-	cur := m.store.TelegramActiveProject()
-	if _, exists := m.store.GetProject(cur); exists {
-		return cur, true
-	}
-	if len(names) == 1 {
-		_ = m.store.SetTelegramActiveProject(names[0])
-		return names[0], true
-	}
-	_ = s.Send(chatID, "🤔 어느 프로젝트에서 할지 알려주세요. 예: \"이제 <프로젝트명> 하자\" (!project list 로 목록 확인)")
-	return "", false
+	m.runWorker(ctx, chatID, text, m.telegramSink(project), workDir, tc, s, client, backend)
 }
 
 // handleWeb handles a web send with no explicit target (legacy path): default to
@@ -332,10 +313,10 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		return
 	}
 
-	// Web topic target.
-	c, ok := m.store.GetConversation(tgt.Project, tgt.ID)
+	// Web conversation target (top-level, project-independent).
+	c, ok := m.store.GetWebConv(tgt.ID)
 	if !ok {
-		_ = s.Send(chatID, "웹 토픽을 찾을 수 없습니다: "+tgt.Project+"/"+tgt.ID)
+		_ = s.Send(chatID, "웹 대화를 찾을 수 없습니다. 새 대화를 만들어 주세요.")
 		return
 	}
 	backend := c.Backend
@@ -344,11 +325,15 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 	}
 	client := m.clientForBackend(backend)
 	if client == nil {
-		_ = s.Send(chatID, fmt.Sprintf("⚠️ 이 토픽은 %s로 만들어졌는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
+		_ = s.Send(chatID, fmt.Sprintf("⚠️ 이 대화는 %s로 만들어졌는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
 		return
 	}
-	_ = m.store.SetActive(tgt.Project, c.ID)
-	m.runWorker(ctx, chatID, text, m.projectSink(tgt.Project), "", c, s, client, backend)
+	workDir := c.WorkDir
+	if workDir == "" {
+		workDir = resolveHomeDir(m.cfg())
+	}
+	_ = m.store.SetActive("", c.ID)
+	m.runWorker(ctx, chatID, text, m.newWebConvSink(), workDir, c, s, client, backend)
 }
 
 func (m *Manager) buildRouteRequest(text string) RouteRequest {
@@ -458,6 +443,27 @@ func (t telegramSink) makeContinuation(c *Conversation) (*Conversation, error) {
 
 func (m *Manager) telegramSink(project string) convSink { return telegramSink{m: m, proj: project} }
 
+// webConvSink persists a top-level, project-independent web conversation. It has
+// no project scope (project()==""), so runWorker skips project lookup/memory and
+// runs in the conversation's WorkDir (or the service home). Continuation is an
+// in-place session reset, matching the telegram stream's single-record behavior.
+type webConvSink struct {
+	m *Manager
+}
+
+func (w webConvSink) project() string            { return "" }
+func (w webConvSink) save(c *Conversation) error { return w.m.store.UpdateWebConv(c) }
+func (w webConvSink) setActive(c *Conversation) error {
+	return w.m.store.SetActive("", c.ID)
+}
+func (w webConvSink) makeContinuation(c *Conversation) (*Conversation, error) {
+	c.SessionID = newUUID()
+	c.Started = false
+	return c, nil
+}
+
+func (m *Manager) newWebConvSink() convSink { return webConvSink{m: m} }
+
 // isContextOverflow detects Claude CLI "Prompt is too long" context limit errors.
 func isContextOverflow(text string) bool {
 	lower := strings.ToLower(text)
@@ -519,14 +525,24 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// indicator (web chat) always get a matching Done for their Typing.
 	defer s.Done(chatID)
 
+	// project scopes workdir/status/history-log. For a top-level web conversation
+	// (webConvSink) project()=="" — there is no registered project to look up, so
+	// skip GetProject and fall back to the passed workDir / the service home.
 	project := sink.project()
-	p, ok := m.store.GetProject(project)
-	if !ok {
-		_ = s.Send(chatID, "⚠️ 프로젝트를 찾을 수 없습니다: "+project)
-		return
+	var pPath string
+	if project != "" {
+		p, ok := m.store.GetProject(project)
+		if !ok {
+			_ = s.Send(chatID, "⚠️ 프로젝트를 찾을 수 없습니다: "+project)
+			return
+		}
+		pPath = p.Path
 	}
 	if workDir == "" {
-		workDir = p.Path
+		workDir = pPath
+	}
+	if workDir == "" {
+		workDir = resolveHomeDir(m.cfg())
 	}
 
 	// Forward tool images (screen MCP screenshot/capture_window/capture_region) to
@@ -581,7 +597,11 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// context-length series split). This keeps Telegram feeling like one continuous
 	// chat while the backend still manages conversations/series behind the scenes.
 	if isNewConv && !workConv.IsContinuation {
-		_ = s.Send(chatID, routingHeader(project, workConv.Title, isNewConv))
+		headerProject := project
+		if headerProject == "" {
+			headerProject = "웹" // top-level web conversation has no project scope
+		}
+		_ = s.Send(chatID, routingHeader(headerProject, workConv.Title, isNewConv))
 	}
 
 	// Record Worker status as running
@@ -626,7 +646,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		historyForPrompt = historyForPrompt[len(historyForPrompt)-maxHistoryInPrompt:]
 	}
 	globalMemory := readGlobalMemory()
-	projectMemory := readProjectMemory(p.Path)
+	projectMemory := ""
+	if pPath != "" {
+		projectMemory = readProjectMemory(pPath)
+	}
 	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)
 
 	workerModel := m.workerModelForBackendName(backend)
@@ -786,9 +809,15 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		log.Printf("[manager] set active: %v", err)
 	}
 
-	// Append to date-based history log for !history command.
+	// Append to date-based history log for !history command. For a web conversation
+	// project=="", which would make WriteHistory write to the history root; use a
+	// "web" label so those turns land in a dedicated per-channel folder instead.
 	if res.Text != "" {
-		if herr := WriteHistory(project, workConv.Title, text, res.Text); herr != nil {
+		historyLabel := project
+		if historyLabel == "" {
+			historyLabel = "web"
+		}
+		if herr := WriteHistory(historyLabel, workConv.Title, text, res.Text); herr != nil {
 			log.Printf("[manager] history write error: %v", herr)
 		}
 	}

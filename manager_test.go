@@ -40,15 +40,24 @@ func mgrFixture(t *testing.T, fc *fakeClaude) (*Manager, *fileStore, string) {
 	return NewManager(fc, nil, st, NewConfigHolder(cfg)), st, dir
 }
 
-func TestManager_NoProjects_Guides(t *testing.T) {
-	fc := &fakeClaude{}
+// Telegram no longer blocks when no projects are registered — the web-first
+// redesign runs the turn in the service home instead of prompting !project add.
+func TestManager_NoProjects_RunsInHome(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
 	_ = st.Load()
-	m := NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
+	home := t.TempDir()
+	m := NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true, HomeDir: home}))
 	f := &fakeSender{}
 	m.Handle(context.Background(), 1, "hi", "", f)
-	if len(f.sent) != 1 || !contains(f.sent[0], "!project add") {
-		t.Errorf("messages = %v", f.sent)
+	if fc.runCalls != 1 {
+		t.Fatalf("no-project telegram should run in home, runCalls=%d", fc.runCalls)
+	}
+	if fc.lastRun.WorkDir != home {
+		t.Errorf("no-project telegram turn should run in home %q, got %q", home, fc.lastRun.WorkDir)
+	}
+	if contains(strings.Join(f.sent, ""), "!project add") {
+		t.Errorf("telegram must no longer block on missing projects, got: %v", f.sent)
 	}
 }
 

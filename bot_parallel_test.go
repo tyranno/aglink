@@ -135,6 +135,54 @@ func TestBot_CancelClearsAll(t *testing.T) {
 	}
 }
 
+// TestDispatchTargeted_RoutesThroughQueue verifies the Task 5 review fix:
+// dispatchTargeted must go through the shared worker-slot queue (dispatch()),
+// not call the Manager directly — so it gets MaxWorkers limiting, the
+// TimeoutMinutes deadline, !cancel registration, and panic recovery like every
+// other dispatch. With MaxWorkers=0, dispatch()'s queueing branch always fires
+// (activeCount 0 >= MaxWorkers 0) instead of spawning a worker goroutine, so
+// this is deterministic: we can inspect the queued message directly rather
+// than racing a background goroutine.
+func TestDispatchTargeted_RoutesThroughQueue(t *testing.T) {
+	b := newParallelTestBot(0)
+	b.out = NewHub()
+
+	tgt := &Target{Kind: "web", Project: "myapp", ID: "abc"}
+	b.dispatchTargeted(42, "hello", tgt)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.queue) != 1 {
+		t.Fatalf("queue len = %d, want 1 (dispatchTargeted must enqueue via dispatch(), not call the Manager directly)", len(b.queue))
+	}
+	qm := b.queue[0]
+	if qm.chatID != 42 || qm.text != "hello" {
+		t.Errorf("queued msg = %+v, want chatID=42 text=hello", qm)
+	}
+	if qm.target == nil || *qm.target != *tgt {
+		t.Errorf("queued msg target = %+v, want %+v", qm.target, tgt)
+	}
+}
+
+// TestDispatchTargeted_DefaultsToTelegramTarget verifies a nil tgt (web client
+// that hasn't sent an explicit target) still enqueues with target.Kind ==
+// "telegram", matching dispatchTargeted's documented default.
+func TestDispatchTargeted_DefaultsToTelegramTarget(t *testing.T) {
+	b := newParallelTestBot(0)
+	b.out = NewHub()
+
+	b.dispatchTargeted(7, "hi", nil)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.queue) != 1 {
+		t.Fatalf("queue len = %d, want 1", len(b.queue))
+	}
+	if b.queue[0].target == nil || b.queue[0].target.Kind != "telegram" {
+		t.Errorf("queued msg target = %+v, want Kind=telegram", b.queue[0].target)
+	}
+}
+
 // TestBot_WorkerSeqMonotonic verifies workerSeq increases with each slot acquisition.
 func TestBot_WorkerSeqMonotonic(t *testing.T) {
 	b := newParallelTestBot(5)

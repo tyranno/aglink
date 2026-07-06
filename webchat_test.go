@@ -128,7 +128,7 @@ func TestWebInjectRouting(t *testing.T) {
 	var gotCmd string
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	m, st, _ := webTgtManager(t, fc)
-	b := &Bot{manager: m, store: st}
+	b := &Bot{manager: m, store: st, cfgh: NewConfigHolder(&Config{MaxWorkers: 3, TimeoutMinutes: 1}), cancels: make(map[int]context.CancelFunc)}
 	b.out = NewHub()
 	b.commandHook = func(_ int64, text string) { gotCmd = text }
 	s := &webServer{ownerChatID: 7, bot: b, hub: b.out}
@@ -139,6 +139,10 @@ func TestWebInjectRouting(t *testing.T) {
 	if gotCmd != "!help" {
 		t.Errorf("command not routed to handleCommand, got %q", gotCmd)
 	}
+	deadline := time.Now().Add(2 * time.Second) // dispatchTargeted now runs the actual send via the queue's goroutine
+	for len(st.TelegramConversation().History) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(st.TelegramConversation().History) != 1 {
 		t.Errorf("text not routed to telegram target via dispatchTargeted, history len=%d", len(st.TelegramConversation().History))
 	}
@@ -147,7 +151,7 @@ func TestWebInjectRouting(t *testing.T) {
 func TestWebInjectRateLimited(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	m, st, _ := webTgtManager(t, fc)
-	b := &Bot{manager: m, store: st}
+	b := &Bot{manager: m, store: st, cfgh: NewConfigHolder(&Config{MaxWorkers: 3, TimeoutMinutes: 1}), cancels: make(map[int]context.CancelFunc)}
 	b.out = NewHub()
 	b.rateLimiter = NewRateLimiter(1) // allow 1 per minute
 	s := &webServer{ownerChatID: 7, bot: b, hub: b.out}
@@ -155,6 +159,10 @@ func TestWebInjectRateLimited(t *testing.T) {
 	s.inject("hi", nil)
 	s.inject("hi again", nil)
 
+	deadline := time.Now().Add(2 * time.Second)
+	for len(st.TelegramConversation().History) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(st.TelegramConversation().History) != 1 {
 		t.Errorf("history len = %d, want 1 (second call should have been rate-limited)", len(st.TelegramConversation().History))
 	}
@@ -580,7 +588,7 @@ func TestUpload_Unauthorized(t *testing.T) {
 func TestWSRoundTrip(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	m, st, _ := webTgtManager(t, fc)
-	b := &Bot{manager: m, store: st}
+	b := &Bot{manager: m, store: st, cfgh: NewConfigHolder(&Config{MaxWorkers: 3, TimeoutMinutes: 1}), cancels: make(map[int]context.CancelFunc)}
 	hub := NewHub()
 	b.out = hub
 	s := &webServer{token: "secret", ownerChatID: 7, hub: hub, bot: b}

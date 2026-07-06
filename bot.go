@@ -24,8 +24,9 @@ import (
 type queuedMsg struct {
 	chatID int64
 	text   string
-	isTask bool   // true = scheduled task (bypass manager routing)
-	origin string // "telegram"|"web" — channel that sent it (tags new conversations)
+	isTask bool    // true = scheduled task (bypass manager routing)
+	origin string  // "telegram"|"web" — channel that sent it (tags new conversations)
+	target *Target // non-nil for web sends with an explicit target (telegram stream vs web topic)
 }
 
 // Bot dispatches Telegram messages to concurrent Workers.
@@ -248,15 +249,20 @@ func (b *Bot) dispatchText(chatID int64, text, origin string) {
 // dispatchTargeted routes a web message to its explicit target: the global
 // telegram stream (kind "telegram") or a specific web topic (kind "web"). A nil
 // tgt (a web client that hasn't yet been updated to send a target) defaults to
-// the telegram stream. Unlike dispatchText this calls the Manager directly —
-// no worker-slot queue and no per-turn timeout context — since per-target web
-// sends are independent of the shared telegram worker-slot count.
+// the telegram stream. Like dispatchText, this goes through the shared
+// worker-slot queue (dispatch()) — so it gets the same MaxWorkers limiting,
+// TimeoutMinutes deadline, !cancel registration, and panic recovery as every
+// other dispatch — rather than calling the Manager directly.
 func (b *Bot) dispatchTargeted(chatID int64, text string, tgt *Target) {
 	t := Target{Kind: "telegram"}
 	if tgt != nil {
 		t = *tgt
 	}
-	b.manager.HandleWebTarget(context.Background(), chatID, text, t, b)
+	// Mirror web-typed input to the other channel (Telegram), same as dispatchText.
+	if b.out != nil {
+		b.out.EchoUser(chatID, text, OriginWeb)
+	}
+	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: OriginWeb, target: &t})
 }
 
 // dispatchScheduledTask runs a pre-scheduled task bypassing Manager LLM routing.
@@ -321,6 +327,8 @@ func (b *Bot) dispatch(msg queuedMsg) {
 
 		if msg.isTask {
 			b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, b)
+		} else if msg.target != nil {
+			b.manager.HandleWebTarget(ctx, msg.chatID, msg.text, *msg.target, b)
 		} else {
 			b.manager.Handle(ctx, msg.chatID, msg.text, msg.origin, b)
 		}

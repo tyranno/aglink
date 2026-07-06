@@ -295,7 +295,9 @@ func (m *Manager) handleWeb(ctx context.Context, chatID int64, text string, s Me
 // HandleWebTarget routes a web send to its explicit target: the global telegram
 // stream or a specific web topic. Web never does LLM project routing.
 func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string, tgt Target, s MessageSender) {
-	if tgt.Kind == "telegram" {
+	if tgt.Kind != "web" {
+		// Telegram stream: the default for kind "telegram", and for any unknown
+		// or empty kind (e.g. a not-yet-updated web client).
 		project := m.store.TelegramActiveProject()
 		p, ok := m.store.GetProject(project)
 		if !ok {

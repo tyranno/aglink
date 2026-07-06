@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func TestRemoteChatChannel_Frames(t *testing.T) {
 func TestChatControl_SendText_Dispatches(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	m, st, _ := webTgtManager(t, fc)
-	b := &Bot{manager: m, store: st}
+	b := &Bot{manager: m, store: st, cfgh: NewConfigHolder(&Config{MaxWorkers: 3, TimeoutMinutes: 1}), cancels: make(map[int]context.CancelFunc)}
 	b.out = NewHub()
 	s := &chatControlServer{ownerChatID: 7, bot: b, hub: b.out}
 	ch := &remoteChatChannel{send: make(chan controlOut, 4), cancel: func() {}}

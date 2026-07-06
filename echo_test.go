@@ -80,3 +80,22 @@ func TestDispatchText_EchoesUserInput(t *testing.T) {
 		t.Errorf("dispatchText should echo the user input to the Hub, got %v", rec.echoes)
 	}
 }
+
+// dispatchTargeted must also mirror the user's input via the Hub (Task 5 review
+// fix: this mirror was dropped when dispatchTargeted bypassed dispatchText's
+// queue path — without it, web-typed input stopped showing up in Telegram).
+// MaxWorkers=0 forces dispatch()'s queueing branch, so this stays deterministic
+// (see TestDispatchTargeted_RoutesThroughQueue in bot_parallel_test.go) — the
+// echo itself happens synchronously before the message is even enqueued.
+func TestDispatchTargeted_EchoesUserInput(t *testing.T) {
+	b := newParallelTestBot(0)
+	b.out = NewHub()
+	rec := &recCh{}
+	b.out.Register(7, rec)
+
+	b.dispatchTargeted(7, "hello from web", nil)
+
+	if len(rec.echoes) != 1 || rec.echoes[0] != "web:hello from web" {
+		t.Errorf("dispatchTargeted should echo the user input to the Hub, got %v", rec.echoes)
+	}
+}

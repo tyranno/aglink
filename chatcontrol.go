@@ -144,8 +144,8 @@ func (s *chatControlServer) handleControl(w http.ResponseWriter, r *http.Request
 }
 
 // handleInbound routes a control request into the Bot — the same entry points the
-// embedded web server uses (dispatchText/handleCommand/ingestAttachment), so all
-// the recently added behavior (origin tagging, cross-channel echo, working
+// embedded web server uses (dispatchTargeted/handleCommand/ingestAttachment), so
+// all the recently added behavior (origin tagging, cross-channel echo, working
 // indicator) applies identically.
 func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 	chatID := m.ChatID

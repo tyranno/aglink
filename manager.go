@@ -162,7 +162,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 		// Routing failed entirely → fall back to the active conversation, else ask.
 		if active := m.store.GetActive(); active.Project != "" {
 			if c, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-				m.runWorker(ctx, chatID, text, active.Project, "", c, s, currentClient, currentBackend)
+				m.runWorker(ctx, chatID, text, m.projectSink(active.Project), "", c, s, currentClient, currentBackend)
 				return
 			}
 		}
@@ -176,7 +176,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 			}
 			if c, cerr := m.store.NewConversation(only, "새 대화", origin); cerr == nil {
 				_ = m.store.SetActive(only, c.ID)
-				m.runWorker(ctx, chatID, text, only, "", c, s, currentClient, currentBackend)
+				m.runWorker(ctx, chatID, text, m.projectSink(only), "", c, s, currentClient, currentBackend)
 				return
 			}
 		}
@@ -191,7 +191,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 		if _, pok := m.store.GetProject(dec.Project); !pok {
 			if active := m.store.GetActive(); active.Project != "" {
 				if ac, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-					m.runWorker(ctx, chatID, text, active.Project, "", ac, s, currentClient, currentBackend)
+					m.runWorker(ctx, chatID, text, m.projectSink(active.Project), "", ac, s, currentClient, currentBackend)
 					return
 				}
 			}
@@ -226,7 +226,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 		}
 		c.Backend = currentBackend
 		_ = m.store.UpdateConversation(dec.Project, c)
-		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, currentClient, currentBackend)
+		m.runWorker(ctx, chatID, text, m.projectSink(dec.Project), "", c, s, currentClient, currentBackend)
 
 	case ActionResume:
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
@@ -239,7 +239,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 			}
 			newC.Backend = currentBackend
 			_ = m.store.UpdateConversation(dec.Project, newC)
-			m.runWorker(ctx, chatID, text, dec.Project, "", newC, s, currentClient, currentBackend)
+			m.runWorker(ctx, chatID, text, m.projectSink(dec.Project), "", newC, s, currentClient, currentBackend)
 			return
 		}
 		convBackend := c.Backend
@@ -261,7 +261,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 			}
 			log.Printf("[manager] resume conv %s/%s on its own backend %s (active backend is %s)", dec.Project, c.ID, convBackend, currentBackend)
 		}
-		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, resumeClient, convBackend)
+		m.runWorker(ctx, chatID, text, m.projectSink(dec.Project), "", c, s, resumeClient, convBackend)
 
 	default:
 		_ = s.Send(chatID, "🤔 라우팅 결과를 이해하지 못했어요. !chat use <id> 로 대화를 지정해 주세요.")
@@ -340,6 +340,60 @@ func (m *Manager) makeContinuation(project string, parent *Conversation) (*Conve
 	return newC, nil
 }
 
+// convSink abstracts where a worker turn persists its conversation: a project
+// topic (web) or the global telegram conversation. This keeps runWorker unaware
+// of the two storage locations.
+type convSink interface {
+	project() string                 // workdir/status/history-log scope
+	save(c *Conversation) error      // persist updated conversation
+	setActive(c *Conversation) error // update the channel's active pointer
+	makeContinuation(c *Conversation) (*Conversation, error)
+}
+
+type projectSink struct {
+	m    *Manager
+	proj string
+}
+
+func (p projectSink) project() string { return p.proj }
+func (p projectSink) save(c *Conversation) error {
+	return p.m.store.UpdateConversation(p.proj, c)
+}
+func (p projectSink) setActive(c *Conversation) error {
+	return p.m.store.SetActive(p.proj, c.ID)
+}
+func (p projectSink) makeContinuation(c *Conversation) (*Conversation, error) {
+	return p.m.makeContinuation(p.proj, c)
+}
+
+func (m *Manager) projectSink(project string) convSink { return projectSink{m: m, proj: project} }
+
+// telegramSink persists the single global telegram conversation. `proj` is only
+// the working-directory/history scope (the active project), never the owner of
+// the conversation record. Continuation is an in-place session reset: the same
+// record continues with a fresh CLI session, so the telegram stream stays one
+// conversation to the user.
+type telegramSink struct {
+	m    *Manager
+	proj string
+}
+
+func (t telegramSink) project() string { return t.proj }
+func (t telegramSink) save(c *Conversation) error {
+	return t.m.store.UpdateTelegramConversation(c)
+}
+func (t telegramSink) setActive(c *Conversation) error { return nil } // telegram active is the stream itself
+func (t telegramSink) makeContinuation(c *Conversation) (*Conversation, error) {
+	// In-place continuation: keep the same telegram record but drop the CLI
+	// session so the next turn starts fresh with the carried summary. History is
+	// preserved (capped), so the user still sees a single continuous stream.
+	c.SessionID = newUUID()
+	c.Started = false
+	return c, nil
+}
+
+func (m *Manager) telegramSink(project string) convSink { return telegramSink{m: m, proj: project} }
+
 // isContextOverflow detects Claude CLI "Prompt is too long" context limit errors.
 func isContextOverflow(text string) bool {
 	lower := strings.ToLower(text)
@@ -395,12 +449,13 @@ func (m *Manager) clientForBackend(name string) ClaudeClient {
 // passed explicitly (rather than read from the global active backend) so a
 // conversation resumed on its own backend uses the right model, logging, and
 // continuation tagging even when the global backend differs.
-func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, workDir string, c *Conversation, s MessageSender, client ClaudeClient, backend string) {
+func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink convSink, workDir string, c *Conversation, s MessageSender, client ClaudeClient, backend string) {
 	// Signal turn completion on every exit path (success, error, timeout, or the
 	// early "project not found" return) so channels with a live "working"
 	// indicator (web chat) always get a matching Done for their Typing.
 	defer s.Done(chatID)
 
+	project := sink.project()
 	p, ok := m.store.GetProject(project)
 	if !ok {
 		_ = s.Send(chatID, "⚠️ 프로젝트를 찾을 수 없습니다: "+project)
@@ -442,7 +497,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		if summary == "" {
 			summary = "이전 대화 내용을 참고해 주세요."
 		}
-		if newC, err := m.makeContinuation(project, c); err != nil {
+		if newC, err := sink.makeContinuation(c); err != nil {
 			log.Printf("[manager] auto-continuation failed: %v", err)
 		} else {
 			newC.Backend = backend
@@ -591,8 +646,8 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		if overflowSummary == "" {
 			overflowSummary = "이전 대화 내용을 참고해 주세요."
 		}
-		if newC, cerr := m.makeContinuation(project, workConv); cerr == nil {
-			newC.Backend = m.Backend()
+		if newC, cerr := sink.makeContinuation(workConv); cerr == nil {
+			newC.Backend = backend
 			workConv = newC
 			// Reactive context-overflow split: continue seamlessly in a new series
 			// (summary carried); keep it internal — logged below, not sent to the user.
@@ -660,10 +715,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		workConv.SessionID = res.SessionID
 	}
 
-	if err := m.store.UpdateConversation(project, workConv); err != nil {
+	if err := sink.save(workConv); err != nil {
 		log.Printf("[manager] update conversation: %v", err)
 	}
-	if err := m.store.SetActive(project, workConv.ID); err != nil {
+	if err := sink.setActive(workConv); err != nil {
 		log.Printf("[manager] set active: %v", err)
 	}
 
@@ -932,7 +987,7 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text st
 	}
 
 	log.Printf("[manager] scheduled task → project=%s conv=%s workDir=%s", projectName, c.ID, workDir)
-	m.runWorker(ctx, chatID, text, projectName, workDir, c, s, currentClient, currentBackend)
+	m.runWorker(ctx, chatID, text, m.projectSink(projectName), workDir, c, s, currentClient, currentBackend)
 }
 
 // timeNow is a replaceable clock for testing.

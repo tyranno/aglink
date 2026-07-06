@@ -447,17 +447,22 @@ func TestWebUIHasConversationTopicList(t *testing.T) {
 
 	appText := string(app)
 	if !strings.Contains(appText, "loadConversations") || !strings.Contains(appText, "/api/conversations") {
-		t.Fatal("app.js should load and render conversation topics from /api/conversations")
+		t.Fatal("app.js should load and render conversations from /api/conversations")
 	}
-	if !strings.Contains(appText, "topic-project") {
-		t.Fatal("app.js should render project-group headers in the topic list")
+	// Web-first UI: the list is the top-level web conversations plus a pinned
+	// telegram entry (project-group rendering was removed).
+	if !strings.Contains(appText, "makeWebConvButton") || !strings.Contains(appText, "data.webConvs") {
+		t.Fatal("app.js should render top-level web conversations (web-first)")
 	}
-	if !strings.Contains(appText, "!chat use") {
-		t.Fatal("app.js should switch conversations through the existing !chat use command")
+	if !strings.Contains(appText, "makeTelegramButton") {
+		t.Fatal("app.js should render the pinned telegram entry")
+	}
+	if !strings.Contains(appText, "selectTarget") {
+		t.Fatal("app.js should switch conversations via selectTarget target routing")
 	}
 
 	cssText := string(css)
-	if !strings.Contains(cssText, "#topics") || !strings.Contains(cssText, "#topic-list") || !strings.Contains(cssText, ".topic-project") {
+	if !strings.Contains(cssText, "#topics") || !strings.Contains(cssText, "#topic-list") {
 		t.Fatal("style.css should style the conversation topic list")
 	}
 }

@@ -282,22 +282,29 @@ func (m *Manager) handleWeb(ctx context.Context, chatID int64, text string, s Me
 func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string, tgt Target, s MessageSender) {
 	if tgt.Kind != "web" {
 		// Telegram stream: the default for kind "telegram", and for any unknown
-		// or empty kind (e.g. a not-yet-updated web client).
+		// or empty kind (e.g. a not-yet-updated web client). Working directory
+		// resolution mirrors handleTelegram: the active project's path if set &
+		// valid, else the service home. No project is required — this must
+		// always run, never error, even with zero projects registered.
 		project := m.store.TelegramActiveProject()
-		p, ok := m.store.GetProject(project)
-		if !ok {
-			// Fall back to a single project, else ask.
-			names := projectNames(m.store)
-			if len(names) == 1 {
-				project = names[0]
-				_ = m.store.SetTelegramActiveProject(project)
-				p, _ = m.store.GetProject(project)
-			} else {
-				_ = s.Send(chatID, "🤔 텔레그램 대화의 작업 프로젝트가 정해지지 않았습니다. 텔레그램에서 \"이제 <프로젝트명> 하자\"로 먼저 지정해 주세요.")
-				return
+		// A stale active pointer (project since removed) must not reach
+		// runWorker, which would error "프로젝트를 찾을 수 없습니다"; treat it as
+		// no project → run in home.
+		if project != "" {
+			if _, exists := m.store.GetProject(project); !exists {
+				project = ""
+			}
+		}
+		workDir := resolveHomeDir(m.cfg())
+		if project != "" {
+			if p, ok := m.store.GetProject(project); ok {
+				workDir = p.Path
 			}
 		}
 		tc := m.store.TelegramConversation()
+		if tc.WorkDir != "" {
+			workDir = tc.WorkDir
+		}
 		backend := tc.Backend
 		if backend == "" {
 			backend = "claude"
@@ -309,7 +316,7 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		}
 		m.telegramMu.Lock()
 		defer m.telegramMu.Unlock()
-		m.runWorker(ctx, chatID, text, m.telegramSink(project), p.Path, tc, s, client, backend)
+		m.runWorker(ctx, chatID, text, m.telegramSink(project), workDir, tc, s, client, backend)
 		return
 	}
 
@@ -394,6 +401,7 @@ func (m *Manager) makeContinuation(project string, parent *Conversation) (*Conve
 // of the two storage locations.
 type convSink interface {
 	project() string                 // workdir/status/history-log scope
+	label() string                   // channel/project label for display & history filing
 	save(c *Conversation) error      // persist updated conversation
 	setActive(c *Conversation) error // update the channel's active pointer
 	makeContinuation(c *Conversation) (*Conversation, error)
@@ -405,6 +413,7 @@ type projectSink struct {
 }
 
 func (p projectSink) project() string { return p.proj }
+func (p projectSink) label() string   { return p.proj }
 func (p projectSink) save(c *Conversation) error {
 	return p.m.store.UpdateConversation(p.proj, c)
 }
@@ -428,6 +437,7 @@ type telegramSink struct {
 }
 
 func (t telegramSink) project() string { return t.proj }
+func (t telegramSink) label() string   { return "telegram" }
 func (t telegramSink) save(c *Conversation) error {
 	return t.m.store.UpdateTelegramConversation(c)
 }
@@ -452,6 +462,7 @@ type webConvSink struct {
 }
 
 func (w webConvSink) project() string            { return "" }
+func (w webConvSink) label() string              { return "web" }
 func (w webConvSink) save(c *Conversation) error { return w.m.store.UpdateWebConv(c) }
 func (w webConvSink) setActive(c *Conversation) error {
 	return w.m.store.SetActive("", c.ID)
@@ -599,7 +610,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	if isNewConv && !workConv.IsContinuation {
 		headerProject := project
 		if headerProject == "" {
-			headerProject = "웹" // top-level web conversation has no project scope
+			// No project scope: label by the actual channel (telegram/web), not a
+			// hardcoded "웹" — a telegram turn with no active project must show
+			// "telegram", never "web".
+			headerProject = sink.label()
 		}
 		_ = s.Send(chatID, routingHeader(headerProject, workConv.Title, isNewConv))
 	}
@@ -809,13 +823,15 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		log.Printf("[manager] set active: %v", err)
 	}
 
-	// Append to date-based history log for !history command. For a web conversation
-	// project=="", which would make WriteHistory write to the history root; use a
-	// "web" label so those turns land in a dedicated per-channel folder instead.
+	// Append to date-based history log for !history command. When there's no
+	// project scope (project==""), which would make WriteHistory write to the
+	// history root, fall back to the sink's channel label ("telegram" or "web")
+	// so those turns land in a dedicated per-channel folder instead — never
+	// mislabeling a telegram-no-project turn as "web".
 	if res.Text != "" {
 		historyLabel := project
 		if historyLabel == "" {
-			historyLabel = "web"
+			historyLabel = sink.label()
 		}
 		if herr := WriteHistory(historyLabel, workConv.Title, text, res.Text); herr != nil {
 			log.Printf("[manager] history write error: %v", herr)

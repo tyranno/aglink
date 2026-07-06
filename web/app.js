@@ -25,7 +25,7 @@
   // Which stream the composer currently targets: a specific web conversation,
   // or (only if explicitly picked) the single Telegram stream. Web starts with
   // no target until an active web conversation is found or the user picks one.
-  let currentTarget = { kind: "telegram" }; // telegram is the always-present default channel
+  let currentTarget = null; // web is default; telegram only becomes the target on explicit click
 
   if (attachBtn) attachBtn.addEventListener("click", () => fileEl.click());
   if (fileEl) fileEl.addEventListener("change", () => {
@@ -232,7 +232,10 @@
   function connect() {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${scheme}://${location.host}/ws?token=${encodeURIComponent(token)}`);
-    ws.onopen = () => { statusEl.textContent = "연결됨"; statusEl.className = "on"; backoff = 500; selectTarget(currentTarget); };
+    ws.onopen = () => {
+      statusEl.textContent = "연결됨"; statusEl.className = "on"; backoff = 500;
+      if (currentTarget) selectTarget(currentTarget); else loadConversations();
+    };
     ws.onclose = () => {
       statusEl.textContent = "연결 끊김"; statusEl.className = "off";
       hideWorking();

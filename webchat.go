@@ -320,6 +320,7 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	inject := []byte("<script>window.__TC_TOKEN__=" + string(tokJSON) + ";</script></head>")
 	b = bytes.Replace(b, []byte("</head>"), inject, 1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, must-revalidate")
 	_, _ = w.Write(b)
 }
 
@@ -534,12 +535,23 @@ func (s *webServer) Start() {
 		log.Printf("[webchat] embed error: %v — web chat disabled", err)
 		return
 	}
+	// noStore forces the browser to always refetch web assets. go:embed + FileServer
+	// serve weak cache validators, so without this a normal refresh keeps a stale
+	// app.js after a rebuild — the browser ends up running old client code against a
+	// new server. Assets are tiny and loopback-only, so no-store costs nothing.
+	noStore := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store, must-revalidate")
+			h.ServeHTTP(w, r)
+		})
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/history", s.handleHistory)
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	mux.Handle("/static/", noStore(http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))))
 	mux.HandleFunc("/", s.handleIndex)
 
 	ln, err := net.Listen("tcp", s.addr)

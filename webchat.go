@@ -540,9 +540,36 @@ func (s *webServer) Start() {
 	}
 	log.Printf("[webchat] http://%s/?token=%s", s.addr, s.token)
 	srv := &http.Server{Handler: mux}
+
+	// Also serve the IPv6 loopback (::1) so a browser that resolves "localhost"
+	// to IPv6 — common on Windows/Chrome — can connect. Best-effort: IPv4 still
+	// works if this bind fails (e.g. IPv6 disabled).
+	if v6 := ipv6LoopbackAddr(s.addr); v6 != "" {
+		if ln6, err6 := net.Listen("tcp", v6); err6 != nil {
+			log.Printf("[webchat] IPv6 loopback %s not bound: %v (IPv4 still served)", v6, err6)
+		} else {
+			log.Printf("[webchat] also http://%s/", v6)
+			go func() { _ = srv.Serve(ln6) }()
+		}
+	}
+
 	if serr := srv.Serve(ln); serr != nil {
 		log.Printf("[webchat] server stopped: %v", serr)
 	}
+}
+
+// ipv6LoopbackAddr returns the "[::1]:port" form of an IPv4-loopback / localhost
+// listen address like "127.0.0.1:1717", or "" if addr is not one we should
+// mirror onto IPv6.
+func ipv6LoopbackAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if host == "127.0.0.1" || strings.EqualFold(host, "localhost") {
+		return net.JoinHostPort("::1", port)
+	}
+	return ""
 }
 
 // handleUpload saves an uploaded multipart file under ~/.teleclaude/attachments

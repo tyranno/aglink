@@ -67,7 +67,9 @@ func TestHandleChatUseQualifiedProjectConversation(t *testing.T) {
 	b := &Bot{store: st, out: NewHub()}
 	w := &recCh{}
 	b.out.Register(55, w)
-	b.handleChat(55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID), "")
+	// !chat is web-only (Task 6); origin must be OriginWeb for the subcommand
+	// to run at all — see TestHandleChat_TelegramRejected in chat_cmd_test.go.
+	b.handleChat(55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID), OriginWeb)
 
 	active := st.GetActive()
 	if active.Project != "beta" || active.ConversationID != betaConv.ID {

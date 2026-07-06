@@ -583,8 +583,12 @@ func (b *Bot) formatProjectList() string {
 // origin tags a "!chat new" conversation with the channel that created it so the
 // two channels' chat lists can be managed separately.
 func (b *Bot) handleChat(chatID int64, text string, fields []string, origin string) {
+	if origin != OriginWeb {
+		_ = b.Send(chatID, "ℹ️ 텔레그램에서는 대화 주제를 관리하지 않습니다. 대화 주제는 웹에서 관리하세요. (텔레그램은 \"이제 <프로젝트명> 하자\"로 작업 대상만 전환)")
+		return
+	}
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id>")
+		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id> | !chat rename <새 제목>")
 		return
 	}
 	active := b.store.GetActive()
@@ -633,8 +637,32 @@ func (b *Bot) handleChat(chatID int64, text string, fields []string, origin stri
 		}
 		_ = b.store.SetActive(project, c.ID)
 		_ = b.Send(chatID, fmt.Sprintf("✅ 대화 전환 [%s] %s", c.ID, c.Title))
+	case "rename":
+		if active.Project == "" || active.ConversationID == "" {
+			_ = b.Send(chatID, "이름을 바꿀 활성 웹 토픽이 없습니다. 먼저 토픽을 선택하세요.")
+			return
+		}
+		newTitle := ""
+		if parts := strings.SplitN(text, " ", 3); len(parts) == 3 {
+			newTitle = strings.TrimSpace(parts[2])
+		}
+		if newTitle == "" {
+			_ = b.Send(chatID, "사용법: !chat rename <새 제목>")
+			return
+		}
+		c, ok := b.store.GetConversation(active.Project, active.ConversationID)
+		if !ok {
+			_ = b.Send(chatID, "활성 토픽을 찾을 수 없습니다.")
+			return
+		}
+		c.Title = newTitle
+		if err := b.store.UpdateConversation(active.Project, c); err != nil {
+			_ = b.Send(chatID, "⚠️ 이름 변경 실패: "+err.Error())
+			return
+		}
+		_ = b.Send(chatID, "✏️ 대화 이름을 변경했습니다: "+newTitle)
 	default:
-		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id>")
+		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id> | !chat rename <새 제목>")
 	}
 }
 

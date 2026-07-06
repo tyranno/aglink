@@ -131,6 +131,45 @@ func detectBackendSwitchIntent(text string) string {
 	return ""
 }
 
+// detectProjectSwitchIntent returns a registered project name mentioned in text,
+// preferring the longest match (so "voice-server" wins over "voice"). Case-
+// insensitive. Deterministic; no LLM. Returns ("", false) when none match.
+func detectProjectSwitchIntent(text string, projectNames []string) (string, bool) {
+	lower := strings.ToLower(text)
+	best := ""
+	for _, name := range projectNames {
+		if name == "" {
+			continue
+		}
+		if strings.Contains(lower, strings.ToLower(name)) && len(name) > len(best) {
+			best = name
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
+}
+
+// routeProjectOnly asks the manager LLM which project the message targets, used
+// only as a fallback when keyword matching fails. Returns the project name if the
+// LLM names a registered project, else ("", false).
+func (m *Manager) routeProjectOnly(ctx context.Context, client ClaudeClient, text string) (string, bool) {
+	req := m.buildRouteRequest(text)
+	dec, err := client.Route(ctx, req)
+	if err != nil {
+		log.Printf("[manager] routeProjectOnly error: %v", err)
+		return "", false
+	}
+	if dec.Project == "" {
+		return "", false
+	}
+	if _, ok := m.store.GetProject(dec.Project); !ok {
+		return "", false
+	}
+	return dec.Project, true
+}
+
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
 // Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
 // Handle routes a free-text message to a worker. origin ("telegram"|"web") tags

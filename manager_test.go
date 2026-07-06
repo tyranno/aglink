@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fakeClaude is a programmable ClaudeClient for manager tests.
@@ -42,109 +40,6 @@ func mgrFixture(t *testing.T, fc *fakeClaude) (*Manager, *fileStore, string) {
 	return NewManager(fc, nil, st, NewConfigHolder(cfg)), st, dir
 }
 
-func TestManager_New_CreatesConversationAndRuns(t *testing.T) {
-	fc := &fakeClaude{
-		decision: RouteDecision{Action: ActionNew, Project: "myapp", NewTitle: "로그인 버그"},
-		runRes:   RunResult{Text: "수정 완료"},
-	}
-	m, st, _ := mgrFixture(t, fc)
-	f := &fakeSender{}
-
-	m.Handle(context.Background(), 1, "로그인 고쳐줘", "", f)
-
-	if fc.runCalls != 1 {
-		t.Fatalf("Run called %d times", fc.runCalls)
-	}
-	if fc.lastRun.Resume {
-		t.Error("new conversation should not Resume")
-	}
-	p, _ := st.GetProject("myapp")
-	if len(p.Conversations) != 1 {
-		t.Fatalf("expected 1 conversation, got %d", len(p.Conversations))
-	}
-	// header + result sent
-	joined := ""
-	for _, s := range f.sent {
-		joined += s + "\n"
-	}
-	if !contains(joined, "수정 완료") || !contains(joined, "새 대화") {
-		t.Errorf("messages = %v", f.sent)
-	}
-	// conversation persisted as Started with summary
-	if st.GetActive().Project != "myapp" {
-		t.Error("active project not set")
-	}
-}
-
-func TestManager_Resume_UsesExistingSession(t *testing.T) {
-	fc := &fakeClaude{runRes: RunResult{Text: "이어서 처리"}}
-	m, st, _ := mgrFixture(t, fc)
-	c, _ := st.NewConversation("myapp", "기존 대화", "")
-	c.Started = true
-	_ = st.UpdateConversation("myapp", c)
-
-	fc.decision = RouteDecision{Action: ActionResume, Project: "myapp", ConversationID: c.ID}
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "계속하자", "", f)
-
-	if !fc.lastRun.Resume {
-		t.Error("existing started conversation should Resume")
-	}
-	if fc.lastRun.SessionID != c.SessionID {
-		t.Errorf("session = %q, want %q", fc.lastRun.SessionID, c.SessionID)
-	}
-}
-
-func TestManager_Clarify_DoesNotRun(t *testing.T) {
-	fc := &fakeClaude{decision: RouteDecision{Action: ActionClarify, Clarify: "1) A 2) B"}}
-	m, _, _ := mgrFixture(t, fc)
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "그거 다시", "", f)
-
-	if fc.runCalls != 0 {
-		t.Error("clarify must not run worker")
-	}
-	if len(f.sent) != 1 || !contains(f.sent[0], "1) A 2) B") {
-		t.Errorf("messages = %v", f.sent)
-	}
-}
-
-func TestManager_RouteError_FallsBackToActive(t *testing.T) {
-	fc := &fakeClaude{routeErr: errors.New("boom"), runRes: RunResult{Text: "fallback ok"}}
-	m, st, _ := mgrFixture(t, fc)
-	c, _ := st.NewConversation("myapp", "활성 대화", "")
-	c.Started = true
-	_ = st.UpdateConversation("myapp", c)
-	_ = st.SetActive("myapp", c.ID)
-
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "뭔가 해줘", "", f)
-
-	if fc.runCalls != 1 {
-		t.Errorf("expected fallback run, got %d calls", fc.runCalls)
-	}
-}
-
-func TestManager_RouteError_NoActive_Asks(t *testing.T) {
-	fc := &fakeClaude{routeErr: errors.New("boom")}
-	m, st, _ := mgrFixture(t, fc)
-	// A second project makes the target genuinely ambiguous, so the manager must
-	// ask instead of guessing. (With a single project it auto-runs — see
-	// TestManager_RouteError_SingleProject_AutoRuns.)
-	if err := st.AddProject("other", t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "뭔가 해줘", "", f)
-
-	if fc.runCalls != 0 {
-		t.Error("should not run when multiple projects and no active conversation")
-	}
-	if len(f.sent) == 0 {
-		t.Error("should ask the user")
-	}
-}
-
 func TestManager_NoProjects_Guides(t *testing.T) {
 	fc := &fakeClaude{}
 	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
@@ -157,132 +52,51 @@ func TestManager_NoProjects_Guides(t *testing.T) {
 	}
 }
 
-// Regression: LLM returns resume with an empty project (vague follow-up).
-// Must continue the ACTIVE conversation, not crash into NewConversation("").
-func TestManager_EmptyProject_FallsBackToActive(t *testing.T) {
-	fc := &fakeClaude{
-		decision: RouteDecision{Action: ActionResume, Project: "", ConversationID: ""},
-		runRes:   RunResult{Text: "이어서 처리"},
-	}
-	m, st, _ := mgrFixture(t, fc)
-	c, _ := st.NewConversation("myapp", "활성 대화", "")
-	c.Started = true
-	_ = st.UpdateConversation("myapp", c)
-	_ = st.SetActive("myapp", c.ID)
-
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "가능한지 확인해봐", "", f)
-
-	if fc.runCalls != 1 {
-		t.Fatalf("expected resume of active conversation, got %d run calls", fc.runCalls)
-	}
-	if fc.lastRun.SessionID != c.SessionID {
-		t.Errorf("should resume active session %q, got %q", c.SessionID, fc.lastRun.SessionID)
-	}
-	for _, msg := range f.sent {
-		if contains(msg, "찾을 수 없") {
-			t.Errorf("must not emit not-found error: %q", msg)
-		}
-	}
-}
-
-// Regression: empty project AND no active conversation → clarify, never crash.
-func TestManager_EmptyProject_NoActive_Clarifies(t *testing.T) {
-	fc := &fakeClaude{decision: RouteDecision{Action: ActionResume, Project: ""}}
-	m, _, _ := mgrFixture(t, fc) // project registered but no active set
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "가능한지 확인해봐", "", f)
-
-	if fc.runCalls != 0 {
-		t.Errorf("should not run worker, got %d", fc.runCalls)
-	}
-	if len(f.sent) == 0 {
-		t.Fatal("should send a clarify message")
-	}
-	for _, msg := range f.sent {
-		if contains(msg, "프로젝트를 찾을 수 없습니다:") {
-			t.Errorf("must not crash with not-found error: %q", msg)
-		}
-	}
-}
-
+// Auto-continuation still fires on the telegram stream: a large history triggers
+// an in-place series reset via the telegram sink (same "telegram" record, fresh
+// CLI session), carrying the prior summary into the next prompt — without ever
+// forking a project topic.
 func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
-	// Create a conversation with large history to trigger auto-continuation
 	fc := &fakeClaude{runRes: RunResult{Text: "더 많은 작업 완료"}}
-	m, st, _ := mgrFixture(t, fc)
+	m, st, _ := tgManager(t, fc)
 
-	// Create initial conversation with large history
-	c, _ := st.NewConversation("myapp", "큰 프로젝트", "")
+	// Seed the global telegram conversation with a large history + summary.
+	c := st.TelegramConversation()
 	c.Started = true
 	c.Summary = "이전에 많은 작업을 했습니다"
+	oldSession := c.SessionID
 
-	// Add large history to trigger continuation (with actual characters to count tokens)
 	longPrompt := "여기는 매우 긴 프롬프트입니다. "
 	longResponse := "여기는 매우 긴 응답입니다. "
 	for range 5000 { // ~70k tokens with multiplier
 		longPrompt += "긴 텍스트를 반복합니다. "
 		longResponse += "긴 응답을 반복합니다. "
 	}
+	c.History = append(c.History, ConversationTurn{Prompt: longPrompt, Response: longResponse})
+	_ = st.UpdateTelegramConversation(c)
 
-	largeTurn := ConversationTurn{
-		Prompt:   longPrompt,
-		Response: longResponse,
-	}
-	c.History = append(c.History, largeTurn)
-	_ = st.UpdateConversation("myapp", c)
-
-	// Verify token estimation exceeds threshold
-	estimatedTokens := estimateTokens(longPrompt) + estimateTokens(longResponse)
-	if estimatedTokens < 50000 {
-		t.Logf("Warning: estimated tokens %d < threshold 50000; test may not trigger continuation", estimatedTokens)
-	}
-
-	// Set this as active and resume with more input
-	_ = st.SetActive("myapp", c.ID)
-
-	fc.decision = RouteDecision{Action: ActionResume, Project: "myapp", ConversationID: c.ID}
 	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "계속 작업해줘", "", f)
+	m.Handle(context.Background(), 1, "계속 작업해줘", OriginTelegram, f)
 
-	// Verify continuation was created
+	if fc.runCalls != 1 {
+		t.Fatalf("expected one worker run, got %d", fc.runCalls)
+	}
+	// In-place continuation: still exactly the single telegram record, no project fork.
+	tc := st.TelegramConversation()
+	if tc.ID != "telegram" {
+		t.Errorf("telegram record must stay one conversation, got id %q", tc.ID)
+	}
 	p, _ := st.GetProject("myapp")
-	if len(p.Conversations) != 2 {
-		t.Fatalf("expected 2 conversations (original + continuation), got %d", len(p.Conversations))
+	if len(p.Conversations) != 0 {
+		t.Fatalf("auto-continuation must not fork a project topic, got %d", len(p.Conversations))
 	}
-
-	// Find the continuation conversation
-	var continuation *Conversation
-	for _, conv := range p.Conversations {
-		if conv.ParentID != "" && conv.IsContinuation {
-			continuation = conv
-			break
-		}
+	// Session was reset for the fresh series.
+	if tc.SessionID == oldSession {
+		t.Errorf("continuation should reset the CLI session, still %q", oldSession)
 	}
-	if continuation == nil {
-		t.Fatal("continuation conversation not found")
-	}
-
-	// Verify parent-child link
-	if continuation.ParentID != c.ID {
-		t.Errorf("continuation.ParentID = %q, want %q", continuation.ParentID, c.ID)
-	}
-	if c.ChildID != continuation.ID {
-		t.Errorf("original.ChildID not updated: %q, want %q", c.ChildID, continuation.ID)
-	}
-
-	// Verify the prompt includes parent summary
+	// The carried summary made it into the worker prompt.
 	if !contains(fc.lastRun.Prompt, "이전에 많은 작업을 했습니다") {
 		t.Errorf("continuation prompt should include parent summary, got: %q", fc.lastRun.Prompt)
-	}
-
-	// Verify title includes series indicator
-	if !contains(continuation.Title, "시리즈") {
-		t.Errorf("continuation title should include series indicator: %q", continuation.Title)
-	}
-
-	// Verify active is set to continuation
-	if st.GetActive().ConversationID != continuation.ID {
-		t.Errorf("active should be continuation, got %q", st.GetActive().ConversationID)
 	}
 }
 
@@ -303,43 +117,6 @@ func TestEstimateTokens(t *testing.T) {
 				t.Errorf("estimateTokens(%q) = %d, check failed", tt.text, got)
 			}
 		})
-	}
-}
-
-func TestManager_StatusAction_ReturnsActiveWorkers(t *testing.T) {
-	// Manager Claude returns ActionStatus → should show worker status without running Worker.
-	fc := &fakeClaude{
-		decision: RouteDecision{Action: ActionStatus},
-		runRes:   RunResult{Text: "처리 중"},
-	}
-	m, st, _ := mgrFixture(t, fc)
-
-	// Create conversation and mark as started
-	c, _ := st.NewConversation("myapp", "작업 중", "")
-	c.Started = true
-	_ = st.UpdateConversation("myapp", c)
-
-	// Manually record a running worker
-	_ = m.workerStatus.SetStatus(WorkerStatus{
-		Project:        "myapp",
-		ConversationID: c.ID,
-		Title:          "작업 중",
-		Status:         "running",
-		StartTime:      time.Now().Add(-30 * time.Second),
-	})
-
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "진행 중이야?", "", f)
-
-	if fc.runCalls != 0 {
-		t.Errorf("ActionStatus must not run Worker, got %d calls", fc.runCalls)
-	}
-	joined := ""
-	for _, s := range f.sent {
-		joined += s + "\n"
-	}
-	if !contains(joined, "실행 중인 작업") {
-		t.Errorf("should show active workers, got: %s", joined)
 	}
 }
 

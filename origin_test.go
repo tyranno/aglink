@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,32 +63,6 @@ func TestFormatChatList_ExcludesWebOrigin(t *testing.T) {
 	}
 	if !strings.Contains(list, "shared-chat") {
 		t.Errorf("!chat list must include shared conversation, got:\n%s", list)
-	}
-}
-
-// A conversation auto-created for a web request is tagged origin=web.
-func TestManagerHandle_TagsNewConvWithOrigin(t *testing.T) {
-	fc := &fakeClaude{
-		decision: RouteDecision{Action: ActionNew, Project: "p", NewTitle: "새 주제"},
-		runRes:   RunResult{Text: "done"},
-	}
-	st := originStore(t)
-	m := NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
-	f := &fakeSender{}
-	m.Handle(context.Background(), 1, "웹에서 새 주제", OriginWeb, f)
-
-	p, _ := st.GetProject("p")
-	found := false
-	for _, c := range p.Conversations {
-		if c.Title == "새 주제" {
-			found = true
-			if c.Origin != OriginWeb {
-				t.Errorf("web-request conversation origin = %q, want %q", c.Origin, OriginWeb)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("new conversation was not created")
 	}
 }
 

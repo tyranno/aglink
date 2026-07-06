@@ -170,13 +170,34 @@ func (m *Manager) routeProjectOnly(ctx context.Context, client ClaudeClient, tex
 	return dec.Project, true
 }
 
-// Handle routes a free-text message to the right project/conversation and runs the Worker.
-// Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
-// Handle routes a free-text message to a worker. origin ("telegram"|"web") tags
-// any conversation newly created for this request so the two channels' chat lists
-// can be managed separately; continuations inherit their parent's origin.
+// projectNames returns the registered project names (unordered).
+func projectNames(store StoreRepo) []string {
+	projects := store.ListProjects()
+	names := make([]string, 0, len(projects))
+	for name := range projects {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Handle routes a free-text message to a worker. origin ("telegram"|"web") selects
+// the channel: telegram is a single global conversation stream; web uses per-topic
+// conversations (handleWeb, Task 5).
 func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string, s MessageSender) {
-	// Pre-check: auto-switch backend if the message mentions it.
+	if origin == OriginWeb {
+		m.handleWeb(ctx, chatID, text, s) // Task 5
+		return
+	}
+	m.handleTelegram(ctx, chatID, text, s)
+}
+
+// handleTelegram continues the single global telegram conversation. A project-
+// switch intent only moves the working-directory pointer; the conversation and
+// its history stay one continuous stream. The telegram channel no longer does LLM
+// project/conversation routing, but one manager LLM call still serves natural-
+// language scheduling (and, incidentally, a project hint).
+func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string, s MessageSender) {
+	// Backend auto-switch pre-check (unchanged behavior).
 	if target := detectBackendSwitchIntent(text); target != "" && target != m.Backend() {
 		if err := m.SetBackend(target); err != nil {
 			_ = s.Send(chatID, "⚠️ 백엔드 전환 실패: "+err.Error())
@@ -185,145 +206,103 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 		}
 	}
 
-	m.backendMu.RLock()
-	currentBackend := m.backendName
-	currentClient := m.client
-	m.backendMu.RUnlock()
-
-	projects := m.store.ListProjects()
-	if len(projects) == 0 {
+	names := projectNames(m.store)
+	if len(names) == 0 {
 		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n!project add <이름> <경로>")
 		return
 	}
 
-	dec, ok := m.decide(ctx, currentClient, text)
+	// One manager LLM call: honor a schedule request; otherwise keep the project hint.
+	m.backendMu.RLock()
+	routeClient := m.client
+	m.backendMu.RUnlock()
+	hint := ""
+	if dec, err := routeClient.Route(ctx, m.buildRouteRequest(text)); err == nil {
+		if dec.Action == ActionSchedule {
+			m.handleSchedule(chatID, dec, s)
+			return
+		}
+		hint = dec.Project
+	}
+
+	project, ok := m.resolveTelegramProject(chatID, text, hint, s)
 	if !ok {
-		// Routing failed entirely → fall back to the active conversation, else ask.
-		if active := m.store.GetActive(); active.Project != "" {
-			if c, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-				m.runWorker(ctx, chatID, text, m.projectSink(active.Project), "", c, s, currentClient, currentBackend)
-				return
-			}
-		}
-		// No active conversation and routing failed. If there is exactly one project,
-		// just start there instead of making the user pick — only ask when the target
-		// is genuinely ambiguous (multiple projects).
-		if len(projects) == 1 {
-			var only string
-			for name := range projects {
-				only = name
-			}
-			if c, cerr := m.store.NewConversation(only, "새 대화", origin); cerr == nil {
-				_ = m.store.SetActive(only, c.ID)
-				m.runWorker(ctx, chatID, text, m.projectSink(only), "", c, s, currentClient, currentBackend)
-				return
-			}
-		}
-		_ = s.Send(chatID, "🤔 어느 프로젝트/대화에서 할지 모르겠어요. !project list 로 확인하거나 !chat use <id> 로 지정해 주세요.")
 		return
 	}
 
-	// Guard: a resume/new decision that names an empty or unregistered project
-	// (common when the LLM can't pin a vague follow-up). Continue the active
-	// conversation if there is one; otherwise ask — never crash into NewConversation("").
-	if dec.Action == ActionResume || dec.Action == ActionNew {
-		if _, pok := m.store.GetProject(dec.Project); !pok {
-			if active := m.store.GetActive(); active.Project != "" {
-				if ac, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-					m.runWorker(ctx, chatID, text, m.projectSink(active.Project), "", ac, s, currentClient, currentBackend)
-					return
-				}
-			}
-			_ = s.Send(chatID, "🤔 어느 프로젝트에서 이어갈지 모르겠어요. !project list 로 확인하거나 \"<프로젝트명> ...\" 처럼 프로젝트를 함께 적어 주세요.")
-			return
-		}
+	p, _ := m.store.GetProject(project)
+	tc := m.store.TelegramConversation()
+	backend := tc.Backend
+	if backend == "" {
+		backend = "claude"
 	}
-
-	switch dec.Action {
-	case ActionStatus:
-		_ = s.Send(chatID, m.DescribeActiveWorkers())
-
-	case ActionSchedule:
-		m.handleSchedule(chatID, dec, s)
-
-	case ActionClarify:
-		msg := dec.Clarify
-		if msg == "" {
-			msg = "어느 대화를 말씀하시는지 알려주세요. !chat list 로 목록을 볼 수 있어요."
-		}
-		_ = s.Send(chatID, "🤔 "+msg)
-
-	case ActionNew:
-		if _, exists := m.store.GetProject(dec.Project); !exists {
-			_ = s.Send(chatID, "🤔 어느 프로젝트인지 분명하지 않아요. !project list 를 확인해 주세요.")
-			return
-		}
-		c, err := m.store.NewConversation(dec.Project, dec.NewTitle, origin)
-		if err != nil {
-			_ = s.Send(chatID, "⚠️ 새 대화 생성 실패: "+err.Error())
-			return
-		}
-		c.Backend = currentBackend
-		_ = m.store.UpdateConversation(dec.Project, c)
-		m.runWorker(ctx, chatID, text, m.projectSink(dec.Project), "", c, s, currentClient, currentBackend)
-
-	case ActionResume:
-		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
-		if !exists {
-			// Conversation was deleted or never existed — start a new one instead of erroring.
-			newC, cerr := m.store.NewConversation(dec.Project, "새 대화", origin)
-			if cerr != nil {
-				_ = s.Send(chatID, "⚠️ 대화를 찾을 수 없어 새 대화 생성도 실패했습니다: "+cerr.Error())
-				return
-			}
-			newC.Backend = currentBackend
-			_ = m.store.UpdateConversation(dec.Project, newC)
-			m.runWorker(ctx, chatID, text, m.projectSink(dec.Project), "", newC, s, currentClient, currentBackend)
-			return
-		}
-		convBackend := c.Backend
-		if convBackend == "" {
-			convBackend = "claude"
-		}
-		// Resuming an explicitly chosen conversation always uses that conversation's
-		// own backend — the global active backend (set via !backend) governs only new
-		// conversations and auto-routing, never an existing one the user picked. This
-		// is what makes "reopen an old codex/claude chat" actually continue it instead
-		// of silently forking a new conversation on the current backend.
-		resumeClient := currentClient
-		if convBackend != currentBackend {
-			resumeClient = m.clientForBackend(convBackend)
-			if resumeClient == nil {
-				_ = s.Send(chatID, fmt.Sprintf("⚠️ 이 대화는 %s로 만들어졌는데 %s가 지금 설치되어 있지 않습니다.\n해당 백엔드를 설치하거나 `!backend %s`로 전환한 뒤 다시 시도해 주세요.",
-					strings.ToUpper(convBackend), strings.ToUpper(convBackend), convBackend))
-				return
-			}
-			log.Printf("[manager] resume conv %s/%s on its own backend %s (active backend is %s)", dec.Project, c.ID, convBackend, currentBackend)
-		}
-		m.runWorker(ctx, chatID, text, m.projectSink(dec.Project), "", c, s, resumeClient, convBackend)
-
-	default:
-		_ = s.Send(chatID, "🤔 라우팅 결과를 이해하지 못했어요. !chat use <id> 로 대화를 지정해 주세요.")
+	client := m.clientForBackend(backend)
+	if client == nil {
+		_ = s.Send(chatID, fmt.Sprintf("⚠️ 텔레그램 대화는 %s로 생성됐는데 %s가 설치되어 있지 않습니다. `!backend`로 전환하거나 설치 후 다시 시도해 주세요.",
+			strings.ToUpper(backend), strings.ToUpper(backend)))
+		return
 	}
+	m.runWorker(ctx, chatID, text, m.telegramSink(project), p.Path, tc, s, client, backend)
 }
 
-// decide returns the routing decision. With ManagerAlways=false it reuses the active
-// conversation without a Manager call when one is set (token-saving optimization).
-func (m *Manager) decide(ctx context.Context, client ClaudeClient, text string) (RouteDecision, bool) {
-	if !m.cfg().ManagerAlways {
-		if active := m.store.GetActive(); active.Project != "" {
-			if _, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-				return RouteDecision{Action: ActionResume, Project: active.Project, ConversationID: active.ConversationID}, true
-			}
+// resolveTelegramProject returns the working-directory project for this turn.
+// A switch intent (keyword first, then the LLM hint, then a project-only LLM
+// fallback) updates the stored pointer; otherwise the current pointer is used.
+// Falls back to the single project, or asks when ambiguous.
+func (m *Manager) resolveTelegramProject(chatID int64, text, hint string, s MessageSender) (string, bool) {
+	names := projectNames(m.store)
+	if len(names) == 0 {
+		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n!project add <이름> <경로>")
+		return "", false
+	}
+	switched, ok := detectProjectSwitchIntent(text, names)
+	if !ok && hint != "" {
+		if _, exists := m.store.GetProject(hint); exists {
+			switched, ok = hint, true
 		}
 	}
-	req := m.buildRouteRequest(text)
-	dec, err := client.Route(ctx, req)
-	if err != nil {
-		log.Printf("[manager] route error: %v", err)
-		return RouteDecision{}, false
+	if !ok && len(names) > 1 {
+		m.backendMu.RLock()
+		client := m.client
+		m.backendMu.RUnlock()
+		switched, ok = m.routeProjectOnly(context.Background(), client, text)
 	}
-	return dec, true
+	if ok {
+		if switched != m.store.TelegramActiveProject() {
+			_ = m.store.SetTelegramActiveProject(switched)
+			_ = s.Send(chatID, "📂 이제 "+switched+"에서 진행합니다.")
+		}
+		return switched, true
+	}
+	cur := m.store.TelegramActiveProject()
+	if _, exists := m.store.GetProject(cur); exists {
+		return cur, true
+	}
+	if len(names) == 1 {
+		_ = m.store.SetTelegramActiveProject(names[0])
+		return names[0], true
+	}
+	_ = s.Send(chatID, "🤔 어느 프로젝트에서 할지 알려주세요. 예: \"이제 <프로젝트명> 하자\" (!project list 로 목록 확인)")
+	return "", false
+}
+
+// handleWeb is a temporary stub (replaced in Task 5). It routes to the active web
+// topic if one exists.
+func (m *Manager) handleWeb(ctx context.Context, chatID int64, text string, s MessageSender) {
+	active := m.store.GetActive()
+	if active.Project == "" {
+		_ = s.Send(chatID, "웹 토픽을 먼저 선택하거나 생성하세요.")
+		return
+	}
+	c, ok := m.store.GetConversation(active.Project, active.ConversationID)
+	if !ok {
+		_ = s.Send(chatID, "웹 토픽을 찾을 수 없습니다.")
+		return
+	}
+	m.backendMu.RLock()
+	client, backend := m.client, m.backendName
+	m.backendMu.RUnlock()
+	m.runWorker(ctx, chatID, text, m.projectSink(active.Project), "", c, s, client, backend)
 }
 
 func (m *Manager) buildRouteRequest(text string) RouteRequest {

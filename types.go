@@ -93,9 +93,14 @@ type ActiveRef struct {
 
 // StoreData is the root persisted to store.json (별도 저장소).
 type StoreData struct {
-	Projects      map[string]*Project `json:"projects"`
-	Active        ActiveRef           `json:"active"`
-	ActiveBackend string              `json:"activeBackend,omitempty"` // "claude"|"codex"; "" means claude
+	SchemaVersion int                 `json:"schemaVersion"`
+	Projects      map[string]*Project `json:"projects"` // 웹 토픽 전용
+	Active        ActiveRef           `json:"active"`   // 웹의 활성 토픽
+	ActiveBackend string              `json:"activeBackend,omitempty"`
+
+	// 전역 단일 텔레그램 대화 (프로젝트 무관).
+	TelegramConv          *Conversation `json:"telegramConv,omitempty"`
+	TelegramActiveProject string        `json:"telegramActiveProject,omitempty"`
 }
 
 // --- Manager routing I/O (Design §3.2) ---
@@ -238,4 +243,8 @@ type StoreRepo interface {
 	GetParent(project, convID string) (*Conversation, bool)
 	GetStoredBackend() string
 	SetStoredBackend(name string) error
+	TelegramConversation() *Conversation
+	UpdateTelegramConversation(c *Conversation) error
+	TelegramActiveProject() string
+	SetTelegramActiveProject(name string) error
 }

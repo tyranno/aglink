@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -14,6 +15,11 @@ import (
 
 // Design Ref: §4.1 StoreRepo, §3.4 store.json. Infrastructure layer.
 
+// storeSchemaVersion is bumped whenever StoreData's shape changes in a way that
+// isn't safely forward-compatible. On mismatch, Load backs up the old file and
+// starts fresh rather than migrating — see Load for rationale.
+const storeSchemaVersion = 2
+
 // fileStore is a JSON-file backed StoreRepo (MVP). Safe for concurrent use.
 type fileStore struct {
 	path string
@@ -23,10 +29,7 @@ type fileStore struct {
 
 // NewFileStore creates a store backed by the given JSON file path.
 func NewFileStore(path string) *fileStore {
-	return &fileStore{
-		path: path,
-		data: StoreData{Projects: map[string]*Project{}},
-	}
+	return &fileStore{path: path, data: newEmptyStore()}
 }
 
 // Load reads store.json. A missing file is treated as an empty store.
@@ -37,7 +40,7 @@ func (s *fileStore) Load() error {
 	b, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			s.data = StoreData{Projects: map[string]*Project{}}
+			s.data = newEmptyStore()
 			return nil
 		}
 		return err
@@ -45,6 +48,17 @@ func (s *fileStore) Load() error {
 	var d StoreData
 	if err := json.Unmarshal(b, &d); err != nil {
 		return fmt.Errorf("store.json 파싱 실패: %w", err)
+	}
+	// Schema mismatch (or legacy file with no version) → back up once and reset.
+	// Migration is intentionally not supported: old conversations are discarded.
+	if d.SchemaVersion != storeSchemaVersion {
+		if berr := os.Rename(s.path, s.path+".bak"); berr != nil {
+			log.Printf("[store] legacy backup failed: %v (starting fresh anyway)", berr)
+		} else {
+			log.Printf("[store] legacy store.json (schema %d) backed up to %s.bak; starting fresh (schema %d)", d.SchemaVersion, s.path, storeSchemaVersion)
+		}
+		s.data = newEmptyStore()
+		return s.saveLocked()
 	}
 	if d.Projects == nil {
 		d.Projects = map[string]*Project{}
@@ -58,6 +72,10 @@ func (s *fileStore) Load() error {
 	return nil
 }
 
+func newEmptyStore() StoreData {
+	return StoreData{SchemaVersion: storeSchemaVersion, Projects: map[string]*Project{}}
+}
+
 // Save writes store.json atomically (temp file + rename).
 func (s *fileStore) Save() error {
 	s.mu.Lock()
@@ -66,6 +84,7 @@ func (s *fileStore) Save() error {
 }
 
 func (s *fileStore) saveLocked() error {
+	s.data.SchemaVersion = storeSchemaVersion
 	b, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return err
@@ -119,6 +138,9 @@ func (s *fileStore) RemoveProject(name string) error {
 	delete(s.data.Projects, name)
 	if s.data.Active.Project == name {
 		s.data.Active = ActiveRef{}
+	}
+	if s.data.TelegramActiveProject == name {
+		s.data.TelegramActiveProject = ""
 	}
 	return s.saveLocked()
 }
@@ -311,4 +333,52 @@ func (s *fileStore) GetParent(project, convID string) (*Conversation, bool) {
 	}
 	parent, ok := p.Conversations[c.ParentID]
 	return parent, ok
+}
+
+// TelegramConversation returns the single global telegram conversation, creating
+// it on first access. It is project-independent; the working directory for a
+// telegram turn comes from TelegramActiveProject.
+func (s *fileStore) TelegramConversation() *Conversation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.TelegramConv == nil {
+		backend := s.data.ActiveBackend
+		if backend == "" {
+			backend = "claude"
+		}
+		s.data.TelegramConv = &Conversation{
+			ID:           "telegram",
+			Title:        "텔레그램 대화",
+			SessionID:    newUUID(),
+			Started:      false,
+			LastActivity: time.Now().UTC(),
+			Backend:      backend,
+			Origin:       OriginTelegram,
+		}
+		_ = s.saveLocked()
+	}
+	return s.data.TelegramConv
+}
+
+// UpdateTelegramConversation persists changes to the global telegram conversation.
+func (s *fileStore) UpdateTelegramConversation(c *Conversation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.TelegramConv = c
+	return s.saveLocked()
+}
+
+// TelegramActiveProject returns the project currently targeted by telegram turns.
+func (s *fileStore) TelegramActiveProject() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.data.TelegramActiveProject
+}
+
+// SetTelegramActiveProject records the project telegram turns should run against.
+func (s *fileStore) SetTelegramActiveProject(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.TelegramActiveProject = name
+	return s.saveLocked()
 }

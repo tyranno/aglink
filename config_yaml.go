@@ -10,7 +10,7 @@ import (
 // yamlConfig is the on-disk YAML shape. Pointers/omitempty keep output tidy and
 // let us detect "unset" so defaults apply.
 type yamlConfig struct {
-	HomeDir string `yaml:"home_dir"`
+	HomeDir  string `yaml:"home_dir"`
 	Telegram struct {
 		BotToken         string   `yaml:"bot_token"`
 		AllowedUserIDs   []int64  `yaml:"allowed_user_ids"`
@@ -64,6 +64,12 @@ type yamlConfig struct {
 		Token       string `yaml:"token"`
 		OwnerChatID int64  `yaml:"owner_chat_id"`
 	} `yaml:"chat_control"`
+	AglinkChat struct {
+		Enabled    bool   `yaml:"enabled"`
+		Addr       string `yaml:"addr"`
+		BinaryPath string `yaml:"binary_path"`
+		Token      string `yaml:"token"`
+	} `yaml:"aglink_chat"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -137,6 +143,13 @@ func yamlToConfig(y *yamlConfig) *Config {
 	}
 	c.ChatControlToken = y.ChatControl.Token
 	c.ChatControlOwnerChatID = y.ChatControl.OwnerChatID
+	c.AglinkChat = y.AglinkChat.Enabled
+	c.AglinkChatAddr = y.AglinkChat.Addr
+	if c.AglinkChatAddr == "" {
+		c.AglinkChatAddr = "127.0.0.1:1718"
+	}
+	c.AglinkChatBinaryPath = y.AglinkChat.BinaryPath
+	c.AglinkChatToken = y.AglinkChat.Token
 	return c
 }
 
@@ -178,6 +191,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ChatControl.Addr = c.ChatControlAddr
 	y.ChatControl.Token = c.ChatControlToken
 	y.ChatControl.OwnerChatID = c.ChatControlOwnerChatID
+	y.AglinkChat.Enabled = c.AglinkChat
+	y.AglinkChat.Addr = c.AglinkChatAddr
+	y.AglinkChat.BinaryPath = c.AglinkChatBinaryPath
+	y.AglinkChat.Token = c.AglinkChatToken
 	return y
 }
 

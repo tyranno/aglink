@@ -46,6 +46,14 @@ type Config struct {
 	ChatControlAddr        string // control-API bind address (loopback only), default 127.0.0.1:17170
 	ChatControlToken       string // control-API auth token; empty → auto-generated + persisted
 	ChatControlOwnerChatID int64  // chatID aglink-chat actions run as; 0 → first AllowedUserIDs
+
+	// aglink_chat: teleclaude spawns aglink-chat.exe serve as a managed child so
+	// it runs as the primary frontend. Phase 1 runs it on a parallel port (1718)
+	// alongside the embedded web_chat server; requires ChatControl enabled.
+	AglinkChat           bool   // spawn+supervise aglink-chat.exe serve
+	AglinkChatAddr       string // aglink-chat browser bind address, default 127.0.0.1:1718
+	AglinkChatBinaryPath string // aglink-chat.exe path; empty → srcDir then ../aglink-chat
+	AglinkChatToken      string // aglink-chat browser auth token; empty → auto-generated + persisted
 }
 
 // ConversationTurn represents one exchange in a conversation.

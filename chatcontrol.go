@@ -27,12 +27,13 @@ type chatControlServer struct {
 	ownerChatID int64
 	hub         *Hub
 	bot         *Bot
+	cfgPath     string       // config.yaml path (get_config/set_config relay target)
 	connCount   atomic.Int64 // number of currently connected aglink-chat clients
 }
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | get_version | get_aux | get_config | set_config
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -42,6 +43,7 @@ type controlIn struct {
 	Target  *Target `json:"target,omitempty"`
 	ID      string  `json:"id,omitempty"`
 	Title   string  `json:"title,omitempty"`
+	Body    string  `json:"body,omitempty"` // set_config: edited config.yaml text
 }
 
 // controlOut is a message to aglink-chat: either a Hub-driven browser frame
@@ -207,6 +209,35 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		go s.bot.webRename(chatID, m.ID, m.Title)
 	case "web_delete":
 		go s.bot.webDelete(chatID, m.ID)
+	case "get_version":
+		backend := ""
+		if s.bot != nil && s.bot.manager != nil {
+			backend = s.bot.manager.Backend()
+		}
+		data, _ := json.Marshal(versionPayload(backend))
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "get_aux":
+		cfg := s.bot.cfg()
+		feats := buildAuxFeatures(int(s.connCount.Load()), cfg.ChatControl, cfg.ChatControlAddr)
+		data, _ := json.Marshal(map[string]any{"features": feats})
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "get_config":
+		out := map[string]any{}
+		if masked, err := readMaskedConfig(s.cfgPath, s.bot.cfg()); err != nil {
+			out["error"] = err.Error()
+		} else {
+			out["config"] = string(masked)
+		}
+		data, _ := json.Marshal(out)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "set_config":
+		out := map[string]any{"ok": true}
+		if err := writeValidatedConfig(s.cfgPath, s.bot.cfg(), []byte(m.Body)); err != nil {
+			out["ok"] = false
+			out["error"] = err.Error()
+		}
+		data, _ := json.Marshal(out)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	default:
 		log.Printf("[chatcontrol] unknown control message type %q", m.Type)
 	}

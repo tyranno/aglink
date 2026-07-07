@@ -14,7 +14,7 @@ import (
 // deploys alongside teleclaude itself, so one command keeps the whole set
 // (teleclaude + its Windows plugins) in sync instead of hand-building each
 // repo and copying the binary over after every change.
-var pluginNames = []string{"aglink-screen", "aglink-web"}
+var pluginNames = []string{"aglink-screen", "aglink-web", "aglink-chat"}
 
 // updatePlugins rebuilds each plugin in pluginNames from its sibling source
 // directory (../<name> relative to teleclaude's own source dir, srcDir) and
@@ -35,11 +35,21 @@ func updatePlugins(srcDir string) ([]string, error) {
 			continue
 		}
 		target := filepath.Join(srcDir, name+exeSuffix)
+		// aglink-chat runs as a supervised child; kill it (release the exe lock)
+		// and pause the supervisor's respawn while we rebuild. The next teleclaude
+		// respawns it from the fresh binary.
+		if name == "aglink-chat" {
+			aglinkChatUpdating.Store(true)
+			killByImageName("aglink-chat" + exeSuffix)
+		}
 		buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", target, ".")
 		buildCmd.Dir = pluginDir
 		out, buildErr := buildCmd.CombinedOutput()
 		cancel()
+		if name == "aglink-chat" {
+			aglinkChatUpdating.Store(false)
+		}
 		if buildErr != nil {
 			return report, fmt.Errorf("%s 빌드 실패:\n%s", name, strings.TrimSpace(string(out)))
 		}

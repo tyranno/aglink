@@ -54,6 +54,9 @@ func buildAuxFeatures(relayClients int, chatControlEnabled bool, chatControlAddr
 		parent = filepath.Dir(srcDir)
 	}
 	for _, name := range pluginNames {
+		if name == "aglink-chat" {
+			continue // rendered above as the relay entry, not as a plugin
+		}
 		f := auxFeature{Name: name, Label: name}
 
 		installed := false

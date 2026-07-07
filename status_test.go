@@ -56,8 +56,16 @@ func TestHandleAux_ListsUnifiedFeatures(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(body.Features) != 1+len(pluginNames) {
-		t.Fatalf("got %d features, want %d", len(body.Features), 1+len(pluginNames))
+	// Expected: aglink-chat relay + each non-aglink-chat plugin (aglink-chat is
+	// in pluginNames for !update builds but shown once, as the relay).
+	want := 1
+	for _, n := range pluginNames {
+		if n != "aglink-chat" {
+			want++
+		}
+	}
+	if len(body.Features) != want {
+		t.Fatalf("got %d features, want %d", len(body.Features), want)
 	}
 	valid := map[string]bool{auxRunning: true, auxIdle: true, auxAbsent: true}
 	var chat *string

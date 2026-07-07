@@ -654,15 +654,20 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// versionPayload builds the running-vs-latest-source version report. "latest" is
-// computed live from the binary's own source dir (git commit count of HEAD), so
-// the UI can flag when the running build is behind the working tree.
-func (s *webServer) versionPayload() map[string]any {
+// versionPayload builds the running-vs-latest-source version report, shared by
+// the embedded web server and the control-API relay so both report identical
+// data. "latest" is computed live from the binary's own source dir (git commit
+// count of HEAD), so the UI can flag when the running build is behind the tree.
+// backend, when non-empty, is included as the active runner backend.
+func versionPayload(backend string) map[string]any {
 	p := map[string]any{
 		"version":     runningVersion(),
 		"commit":      buildCommit,
 		"buildTime":   buildTime,
 		"commitCount": atoiOr(buildCommitCount, 0),
+	}
+	if backend != "" {
+		p["backend"] = backend
 	}
 	if exe, err := os.Executable(); err == nil {
 		srcDir := filepath.Dir(exe)
@@ -680,6 +685,33 @@ func (s *webServer) versionPayload() map[string]any {
 	return p
 }
 
+// readMaskedConfig reads cfgPath and masks its secret values for display.
+func readMaskedConfig(cfgPath string, cfg *Config) ([]byte, error) {
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	return maskConfigSecrets(raw, cfg), nil
+}
+
+// writeValidatedConfig restores masked secrets in body, validates it, and — only
+// if valid — writes it to cfgPath (the fixed path; never client-supplied). A
+// non-nil error means nothing was written.
+func writeValidatedConfig(cfgPath string, cfg *Config, body []byte) error {
+	restored := restoreConfigSecrets(body, cfg)
+	if _, verr := unmarshalConfigYAML(restored); verr != nil {
+		return verr
+	}
+	return os.WriteFile(cfgPath, restored, 0o600)
+}
+
+func (s *webServer) backendName() string {
+	if s.bot != nil && s.bot.manager != nil {
+		return s.bot.manager.Backend()
+	}
+	return ""
+}
+
 // handleCapabilities tells the shared app.js this is the admin-capable embedded
 // server (aglink-chat does not register this route, so its 404 hides admin UI).
 // It carries the full version payload so the badge can render the update flag
@@ -689,7 +721,7 @@ func (s *webServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	p := s.versionPayload()
+	p := versionPayload("")
 	p["admin"] = true
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(p)
@@ -702,12 +734,8 @@ func (s *webServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	p := s.versionPayload()
-	if s.bot != nil && s.bot.manager != nil {
-		p["backend"] = s.bot.manager.Backend()
-	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(p)
+	_ = json.NewEncoder(w).Encode(versionPayload(s.backendName()))
 }
 
 // handleStatus reports the web/control listen addresses and whether an
@@ -768,27 +796,22 @@ func (s *webServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		raw, err := os.ReadFile(s.cfgPath)
+		masked, err := readMaskedConfig(s.cfgPath, s.holder.Get())
 		if err != nil {
 			http.Error(w, "read failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(maskConfigSecrets(raw, s.holder.Get()))
+		_, _ = w.Write(masked)
 	case http.MethodPut:
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MiB cap
 		if err != nil {
 			http.Error(w, "read body failed", http.StatusBadRequest)
 			return
 		}
-		restored := restoreConfigSecrets(body, s.holder.Get())
-		if _, verr := unmarshalConfigYAML(restored); verr != nil {
-			http.Error(w, verr.Error(), http.StatusBadRequest)
-			return
-		}
-		if werr := os.WriteFile(s.cfgPath, restored, 0o600); werr != nil {
-			http.Error(w, "write failed: "+werr.Error(), http.StatusInternalServerError)
+		if werr := writeValidatedConfig(s.cfgPath, s.holder.Get(), body); werr != nil {
+			http.Error(w, werr.Error(), http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent) // fsnotify (confighot.go) hot-reloads

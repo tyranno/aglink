@@ -400,7 +400,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		} else if !ownerOK {
 			log.Printf("[chatcontrol] no owner chatID (set chat_control.owner_chat_id or allowed_user_ids) — chat control disabled")
 		} else {
-			chatCtl = &chatControlServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}
+			chatCtl = &chatControlServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot, cfgPath: cfgPath}
 			go chatCtl.Start()
 		}
 	}
@@ -418,6 +418,26 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		} else {
 			ws := &webServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot, cfgPath: cfgPath, holder: holder, control: chatCtl}
 			go ws.Start()
+		}
+	}
+
+	// aglink-chat as a managed child frontend (Phase 1: parallel port, e.g. 1718).
+	// Requires the control API (chatCtl) since aglink-chat reaches teleclaude
+	// through it. Startup-bound like web_chat/chat_control — toggling needs a restart.
+	if cfg.AglinkChat && chatCtl != nil {
+		selfExe, _ := os.Executable()
+		binPath := resolveAglinkChatBinary(cfg, selfExe)
+		addr := cfg.AglinkChatAddr
+		if addr == "" {
+			addr = "127.0.0.1:1718"
+		}
+		if binPath == "" {
+			log.Printf("[aglinkchat] binary not found (set aglink_chat.binary_path or build aglink-chat) — not started")
+		} else if btok, terr := loadOrCreateToken(cfg.AglinkChatToken, "aglink_chat.token"); terr != nil {
+			log.Printf("[aglinkchat] token init failed: %v — not started", terr)
+		} else {
+			log.Printf("[aglinkchat] http://%s/?token=%s", addr, btok)
+			go startAglinkChat(context.Background(), binPath, addr, chatCtl.addr, chatCtl.token, btok)
 		}
 	}
 

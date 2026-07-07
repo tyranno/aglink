@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -26,11 +27,12 @@ type chatControlServer struct {
 	ownerChatID int64
 	hub         *Hub
 	bot         *Bot
+	connCount   atomic.Int64 // number of currently connected aglink-chat clients
 }
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment | web_new | web_setdir | web_rename
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -113,6 +115,8 @@ func (s *chatControlServer) handleControl(w http.ResponseWriter, r *http.Request
 	s.hub.Register(s.ownerChatID, ch)
 	defer s.hub.Unregister(s.ownerChatID, ch)
 	defer c.Close(websocket.StatusNormalClosure, "")
+	s.connCount.Add(1)
+	defer s.connCount.Add(-1)
 	log.Printf("[chatcontrol] aglink-chat connected")
 
 	// Single writer goroutine (a WebSocket allows only one concurrent writer).
@@ -201,6 +205,8 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		go s.bot.webSetDir(chatID, m.ID, m.Path)
 	case "web_rename":
 		go s.bot.webRename(chatID, m.ID, m.Title)
+	case "web_delete":
+		go s.bot.webDelete(chatID, m.ID)
 	default:
 		log.Printf("[chatcontrol] unknown control message type %q", m.Type)
 	}

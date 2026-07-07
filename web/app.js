@@ -516,44 +516,31 @@
     renderVersionBadge(ver); // keep the header badge in sync with fresh data
 
     // This web server — if you can read this panel, it is up. Shown first so the
-    // aglink-chat row below is never mistaken for "is this page working?".
+    // aglink helper rows below are never mistaken for "is this page working?".
     connBody.appendChild(connHeading("이 웹 서버 (지금 보고 있는 화면)"));
     connBody.appendChild(connRow("상태", "정상 동작 중", "conn-ok"));
     connBody.appendChild(connRow("웹 채팅 주소", data.webChatAddr || "(미설정)"));
 
-    // External aglink-chat relay process — a SEPARATE program that connects to
-    // the control API. "연결 안 됨" here does NOT mean this page is broken.
-    connBody.appendChild(connHeading("aglink-chat 릴레이 (별도 프로세스)"));
-    connBody.appendChild(connRow("제어 API", data.chatControlEnabled ? "켜짐" : "꺼짐"));
-    connBody.appendChild(connRow("제어 API 주소", data.chatControlAddr || "(미설정)"));
-    connBody.appendChild(connRow(
-      "릴레이 프로세스 접속",
-      data.aglinkConnected ? ("접속됨 (" + (data.aglinkClients || 0) + "개)") : "접속 없음",
-      data.aglinkConnected ? "conn-ok" : "conn-off"));
-    connBody.appendChild(connNote("이 항목은 별도 aglink-chat 프로그램이 제어 API로 붙어 있는지 여부입니다. 이 웹페이지 동작과는 무관합니다."));
-
-    // aglink-* control plugins (aglink-screen / aglink-web) — rebuilt by !update.
-    connBody.appendChild(connHeading("aglink 플러그인"));
-    let plugins = [];
-    try { const presp = await fetch("/api/plugins", { headers: authHeaders }); if (presp.ok) plugins = (await presp.json()).plugins || []; } catch (e) { /* none */ }
-    if (plugins.length === 0) {
-      connBody.appendChild(connNote("플러그인 정보를 불러오지 못했습니다."));
+    // aglink helper features (aglink-chat / aglink-screen / aglink-web) — all
+    // shown with ONE unified 3-state rule.
+    connBody.appendChild(connHeading("aglink 보조 기능"));
+    let features = [];
+    try { const ar = await fetch("/api/aux", { headers: authHeaders }); if (ar.ok) features = (await ar.json()).features || []; } catch (e) { /* none */ }
+    if (features.length === 0) {
+      connBody.appendChild(connNote("상태 정보를 불러오지 못했습니다."));
     } else {
-      for (const p of plugins) {
-        if (!p.installed) {
-          connBody.appendChild(connRow(p.name, "설치 안 됨", "conn-off"));
-          continue;
-        }
-        // Line 1: install/version/binary.
-        const meta = (p.version ? p.version : "설치됨") + (p.binary ? " · 빌드 있음" : " · 빌드 없음");
-        connBody.appendChild(connRow(p.name, meta, "conn-ok"));
-        // Line 2: live process status.
-        let runVal, runCls;
-        if (!p.runKnown) { runVal = "실행 상태 확인 불가"; runCls = ""; }
-        else if (p.running) { runVal = "🟢 실행 중" + (p.runDetail ? " (" + p.runDetail + ")" : ""); runCls = "conn-ok"; }
-        else { runVal = "⚪ 실행 중 아님"; runCls = "conn-off"; }
-        connBody.appendChild(connRow("↳ 실행 상태", runVal, runCls));
+      const stateMap = {
+        running: ["🟢 실행 중", "conn-ok"],
+        idle:    ["⚪ 미사용", "conn-idle"],
+        absent:  ["🔴 설치 안 됨", "conn-off"],
+      };
+      for (const f of features) {
+        const [txt, cls] = stateMap[f.state] || ["⚫ 알 수 없음", ""];
+        const label = f.label + (f.version ? " (" + f.version + ")" : "");
+        connBody.appendChild(connRow(label, txt, cls));
+        if (f.detail) connBody.appendChild(connNote("↳ " + f.detail));
       }
+      connBody.appendChild(connNote("⚪ 미사용은 정상입니다(필요할 때만 실행). 🔴만 조치가 필요합니다."));
     }
 
     connBody.appendChild(connNote("주소/포트 변경은 ⚙ 설정에서 config.yaml을 편집한 뒤 재시작하세요."));

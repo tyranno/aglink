@@ -1429,6 +1429,10 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 // it. Shared by the Telegram attachment path and the web upload endpoint so both
 // behave identically.
 func (b *Bot) ingestAttachment(chatID int64, savePath, caption, origin string) {
+	// Cap the attachments directory to the most recent maxAttachments files. The
+	// just-saved file is the newest, so it always survives. Best-effort.
+	pruneAttachments(filepath.Dir(savePath), maxAttachments)
+
 	prompt := caption
 	if prompt == "" {
 		prompt = "첨부파일을 분석해줘"

@@ -654,35 +654,60 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// versionPayload builds the running-vs-latest-source version report. "latest" is
+// computed live from the binary's own source dir (git commit count of HEAD), so
+// the UI can flag when the running build is behind the working tree.
+func (s *webServer) versionPayload() map[string]any {
+	p := map[string]any{
+		"version":     runningVersion(),
+		"commit":      buildCommit,
+		"buildTime":   buildTime,
+		"commitCount": atoiOr(buildCommitCount, 0),
+	}
+	if exe, err := os.Executable(); err == nil {
+		srcDir := filepath.Dir(exe)
+		if latest := gitCommitCount(srcDir); latest != "" {
+			p["latestCommitCount"] = atoiOr(latest, 0)
+			p["latestVersion"] = formatVersion(latest)
+			p["latestCommit"] = gitShortCommit(srcDir)
+			// updateAvailable only when the running build is itself stamped
+			// (a dev build has no meaningful count to compare).
+			if buildCommitCount != "" {
+				p["updateAvailable"] = atoiOr(latest, 0) > atoiOr(buildCommitCount, 0)
+			}
+		}
+	}
+	return p
+}
+
 // handleCapabilities tells the shared app.js this is the admin-capable embedded
 // server (aglink-chat does not register this route, so its 404 hides admin UI).
+// It carries the full version payload so the badge can render the update flag
+// without a second request.
 func (s *webServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet || !s.authOK(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	v, bt := versionInfo()
+	p := s.versionPayload()
+	p["admin"] = true
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"admin": true, "version": v, "buildTime": bt,
-	})
+	_ = json.NewEncoder(w).Encode(p)
 }
 
-// handleVersion reports the running binary's build stamp and active backend.
+// handleVersion reports the running binary's version + build stamp, the latest
+// source version, and the active backend.
 func (s *webServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet || !s.authOK(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	v, bt := versionInfo()
-	backend := ""
+	p := s.versionPayload()
 	if s.bot != nil && s.bot.manager != nil {
-		backend = s.bot.manager.Backend()
+		p["backend"] = s.bot.manager.Backend()
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"version": v, "buildTime": bt, "backend": backend,
-	})
+	_ = json.NewEncoder(w).Encode(p)
 }
 
 // handleStatus reports the web/control listen addresses and whether an
@@ -735,7 +760,7 @@ func (s *webServer) handlePlugins(w http.ResponseWriter, r *http.Request) {
 			info := pluginInfo{Name: name}
 			if fi, statErr := os.Stat(pluginDir); statErr == nil && fi.IsDir() {
 				info.Installed = true
-				info.Version = buildStampVersion(pluginDir)
+				info.Version = gitShortCommit(pluginDir)
 			}
 			if _, berr := os.Stat(filepath.Join(srcDir, name+exeSuffix)); berr == nil {
 				info.Binary = true

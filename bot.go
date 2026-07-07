@@ -748,12 +748,15 @@ func (b *Bot) handleUpdate(chatID int64) {
 	// Build
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer buildCancel()
-	// Stamp the new binary's version. Best-effort: git absent / not a repo → omit
-	// ldflags and the binary keeps buildVersion="dev".
+	// Stamp the new binary's version (v<major>.<minor>.<commit-count> + hash +
+	// time). Best-effort: git absent / not a repo → omit ldflags and the binary
+	// renders v<major>.<minor>.dev.
 	buildArgs := []string{"build", "-o", newExe}
-	if ver := buildStampVersion(srcDir); ver != "" {
+	if count := gitCommitCount(srcDir); count != "" {
 		buildArgs = append(buildArgs, "-ldflags",
-			"-X main.buildVersion="+ver+" -X main.buildTime="+time.Now().UTC().Format(time.RFC3339))
+			"-X main.buildCommitCount="+count+
+				" -X main.buildCommit="+gitShortCommit(srcDir)+
+				" -X main.buildTime="+time.Now().UTC().Format(time.RFC3339))
 	}
 	buildArgs = append(buildArgs, ".")
 	buildCmd := exec.CommandContext(buildCtx, "go", buildArgs...)

@@ -35,6 +35,11 @@
   const configMsg = document.getElementById("config-msg");
   const connOverlay = document.getElementById("conn-overlay");
   const connBody = document.getElementById("conn-body");
+  const dialogOverlay = document.getElementById("dialog-overlay");
+  const dialogTitle = document.getElementById("dialog-title");
+  const dialogBody = document.getElementById("dialog-body");
+  const dialogFoot = document.getElementById("dialog-foot");
+  const dialogClose = document.getElementById("dialog-close");
   const authHeaders = { Authorization: "Bearer " + token };
   let ws, backoff = 500;
   // Which stream the composer currently targets: a specific web conversation,
@@ -48,6 +53,32 @@
     if (fileEl.files.length > 0) { fileNameEl.textContent = fileEl.files[0].name; fileNameEl.hidden = false; }
     else { fileNameEl.textContent = ""; fileNameEl.hidden = true; }
   });
+
+  // Paste an image from the clipboard (Ctrl+V in the input) as a file attachment,
+  // matching the 📎 flow: the filename shows in #file-name and the user still
+  // types a caption and sends via the normal submit. A non-image paste falls
+  // through to the default text paste (we don't preventDefault).
+  if (input && fileEl) {
+    input.addEventListener("paste", (e) => {
+      const items = (e.clipboardData && e.clipboardData.items) || [];
+      let blob = null;
+      for (const it of items) {
+        if (it.type && it.type.indexOf("image/") === 0) { blob = it.getAsFile(); break; }
+      }
+      if (!blob) return; // no image on the clipboard → let the text paste happen
+      e.preventDefault();
+      const ext = (blob.type.split("/")[1] || "png").split("+")[0]; // image/png→png, image/svg+xml→svg
+      const file = new File([blob], "붙여넣은 이미지." + ext, { type: blob.type });
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileEl.files = dt.files;
+      } catch (err) {
+        return; // DataTransfer unsupported → silently skip (no crash)
+      }
+      fileEl.dispatchEvent(new Event("change")); // reuse the filename-display logic
+    });
+  }
 
   let workingTimer = null, workingStart = 0;
   function workingElapsedText() {
@@ -125,11 +156,117 @@
     input.style.height = input.scrollHeight + "px";
   }
 
-  // Esc closes the admin panels (config / connections).
+  // Esc closes the admin panels (config / connections) and any open dialog.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (configOverlay) configOverlay.hidden = true;
     if (connOverlay) connOverlay.hidden = true;
+    if (dialogCancel) dialogCancel();
+  });
+
+  // --- Custom dialogs (replace window.prompt/confirm — no browser-native popups) ---
+  // dialogCancel, when set, is the "resolve as cancelled" callback for whichever
+  // dialog is currently open; Esc and click-outside both call it.
+  let dialogCancel = null;
+
+  function openDialog(title, build, cancelValue) {
+    return new Promise((resolve) => {
+      if (!dialogOverlay) { resolve(cancelValue); return; }
+      let settled = false;
+      const finish = (val) => {
+        if (settled) return;
+        settled = true;
+        dialogCancel = null;
+        dialogOverlay.hidden = true;
+        resolve(val);
+      };
+      dialogCancel = () => finish(cancelValue);
+      dialogTitle.textContent = title;
+      dialogBody.replaceChildren();
+      dialogFoot.replaceChildren();
+      build(dialogBody, dialogFoot, finish);
+      dialogOverlay.hidden = false;
+      const firstField = dialogBody.querySelector("input");
+      if (firstField) { firstField.focus(); firstField.select(); }
+    });
+  }
+
+  // Replaces window.prompt(label, defaultValue). Resolves "" on cancel — same
+  // as the original `prompt(...) || ""` call sites, so behavior is unchanged.
+  function askText(title, label, defaultValue) {
+    return openDialog(title, (body, foot, finish) => {
+      if (label) {
+        const l = document.createElement("div");
+        l.className = "dialog-label";
+        l.textContent = label;
+        body.appendChild(l);
+      }
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "dialog-input";
+      inp.value = defaultValue || "";
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); finish(inp.value); }
+      });
+      body.appendChild(inp);
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "dialog-btn-secondary";
+      cancel.textContent = "취소";
+      cancel.addEventListener("click", () => finish(""));
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.textContent = "확인";
+      ok.addEventListener("click", () => finish(inp.value));
+      foot.append(cancel, ok);
+    }, "");
+  }
+
+  // Replaces window.confirm(message). opts: { okLabel, danger }.
+  function askConfirm(title, message, opts) {
+    opts = opts || {};
+    return openDialog(title, (body, foot, finish) => {
+      const m = document.createElement("div");
+      m.className = "dialog-message";
+      m.textContent = message;
+      body.appendChild(m);
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "dialog-btn-secondary";
+      cancel.textContent = "취소";
+      cancel.addEventListener("click", () => finish(false));
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.textContent = opts.okLabel || "확인";
+      if (opts.danger) ok.classList.add("dialog-btn-danger");
+      ok.addEventListener("click", () => finish(true));
+      foot.append(cancel, ok);
+    }, false);
+  }
+
+  // A choice menu (replaces the "1/2/3 번호 입력" prompt). options:
+  // [{ value, label, danger }]. Resolves the chosen value, or null on cancel.
+  function askMenu(title, options) {
+    return openDialog(title, (body, foot, finish) => {
+      for (const opt of options) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "dialog-menu-btn" + (opt.danger ? " dialog-danger-outline" : "");
+        b.textContent = opt.label;
+        b.addEventListener("click", () => finish(opt.value));
+        body.appendChild(b);
+      }
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "dialog-btn-secondary";
+      cancel.textContent = "취소";
+      cancel.addEventListener("click", () => finish(null));
+      foot.append(cancel);
+    }, null);
+  }
+  if (dialogClose) dialogClose.addEventListener("click", () => { if (dialogCancel) dialogCancel(); });
+  if (dialogOverlay) dialogOverlay.addEventListener("click", (e) => {
+    if (e.target === dialogOverlay && dialogCancel) dialogCancel();
   });
 
   function sendText(text, echo) {
@@ -212,18 +349,23 @@
     menu.dataset.gear = "1";
     menu.className = "topic-menu";
     menu.title = "대화 관리";
-    menu.addEventListener("click", (ev) => {
+    menu.addEventListener("click", async (ev) => {
       ev.stopPropagation();
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const action = window.prompt("대화 관리 — 번호 입력:\n1) 이름 변경\n2) 작업 폴더 변경\n3) 삭제", "1");
-      if (action === "1") {
-        const title = window.prompt("새 이름:", wc.title || "");
+      const action = await askMenu("대화 관리", [
+        { value: "rename", label: "✏️  이름 변경" },
+        { value: "workdir", label: "📁  작업 폴더 변경" },
+        { value: "delete", label: "🗑️  삭제", danger: true },
+      ]);
+      if (action === "rename") {
+        const title = await askText("이름 변경", "새 이름", wc.title || "");
         if (title) { ws.send(JSON.stringify({ type: "web_rename", id: wc.id, title })); window.setTimeout(loadConversations, 400); }
-      } else if (action === "2") {
-        const path = window.prompt("이 대화의 작업 폴더 경로:", wc.workDir || "");
+      } else if (action === "workdir") {
+        const path = await askText("작업 폴더 변경", "이 대화의 작업 폴더 경로", wc.workDir || "");
         if (path) { ws.send(JSON.stringify({ type: "web_setdir", id: wc.id, path })); window.setTimeout(loadConversations, 400); }
-      } else if (action === "3") {
-        if (window.confirm("이 대화를 삭제할까요? 되돌릴 수 없습니다.")) {
+      } else if (action === "delete") {
+        const ok = await askConfirm("대화 삭제", "이 대화를 삭제할까요? 되돌릴 수 없습니다.", { okLabel: "삭제", danger: true });
+        if (ok) {
           if (currentTarget && currentTarget.kind === "web" && currentTarget.id === wc.id) { currentTarget = null; log.replaceChildren(); }
           ws.send(JSON.stringify({ type: "web_delete", id: wc.id }));
           window.setTimeout(loadConversations, 400);
@@ -379,8 +521,8 @@
     }
   });
   if (refreshTopics) refreshTopics.addEventListener("click", loadConversations);
-  if (newChat) newChat.addEventListener("click", () => {
-    const title = prompt("새 대화 제목 (선택):", "") || "";
+  if (newChat) newChat.addEventListener("click", async () => {
+    const title = await askText("새 대화", "제목 (선택)", "");
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: "web_new", title: title }));
     // After creation, refresh and select the newest web conv.

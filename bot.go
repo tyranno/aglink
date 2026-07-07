@@ -748,7 +748,15 @@ func (b *Bot) handleUpdate(chatID int64) {
 	// Build
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer buildCancel()
-	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", newExe, ".")
+	// Stamp the new binary's version. Best-effort: git absent / not a repo → omit
+	// ldflags and the binary keeps buildVersion="dev".
+	buildArgs := []string{"build", "-o", newExe}
+	if ver := buildStampVersion(srcDir); ver != "" {
+		buildArgs = append(buildArgs, "-ldflags",
+			"-X main.buildVersion="+ver+" -X main.buildTime="+time.Now().UTC().Format(time.RFC3339))
+	}
+	buildArgs = append(buildArgs, ".")
+	buildCmd := exec.CommandContext(buildCtx, "go", buildArgs...)
 	buildCmd.Dir = srcDir
 	if out, berr := buildCmd.CombinedOutput(); berr != nil {
 		_ = b.Send(chatID, "⚠️ 빌드 실패:\n"+strings.TrimSpace(string(out)))
@@ -1895,4 +1903,18 @@ func (b *Bot) webRename(chatID int64, id, title string) {
 		return
 	}
 	_ = b.Send(chatID, "✏️ 이름 변경: "+title)
+}
+
+// webDelete removes a top-level web conversation. store.DeleteWebConv already
+// clears the active pointer when it referenced the deleted conversation.
+func (b *Bot) webDelete(chatID int64, id string) {
+	if _, ok := b.store.GetWebConv(id); !ok {
+		_ = b.Send(chatID, "웹 대화를 찾을 수 없습니다.")
+		return
+	}
+	if err := b.store.DeleteWebConv(id); err != nil {
+		_ = b.Send(chatID, "⚠️ 삭제 실패: "+err.Error())
+		return
+	}
+	_ = b.Send(chatID, "🗑️ 대화가 삭제되었습니다.")
 }

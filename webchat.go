@@ -100,6 +100,9 @@ type webServer struct {
 	ownerChatID int64
 	hub         *Hub
 	bot         *Bot
+	cfgPath     string             // config.yaml path (edit target; fixed, never client-supplied)
+	holder      *ConfigHolder      // current effective config (secret restore / status)
+	control     *chatControlServer // chat_control server, for aglink-chat connection status; nil when disabled
 }
 
 // wsFrame is the JSON envelope sent to browsers.
@@ -112,7 +115,7 @@ type wsFrame struct {
 
 // inMsg is a message from the browser.
 type inMsg struct {
-	Type   string  `json:"type"` // "send" | "web_new" | "web_setdir" | "web_rename"
+	Type   string  `json:"type"` // "send" | "web_new" | "web_setdir" | "web_rename" | "web_delete"
 	Text   string  `json:"text"`
 	Target *Target `json:"target,omitempty"`
 	ID     string  `json:"id,omitempty"`
@@ -296,6 +299,8 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 			go s.bot.webSetDir(s.ownerChatID, m.ID, m.Path)
 		case "web_rename":
 			go s.bot.webRename(s.ownerChatID, m.ID, m.Title)
+		case "web_delete":
+			go s.bot.webDelete(s.ownerChatID, m.ID)
 		}
 	}
 	cancel()
@@ -551,6 +556,10 @@ func (s *webServer) Start() {
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/api/version", s.handleVersion)
+	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.Handle("/static/", noStore(http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))))
 	mux.HandleFunc("/", s.handleIndex)
 
@@ -642,4 +651,100 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	s.bot.ingestAttachment(s.ownerChatID, savePath, r.FormValue("caption"), OriginWeb)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCapabilities tells the shared app.js this is the admin-capable embedded
+// server (aglink-chat does not register this route, so its 404 hides admin UI).
+func (s *webServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	v, bt := versionInfo()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"admin": true, "version": v, "buildTime": bt,
+	})
+}
+
+// handleVersion reports the running binary's build stamp and active backend.
+func (s *webServer) handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	v, bt := versionInfo()
+	backend := ""
+	if s.bot != nil && s.bot.manager != nil {
+		backend = s.bot.manager.Backend()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"version": v, "buildTime": bt, "backend": backend,
+	})
+}
+
+// handleStatus reports the web/control listen addresses and whether an
+// aglink-chat control client is currently connected.
+func (s *webServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	clients := 0
+	if s.control != nil {
+		clients = int(s.control.connCount.Load())
+	}
+	resp := map[string]any{"aglinkClients": clients, "aglinkConnected": clients > 0}
+	if s.holder != nil {
+		cfg := s.holder.Get()
+		resp["webChatAddr"] = cfg.WebChatAddr
+		resp["chatControlEnabled"] = cfg.ChatControl
+		resp["chatControlAddr"] = cfg.ChatControlAddr
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleConfig serves (GET, secret-masked) and saves (PUT, validated) the
+// config.yaml file. Writes go only to s.cfgPath — the client never supplies a
+// path. A saved file is picked up by the fsnotify hot-reload watcher.
+func (s *webServer) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.cfgPath == "" || s.holder == nil {
+		http.Error(w, "config editing unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		raw, err := os.ReadFile(s.cfgPath)
+		if err != nil {
+			http.Error(w, "read failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(maskConfigSecrets(raw, s.holder.Get()))
+	case http.MethodPut:
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MiB cap
+		if err != nil {
+			http.Error(w, "read body failed", http.StatusBadRequest)
+			return
+		}
+		restored := restoreConfigSecrets(body, s.holder.Get())
+		if _, verr := unmarshalConfigYAML(restored); verr != nil {
+			http.Error(w, verr.Error(), http.StatusBadRequest)
+			return
+		}
+		if werr := os.WriteFile(s.cfgPath, restored, 0o600); werr != nil {
+			http.Error(w, "write failed: "+werr.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent) // fsnotify (confighot.go) hot-reloads
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }

@@ -376,25 +376,12 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	// started earlier (right after NewBot), a still-running old instance would
 	// hold 127.0.0.1:1717 and bind would fail, silently disabling web chat on the
 	// new process. Both channels share state via the same Hub + owner chatID.
-	if cfg.WebChat {
-		owner, ownerOK := resolveWebOwner(cfg.WebChatOwnerChatID, cfg.AllowedUserIDs)
-		addr := cfg.WebChatAddr
-		if addr == "" {
-			addr = "127.0.0.1:1717"
-		}
-		if tok, terr := loadOrCreateWebToken(cfg.WebChatToken); terr != nil {
-			log.Printf("[webchat] token init failed: %v — web chat disabled", terr)
-		} else if !ownerOK {
-			log.Printf("[webchat] no owner chatID (set web_chat.owner_chat_id or allowed_user_ids) — web chat disabled")
-		} else {
-			ws := &webServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}
-			go ws.Start()
-		}
-	}
-
 	// Chat control API (loopback only) — lets a separate aglink-chat process serve
 	// the browser UI. Off by default; enabling it does not affect the embedded
-	// web_chat server above (both register their own channels with the same Hub).
+	// web_chat server below (both register their own channels with the same Hub).
+	// Created before web_chat so the embedded server can reference it for
+	// aglink-chat connection status (/api/status).
+	var chatCtl *chatControlServer
 	if cfg.ChatControl {
 		owner, ownerOK := resolveWebOwner(cfg.ChatControlOwnerChatID, cfg.AllowedUserIDs)
 		addr := cfg.ChatControlAddr
@@ -406,8 +393,24 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		} else if !ownerOK {
 			log.Printf("[chatcontrol] no owner chatID (set chat_control.owner_chat_id or allowed_user_ids) — chat control disabled")
 		} else {
-			cs := &chatControlServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}
-			go cs.Start()
+			chatCtl = &chatControlServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot}
+			go chatCtl.Start()
+		}
+	}
+
+	if cfg.WebChat {
+		owner, ownerOK := resolveWebOwner(cfg.WebChatOwnerChatID, cfg.AllowedUserIDs)
+		addr := cfg.WebChatAddr
+		if addr == "" {
+			addr = "127.0.0.1:1717"
+		}
+		if tok, terr := loadOrCreateWebToken(cfg.WebChatToken); terr != nil {
+			log.Printf("[webchat] token init failed: %v — web chat disabled", terr)
+		} else if !ownerOK {
+			log.Printf("[webchat] no owner chatID (set web_chat.owner_chat_id or allowed_user_ids) — web chat disabled")
+		} else {
+			ws := &webServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot, cfgPath: cfgPath, holder: holder, control: chatCtl}
+			go ws.Start()
 		}
 	}
 

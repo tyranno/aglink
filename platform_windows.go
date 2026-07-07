@@ -38,6 +38,52 @@ func restartAglinkWebDaemon() {
 	).Run()
 }
 
+// pluginRunStatuses reports, for each requested plugin base name, whether any
+// process for it (image <name>.exe) is currently running, how many, and how many
+// look like the persistent "serve" daemon (same CommandLine heuristic
+// restartAglinkWebDaemon uses). One CIM query covers all aglink-* processes. The
+// bool is false only when the query itself fails → callers report "unknown".
+func pluginRunStatuses(names []string) (map[string]pluginRun, bool) {
+	// Emit "<Name>\t<CommandLine>" per process so we can both count by image and
+	// spot the serve daemon. `t is a PowerShell tab escape (literal backtick+t
+	// in this Go string); $ is not interpolated by Go.
+	psCmd := "Get-CimInstance Win32_Process -Filter \"Name LIKE 'aglink-%'\" | " +
+		"ForEach-Object { \"$($_.Name)`t$($_.CommandLine)\" }"
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", psCmd).Output()
+	if err != nil {
+		return nil, false
+	}
+	res := make(map[string]pluginRun, len(names))
+	for _, name := range names {
+		res[name] = pluginRun{}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		img := strings.ToLower(strings.TrimSpace(parts[0]))
+		cmdline := ""
+		if len(parts) > 1 {
+			cmdline = strings.ToLower(parts[1])
+		}
+		for _, name := range names {
+			if img != strings.ToLower(name+exeSuffix) {
+				continue
+			}
+			pr := res[name]
+			pr.running = true
+			pr.total++
+			if strings.Contains(cmdline, "serve") {
+				pr.serve++
+			}
+			res[name] = pr
+		}
+	}
+	return res, true
+}
+
 // killPreviousInstance terminates any running teleclaude processes (except self).
 func killPreviousInstance() {
 	myPID := os.Getpid()

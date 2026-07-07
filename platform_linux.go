@@ -41,6 +41,13 @@ func restartAglinkWebDaemon() {
 	exec.Command("pkill", "-f", "aglink-web serve").Run()
 }
 
+// pluginRunStatuses is Windows-only in practice (the aglink-screen/aglink-web
+// plugins are Windows binaries). On Linux/macOS we report "unknown" (false) so
+// the UI shows 실행상태 확인 불가 rather than a misleading "not running".
+func pluginRunStatuses(_ []string) (map[string]pluginRun, bool) {
+	return nil, false
+}
+
 // killPreviousInstance sends SIGTERM to the previous instance.
 // Tries PID file first; falls back to pkill for instances started without a PID file.
 func killPreviousInstance() {

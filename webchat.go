@@ -721,7 +721,11 @@ func (s *webServer) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		Installed bool   `json:"installed"`
 		Version   string `json:"version"`
 		Binary    bool   `json:"binary"`
+		Running   bool   `json:"running"`
+		RunKnown  bool   `json:"runKnown"`
+		RunDetail string `json:"runDetail,omitempty"`
 	}
+	runStatuses, runKnown := pluginRunStatuses(pluginNames)
 	out := make([]pluginInfo, 0, len(pluginNames))
 	if exe, err := os.Executable(); err == nil {
 		srcDir := filepath.Dir(exe)
@@ -735,6 +739,13 @@ func (s *webServer) handlePlugins(w http.ResponseWriter, r *http.Request) {
 			}
 			if _, berr := os.Stat(filepath.Join(srcDir, name+exeSuffix)); berr == nil {
 				info.Binary = true
+			}
+			if runKnown {
+				info.RunKnown = true
+				if pr, ok := runStatuses[name]; ok {
+					info.Running = pr.running
+					info.RunDetail = pr.detail()
+				}
 			}
 			out = append(out, info)
 		}

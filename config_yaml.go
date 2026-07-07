@@ -146,7 +146,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.AglinkChat = y.AglinkChat.Enabled
 	c.AglinkChatAddr = y.AglinkChat.Addr
 	if c.AglinkChatAddr == "" {
-		c.AglinkChatAddr = "127.0.0.1:1718"
+		c.AglinkChatAddr = "127.0.0.1:1717" // Phase 2: aglink-chat is the primary frontend on 1717
 	}
 	c.AglinkChatBinaryPath = y.AglinkChat.BinaryPath
 	c.AglinkChatToken = y.AglinkChat.Token

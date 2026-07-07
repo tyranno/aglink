@@ -1,95 +1,53 @@
 package main
 
-import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-)
+import "testing"
 
-func TestHandleStatus_ReportsConfigAndConnections(t *testing.T) {
-	cfg := &Config{WebChatAddr: "127.0.0.1:1717", ChatControl: true, ChatControlAddr: "127.0.0.1:17170"}
-	cs := &chatControlServer{}
-	cs.connCount.Add(1) // one aglink-chat connected
-	s := &webServer{token: "tok", holder: NewConfigHolder(cfg), control: cs}
+func TestBuildAuxFeatures_UnifiedStates(t *testing.T) {
+	// relayClients=1 → aglink-chat running; chat_control disabled here just sets
+	// the relay detail, not the state.
+	feats := buildAuxFeatures(1, false, "127.0.0.1:17170")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-	req.Header.Set("Authorization", "Bearer tok")
-	rr := httptest.NewRecorder()
-	s.handleStatus(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status %d", rr.Code)
-	}
-
-	var body struct {
-		WebChatAddr     string `json:"webChatAddr"`
-		AglinkClients   int    `json:"aglinkClients"`
-		AglinkConnected bool   `json:"aglinkConnected"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body.WebChatAddr != "127.0.0.1:1717" {
-		t.Errorf("addr = %q", body.WebChatAddr)
-	}
-	if body.AglinkClients != 1 || !body.AglinkConnected {
-		t.Errorf("clients=%d connected=%v", body.AglinkClients, body.AglinkConnected)
-	}
-}
-
-func TestHandleAux_ListsUnifiedFeatures(t *testing.T) {
-	// No control server + chat_control disabled → aglink-chat is idle (never absent).
-	s := &webServer{token: "tok", holder: NewConfigHolder(&Config{})}
-	req := httptest.NewRequest(http.MethodGet, "/api/aux", nil)
-	req.Header.Set("Authorization", "Bearer tok")
-	rr := httptest.NewRecorder()
-	s.handleAux(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status %d", rr.Code)
-	}
-	var body struct {
-		Features []struct {
-			Name  string `json:"name"`
-			State string `json:"state"`
-		} `json:"features"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	// Expected: aglink-chat relay + each non-aglink-chat plugin (aglink-chat is
-	// in pluginNames for !update builds but shown once, as the relay).
+	// Expected: aglink-chat relay + each non-aglink-chat plugin (aglink-chat is in
+	// pluginNames for !update builds but shown once, as the relay entry).
 	want := 1
 	for _, n := range pluginNames {
 		if n != "aglink-chat" {
 			want++
 		}
 	}
-	if len(body.Features) != want {
-		t.Fatalf("got %d features, want %d", len(body.Features), want)
+	if len(feats) != want {
+		t.Fatalf("got %d features, want %d", len(feats), want)
 	}
+
 	valid := map[string]bool{auxRunning: true, auxIdle: true, auxAbsent: true}
-	var chat *string
-	for i := range body.Features {
-		f := body.Features[i]
+	var chatState string
+	found := false
+	for _, f := range feats {
 		if !valid[f.State] {
 			t.Errorf("feature %q has invalid state %q", f.Name, f.State)
 		}
 		if f.Name == "aglink-chat" {
-			chat = &body.Features[i].State
+			chatState = f.State
+			found = true
 		}
 	}
-	if chat == nil {
+	if !found {
 		t.Fatal("aglink-chat feature missing")
 	}
-	if *chat != auxIdle {
-		t.Errorf("aglink-chat state = %q, want idle (never absent/error)", *chat)
+	if chatState != auxRunning {
+		t.Errorf("aglink-chat state = %q, want running (1 relay client connected)", chatState)
 	}
+}
 
-	// Unauthorized → 401.
-	noauth := httptest.NewRequest(http.MethodGet, "/api/aux", nil)
-	nrr := httptest.NewRecorder()
-	s.handleAux(nrr, noauth)
-	if nrr.Code != http.StatusUnauthorized {
-		t.Errorf("no-token status = %d, want 401", nrr.Code)
+func TestBuildAuxFeatures_ChatIdleWhenNoRelay(t *testing.T) {
+	feats := buildAuxFeatures(0, false, "")
+	for _, f := range feats {
+		if f.Name == "aglink-chat" {
+			if f.State != auxIdle {
+				t.Errorf("aglink-chat with no relay should be idle (never absent/error), got %q", f.State)
+			}
+			return
+		}
 	}
+	t.Fatal("aglink-chat feature missing")
 }

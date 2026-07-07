@@ -2,34 +2,6 @@ package main
 
 import "testing"
 
-func drainWSFrames(ch chan wsFrame) []wsFrame {
-	var out []wsFrame
-	for {
-		select {
-		case f := <-ch:
-			out = append(out, f)
-		default:
-			return out
-		}
-	}
-}
-
-// webChannel shows Telegram-origin input as a "user" bubble; web-origin is a
-// no-op (the sending tab already rendered it locally → no double echo).
-func TestWebChannelEchoUser_Gating(t *testing.T) {
-	w := &webChannel{send: make(chan wsFrame, 8), cancel: func() {}}
-	w.EchoUser(7, "from telegram", OriginTelegram)
-	w.EchoUser(7, "from web", OriginWeb) // must be a no-op
-
-	frames := drainWSFrames(w.send)
-	if len(frames) != 1 {
-		t.Fatalf("expected exactly 1 frame (telegram-origin only), got %d: %+v", len(frames), frames)
-	}
-	if frames[0].Type != "user" || frames[0].Text != "from telegram" {
-		t.Errorf("frame = %+v, want {user, 'from telegram'}", frames[0])
-	}
-}
-
 // telegramChannel must NOT touch the (nil) API for telegram-origin input — the
 // user's own message is already in their client. A no-op means no nil-deref panic.
 func TestTelegramChannelEchoUser_TelegramOriginNoOp(t *testing.T) {

@@ -405,37 +405,28 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		}
 	}
 
-	if cfg.WebChat {
-		owner, ownerOK := resolveWebOwner(cfg.WebChatOwnerChatID, cfg.AllowedUserIDs)
-		addr := cfg.WebChatAddr
-		if addr == "" {
-			addr = "127.0.0.1:1717"
-		}
-		if tok, terr := loadOrCreateWebToken(cfg.WebChatToken); terr != nil {
-			log.Printf("[webchat] token init failed: %v — web chat disabled", terr)
-		} else if !ownerOK {
-			log.Printf("[webchat] no owner chatID (set web_chat.owner_chat_id or allowed_user_ids) — web chat disabled")
-		} else {
-			ws := &webServer{addr: addr, token: tok, ownerChatID: owner, hub: bot.Hub(), bot: bot, cfgPath: cfgPath, holder: holder, control: chatCtl}
-			go ws.Start()
-		}
-	}
-
-	// aglink-chat as a managed child frontend (Phase 1: parallel port, e.g. 1718).
-	// Requires the control API (chatCtl) since aglink-chat reaches teleclaude
-	// through it. Startup-bound like web_chat/chat_control — toggling needs a restart.
+	// The embedded browser web server was removed in Phase 2 — aglink-chat is now
+	// the primary frontend and serves the browser directly (below). teleclaude
+	// keeps only the control API (chatCtl) that aglink-chat connects to.
+	//
+	// aglink-chat runs as a managed child frontend. Requires the control API
+	// (chatCtl). The browser token is the web_chat token (loadOrCreateWebToken) so
+	// a browser already connected to the old embedded server keeps authenticating
+	// after the swap. Startup-bound — toggling needs a restart.
 	if cfg.AglinkChat && chatCtl != nil {
 		selfExe, _ := os.Executable()
 		binPath := resolveAglinkChatBinary(cfg, selfExe)
 		addr := cfg.AglinkChatAddr
 		if addr == "" {
-			addr = "127.0.0.1:1718"
+			addr = "127.0.0.1:1717"
 		}
-		if binPath == "" {
+		btok, terr := loadOrCreateToken(cfg.AglinkChatToken, "web_chat.token")
+		switch {
+		case binPath == "":
 			log.Printf("[aglinkchat] binary not found (set aglink_chat.binary_path or build aglink-chat) — not started")
-		} else if btok, terr := loadOrCreateToken(cfg.AglinkChatToken, "aglink_chat.token"); terr != nil {
+		case terr != nil:
 			log.Printf("[aglinkchat] token init failed: %v — not started", terr)
-		} else {
+		default:
 			log.Printf("[aglinkchat] http://%s/?token=%s", addr, btok)
 			go startAglinkChat(context.Background(), binPath, addr, chatCtl.addr, chatCtl.token, btok)
 		}

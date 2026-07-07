@@ -7,6 +7,15 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+var (
+	procGetDCN                = modUser32N.NewProc("GetDC")
+	procReleaseDCN            = modUser32N.NewProc("ReleaseDC")
+	procGetTextExtentPoint32N = modGdi32N.NewProc("GetTextExtentPoint32W")
 )
 
 func TestNoticeDue(t *testing.T) {
@@ -178,6 +187,39 @@ func TestManualRealNoticePaintsBeforeInput(t *testing.T) {
 	// and a human watching sees the full envelope.
 	for i := 0; i < 100 && noticeShowing.Load(); i++ {
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestNoticeTextFitsBox measures noticeText with the real overlay font and fails
+// if it is wider than the toast's text area. paintNotice draws with DrawText and
+// no ellipsis flag, so an overflowing string silently clips — this guards wording
+// changes from breaking the layout. Deterministic and headless (no window, just a
+// screen DC for font metrics).
+func TestNoticeTextFitsBox(t *testing.T) {
+	if !registerNoticeClass() {
+		t.Skip("notice window class/font unavailable")
+	}
+	hdc, _, _ := procGetDCN.Call(0)
+	if hdc == 0 {
+		t.Skip("no screen DC available")
+	}
+	defer procReleaseDCN.Call(0, hdc)
+	if noticeFont != 0 {
+		old, _, _ := procSelectObjectN.Call(hdc, noticeFont)
+		defer procSelectObjectN.Call(hdc, old)
+	}
+
+	u := windows.StringToUTF16(noticeText) // includes trailing NUL
+	var sz struct{ CX, CY int32 }
+	procGetTextExtentPoint32N.Call(hdc,
+		uintptr(unsafe.Pointer(&u[0])), uintptr(len(u)-1),
+		uintptr(unsafe.Pointer(&sz)))
+
+	// paintNotice draws text in the rect Left=40 .. Right=noticeW-16.
+	const avail = noticeW - 40 - 16
+	t.Logf("noticeText %q measured %dpx wide; text area is %dpx", noticeText, sz.CX, avail)
+	if int(sz.CX) > avail {
+		t.Errorf("noticeText is %dpx wide, exceeds the %dpx text area — it will clip; shorten the wording or widen noticeW", sz.CX, avail)
 	}
 }
 

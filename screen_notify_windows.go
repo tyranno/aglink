@@ -20,8 +20,10 @@ import (
 // When the agent starts driving the mouse/keyboard while the user may be typing
 // or clicking themselves, their real input and our synthetic input can collide.
 // So, at the START of a control session, we show a small, rounded, light toast in
-// a screen corner ("aglink-screen 자동 제어 중 — 입력 잠시 멈춤") with an amber status dot
-// and accent border, that fades in, holds for a few seconds, and fades out. It is
+// a screen corner ("AI가 화면 제어를 시작합니다 — 잠시 손을 떼어 주세요") with an amber status
+// dot and accent border, that fades in, holds for a few seconds, and fades out. The
+// wording is an anticipatory warning (control is about to begin, please pause), not
+// a "control in progress" status — it appears just before synthetic input starts. It is
 // throttled: once a session is under way (inputs within controlNoticeGap of each
 // other) no further notice is shown; a fresh one only appears after an idle gap.
 //
@@ -71,7 +73,7 @@ const (
 	noticeMaxLeadMS     = 5000
 )
 
-var noticeText = "aglink-screen 자동 제어 중 — 입력 잠시 멈춤"
+var noticeText = "AI가 화면 제어를 시작합니다 — 손을 떼어 주세요"
 
 var (
 	lastSyntheticInput atomic.Int64 // UnixNano of the last synthetic input

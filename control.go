@@ -44,6 +44,7 @@ type controlIn struct {
 	ID      string          `json:"id,omitempty"`
 	Title   string          `json:"title,omitempty"`
 	Target  json.RawMessage `json:"target,omitempty"`
+	Body    string          `json:"body,omitempty"` // set_config: edited config.yaml text
 }
 
 // controlClient maintains one connection to teleclaude's loopback control API,

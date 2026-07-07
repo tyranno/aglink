@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -225,6 +226,110 @@ func (s *browserServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// --- Admin endpoints (proxied to teleclaude via the control API) -------------
+// aglink-chat is the primary frontend, so it exposes the same /api/* the
+// embedded teleclaude web server does. Version/config/aux data lives in
+// teleclaude; we relay it. All require the browser token (authOK).
+
+func (s *browserServer) proxyControl(w http.ResponseWriter, req controlIn) {
+	data, err := s.control.request(req)
+	if err != nil {
+		http.Error(w, "control API error", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(data)
+}
+
+func (s *browserServer) handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.proxyControl(w, controlIn{Type: "get_version"})
+}
+
+func (s *browserServer) handleAux(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.proxyControl(w, controlIn{Type: "get_aux"})
+}
+
+// handleCapabilities marks aglink-chat as admin-capable (it is the primary
+// frontend) and folds in the version payload so the badge renders immediately.
+func (s *browserServer) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	m := map[string]any{}
+	if data, err := s.control.request(controlIn{Type: "get_version"}); err == nil {
+		_ = json.Unmarshal(data, &m)
+	}
+	m["admin"] = true
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(m)
+}
+
+func (s *browserServer) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		data, err := s.control.request(controlIn{Type: "get_config"})
+		if err != nil {
+			http.Error(w, "control API error", http.StatusBadGateway)
+			return
+		}
+		var m struct {
+			Config string `json:"config"`
+			Error  string `json:"error"`
+		}
+		_ = json.Unmarshal(data, &m)
+		if m.Error != "" {
+			http.Error(w, m.Error, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(m.Config))
+	case http.MethodPut:
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		data, err := s.control.request(controlIn{Type: "set_config", Body: string(body)})
+		if err != nil {
+			http.Error(w, "control API error", http.StatusBadGateway)
+			return
+		}
+		var m struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(data, &m)
+		if m.OK {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			http.Error(w, m.Error, http.StatusBadRequest)
+		}
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleStatus reports this frontend's own bind address for the "이 웹 서버"
+// panel section (aglink helper status comes from /api/aux).
+func (s *browserServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"webChatAddr": s.addr})
+}
+
 func (s *browserServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// Next round: save the multipart file to disk, then control upload_attachment
 	// {path,caption}. Kept a clean 501 for now so the roundtrip milestone is minimal.
@@ -255,6 +360,11 @@ func (s *browserServer) Start() error {
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/upload", s.handleUpload)
+	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/api/version", s.handleVersion)
+	mux.HandleFunc("/api/aux", s.handleAux)
+	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.HandleFunc("/", s.handleIndex)
 

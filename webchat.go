@@ -559,6 +559,7 @@ func (s *webServer) Start() {
 	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
 	mux.HandleFunc("/api/version", s.handleVersion)
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.Handle("/static/", noStore(http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))))
 	mux.HandleFunc("/", s.handleIndex)
@@ -704,6 +705,42 @@ func (s *webServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handlePlugins reports each aglink-* sibling plugin's source presence, git
+// version, and whether a built binary sits next to teleclaude — the same set
+// !update rebuilds (pluginNames). Distinct from aglink-chat: these are the
+// screen/web control plugins, not the relay front-end.
+func (s *webServer) handlePlugins(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	type pluginInfo struct {
+		Name      string `json:"name"`
+		Installed bool   `json:"installed"`
+		Version   string `json:"version"`
+		Binary    bool   `json:"binary"`
+	}
+	out := make([]pluginInfo, 0, len(pluginNames))
+	if exe, err := os.Executable(); err == nil {
+		srcDir := filepath.Dir(exe)
+		parent := filepath.Dir(srcDir)
+		for _, name := range pluginNames {
+			pluginDir := filepath.Join(parent, name)
+			info := pluginInfo{Name: name}
+			if fi, statErr := os.Stat(pluginDir); statErr == nil && fi.IsDir() {
+				info.Installed = true
+				info.Version = buildStampVersion(pluginDir)
+			}
+			if _, berr := os.Stat(filepath.Join(srcDir, name+exeSuffix)); berr == nil {
+				info.Binary = true
+			}
+			out = append(out, info)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"plugins": out})
 }
 
 // handleConfig serves (GET, secret-masked) and saves (PUT, validated) the

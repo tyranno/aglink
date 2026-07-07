@@ -7,12 +7,15 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -330,10 +333,58 @@ func (s *browserServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"webChatAddr": s.addr})
 }
 
+// handleUpload saves the uploaded file under ~/.teleclaude/attachments (shared
+// with teleclaude on the same machine), then relays its path via the control
+// API's upload_attachment (teleclaude ingests it through the same pipeline the
+// embedded server used). Mirrors teleclaude's webchat handleUpload.
 func (s *browserServer) handleUpload(w http.ResponseWriter, r *http.Request) {
-	// Next round: save the multipart file to disk, then control upload_attachment
-	// {path,caption}. Kept a clean 501 for now so the roundtrip milestone is minimal.
-	http.Error(w, "file upload not yet implemented in aglink-chat", http.StatusNotImplemented)
+	if r.Method != http.MethodPost || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "no file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "no home", http.StatusInternalServerError)
+		return
+	}
+	dir := filepath.Join(home, ".teleclaude", "attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		http.Error(w, "mkdir failed", http.StatusInternalServerError)
+		return
+	}
+	ext := filepath.Ext(hdr.Filename)
+	savePath := filepath.Join(dir, fmt.Sprintf("%d%s", time.Now().UnixMilli(), ext))
+	out, err := os.Create(savePath)
+	if err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, file); err != nil {
+		http.Error(w, "write failed", http.StatusInternalServerError)
+		return
+	}
+	if err := s.control.send(controlIn{Type: "upload_attachment", Path: savePath, Caption: r.FormValue("caption"), Origin: "web"}); err != nil {
+		http.Error(w, "control send failed", http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *browserServer) handleIndex(w http.ResponseWriter, r *http.Request) {

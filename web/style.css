@@ -97,6 +97,7 @@ header .icon-button { background: transparent; border-color: rgba(255, 255, 255,
 .conn-row { display: flex; justify-content: space-between; gap: 12px; }
 .conn-row .k { color: #475569; }
 .conn-ok { color: #16a34a; font-weight: 700; }
+.conn-idle { color: #64748b; font-weight: 700; }
 .conn-off { color: #dc2626; font-weight: 700; }
 
 button { padding: 7px 12px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; font: inherit; }

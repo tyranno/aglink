@@ -37,31 +37,50 @@ func TestHandleStatus_ReportsConfigAndConnections(t *testing.T) {
 	}
 }
 
-func TestHandlePlugins_ListsConfiguredPlugins(t *testing.T) {
-	s := &webServer{token: "tok"}
-	req := httptest.NewRequest(http.MethodGet, "/api/plugins", nil)
+func TestHandleAux_ListsUnifiedFeatures(t *testing.T) {
+	// No control server + chat_control disabled → aglink-chat is idle (never absent).
+	s := &webServer{token: "tok", holder: NewConfigHolder(&Config{})}
+	req := httptest.NewRequest(http.MethodGet, "/api/aux", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	rr := httptest.NewRecorder()
-	s.handlePlugins(rr, req)
+	s.handleAux(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d", rr.Code)
 	}
 	var body struct {
-		Plugins []struct {
-			Name string `json:"name"`
-		} `json:"plugins"`
+		Features []struct {
+			Name  string `json:"name"`
+			State string `json:"state"`
+		} `json:"features"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(body.Plugins) != len(pluginNames) {
-		t.Errorf("got %d plugins, want %d", len(body.Plugins), len(pluginNames))
+	if len(body.Features) != 1+len(pluginNames) {
+		t.Fatalf("got %d features, want %d", len(body.Features), 1+len(pluginNames))
+	}
+	valid := map[string]bool{auxRunning: true, auxIdle: true, auxAbsent: true}
+	var chat *string
+	for i := range body.Features {
+		f := body.Features[i]
+		if !valid[f.State] {
+			t.Errorf("feature %q has invalid state %q", f.Name, f.State)
+		}
+		if f.Name == "aglink-chat" {
+			chat = &body.Features[i].State
+		}
+	}
+	if chat == nil {
+		t.Fatal("aglink-chat feature missing")
+	}
+	if *chat != auxIdle {
+		t.Errorf("aglink-chat state = %q, want idle (never absent/error)", *chat)
 	}
 
 	// Unauthorized → 401.
-	noauth := httptest.NewRequest(http.MethodGet, "/api/plugins", nil)
+	noauth := httptest.NewRequest(http.MethodGet, "/api/aux", nil)
 	nrr := httptest.NewRecorder()
-	s.handlePlugins(nrr, noauth)
+	s.handleAux(nrr, noauth)
 	if nrr.Code != http.StatusUnauthorized {
 		t.Errorf("no-token status = %d, want 401", nrr.Code)
 	}

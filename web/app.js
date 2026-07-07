@@ -1,8 +1,8 @@
 (function () {
   // Token: explicit ?token= wins, then the token the server injects into the page
-  // (always the current valid one), then previously stored. The injected token
-  // makes the page authenticate regardless of stale localStorage or which URL
-  // (localhost / 127.0.0.1) was opened.
+  // (Teleclaude embedded server; undefined under aglink-chat → harmless), then
+  // previously stored. Keeps the page authenticated regardless of stale
+  // localStorage or which loopback host was opened.
   const params = new URLSearchParams(location.search);
   let token = params.get("token") || window.__TC_TOKEN__ || localStorage.getItem("tc_token") || "";
   if (token) localStorage.setItem("tc_token", token);
@@ -15,17 +15,37 @@
   const fileNameEl = document.getElementById("file-name");
   const attachBtn = document.getElementById("attach-btn");
   const topicList = document.getElementById("topic-list");
+  const currentTopic = document.getElementById("current-topic");
+  const currentProject = document.getElementById("current-project");
+  const currentTitle = document.getElementById("current-title");
+  const currentId = document.getElementById("current-id");
   const refreshTopics = document.getElementById("refresh-topics");
   const newChat = document.getElementById("new-chat");
   const shell = document.getElementById("shell");
   const toggleSidebar = document.getElementById("toggle-sidebar");
   const workingEl = document.getElementById("working");
   const workingLabel = document.getElementById("working-label");
+  // Composer (floating button → modal).
+  const composerFab = document.getElementById("compose-fab");
+  const composerOverlay = document.getElementById("composer-overlay");
+  const composerClose = document.getElementById("composer-close");
+  // Admin surface (Teleclaude embedded only; shown after capability probe).
+  const adminControls = document.getElementById("admin-controls");
+  const versionBadge = document.getElementById("version-badge");
+  const btnConfig = document.getElementById("btn-config");
+  const btnConnections = document.getElementById("btn-connections");
+  const btnUpdate = document.getElementById("btn-update");
+  const configOverlay = document.getElementById("config-overlay");
+  const configText = document.getElementById("config-text");
+  const configMsg = document.getElementById("config-msg");
+  const connOverlay = document.getElementById("conn-overlay");
+  const connBody = document.getElementById("conn-body");
+  const authHeaders = { Authorization: "Bearer " + token };
   let ws, backoff = 500;
   // Which stream the composer currently targets: a specific web conversation,
   // or (only if explicitly picked) the single Telegram stream. Web starts with
   // no target until an active web conversation is found or the user picks one.
-  let currentTarget = null; // web is default; telegram only becomes the target on explicit click
+  let currentTarget = null;
 
   if (attachBtn) attachBtn.addEventListener("click", () => fileEl.click());
   if (fileEl) fileEl.addEventListener("change", () => {
@@ -91,9 +111,32 @@
   }
 
   function resizeInput() {
+    if (!input) return;
     input.style.height = "auto";
     input.style.height = input.scrollHeight + "px";
   }
+
+  // Composer modal control.
+  function openComposer() {
+    if (!composerOverlay) return;
+    composerOverlay.hidden = false;
+    if (input) { input.focus(); resizeInput(); }
+  }
+  function closeComposer() {
+    if (!composerOverlay) return;
+    composerOverlay.hidden = true;
+  }
+  if (composerFab) composerFab.addEventListener("click", openComposer);
+  if (composerClose) composerClose.addEventListener("click", closeComposer);
+  if (composerOverlay) composerOverlay.addEventListener("click", (e) => {
+    if (e.target === composerOverlay) closeComposer();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    closeComposer();
+    if (configOverlay) configOverlay.hidden = true;
+    if (connOverlay) connOverlay.hidden = true;
+  });
 
   function sendText(text, echo) {
     if (!text) return false;
@@ -116,7 +159,7 @@
       const qs = tgt.kind === "telegram"
         ? "kind=telegram"
         : "kind=web&id=" + encodeURIComponent(tgt.id);
-      const resp = await fetch("/api/history?" + qs, { headers: { Authorization: "Bearer " + token } });
+      const resp = await fetch("/api/history?" + qs, { headers: authHeaders });
       if (resp.ok) {
         const data = await resp.json();
         log.replaceChildren();
@@ -125,7 +168,7 @@
         }
       }
     } catch (e) { /* keep whatever is shown; live continues */ }
-    loadConversations(); // refresh highlight
+    loadConversations(); // refresh highlight (and #current-topic header)
   }
 
   function makeTelegramButton(tg) {
@@ -157,7 +200,7 @@
     button.dataset.id = wc.id;
     const title = document.createElement("span");
     title.className = "topic-title";
-    title.textContent = wc.title || wc.id;
+    title.textContent = "💬 " + (wc.title || wc.id);
     button.appendChild(title);
     if (wc.workDir) {
       const sub = document.createElement("span");
@@ -169,21 +212,31 @@
       if (e.target && e.target.dataset && e.target.dataset.gear) return;
       selectTarget({ kind: "web", id: wc.id });
     });
-    const gear = document.createElement("span");
-    gear.textContent = "⚙";
-    gear.dataset.gear = "1";
-    gear.style.cursor = "pointer";
-    gear.style.marginLeft = "6px";
-    gear.title = "작업 폴더 설정";
-    gear.addEventListener("click", (ev) => {
+    // ⋯ management menu: rename / change workdir / delete.
+    const menu = document.createElement("span");
+    menu.textContent = "⋯";
+    menu.dataset.gear = "1";
+    menu.className = "topic-menu";
+    menu.title = "대화 관리";
+    menu.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      const path = prompt("이 대화의 작업 폴더 경로:", wc.workDir || "");
-      if (path && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "web_setdir", id: wc.id, path: path }));
-        window.setTimeout(loadConversations, 400);
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const action = window.prompt("대화 관리 — 번호 입력:\n1) 이름 변경\n2) 작업 폴더 변경\n3) 삭제", "1");
+      if (action === "1") {
+        const title = window.prompt("새 이름:", wc.title || "");
+        if (title) { ws.send(JSON.stringify({ type: "web_rename", id: wc.id, title })); window.setTimeout(loadConversations, 400); }
+      } else if (action === "2") {
+        const path = window.prompt("이 대화의 작업 폴더 경로:", wc.workDir || "");
+        if (path) { ws.send(JSON.stringify({ type: "web_setdir", id: wc.id, path })); window.setTimeout(loadConversations, 400); }
+      } else if (action === "3") {
+        if (window.confirm("이 대화를 삭제할까요? 되돌릴 수 없습니다.")) {
+          if (currentTarget && currentTarget.kind === "web" && currentTarget.id === wc.id) { currentTarget = null; log.replaceChildren(); }
+          ws.send(JSON.stringify({ type: "web_delete", id: wc.id }));
+          window.setTimeout(loadConversations, 400);
+        }
       }
     });
-    button.appendChild(gear);
+    button.appendChild(menu);
     return button;
   }
 
@@ -207,15 +260,63 @@
     for (const wc of webConvs) topicList.appendChild(makeWebConvButton(wc));
   }
 
+  // Locate the active conversation for the #current-topic header. Prefers an
+  // active top-level web conversation (web-first flow; no project), falls
+  // back to the legacy project/telegram active ref, then the per-conv active
+  // flag. Returns { project, conv } or null.
+  function findActiveConversation(data) {
+    const webConvs = Array.isArray(data && data.webConvs) ? data.webConvs : [];
+    const activeWeb = webConvs.find((w) => w.active);
+    if (activeWeb) return { project: "", conv: activeWeb };
+
+    const projects = Array.isArray(data && data.projects) ? data.projects : [];
+    const activeProject = data && data.active && data.active.project;
+    const activeId = data && data.active && data.active.conversationId;
+    if (activeProject && activeId) {
+      for (const p of projects) {
+        const convs = Array.isArray(p.conversations) ? p.conversations : [];
+        for (const c of convs) {
+          if (p.name === activeProject && c.id === activeId) return { project: p.name, conv: c };
+        }
+      }
+    }
+    for (const p of projects) {
+      const convs = Array.isArray(p.conversations) ? p.conversations : [];
+      for (const c of convs) {
+        if (c.active) return { project: p.name, conv: c };
+      }
+    }
+    return null;
+  }
+
+  // Always-visible header showing which conversation is active, so it stays
+  // legible even when the sidebar is collapsed or scrolled.
+  function updateCurrentTopic(data) {
+    if (!currentTopic) return;
+    const found = findActiveConversation(data);
+    if (!found) {
+      if (currentProject) currentProject.textContent = "";
+      if (currentId) currentId.textContent = "";
+      if (currentTitle) { currentTitle.textContent = "대화 미선택"; currentTitle.classList.add("empty"); }
+      return;
+    }
+    const { project, conv } = found;
+    if (currentProject) currentProject.textContent = project || "";
+    if (currentTitle) {
+      currentTitle.textContent = conv.title || conv.id || "제목 없음";
+      currentTitle.classList.remove("empty");
+    }
+    if (currentId) currentId.textContent = conv.id ? "#" + conv.id : "";
+  }
+
   async function loadConversations() {
     if (!topicList) return;
     try {
-      const resp = await fetch("/api/conversations", {
-        headers: { Authorization: "Bearer " + token },
-      });
+      const resp = await fetch("/api/conversations", { headers: authHeaders });
       if (!resp.ok) throw new Error("status " + resp.status);
       const data = await resp.json();
       renderConversations(data);
+      updateCurrentTopic(data);
       if (!currentTarget) {
         const act = (data.webConvs || []).find((w) => w.active);
         if (act) selectTarget({ kind: "web", id: act.id });
@@ -260,11 +361,12 @@
       fd.append("caption", input.value.trim());
       add("user", "📎 " + fileEl.files[0].name + (input.value.trim() ? " — " + input.value.trim() : ""));
       showWorking();
-      const resp = await fetch("/api/upload", { method: "POST", headers: { Authorization: "Bearer " + token }, body: fd });
+      const resp = await fetch("/api/upload", { method: "POST", headers: authHeaders, body: fd });
       if (!resp.ok) { add("system", "업로드 실패: " + resp.status); hideWorking(); }
       fileEl.value = ""; input.value = "";
       if (fileNameEl) { fileNameEl.textContent = ""; fileNameEl.hidden = true; }
       resizeInput();
+      closeComposer();
       return;
     }
     const text = input.value.trim();
@@ -272,6 +374,7 @@
       showWorking();
       input.value = "";
       resizeInput();
+      closeComposer();
       window.setTimeout(loadConversations, 500);
     }
   });
@@ -291,15 +394,94 @@
     // After creation, refresh and select the newest web conv.
     window.setTimeout(async () => {
       await loadConversations();
-      // pick the most-recent web conv as the new target
       try {
-        const resp = await fetch("/api/conversations", { headers: { Authorization: "Bearer " + token } });
+        const resp = await fetch("/api/conversations", { headers: authHeaders });
         const data = await resp.json();
         if (data.webConvs && data.webConvs.length) selectTarget({ kind: "web", id: data.webConvs[0].id });
       } catch (e) { /* ignore; sidebar will still refresh on next loadConversations */ }
     }, 400);
   });
+
+  // --- Admin surface (Teleclaude embedded only) -----------------------------
+
+  async function bootstrapCapabilities() {
+    try {
+      const resp = await fetch("/api/capabilities", { headers: authHeaders });
+      if (!resp.ok) return; // aglink-chat: 404 → admin UI stays hidden
+      const cap = await resp.json();
+      if (!cap.admin) return;
+      if (adminControls) adminControls.hidden = false;
+      if (versionBadge) versionBadge.textContent = "v " + (cap.version || "?");
+    } catch (e) { /* admin UI stays hidden */ }
+  }
+
+  if (btnUpdate) btnUpdate.addEventListener("click", () => {
+    if (!window.confirm("새 버전을 빌드하고 재시작할까요? 진행 중 작업이 없어야 합니다.")) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Reuse the existing authenticated command path — same as typing !update.
+      ws.send(JSON.stringify({ type: "send", text: "!update", target: currentTarget || { kind: "telegram" } }));
+      add("system", "업데이트를 요청했습니다. 빌드/재시작 로그가 곧 표시됩니다.");
+    }
+  });
+
+  async function openConfig() {
+    if (!configOverlay) return;
+    if (configMsg) configMsg.textContent = "";
+    try {
+      const resp = await fetch("/api/config", { headers: authHeaders });
+      configText.value = resp.ok ? await resp.text() : "(불러오기 실패: " + resp.status + ")";
+    } catch (e) { configText.value = "(불러오기 오류)"; }
+    configOverlay.hidden = false;
+  }
+  async function saveConfig() {
+    if (configMsg) configMsg.textContent = "저장 중…";
+    try {
+      const resp = await fetch("/api/config", { method: "PUT", headers: authHeaders, body: configText.value });
+      if (resp.status === 204) { if (configMsg) configMsg.textContent = "저장됨 — 핫리로드 적용"; }
+      else { const t = await resp.text(); if (configMsg) configMsg.textContent = "실패: " + t; }
+    } catch (e) { if (configMsg) configMsg.textContent = "오류: " + e; }
+  }
+  if (btnConfig) btnConfig.addEventListener("click", openConfig);
+  const configCloseBtn = document.getElementById("config-close");
+  if (configCloseBtn) configCloseBtn.addEventListener("click", () => { configOverlay.hidden = true; });
+  const configSaveBtn = document.getElementById("config-save");
+  if (configSaveBtn) configSaveBtn.addEventListener("click", saveConfig);
+  if (configOverlay) configOverlay.addEventListener("click", (e) => { if (e.target === configOverlay) configOverlay.hidden = true; });
+
+  async function openConnections() {
+    if (!connOverlay || !connBody) return;
+    connBody.replaceChildren();
+    let data = {};
+    try { const resp = await fetch("/api/status", { headers: authHeaders }); if (resp.ok) data = await resp.json(); } catch (e) { /* show defaults */ }
+    const rows = [
+      ["웹 채팅 주소", data.webChatAddr || "(미설정)"],
+      ["제어 API 사용", data.chatControlEnabled ? "켜짐" : "꺼짐"],
+      ["제어 API 주소", data.chatControlAddr || "(미설정)"],
+    ];
+    for (const [k, v] of rows) {
+      const row = document.createElement("div"); row.className = "conn-row";
+      const kk = document.createElement("span"); kk.className = "k"; kk.textContent = k;
+      const vv = document.createElement("span"); vv.textContent = v;
+      row.append(kk, vv); connBody.appendChild(row);
+    }
+    const arow = document.createElement("div"); arow.className = "conn-row";
+    const ak = document.createElement("span"); ak.className = "k"; ak.textContent = "aglink-chat 연동";
+    const av = document.createElement("span");
+    av.className = data.aglinkConnected ? "conn-ok" : "conn-off";
+    av.textContent = data.aglinkConnected ? ("연결됨 (" + (data.aglinkClients || 0) + ")") : "연결 안 됨";
+    arow.append(ak, av); connBody.appendChild(arow);
+    const note = document.createElement("div"); note.className = "topic-summary";
+    note.textContent = "주소/포트 변경은 ⚙ 설정에서 config.yaml을 편집한 뒤 재시작하세요.";
+    connBody.appendChild(note);
+    connOverlay.hidden = false;
+  }
+  if (btnConnections) btnConnections.addEventListener("click", openConnections);
+  const connCloseBtn = document.getElementById("conn-close");
+  if (connCloseBtn) connCloseBtn.addEventListener("click", () => { connOverlay.hidden = true; });
+  if (connOverlay) connOverlay.addEventListener("click", (e) => { if (e.target === connOverlay) connOverlay.hidden = true; });
+
   resizeInput();
+  bootstrapCapabilities();
   loadConversations();
   connect();
 })();

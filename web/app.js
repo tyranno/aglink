@@ -504,10 +504,19 @@
       connBody.appendChild(connNote("플러그인 정보를 불러오지 못했습니다."));
     } else {
       for (const p of plugins) {
-        let val, cls;
-        if (!p.installed) { val = "설치 안 됨"; cls = "conn-off"; }
-        else { val = (p.version ? p.version : "설치됨") + (p.binary ? " · 빌드 있음" : " · 빌드 없음"); cls = "conn-ok"; }
-        connBody.appendChild(connRow(p.name, val, cls));
+        if (!p.installed) {
+          connBody.appendChild(connRow(p.name, "설치 안 됨", "conn-off"));
+          continue;
+        }
+        // Line 1: install/version/binary.
+        const meta = (p.version ? p.version : "설치됨") + (p.binary ? " · 빌드 있음" : " · 빌드 없음");
+        connBody.appendChild(connRow(p.name, meta, "conn-ok"));
+        // Line 2: live process status.
+        let runVal, runCls;
+        if (!p.runKnown) { runVal = "실행 상태 확인 불가"; runCls = ""; }
+        else if (p.running) { runVal = "🟢 실행 중" + (p.runDetail ? " (" + p.runDetail + ")" : ""); runCls = "conn-ok"; }
+        else { runVal = "⚪ 실행 중 아님"; runCls = "conn-off"; }
+        connBody.appendChild(connRow("↳ 실행 상태", runVal, runCls));
       }
     }
 

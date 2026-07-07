@@ -36,11 +36,14 @@ import (
 // accent dot rather than an emoji, since classic GDI cannot render color emoji.)
 //
 // Lead time: at session start, ensureControlNotice() shows the notice and then
-// briefly BLOCKS (noticeLeadMS) before returning, so synthetic input begins only
-// after the user has had a moment to see the warning and pause their own typing/
-// clicking. This lead applies ONLY on session start (the first input, or after an
-// idle gap) — continuous control within a session proceeds with no delay, so it
-// stays responsive.
+// briefly BLOCKS before returning, so synthetic input begins only after the user
+// has had a moment to see the warning and pause their own typing/clicking. The
+// overlay is drawn on its own goroutine, so ensureControlNotice first waits for a
+// "shown" handshake (the toast's first paint, bounded by noticeShownWaitMax) and
+// only THEN sleeps noticeLeadMS — otherwise the lead sleep and the ShowWindow/paint
+// would race and input could precede the visible warning. This lead applies ONLY
+// on session start (the first input, or after an idle gap) — continuous control
+// within a session proceeds with no delay, so it stays responsive.
 //
 //	AGLINK_NO_CONTROL_NOTICE=1      disable entirely (headless / no user present)
 //	AGLINK_NOTICE_DURATION_MS=4500  override the on-screen time (clamped 1500..15000)
@@ -115,8 +118,10 @@ func noticeLeadMS() int {
 
 // ensureControlNotice is called at the entry of every function that synthesizes
 // input. It records the input time and, if this is the first input of a new
-// control session (>= controlNoticeGap since the previous one), shows the overlay.
-// It never blocks: the overlay runs on its own goroutine.
+// control session (>= controlNoticeGap since the previous one), shows the overlay
+// and blocks until it is on screen (plus the lead delay) before returning, so the
+// warning is always visible before synthetic input begins. Mid-session calls
+// return immediately.
 func ensureControlNotice() {
 	now := time.Now().UnixNano()
 	prev := lastSyntheticInput.Swap(now)
@@ -124,7 +129,18 @@ func ensureControlNotice() {
 		return
 	}
 	if noticeDue(prev, now) {
-		showControlNotice()
+		// Show the toast and wait until it is actually painted on screen before
+		// starting the lead delay. The overlay is drawn on its own goroutine, so
+		// without this handshake the fixed lead sleep and the ShowWindow/first
+		// paint race — under scheduling pressure synthetic input could begin
+		// before the warning was ever visible. Bounded by noticeShownWaitMax so a
+		// stalled UI thread can never block input indefinitely.
+		if shown := showControlNotice(); shown != nil {
+			select {
+			case <-shown:
+			case <-time.After(noticeShownWaitMax):
+			}
+		}
 		// Session start: hold off briefly so the user sees the notice and can
 		// pause their own input before synthetic control begins. Mid-session
 		// calls skip this (noticeDue is false), so control stays responsive.
@@ -141,15 +157,51 @@ func noticeDue(prevNano, nowNano int64) bool {
 	return prevNano == 0 || nowNano-prevNano >= int64(controlNoticeGap)
 }
 
-// showControlNotice shows the overlay on a dedicated goroutine (fire-and-forget).
-func showControlNotice() {
+// noticeShow runs the overlay window to completion. It is a package var (rather
+// than calling runNoticeWindow directly) so tests can substitute a fake that
+// drives the shown-signal without creating real Win32 windows.
+var noticeShow = runNoticeWindow
+
+// noticeShownWaitMax bounds how long ensureControlNotice waits for the toast to
+// appear before proceeding anyway, so a stalled UI thread can never block
+// synthetic input forever. A var for testability.
+var noticeShownWaitMax = 2 * time.Second
+
+var (
+	noticeShownOnce sync.Once     // guards a single close of noticeShownCh per showing
+	noticeShownCh   chan struct{} // closed when the current toast is on screen
+)
+
+// signalNoticeShown closes the current showing's shown-channel exactly once,
+// unblocking ensureControlNotice. Called from the paint handler on the toast's
+// first paint, and as a fallback when the overlay goroutine exits without ever
+// painting (e.g. window creation failed) so the caller is never left blocked.
+func signalNoticeShown() {
+	noticeShownOnce.Do(func() {
+		if noticeShownCh != nil {
+			close(noticeShownCh)
+		}
+	})
+}
+
+// showControlNotice shows the overlay on a dedicated goroutine. The fade
+// animation runs asynchronously, but the returned channel is closed the moment
+// the toast is actually on screen (first paint) — or if it cannot be shown — so
+// the caller can guarantee the warning is visible before synthetic input begins.
+// Returns nil when a notice is already showing (nothing new to wait on).
+func showControlNotice() <-chan struct{} {
 	if !noticeShowing.CompareAndSwap(false, true) {
-		return // one already on screen
+		return nil // one already on screen
 	}
+	noticeShownOnce = sync.Once{}
+	shown := make(chan struct{})
+	noticeShownCh = shown
 	go func() {
 		defer noticeShowing.Store(false)
-		runNoticeWindow()
+		defer signalNoticeShown() // fallback: never leave the caller blocked
+		noticeShow()
 	}()
+	return shown
 }
 
 // noticeAlpha returns the layered-window alpha for a fade in → hold → fade out
@@ -345,6 +397,8 @@ func noticeWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			paintNotice(hdc)
 			procEndPaintN.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		}
+		// The toast is now on screen; release any caller waiting to begin input.
+		signalNoticeShown()
 		return 0
 	case wmTimer:
 		elapsed := int((time.Now().UnixNano() - noticeStartNano) / 1e6)

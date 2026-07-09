@@ -783,5 +783,59 @@ func uiaGetValue(name string) (string, error) {
 	})
 }
 
+// ---- wait_for_control ----
+
+// uiaWaitForControlPollEvery is how often uiaWaitForControl re-checks while
+// waiting. A var (not const) so tests can shrink it.
+var uiaWaitForControlPollEvery = 250 * time.Millisecond
+
+// uiaControlExistsProbe checks whether an element named `name` currently
+// exists in the foreground window's UIA tree. A package var (wrapping the
+// real uiaDo/findByName-based check) so uiaWaitForControl's polling loop is
+// unit-testable without a real UIA/COM worker thread — mirrors the
+// findTopWindowProbe pattern already used for waitForWindow's tests.
+var uiaControlExistsProbe = func(name string) (bool, error) {
+	found, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
+		root, err := foregroundElement(uia)
+		if err != nil {
+			return "", err
+		}
+		defer release(root)
+		el, err := findByName(uia, root, name)
+		if err != nil {
+			return "", err
+		}
+		if el == nil {
+			return "", nil
+		}
+		defer release(el)
+		return "found", nil
+	})
+	return err == nil && found == "found", err
+}
+
+// uiaWaitForControl polls the foreground window's UIA tree until an element
+// matching name (Name or AutomationId) appears, or timeoutMs elapses —
+// mirrors aglink-web's wait_for_element and aglink-screen's own
+// wait_for_window, but for a specific control inside the foreground window
+// rather than a whole top-level window. Replaces a manual snapshot-polling
+// loop for dialogs/controls that render a moment after the action that
+// triggers them (e.g. a "Save" dialog, a panel that appears after a click).
+func uiaWaitForControl(name string, timeoutMs int) (string, error) {
+	if timeoutMs <= 0 {
+		timeoutMs = 8000
+	}
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for {
+		if ok, _ := uiaControlExistsProbe(name); ok {
+			return fmt.Sprintf("ok: found %q", name), nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("timed out after %dms waiting for an element named %q (try snapshot)", timeoutMs, name)
+		}
+		time.Sleep(uiaWaitForControlPollEvery)
+	}
+}
+
 // keep windows import referenced even if other helpers change.
 var _ = windows.UTF16ToString

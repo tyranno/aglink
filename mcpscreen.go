@@ -120,6 +120,30 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// wait_for_control — like wait_for_window but for a specific UIA element
+	// inside the foreground window (a dialog's control, a panel that renders
+	// a moment after the action that triggers it), instead of a manual
+	// snapshot-polling loop.
+	s.AddTool(
+		mcp.NewTool("wait_for_control",
+			mcp.WithDescription("Block until an element (by Name or AutomationId, as reported by snapshot) appears in the foreground window's UI Automation tree, instead of calling snapshot in a manual polling loop. Fails with a timeout error after 'timeout_ms' (default 8000) if it never appears. Caveat: this checks tree EXISTENCE, not visual visibility — some apps (e.g. modern WinUI/XAML flyouts like Notepad's Find bar) keep an element mounted-but-hidden after it's been shown once, so a second wait for the same element can return immediately even though it isn't currently on screen. Confirmed reliable for an element's first-ever appearance."),
+			mcp.WithString("name", mcp.Description("The element Name or AutomationId to wait for."), mcp.Required()),
+			mcp.WithNumber("timeout_ms", mcp.Description("Max time to wait in milliseconds (default 8000).")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			timeoutMs := req.GetInt("timeout_ms", 8000)
+			result, err := uiaWaitForControl(name, timeoutMs)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("wait_for_control failed", err), nil
+			}
+			return mcp.NewToolResultText(result), nil
+		},
+	)
+
 	// move_window — reposition/resize a window precisely (no keyboard-shortcut
 	// workarounds like win+left/right needed just to arrange windows on screen).
 	s.AddTool(

@@ -112,6 +112,11 @@ func (s *chatControlServer) handleControl(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return
 	}
+	// coder/websocket defaults to a 32KiB read limit; a large set_config body
+	// (edited config.yaml) could exceed it, dropping the connection the same
+	// way an oversized get_history reply does on aglink-chat's side (see the
+	// matching SetReadLimit in aglink-chat's controlClient.connectOnce).
+	c.SetReadLimit(8 << 20)
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := &remoteChatChannel{send: make(chan controlOut, 64), cancel: cancel}
 	s.hub.Register(s.ownerChatID, ch)

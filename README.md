@@ -90,6 +90,32 @@ MANAGER_ALWAYS=true
 
 ---
 
+## 브라우저 채팅 UI (선택, 기본 꺼짐)
+
+텔레그램 없이(또는 텔레그램과 병행해) 브라우저에서도 같은 대화 상태로 채팅할 수 있습니다.
+별도 저장소인 [`aglink-chat`](https://github.com/tyranno/aglink-chat)이 실제 웹 서버 역할을
+하고, teleclaude는 로컬 전용 control API로만 붙습니다.
+
+```
+88.MyProject/
+├── teleclaude/        ← 이 저장소
+└── aglink-chat/        ← 형제 디렉터리로 clone + go build
+```
+
+`~/.teleclaude/config.yaml`에 추가 후 재시작:
+
+```yaml
+chat_control:
+  enabled: true
+aglink_chat:
+  enabled: true
+```
+
+재시작 로그에 뜨는 `http://127.0.0.1:1717/?token=...` 주소를 브라우저로 열면 됩니다
+(로컬 전용, 같은 컴퓨터에서만 접속 가능). 자세한 단계는 [`QUICKSTART.md`](QUICKSTART.md) 참고.
+
+---
+
 ## 사용법
 
 봇에게 **그냥 말하면** 됩니다:

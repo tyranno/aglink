@@ -335,7 +335,9 @@ func (b *Bot) dispatch(msg queuedMsg) {
 
 		switch ctx.Err() {
 		case context.DeadlineExceeded:
-			_ = b.Send(msg.chatID, "⏱ 타임아웃으로 작업을 중단했습니다.")
+			_ = b.Send(msg.chatID, fmt.Sprintf(
+				"⏱ 제한 시간(%d분)을 초과해 작업을 중단했습니다 — 죽은 게 아니라 시간 안에 못 끝낸 것입니다. 다시 메시지를 보내시면 이어서 진행됩니다(같은 대화 세션이라 지금까지 맥락은 유지됩니다).",
+				b.cfg().TimeoutMinutes))
 		case context.Canceled:
 			_ = b.Send(msg.chatID, "🛑 작업이 취소되었습니다.")
 		}

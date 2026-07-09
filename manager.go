@@ -256,10 +256,12 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	if tc.WorkDir != "" {
 		workDir = tc.WorkDir
 	}
-	backend := tc.Backend
-	if backend == "" {
-		backend = "claude"
-	}
+	// The global telegram stream always follows the manager's live active backend
+	// (set by !backend / detectBackendSwitchIntent), not a value stamped on the
+	// conversation at creation time — otherwise a backend switch would report
+	// success but silently keep routing turns through the old backend forever
+	// (tc.Backend, once set, was never updated by SetBackend).
+	backend := m.Backend()
 	client := m.clientForBackend(backend)
 	if client == nil {
 		_ = s.Send(chatID, fmt.Sprintf("⚠️ 텔레그램 대화는 %s로 생성됐는데 %s가 설치되어 있지 않습니다. `!backend`로 전환하거나 설치 후 다시 시도해 주세요.",
@@ -305,10 +307,9 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		if tc.WorkDir != "" {
 			workDir = tc.WorkDir
 		}
-		backend := tc.Backend
-		if backend == "" {
-			backend = "claude"
-		}
+		// See handleTelegram: the global stream follows the live active backend,
+		// not the conversation's creation-time stamp.
+		backend := m.Backend()
 		client := m.clientForBackend(backend)
 		if client == nil {
 			_ = s.Send(chatID, fmt.Sprintf("⚠️ 텔레그램 대화는 %s로 생성됐는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
@@ -523,6 +524,46 @@ func (m *Manager) clientForBackend(name string) ClaudeClient {
 	}
 }
 
+// runHeartbeat sends a periodic "still going" text message every 2 minutes
+// while a Worker turn is in flight, and — critically — also refreshes the
+// channel's live "typing" signal on each tick (s.Typing), not just once at
+// turn start. Without this, the web UI's "작업 진행 중" indicator was a client-
+// side timer with no server-side confirmation the worker was still alive: a
+// hung/dead worker and a slow-but-fine one looked identical until the turn
+// eventually returned (or timed out). label distinguishes the normal run
+// ("작업 진행 중") from a post-session-loss retry ("세션 복구 진행 중").
+//
+// When timeoutMinutes is set, the last heartbeat before the deadline switches
+// to an explicit warning instead of the routine message, so a slow turn gets
+// a heads-up (and a chance to !cancel) before the hard timeout silently kills
+// it — rather than the user only finding out after the fact.
+func runHeartbeat(s MessageSender, chatID int64, label string, startTime time.Time, timeoutMinutes int, done <-chan struct{}) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	var deadline time.Time
+	if timeoutMinutes > 0 {
+		deadline = startTime.Add(time.Duration(timeoutMinutes) * time.Minute)
+	}
+	for {
+		select {
+		case <-ticker.C:
+			s.Typing(chatID) // refresh the live-signal independent of the text bubble below
+			elapsed := time.Since(startTime)
+			mins, secs := int(elapsed.Minutes()), int(elapsed.Seconds())%60
+			msg := fmt.Sprintf("⏳ %s... (%d분 %d초 경과)", label, mins, secs)
+			if !deadline.IsZero() {
+				if remaining := time.Until(deadline); remaining > 0 && remaining <= 2*time.Minute {
+					msg = fmt.Sprintf("⏳ %s... (%d분 %d초 경과) — 곧 제한 시간(%d분)에 도달합니다. 계속 기다리는 중이며, 그만두려면 !cancel",
+						label, mins, secs, timeoutMinutes)
+				}
+			}
+			_ = s.Send(chatID, msg)
+		case <-done:
+			return
+		}
+	}
+}
+
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
 // workDir overrides the project's path as the Claude CLI working directory (e.g. a git worktree).
 // Pass "" to use the project's registered path.
@@ -628,24 +669,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	})
 
 	startTime := time.Now()
-
-	// Heartbeat: notify every 2 minutes while Worker is running.
+	timeoutMinutes := m.cfg().TimeoutMinutes
 	heartbeatDone := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				elapsed := time.Since(startTime)
-				mins := int(elapsed.Minutes())
-				secs := int(elapsed.Seconds()) % 60
-				_ = s.Send(chatID, fmt.Sprintf("⏳ 작업 진행 중... (%d분 %d초 경과)", mins, secs))
-			case <-heartbeatDone:
-				return
-			}
-		}
-	}()
+	go runHeartbeat(s, chatID, "작업 진행 중", startTime, timeoutMinutes, heartbeatDone)
 
 	// Pass history in the prompt as a restart-safe fallback.
 	// When --resume is in play, the CLI session already carries full context server-side,
@@ -699,19 +725,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
-			go func() {
-				ticker := time.NewTicker(2 * time.Minute)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ticker.C:
-						e := time.Since(startTime)
-						_ = s.Send(chatID, fmt.Sprintf("⏳ 세션 복구 진행 중... (%d분 %d초 경과)", int(e.Minutes()), int(e.Seconds())%60))
-					case <-recoverDone:
-						return
-					}
-				}
-			}()
+			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:    prompt,
 				WorkDir:   workDir,
@@ -800,17 +814,27 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		workConv.Summary = truncate(res.Text, 80)
 	}
 
-	// Append this turn to conversation history.
-	// Keep only the most recent maxHistoryTurns (short-term memory).
-	// Older context should be summarised into .teleclaude/memory.md by the Worker.
-	const maxHistoryTurns = 20
+	// Append this turn to conversation history. This cap is a storage/display
+	// limit only — it does NOT affect LLM prompt size, which is separately
+	// (and much more tightly) bounded by maxHistoryInPrompt below. Web chat's
+	// /api/history reads this same array (store.go HistorySnapshot), so a small
+	// cap here made old turns silently vanish from the web view (while still
+	// visible in Telegram's own server-side scrollback) well before it mattered
+	// for prompt size — kept generous so that doesn't happen in normal use.
+	const maxHistoryTurns = 200
 	workConv.History = append(workConv.History, ConversationTurn{
 		Timestamp: time.Now().UTC(),
 		Prompt:    text,
 		Response:  res.Text,
 	})
 	if len(workConv.History) > maxHistoryTurns {
-		workConv.History = workConv.History[len(workConv.History)-maxHistoryTurns:]
+		dropped := len(workConv.History) - maxHistoryTurns
+		workConv.History = workConv.History[dropped:]
+		// The cap silently dropped visible history once before (see the comment
+		// above) without so much as a log line, so a user report was the only way
+		// to notice it happened at all. Logging it costs nothing and means the
+		// next occurrence is visible in the server log instead of a surprise.
+		log.Printf("[manager] conv %s history capped at %d turns, dropped %d oldest", workConv.ID, maxHistoryTurns, dropped)
 	}
 	if res.SessionID != "" && !wasStarted {
 		workConv.SessionID = res.SessionID

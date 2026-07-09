@@ -55,9 +55,11 @@ func TestHandle_Telegram_ProjectSwitch_KeepsConversation(t *testing.T) {
 	}
 }
 
-// The telegram turn runs on the client of TelegramConversation().Backend — the
-// backend-selection principle preserved after removing the old resume routing.
-func TestHandle_Telegram_RunsOnConversationBackend(t *testing.T) {
+// The telegram turn always runs on the manager's live active backend, not a
+// value stamped on the conversation at creation time — otherwise a runtime
+// !backend switch would report success but keep routing through the old
+// backend forever (tc.Backend, once stamped, is never refreshed).
+func TestHandle_Telegram_RunsOnActiveBackend(t *testing.T) {
 	claudeFC := &fakeClaude{runRes: RunResult{Text: "claude ran"}}
 	codexFC := &fakeClaude{runRes: RunResult{Text: "codex ran"}}
 	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
@@ -66,16 +68,21 @@ func TestHandle_Telegram_RunsOnConversationBackend(t *testing.T) {
 	_ = st.SetTelegramActiveProject("myapp")
 	m := NewManager(claudeFC, codexFC, st, NewConfigHolder(&Config{ManagerAlways: true, WorkerModel: "sonnet", CodexModel: "gpt-5.5"}))
 
-	// Active backend is claude, but the telegram conversation was created on codex.
+	// The telegram conversation gets stamped "claude" (the default) at creation;
+	// the manager's active backend is then switched to codex afterward.
 	tc := st.TelegramConversation()
-	tc.Backend = "codex"
-	_ = st.UpdateTelegramConversation(tc)
+	if tc.Backend != "" && tc.Backend != "claude" {
+		t.Fatalf("expected conversation stamped claude/empty at creation, got %q", tc.Backend)
+	}
+	if err := m.SetBackend("codex"); err != nil {
+		t.Fatalf("SetBackend(codex): %v", err)
+	}
 
 	f := &fakeSender{}
 	m.Handle(context.Background(), 1, "뭔가 해줘", OriginTelegram, f)
 
 	if codexFC.runCalls != 1 {
-		t.Fatalf("telegram turn must run on the conversation's backend (codex), codex runCalls=%d", codexFC.runCalls)
+		t.Fatalf("telegram turn must run on the active backend (codex), codex runCalls=%d", codexFC.runCalls)
 	}
 	if claudeFC.runCalls != 0 {
 		t.Fatalf("telegram turn must not run on claude, claude runCalls=%d", claudeFC.runCalls)
@@ -83,7 +90,7 @@ func TestHandle_Telegram_RunsOnConversationBackend(t *testing.T) {
 	if codexFC.lastRun.Model != "gpt-5.5" {
 		t.Errorf("model=%q, want codex model gpt-5.5", codexFC.lastRun.Model)
 	}
-	if m.Backend() != "claude" {
-		t.Errorf("telegram turn must not change global backend, now %s", m.Backend())
+	if m.Backend() != "codex" {
+		t.Errorf("active backend should now be codex, got %s", m.Backend())
 	}
 }

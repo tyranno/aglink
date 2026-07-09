@@ -77,6 +77,11 @@ const (
 	inSmYVirtualScreen  = 77
 	inSmCXVirtualScreen = 78
 	inSmCYVirtualScreen = 79
+
+	// syntheticInputTag marks every INPUT event we generate (in dwExtraInfo) so
+	// the low-level input hook in screen_userwatch_windows.go can tell our own
+	// synthetic input apart from genuine user input.
+	syntheticInputTag = uintptr(0x41474c4b) // "AGLK"
 )
 
 // Common virtual-key codes (for keyCombo). Lowercase keys.
@@ -185,6 +190,7 @@ func mouseEvent(dx, dy int32, mouseData uint32, flags uint32) []byte {
 	blk.Mi.Dy = dy
 	blk.Mi.MouseData = mouseData
 	blk.Mi.DwFlags = flags
+	blk.Mi.DwExtraInfo = syntheticInputTag
 	return structBytes(unsafe.Pointer(&blk))
 }
 
@@ -195,6 +201,7 @@ func keyEvent(vk, scan uint16, flags uint32) []byte {
 	blk.Ki.WVk = vk
 	blk.Ki.WScan = scan
 	blk.Ki.DwFlags = flags
+	blk.Ki.DwExtraInfo = syntheticInputTag
 	return structBytes(unsafe.Pointer(&blk))
 }
 
@@ -248,7 +255,9 @@ func toAbsolute(x, y int) (int32, int32) {
 
 // mouseMove moves the cursor to absolute (x,y) on the virtual desktop.
 func mouseMove(x, y int) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 	ax, ay := toAbsolute(x, y)
 	flags := uint32(mouseeventfMove | mouseeventfAbsolute | mouseeventfVirtualDesk)
@@ -259,7 +268,9 @@ func mouseMove(x, y int) error {
 // mouseClick moves to (x,y) then performs a down+up of the given button.
 // button is one of "left", "right", "middle" (default "left").
 func mouseClick(x, y int, button string) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 
 	var down, up uint32
@@ -302,7 +313,9 @@ func resolveButton(button string) (down, up uint32, err error) {
 // ctrl/alt/shift/win) down — e.g. ctrl+click or shift+click for multi-select.
 // Keyboard and mouse events are sent as one ordered SendInput batch.
 func mouseClickMods(x, y int, button string, mods []string) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 	down, up, err := resolveButton(button)
 	if err != nil {
@@ -348,7 +361,9 @@ func mouseClickMods(x, y int, button string, mods []string) error {
 // (x2,y2), then releases — for rubber-band selection, sliders, and drag & drop.
 // Small delays between phases make the gesture register reliably across apps.
 func mouseDrag(x1, y1, x2, y2 int, button string) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 	down, up, err := resolveButton(button)
 	if err != nil {
@@ -384,7 +399,9 @@ func mouseDrag(x1, y1, x2, y2 int, button string) error {
 
 // mouseDouble performs a left double-click at (x,y).
 func mouseDouble(x, y int) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 	ax, ay := toAbsolute(x, y)
 	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
@@ -402,7 +419,9 @@ func mouseDouble(x, y int) error {
 // UTF-16 code unit. This bypasses the keyboard layout, so any printable rune
 // (including non-ASCII) is entered verbatim.
 func typeText(s string) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 	if s == "" {
 		return nil
@@ -427,7 +446,9 @@ func typeText(s string) error {
 // keyCombo parses a combo like "ctrl+c", "alt+f4", "ctrl+shift+s" or a bare key
 // like "enter", presses modifiers down, taps the key, then releases modifiers.
 func keyCombo(combo string) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 
 	parts := strings.Split(strings.TrimSpace(combo), "+")
@@ -512,7 +533,9 @@ const scrollHoverSettle = 40 * time.Millisecond
 // wheel and removes a class of "wheel went nowhere" failures caused by a stale or
 // unexpected hover/cursor state at wheel time.
 func scroll(dx, dy int) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	ensureDPIAware()
 	if dx == 0 && dy == 0 {
 		return nil

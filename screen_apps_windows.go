@@ -182,6 +182,15 @@ func matchWindowTitle(wins []win, needle string) (uintptr, bool) {
 // to that desktop — so we first remember a return anchor on the current desktop
 // (once), letting return_desktop switch back afterwards.
 func bringToFront(hwnd uintptr) error {
+	// Stealing the foreground window is just as disruptive to the user as a
+	// click/keystroke — it can yank their attention away from whatever they
+	// were doing — but until now only click/type/key/invoke went through
+	// ensureControlNotice(); focus_window (and anything else routed through
+	// bringToFront: click_control, capture_window's auto-focus, etc.) gave no
+	// warning at all. Centralizing the call here covers all of them at once.
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	if isWindowOnAnotherDesktop(hwnd) {
 		originMu.Lock()
 		if originAnchor == 0 {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	ole "github.com/go-ole/go-ole"
@@ -348,6 +349,19 @@ type uiaNode struct {
 
 // uiaSnapshot walks the foreground window's element subtree (children-first,
 // breadth-limited) and returns a compact textual listing capped at maxElems.
+// uiaSnapshotSparseThreshold is the FindAll element count below which
+// uiaSnapshot suspects the target hasn't finished building its accessibility
+// tree yet and retries once. Chromium/Electron apps (VS Code, Chrome) often
+// expose an empty or near-empty tree on the very first UIA query after gaining
+// focus — the query itself seems to be what triggers them to start building
+// it — and a second query a moment later sees the real tree. Native Win32/WPF
+// apps return hundreds of elements immediately, so this path essentially never
+// fires for them and costs nothing.
+const uiaSnapshotSparseThreshold = 10
+
+// uiaSnapshotRetryDelay is how long uiaSnapshot waits before its one retry.
+var uiaSnapshotRetryDelay = 250 * time.Millisecond
+
 func uiaSnapshot(maxElems int) (string, error) {
 	if maxElems <= 0 {
 		maxElems = 200
@@ -367,17 +381,35 @@ func uiaSnapshot(maxElems int) (string, error) {
 		}
 		defer release(cond)
 
-		// FindAll over the subtree (descendants + self).
-		var arr *ole.IUnknown
-		hr = vcall(root, elemFindAll, uintptr(treeScopeSubtree),
-			uintptr(unsafe.Pointer(cond)), uintptr(unsafe.Pointer(&arr)))
-		if failed(hr) || arr == nil {
-			return "", fmt.Errorf("UIA: FindAll failed (hr=0x%x)", uint32(hr))
+		// FindAll over the subtree (descendants + self). findAll is a closure so
+		// it can be called a second time (with a fresh COM array each time) if the
+		// first pass looks suspiciously sparse.
+		findAll := func() (*ole.IUnknown, int32, error) {
+			var arr *ole.IUnknown
+			hr := vcall(root, elemFindAll, uintptr(treeScopeSubtree),
+				uintptr(unsafe.Pointer(cond)), uintptr(unsafe.Pointer(&arr)))
+			if failed(hr) || arr == nil {
+				return nil, 0, fmt.Errorf("UIA: FindAll failed (hr=0x%x)", uint32(hr))
+			}
+			var l int32
+			vcall(arr, arrGetLength, uintptr(unsafe.Pointer(&l)))
+			return arr, l, nil
+		}
+
+		arr, length, err := findAll()
+		if err != nil {
+			return "", err
+		}
+		if length < uiaSnapshotSparseThreshold {
+			time.Sleep(uiaSnapshotRetryDelay)
+			if arr2, length2, err2 := findAll(); err2 == nil && length2 > length {
+				release(arr)
+				arr, length = arr2, length2
+			} else if arr2 != nil {
+				release(arr2) // retry didn't help; keep the first (possibly still-empty) result
+			}
 		}
 		defer release(arr)
-
-		var length int32
-		vcall(arr, arrGetLength, uintptr(unsafe.Pointer(&length)))
 
 		truncated := false
 		n := int(length)
@@ -506,12 +538,110 @@ func findByName(uia *ole.IUnknown, root *ole.IUnknown, name string) (*ole.IUnkno
 	return findFirstByProp(uia, root, uiaAutomationIdPropertyId, name)
 }
 
+// findAllByProp finds every descendant whose property `propId` equals `value`
+// and returns the resulting IUIAutomationElementArray plus its length. Caller
+// must release the returned array (if non-nil).
+func findAllByProp(uia *ole.IUnknown, root *ole.IUnknown, propId int, value string) (*ole.IUnknown, int32, error) {
+	bstr := ole.SysAllocString(value)
+	if bstr == nil {
+		return nil, 0, fmt.Errorf("SysAllocString failed")
+	}
+	defer ole.SysFreeString(bstr)
+
+	var v ole.VARIANT
+	v.VT = 8 // VT_BSTR
+	*(*uintptr)(unsafe.Pointer(&v.Val)) = uintptr(unsafe.Pointer(bstr))
+
+	var cond *ole.IUnknown
+	hr := vcall(uia, uiaCreatePropertyCondition,
+		uintptr(propId), uintptr(unsafe.Pointer(&v)), uintptr(unsafe.Pointer(&cond)))
+	if failed(hr) || cond == nil {
+		return nil, 0, fmt.Errorf("CreatePropertyCondition failed (hr=0x%x)", uint32(hr))
+	}
+	defer release(cond)
+
+	var arr *ole.IUnknown
+	hr = vcall(root, elemFindAll, uintptr(treeScopeSubtree),
+		uintptr(unsafe.Pointer(cond)), uintptr(unsafe.Pointer(&arr)))
+	if failed(hr) || arr == nil {
+		return nil, 0, fmt.Errorf("FindAll failed (hr=0x%x)", uint32(hr))
+	}
+	var l int32
+	vcall(arr, arrGetLength, uintptr(unsafe.Pointer(&l)))
+	return arr, l, nil
+}
+
+// firstMatchWhere returns the first element among all descendants whose
+// property `propId` equals `value` that satisfies `pred`, or nil if none do.
+// Non-matching elements (and the array) are released; the caller owns the
+// returned element and must release it.
+func firstMatchWhere(uia *ole.IUnknown, root *ole.IUnknown, propId int, value string, pred func(*ole.IUnknown) bool) *ole.IUnknown {
+	arr, length, err := findAllByProp(uia, root, propId, value)
+	if err != nil || arr == nil {
+		return nil
+	}
+	defer release(arr)
+	for i := int32(0); i < length; i++ {
+		var el *ole.IUnknown
+		hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&el)))
+		if failed(hr) || el == nil {
+			continue
+		}
+		if pred(el) {
+			return el
+		}
+		release(el)
+	}
+	return nil
+}
+
+// findByNamePreferring is like findByName but, when several elements share the
+// same Name/AutomationId, prefers one satisfying `pred` over the bare
+// document-order first match. This matters because some apps (e.g. Outlook's
+// compose window) give a field's static label the EXACT same caption as its
+// associated edit control — "제목(U)" names both the "Subject:" label text and
+// the subject edit box — so a plain FindFirst can land on the inert label and
+// the caller (which wanted the control behind that label) fails with a
+// confusing "unsupported pattern" error even though the field is genuinely
+// editable/invokable. Falls back to findByName (preserving its error) if no
+// same-named element satisfies pred.
+func findByNamePreferring(uia *ole.IUnknown, root *ole.IUnknown, name string, pred func(*ole.IUnknown) bool) (*ole.IUnknown, error) {
+	if pred != nil {
+		if el := firstMatchWhere(uia, root, uiaNamePropertyId, name, pred); el != nil {
+			return el, nil
+		}
+		if el := firstMatchWhere(uia, root, uiaAutomationIdPropertyId, name, pred); el != nil {
+			return el, nil
+		}
+	}
+	return findByName(uia, root, name)
+}
+
 // ---- invoke ----
+
+// invokeCapable reports whether el supports any pattern uiaInvoke can act
+// through — used to disambiguate same-named elements in favor of the one
+// uiaInvoke can actually activate (see findByNamePreferring).
+func invokeCapable(el *ole.IUnknown) bool {
+	return elemSupportsPattern(el, uiaInvokePatternId) ||
+		elemSupportsPattern(el, uiaSelectionItemPatternId) ||
+		elemSupportsPattern(el, uiaTogglePatternId) ||
+		elemSupportsPattern(el, uiaExpandCollapsePatternId)
+}
+
+// valueCapable reports whether el supports the Value pattern — used to
+// disambiguate same-named elements in favor of the editable one (see
+// findByNamePreferring).
+func valueCapable(el *ole.IUnknown) bool {
+	return elemSupportsPattern(el, uiaValuePatternId)
+}
 
 // uiaInvoke finds an element by Name (or AutomationId) and activates it via the
 // most appropriate pattern (Invoke → SelectionItem → Toggle → ExpandCollapse).
 func uiaInvoke(name string) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := foregroundElement(uia)
 		if err != nil {
@@ -519,7 +649,7 @@ func uiaInvoke(name string) error {
 		}
 		defer release(root)
 
-		el, err := findByName(uia, root, name)
+		el, err := findByNamePreferring(uia, root, name, invokeCapable)
 		if err != nil {
 			return "", err
 		}
@@ -566,7 +696,9 @@ func uiaInvoke(name string) error {
 // uiaSetValue finds an element by Name (or AutomationId) and sets its text via
 // the Value pattern.
 func uiaSetValue(name, text string) error {
-	ensureControlNotice()
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
 	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := foregroundElement(uia)
 		if err != nil {
@@ -574,7 +706,7 @@ func uiaSetValue(name, text string) error {
 		}
 		defer release(root)
 
-		el, err := findByName(uia, root, name)
+		el, err := findByNamePreferring(uia, root, name, valueCapable)
 		if err != nil {
 			return "", err
 		}

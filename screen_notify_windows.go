@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 	"strconv"
@@ -71,6 +72,32 @@ const (
 	// applied on session start, never mid-session.
 	noticeDefaultLeadMS = 1000
 	noticeMaxLeadMS     = 5000
+
+	// userPresentWindowMS: if real (non-synthetic) input was seen within this
+	// long ago, the user is considered "recently present" and the session-start
+	// lead delay still applies. Reuses the same span as controlNoticeGap: if
+	// nobody has touched the mouse/keyboard for that long, they are not at the
+	// desk right now and there is no one to warn — see ensureControlNotice.
+	userPresentWindowMS = int64(controlNoticeGap / time.Millisecond)
+)
+
+// userActiveWindowMS, userYieldPollEvery, userYieldMaxWait, and
+// userResumeQuietMS are vars (not consts) purely so tests can shrink them —
+// production code never mutates them after init. See beginSyntheticInput.
+var (
+	// userActiveWindowMS: real input newer than this is treated as "the user is
+	// actively using the mouse/keyboard right now" — see beginSyntheticInput.
+	userActiveWindowMS = int64(350)
+
+	// userYieldPollEvery / userYieldMaxWait bound how long beginSyntheticInput
+	// waits for an active user to pause before giving up and returning an error
+	// instead of silently racing their input.
+	userYieldPollEvery = 120 * time.Millisecond
+	userYieldMaxWait   = 5 * time.Second
+
+	// userResumeQuietMS is how long the user must stay quiet after a yield
+	// before we treat control as safely resumable.
+	userResumeQuietMS = int64(700)
 )
 
 var noticeText = "AI가 화면 제어를 시작합니다 — 손을 떼어 주세요"
@@ -146,10 +173,57 @@ func ensureControlNotice() {
 		// Session start: hold off briefly so the user sees the notice and can
 		// pause their own input before synthetic control begins. Mid-session
 		// calls skip this (noticeDue is false), so control stays responsive.
-		if lead := noticeLeadMS(); lead > 0 {
+		//
+		// This blind delay used to apply unconditionally, which meant every LLM
+		// tool call in a multi-step flow (turns are almost always spaced further
+		// apart than controlNoticeGap) paid the full tax even when nobody was at
+		// the keyboard. Now that the low-level input watcher gives ground truth,
+		// skip it when the watcher is active AND has not seen real input within
+		// userPresentWindowMS — there is no one to warn. If the watcher failed to
+		// install, userWatcherOK is false and we keep the old unconditional delay
+		// so the safety warning never silently disappears.
+		skipLead := userWatcherOK.Load() && msSinceRealUserInput() >= userPresentWindowMS
+		if lead := noticeLeadMS(); lead > 0 && !skipLead {
 			time.Sleep(time.Duration(lead) * time.Millisecond)
 		}
 	}
+}
+
+// beginSyntheticInput is the single gate every input-synthesizing function
+// (mouseMove, mouseClick, typeText, keyCombo, scroll, uiaInvoke, ...) calls
+// before sending anything, replacing a bare ensureControlNotice() call.
+//
+// If the input watcher shows the user is actively driving the mouse/keyboard
+// right now, control yields to them: we wait (bounded by userYieldMaxWait)
+// for a quiet gap instead of racing their input, and give up with an error
+// rather than silently colliding if they never pause. Once they do go quiet,
+// we force a fresh session-start notice (lastSyntheticInput reset) so they
+// see an explicit "AI is resuming control" warning before automation
+// continues — the "다시 확인하고 진행" behavior. When the user was never
+// active to begin with, this just delegates to ensureControlNotice, whose own
+// lead-delay skip (above) removes the fixed tax for that common case.
+func beginSyntheticInput() error {
+	installUserInputWatcher()
+
+	yielded := false
+	deadline := time.Now().Add(userYieldMaxWait)
+	for userWatcherOK.Load() && msSinceRealUserInput() < userActiveWindowMS {
+		yielded = true
+		if time.Now().After(deadline) {
+			return fmt.Errorf("user is actively using the mouse/keyboard — pausing automation instead of colliding with their input; wait a moment and retry")
+		}
+		time.Sleep(userYieldPollEvery)
+	}
+	if yielded {
+		// The user just released control. Wait for a real quiet gap (not just
+		// the instant activity crossed userActiveWindowMS) before resuming.
+		for msSinceRealUserInput() < userResumeQuietMS {
+			time.Sleep(userYieldPollEvery)
+		}
+		lastSyntheticInput.Store(0) // forces noticeDue() true on the next call below
+	}
+	ensureControlNotice()
+	return nil
 }
 
 // noticeDue reports whether a control-start notice should be shown: on the very
@@ -247,6 +321,8 @@ var (
 	procEndPaintN             = modUser32N.NewProc("EndPaint")
 	procDrawTextWN            = modUser32N.NewProc("DrawTextW")
 	procSystemParametersInfoN = modUser32N.NewProc("SystemParametersInfoW")
+	procMonitorFromWindowN    = modUser32N.NewProc("MonitorFromWindow")
+	procGetMonitorInfoN       = modUser32N.NewProc("GetMonitorInfoW")
 
 	procCreateSolidBrushN   = modGdi32N.NewProc("CreateSolidBrush")
 	procCreatePenN          = modGdi32N.NewProc("CreatePen")
@@ -277,9 +353,10 @@ const (
 	wmPaint   = 0x000F
 	wmTimer   = 0x0113
 
-	spiGetWorkArea = 0x0030
-	bkTransparent  = 1
-	psSolid        = 0
+	spiGetWorkArea          = 0x0030
+	monitorDefaultToNearest = 0x00000002
+	bkTransparent           = 1
+	psSolid                 = 0
 
 	dtLeft       = 0x0
 	dtVCenter    = 0x4
@@ -457,6 +534,40 @@ func paintNotice(hdc uintptr) {
 	}
 }
 
+// monitorInfo mirrors Win32's MONITORINFO (RectMonitor/RectWork use the
+// existing `rect` type from screen_apps_windows.go).
+type monitorInfo struct {
+	CbSize    uint32
+	RcMonitor rect
+	RcWork    rect
+	DwFlags   uint32
+}
+
+// foregroundMonitorWorkArea returns the work-area rect of the monitor
+// currently showing the foreground window, falling back to the primary
+// monitor's work area (SPI_GETWORKAREA) if the foreground window can't be
+// resolved or GetMonitorInfo fails — the previous, monitor-agnostic behavior.
+func foregroundMonitorWorkArea() rect {
+	fallback := func() rect {
+		var wa rect
+		procSystemParametersInfoN.Call(spiGetWorkArea, 0, uintptr(unsafe.Pointer(&wa)), 0)
+		return wa
+	}
+	fg, _, _ := procGetForegroundWindow.Call()
+	if fg == 0 {
+		return fallback()
+	}
+	hMonitor, _, _ := procMonitorFromWindowN.Call(fg, uintptr(monitorDefaultToNearest))
+	if hMonitor == 0 {
+		return fallback()
+	}
+	mi := monitorInfo{CbSize: uint32(unsafe.Sizeof(monitorInfo{}))}
+	if r, _, _ := procGetMonitorInfoN.Call(hMonitor, uintptr(unsafe.Pointer(&mi))); r == 0 {
+		return fallback()
+	}
+	return mi.RcWork
+}
+
 // runNoticeWindow creates the overlay in the bottom-right of the work area, shows
 // it without activation, and pumps its messages until the fade timer destroys it.
 func runNoticeWindow() {
@@ -467,12 +578,17 @@ func runNoticeWindow() {
 		return
 	}
 
-	var wa rect
-	x, y := 200, 200
-	if r, _, _ := procSystemParametersInfoN.Call(spiGetWorkArea, 0, uintptr(unsafe.Pointer(&wa)), 0); r != 0 {
-		x = int(wa.Right) - noticeW - noticeMargin
-		y = int(wa.Bottom) - noticeH - noticeMargin
-	}
+	// Position on the work area of the monitor showing the foreground window —
+	// not always the primary monitor's SPI_GETWORKAREA, which is what this used
+	// to do. On a multi-monitor setup that placed the notice on whichever
+	// monitor happens to be primary regardless of where the actual controlled
+	// window (and the user's attention) was, so a warning meant to be seen
+	// before synthetic input landed could go entirely unnoticed on another
+	// screen. foregroundMonitorWorkArea falls back to the primary monitor's
+	// work area if the foreground window can't be resolved.
+	wa := foregroundMonitorWorkArea()
+	x := int(wa.Right) - noticeW - noticeMargin
+	y := int(wa.Bottom) - noticeH - noticeMargin
 
 	hInst, _, _ := procGetModuleHandleN.Call(0)
 	hwnd, _, _ := procCreateWindowExN.Call(

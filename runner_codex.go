@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,36 @@ import (
 type codexRunner struct {
 	codexPath string
 	cfgh      *ConfigHolder
+
+	// ignoreUserConfigOnce/OK back supportsIgnoreUserConfig — a one-time probe
+	// cached for this runner's lifetime.
+	ignoreUserConfigOnce sync.Once
+	ignoreUserConfigOK   bool
+}
+
+// supportsIgnoreUserConfig reports whether the installed codex CLI accepts
+// --ignore-user-config, probed once via `codex exec --help` and cached. Older
+// codex CLI builds don't have this flag yet — found live (2026-07-09) when a
+// tester's install rejected every codex-backed turn with "error: unexpected
+// argument '--ignore-user-config' found". Probing --help avoids hardcoding a
+// version cutoff that would need updating every time codex ships a release;
+// if the probe itself fails for any reason, this conservatively reports
+// false so the turn still runs (without --ignore-user-config) instead of
+// never starting at all.
+func (r *codexRunner) supportsIgnoreUserConfig() bool {
+	r.ignoreUserConfigOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "")
+		r.ignoreUserConfigOK = helpMentionsIgnoreUserConfig(stdout, stderr)
+	})
+	return r.ignoreUserConfigOK
+}
+
+// helpMentionsIgnoreUserConfig is the pure decision behind supportsIgnoreUserConfig,
+// split out so it's testable without spawning a real codex process.
+func helpMentionsIgnoreUserConfig(stdout, stderr string) bool {
+	return strings.Contains(stdout, "--ignore-user-config") || strings.Contains(stderr, "--ignore-user-config")
 }
 
 func (r *codexRunner) cfg() *Config { return r.cfgh.Get() }
@@ -396,16 +427,18 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	defer os.Remove(outFile)
 
 	prompt := buildRoutePrompt(req)
-	args := []string{
-		"exec",
-		"--ignore-user-config",
+	args := []string{"exec"}
+	if r.supportsIgnoreUserConfig() {
+		args = append(args, "--ignore-user-config")
+	}
+	args = append(args,
 		"--skip-git-repo-check",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--ephemeral",
 		"--sandbox", "read-only",
 		"--json",
 		"-o", outFile,
-	}
+	)
 	if m := codexManagerModel(r.cfg()); m != "" {
 		args = append(args, "-m", m)
 	}
@@ -446,16 +479,17 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	// each turn, causing "Reading additional input from stdin..." on EOF.
 	// With --ephemeral, exec runs a single non-interactive turn and exits cleanly.
 	// Conversation context is preserved via buildContextPrompt (history in every prompt).
-	args := []string{
-		"exec",
-		"-C", req.WorkDir,
-		"--ignore-user-config",
+	args := []string{"exec", "-C", req.WorkDir}
+	if r.supportsIgnoreUserConfig() {
+		args = append(args, "--ignore-user-config")
+	}
+	args = append(args,
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--skip-git-repo-check",
 		"--ephemeral",
 		"--json",
 		"-o", outFile,
-	}
+	)
 	if model != "" {
 		args = append(args, "-m", model)
 	}

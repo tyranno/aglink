@@ -76,3 +76,27 @@ func TestRouteDecisionJSONRoundTrip(t *testing.T) {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 }
+
+// TestHelpMentionsIgnoreUserConfig guards a live-found bug: an older codex CLI
+// that doesn't support --ignore-user-config rejected every codex-backed turn
+// with "error: unexpected argument '--ignore-user-config' found". The runner
+// probes `codex exec --help` once and must correctly detect presence/absence
+// so it only passes the flag to codex builds that actually accept it.
+func TestHelpMentionsIgnoreUserConfig(t *testing.T) {
+	newerHelp := "      --ignore-user-config\n          Do not load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`\n"
+	olderHelp := "  -C, --cd <DIR>\n          Tell the agent to use the specified directory as its working root\n"
+
+	if !helpMentionsIgnoreUserConfig(newerHelp, "") {
+		t.Error("newer codex --help output mentions --ignore-user-config but was not detected")
+	}
+	if helpMentionsIgnoreUserConfig(olderHelp, "") {
+		t.Error("older codex --help output (no --ignore-user-config) was incorrectly detected as supporting it")
+	}
+	// codex sometimes writes --help to stderr depending on version/platform.
+	if !helpMentionsIgnoreUserConfig("", newerHelp) {
+		t.Error("--ignore-user-config on stderr was not detected")
+	}
+	if helpMentionsIgnoreUserConfig("", "") {
+		t.Error("empty output (failed probe) must not be reported as supporting the flag")
+	}
+}

@@ -70,10 +70,28 @@ var commands = []command{
 	},
 	{
 		name: "click",
-		desc: "Click a DOM element in a Chrome tab, matched by CSS selector (e.g. 'button.submit', '#login', 'a[href=\"/next\"]'). Scrolls the element into view first. If 'tabId' is omitted, the active tab of the focused window is used.",
+		desc: "Click a DOM element in a Chrome tab, matched by CSS selector (e.g. 'button.submit', '#login', 'a[href=\"/next\"]'). Scrolls the element into view first. 'button' left (default) uses the real .click() method; right/middle synthesize mousedown+mouseup+contextmenu/auxclick instead — these reach a page's own JS context-menu/middle-click handler but will NOT open the browser's native right-click menu (that requires a real OS-trusted event). If 'tabId' is omitted, the active tab of the focused window is used.",
 		args: []argSpec{
 			{name: "selector", typ: argString, required: true, desc: "CSS selector for the element to click."},
+			{name: "button", typ: argString, desc: "Mouse button: left (default), right, or middle."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "list_elements",
+		desc: "List currently visible interactive elements (links, buttons, inputs, ARIA controls) in a Chrome tab as 'index | tag[role] | \"label\" | selector=... | viewport(x,y)' lines. The reported selector (a freshly-assigned unique attribute) is guaranteed to match exactly that element — use it directly with click/type instead of guessing a CSS selector from the page's own classes/attributes, which can silently match the wrong element on complex pages. Re-call after the page changes: indices are reassigned every call. viewport(x,y) is the element's on-screen center in CSS pixels (informational only — not an absolute screen coordinate usable by aglink-screen).",
+		args: []argSpec{
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+			{name: "max", typ: argInt, desc: "Maximum number of elements to return (default 200)."},
+		},
+	},
+	{
+		name: "wait_for_element",
+		desc: "Block until an element matching the CSS selector becomes visible in a Chrome tab, instead of polling list_elements/get_page_text in a manual loop — useful for SPA content that renders after navigation or a click settles. Fails with a timeout error after 'timeoutMs' (default 8000) if it never appears.",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector to wait for."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+			{name: "timeoutMs", typ: argInt, desc: "Max time to wait in milliseconds (default 8000)."},
 		},
 	},
 	{
@@ -90,6 +108,42 @@ var commands = []command{
 		args: []argSpec{
 			{name: "selector", typ: argString, required: true, desc: "CSS selector for the input/textarea/contenteditable element."},
 			{name: "text", typ: argString, required: true, desc: "Text to type."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "get_value",
+		desc: "Read an element's CURRENT value/text (input/textarea's .value, or textContent for contenteditable), matched by CSS selector. The read-side counterpart to type/select_option — get_page_text can't see this, since an <input>'s value isn't part of document.body.innerText. Use this to confirm what a field actually holds now after page JS may have rewritten it (autocomplete, a calculated total, reformatting).",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector for the element to read."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "key",
+		desc: "Press a key or key combo — e.g. 'enter', 'esc', 'tab', 'ctrl+a' — scoped to the currently focused element inside a Chrome tab. Prefer this over aglink-screen's OS-level key() for anything happening inside the page: that one requires OS-focusing the browser window and sends the keystroke to the whole browser (e.g. Escape can trigger the browser's own shortcut instead of just dismissing an in-page dropdown), not just the page. Note: dispatched key events are not OS-trusted, so page JS (React, most SPA keyboard handlers) reacts normally, but a bare native action with no JS handler (e.g. a plain form submitting on Enter) may not fire — click the actual button in that case.",
+		args: []argSpec{
+			{name: "combo", typ: argString, required: true, desc: "Key combo, e.g. 'ctrl+c' or 'enter'."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "scroll",
+		desc: "Scroll the page (or a specific scrollable element, if 'selector' is given) by pixel deltas. Sign convention is plain DOM scrollBy: positive dy scrolls DOWN, positive dx scrolls RIGHT — the opposite of aglink-screen's wheel-notch-based scroll(), since this one sets scroll position directly rather than simulating a wheel event.",
+		args: []argSpec{
+			{name: "selector", typ: argString, desc: "Optional CSS selector of a scrollable element. Omit to scroll the whole page."},
+			{name: "dx", typ: argInt, desc: "Horizontal scroll amount in pixels. Positive = right."},
+			{name: "dy", typ: argInt, desc: "Vertical scroll amount in pixels. Positive = down."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "select_option",
+		desc: "Set a native <select> element's value by option value or visible label, matched by CSS selector. Fires change so page JS notices. Use 'value' when you know the option's value attribute, 'label' to match by its visible text instead.",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector for the <select> element."},
+			{name: "value", typ: argString, desc: "Option value to select (matches the <option>'s value attribute)."},
+			{name: "label", typ: argString, desc: "Option's visible text to select (used if 'value' is omitted)."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
 		},
 	},
@@ -137,7 +191,14 @@ func (c command) cliUsage() string {
 // parseCLIArgs maps positional CLI args (those after the subcommand name) onto a
 // params map per the command's argSpec order. Required args must be present;
 // optional int args that don't parse as integers are skipped (mirrors the
-// original per-command handling).
+// original per-command handling). An empty string for an OPTIONAL string arg
+// is likewise treated as "not provided" rather than a literal empty value —
+// this lets a positional placeholder be skipped to reach a later optional arg
+// (e.g. `select_option <selector> "" <label>` to set label without value),
+// mirroring the MCP path's own mcpParams, which already omits empty optional
+// strings. Getting this wrong once bit select_option: passing "" for value to
+// skip to label matched a real <select>'s empty-value placeholder option
+// instead of being skipped, silently selecting the wrong option.
 func (c command) parseCLIArgs(args []string) (map[string]any, error) {
 	params := map[string]any{}
 	for i, a := range c.args {
@@ -156,7 +217,9 @@ func (c command) parseCLIArgs(args []string) (map[string]any, error) {
 				return nil, fmt.Errorf("%s: %s must be an integer", c.name, a.name)
 			}
 		default: // argString
-			params[a.name] = raw
+			if a.required || raw != "" {
+				params[a.name] = raw
+			}
 		}
 	}
 	return params, nil

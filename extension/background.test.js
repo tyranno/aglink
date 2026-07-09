@@ -201,3 +201,223 @@ test("navigate requires a url", async () => {
   const sb = loadBackground(makeChrome());
   await assert.rejects(() => sb.navigate({}), /navigate requires 'url'/);
 });
+
+test("click defaults to left and reports the button used", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: {
+        executeScript: async () => [{ result: { found: true, tag: "button", text: "Submit" } }],
+      },
+    })
+  );
+  assert.strictEqual(await sb.click({ selector: "#go" }), 'ok: left-clicked <button> "Submit"');
+});
+
+test("click supports right/middle and rejects an unknown button", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, tag: "div", text: "" } }] },
+    })
+  );
+  assert.strictEqual(await sb.click({ selector: "#menu", button: "right" }), "ok: right-clicked <div>");
+  assert.strictEqual(await sb.click({ selector: "#menu", button: "MIDDLE" }), "ok: middle-clicked <div>");
+  await assert.rejects(
+    () => sb.click({ selector: "#menu", button: "double" }),
+    /unknown button "double" \(want left\/right\/middle\)/
+  );
+});
+
+test("listElements formats rows and handles the empty case", async () => {
+  const withEls = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 9, active: true }] },
+      scripting: {
+        executeScript: async () => [
+          {
+            result: [
+              { idx: 0, tag: "button", role: "", type: "", label: "Send", disabled: false, x: 10, y: 20 },
+              { idx: 1, tag: "input", role: "combobox", type: "text", label: "", disabled: true, x: 30, y: 40 },
+            ],
+          },
+        ],
+      },
+    })
+  );
+  assert.strictEqual(
+    await withEls.listElements({}),
+    '0 | button | "Send" | selector=[data-aglink-id="0"] | viewport(10,20)\n' +
+      '1 | input[combobox] type=text | "" | selector=[data-aglink-id="1"] | viewport(30,40) [disabled]'
+  );
+
+  const empty = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 9, active: true }] },
+      scripting: { executeScript: async () => [{ result: [] }] },
+    })
+  );
+  assert.strictEqual(await empty.listElements({}), "(no visible interactive elements found)");
+});
+
+test("listElements requires an active tab when tabId is omitted", async () => {
+  const sb = loadBackground(makeChrome({ tabs: { query: async () => [] } }));
+  await assert.rejects(() => sb.listElements({}), /no active tab/);
+});
+
+test("getValue reads an input's current value", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 3, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, tag: "input", value: "42500" } }] },
+    })
+  );
+  assert.strictEqual(await sb.getValue({ selector: "#total" }), '#total = "42500"');
+});
+
+test("getValue requires a selector and surfaces a missing element", async () => {
+  const sb = loadBackground(makeChrome());
+  await assert.rejects(() => sb.getValue({}), /get_value requires 'selector'/);
+
+  const missing = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 3, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: false } }] },
+    })
+  );
+  await assert.rejects(() => missing.getValue({ selector: "#nope" }), /no element matched selector: #nope/);
+});
+
+test("keyCombo requires a combo", async () => {
+  const sb = loadBackground(makeChrome());
+  await assert.rejects(() => sb.keyCombo({}), /key requires 'combo'/);
+});
+
+test("keyCombo reports success from the page-side result", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 5, active: true }] },
+      scripting: { executeScript: async () => [{ result: { ok: true, tag: "input" } }] },
+    })
+  );
+  assert.strictEqual(await sb.keyCombo({ combo: "ctrl+a" }), 'ok: pressed "ctrl+a" on <input>');
+});
+
+test("keyCombo surfaces a page-side error (e.g. unknown key)", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 5, active: true }] },
+      scripting: {
+        executeScript: async () => [{ result: { ok: false, error: 'unknown key "zzz" in combo "zzz"' } }],
+      },
+    })
+  );
+  await assert.rejects(() => sb.keyCombo({ combo: "zzz" }), /unknown key "zzz"/);
+});
+
+test("waitForElement resolves once the element becomes visible", async () => {
+  let calls = 0;
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: {
+        executeScript: async () => {
+          calls++;
+          if (calls < 2) return [{ result: { found: false } }];
+          return [{ result: { found: true, visible: true, tag: "div" } }];
+        },
+      },
+    })
+  );
+  const out = await sb.waitForElement({ selector: "#late", timeoutMs: 2000 });
+  assert.strictEqual(out, "ok: found <div> matching #late");
+  assert.ok(calls >= 2, "expected at least 2 polls before success");
+});
+
+test("waitForElement times out when the element never appears", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: false } }] },
+    })
+  );
+  const start = Date.now();
+  await assert.rejects(
+    () => sb.waitForElement({ selector: "#never", timeoutMs: 100 }),
+    /timed out after 100ms waiting for a visible element matching #never/
+  );
+  assert.ok(Date.now() - start < 2000, "should not block far past the timeout");
+});
+
+test("waitForElement requires a selector", async () => {
+  const sb = loadBackground(makeChrome());
+  await assert.rejects(() => sb.waitForElement({}), /wait_for_element requires 'selector'/);
+});
+
+test("scroll requires a non-zero dx or dy", async () => {
+  const sb = loadBackground(makeChrome());
+  await assert.rejects(() => sb.scroll({}), /scroll requires a non-zero dx or dy/);
+  await assert.rejects(() => sb.scroll({ dx: 0, dy: 0 }), /scroll requires a non-zero dx or dy/);
+});
+
+test("scroll reports success and surfaces a missing selector", async () => {
+  const ok = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true } }] },
+    })
+  );
+  assert.strictEqual(await ok.scroll({ dy: 100 }), "ok: scrolled dx=0 dy=100");
+
+  const missing = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: false } }] },
+    })
+  );
+  await assert.rejects(
+    () => missing.scroll({ dy: 100, selector: "#nope" }),
+    /no element matched selector: #nope/
+  );
+});
+
+test("selectOption requires a value or label", async () => {
+  const sb = loadBackground(makeChrome());
+  await assert.rejects(() => sb.selectOption({ selector: "#s" }), /select_option requires 'value' or 'label'/);
+});
+
+test("selectOption reports the selected option", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 2, active: true }] },
+      scripting: {
+        executeScript: async () => [{ result: { found: true, isSelect: true, matched: true, selected: "Korea" } }],
+      },
+    })
+  );
+  assert.strictEqual(await sb.selectOption({ selector: "#country", label: "Korea" }), 'ok: selected "Korea"');
+});
+
+test("selectOption rejects a non-<select> element and an unmatched option", async () => {
+  const notSelect = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 2, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, isSelect: false, tag: "input" } }] },
+    })
+  );
+  await assert.rejects(
+    () => notSelect.selectOption({ selector: "#x", value: "a" }),
+    /element <input> matched by #x is not a <select>/
+  );
+
+  const noMatch = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 2, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, isSelect: true, matched: false } }] },
+    })
+  );
+  await assert.rejects(
+    () => noMatch.selectOption({ selector: "#x", value: "zz" }),
+    /no <option> matching value="zz"/
+  );
+});

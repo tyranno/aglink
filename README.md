@@ -7,7 +7,8 @@ sibling to [`aglink-screen`](../aglink-screen) (Windows screen control).
 
 Status: scaffold validated end-to-end (live in teleclaude workers as
 `mcp__web__*`); tool set now covers `list_tabs`, `navigate`, `get_page_text`,
-`click`, `screenshot`, `type`, `close_tab`. `web_search` is still pending — the
+`click`, `list_elements`, `screenshot`, `type`, `get_value`, `key`, `scroll`,
+`select_option`, `wait_for_element`, `close_tab`. `web_search` is still pending — the
 plan is to do it the same way a human would (navigate to a search engine in
 the real browser and read/screenshot the results), not call a search API, so
 it needs its own design pass rather than a one-line addition like the others.
@@ -44,7 +45,7 @@ One Go binary, three subcommands (mirrors `aglink-screen`):
 |---|---|
 | `aglink-web` / `aglink-web mcp` | stdio MCP server teleclaude spawns per worker (default). Thin forwarder. |
 | `aglink-web serve` | the persistent daemon the extension connects to. Auto-spawned by the bridge if not already up. |
-| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [tabId]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `close_tab [tabId]`. |
+| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [button] [tabId]` / `list_elements [tabId] [max]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `get_value <selector> [tabId]` / `key <combo> [tabId]` / `scroll [selector] [dx] [dy] [tabId]` / `select_option <selector> [value] [label] [tabId]` / `wait_for_element <selector> [tabId] [timeoutMs]` / `close_tab [tabId]`. |
 
 ## Security
 
@@ -126,8 +127,14 @@ teleclaude와 이 저장소를 **형제 디렉터리**(예: `..\teleclaude`, `..
 ./aglink-web.exe cmd navigate https://example.com
 ./aglink-web.exe cmd get_page_text
 ./aglink-web.exe cmd click "button.submit"
+./aglink-web.exe cmd click "#file-row" right   # trigger a page's own JS context menu
+./aglink-web.exe cmd list_elements   # visible interactive elements + ready-to-use selectors
 ./aglink-web.exe cmd screenshot   # prints base64 PNG — e.g. pipe through `base64 -d > shot.png`
 ./aglink-web.exe cmd type "input#q" "hello world"
+./aglink-web.exe cmd key "enter"      # scoped to the focused element in the page, not the OS
+./aglink-web.exe cmd scroll "" 0 400   # scroll the page down 400px ("" = whole page, not an element)
+./aglink-web.exe cmd select_option "select#country" KR
+./aglink-web.exe cmd wait_for_element ".results-loaded"
 ./aglink-web.exe cmd close_tab
 ```
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeClaude is a programmable ClaudeClient for manager tests.
@@ -193,6 +194,72 @@ func TestCompactTelegramConversation_NothingToCompact(t *testing.T) {
 	}
 	if !contains(strings.Join(f.sent, ""), "압축할 대화 내용이 없습니다") {
 		t.Errorf("user should be told there's nothing to compact, got: %v", f.sent)
+	}
+}
+
+// estimateTurnDuration must withhold an estimate until there's enough data to
+// back it — showing an "average" from 1-2 samples would read as a made-up
+// number rather than a genuine trend.
+func TestEstimateTurnDuration_NeedsMinimumSamples(t *testing.T) {
+	m := &Manager{}
+	for i, want := range []bool{false, false, true} {
+		m.recordTurnDuration("claude", time.Duration(i+1)*time.Minute)
+		_, samples, ok := m.estimateTurnDuration("claude")
+		if ok != want {
+			t.Errorf("after %d sample(s): ok=%v, want %v", i+1, ok, want)
+		}
+		if samples != i+1 {
+			t.Errorf("after %d sample(s): reported samples=%d", i+1, samples)
+		}
+	}
+	avg, _, ok := m.estimateTurnDuration("claude")
+	if !ok || avg != 2*time.Minute {
+		t.Errorf("average of 1,2,3 minutes = %v, want 2m (ok=%v)", avg, ok)
+	}
+	// A backend with no recorded turns yet must not borrow another backend's data.
+	if _, _, ok := m.estimateTurnDuration("codex"); ok {
+		t.Error("codex has no samples yet — must not report an estimate")
+	}
+}
+
+// The rolling window caps at turnDurationSamples so the estimate reflects
+// recent turns, not a stale all-time average.
+func TestEstimateTurnDuration_RollingWindowCap(t *testing.T) {
+	m := &Manager{}
+	for range turnDurationSamples {
+		m.recordTurnDuration("claude", time.Minute) // baseline: all 1-minute turns
+	}
+	m.recordTurnDuration("claude", 60*time.Minute) // one big outlier pushes out the oldest sample
+	m.durationsMu.Lock()
+	got := len(m.turnDurations["claude"])
+	m.durationsMu.Unlock()
+	if got != turnDurationSamples {
+		t.Fatalf("window should stay capped at %d, got %d", turnDurationSamples, got)
+	}
+	avg, _, _ := m.estimateTurnDuration("claude")
+	wantAvg := (time.Duration(turnDurationSamples-1)*time.Minute + 60*time.Minute) / turnDurationSamples
+	if avg != wantAvg {
+		t.Errorf("average = %v, want %v (oldest 1m sample should have been evicted)", avg, wantAvg)
+	}
+}
+
+// End-to-end: the estimate message appears once there's enough turn history
+// for that backend, and never claims an estimate before then.
+func TestHandle_Telegram_ShowsEstimateOnceEnoughHistory(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
+	m, _, _ := tgManager(t, fc)
+
+	for i := 1; i <= 4; i++ {
+		f := &fakeSender{}
+		m.Handle(context.Background(), 1, "작업 진행", OriginTelegram, f)
+		sent := strings.Join(f.sent, "\n")
+		hasEstimate := contains(sent, "최근") && contains(sent, "평균")
+		if i < 3 && hasEstimate {
+			t.Errorf("turn %d: estimate shown too early with only %d prior sample(s): %v", i, i-1, f.sent)
+		}
+		if i >= 4 && !hasEstimate {
+			t.Errorf("turn %d: expected an estimate after %d prior samples, got: %v", i, i-1, f.sent)
+		}
 	}
 }
 

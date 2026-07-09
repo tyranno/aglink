@@ -27,6 +27,11 @@ type Manager struct {
 	cfgh         *ConfigHolder
 
 	telegramMu sync.Mutex // serializes turns on the single global telegram conversation
+
+	// durationsMu/turnDurations back the "recent average" turn-time estimate
+	// shown when a new turn starts — see recordTurnDuration/estimateTurnDuration.
+	durationsMu   sync.Mutex
+	turnDurations map[string][]time.Duration // backend name → rolling window of completed-turn durations
 }
 
 func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *ConfigHolder) *Manager {
@@ -596,6 +601,59 @@ func (m *Manager) clientForBackend(name string) ClaudeClient {
 	}
 }
 
+// turnDurationSamples caps the rolling window of completed-turn durations kept
+// per backend for the startup estimate — recent conditions, not an
+// all-time average that would drift stale as the workload changes.
+const turnDurationSamples = 20
+
+// recordTurnDuration appends a completed turn's wall-clock duration to the
+// backend's rolling window. Called once a turn actually finishes (success or
+// session-recovered success) — see the call site in runWorker.
+func (m *Manager) recordTurnDuration(backend string, d time.Duration) {
+	m.durationsMu.Lock()
+	defer m.durationsMu.Unlock()
+	if m.turnDurations == nil {
+		m.turnDurations = make(map[string][]time.Duration)
+	}
+	ds := append(m.turnDurations[backend], d)
+	if len(ds) > turnDurationSamples {
+		ds = ds[len(ds)-turnDurationSamples:]
+	}
+	m.turnDurations[backend] = ds
+}
+
+// estimateTurnDuration returns the average of the backend's recent completed
+// turns. ok is false with fewer than 3 samples — too little data to show
+// without it reading as a made-up number. This is deliberately NOT a real
+// ETA: there is no way to know upfront how many tool calls an agentic turn
+// will take. It's an honest "here's roughly what recent turns have looked
+// like" instead of the user waiting in total silence with no sense of scale.
+func (m *Manager) estimateTurnDuration(backend string) (avg time.Duration, samples int, ok bool) {
+	m.durationsMu.Lock()
+	defer m.durationsMu.Unlock()
+	ds := m.turnDurations[backend]
+	if len(ds) < 3 {
+		return 0, len(ds), false
+	}
+	var total time.Duration
+	for _, d := range ds {
+		total += d
+	}
+	return total / time.Duration(len(ds)), len(ds), true
+}
+
+// formatMinSec renders a duration as "N분 M초" (or "M초" under a minute),
+// matching runHeartbeat's own elapsed-time formatting below.
+func formatMinSec(d time.Duration) string {
+	secs := int(d.Seconds())
+	mins := secs / 60
+	secs %= 60
+	if mins == 0 {
+		return fmt.Sprintf("%d초", secs)
+	}
+	return fmt.Sprintf("%d분 %d초", mins, secs)
+}
+
 // runHeartbeat sends a periodic "still going" text message every 2 minutes
 // while a Worker turn is in flight, and — critically — also refreshes the
 // channel's live "typing" signal on each tick (s.Typing), not just once at
@@ -741,6 +799,12 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	})
 
 	startTime := time.Now()
+	// Give the user a sense of scale before the wait starts, not just silence
+	// until the (up to 2-minute-away) first heartbeat tick — a turn that
+	// finishes in 90s currently produces zero progress signal at all.
+	if avg, samples, ok := m.estimateTurnDuration(backend); ok {
+		_ = s.Send(chatID, fmt.Sprintf("⏳ 작업 시작 (최근 %d건 평균 %s)", samples, formatMinSec(avg)))
+	}
 	timeoutMinutes := m.cfg().TimeoutMinutes
 	heartbeatDone := make(chan struct{})
 	go runHeartbeat(s, chatID, "작업 진행 중", startTime, timeoutMinutes, heartbeatDone)
@@ -826,6 +890,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 
 	log.Printf("[worker] ✅ backend=%s elapsed=%s output=%d bytes session=%q",
 		backend, elapsed, len(res.Text), res.SessionID)
+	m.recordTurnDuration(backend, elapsed)
 
 	// Reactive: if Worker hit Claude's context limit, auto-create continuation and retry once.
 	if res.IsError && isContextOverflow(res.Text) {

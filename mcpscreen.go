@@ -186,6 +186,28 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// get_window_rect — read-side counterpart to move_window/window_state, so
+	// a window's current position/size/state can be checked instead of
+	// guessed from a screenshot (e.g. to verify a move_window call landed, or
+	// to decide how to move a window before doing so).
+	s.AddTool(
+		mcp.NewTool("get_window_rect",
+			mcp.WithDescription("Get a window's current screen position, size, and minimize/maximize/normal state. The read-side counterpart to move_window/window_state — use this to verify a move_window call landed, or to check current placement before deciding how to move a window."),
+			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			result, err := getWindowRectInfo(window)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("get_window_rect failed", err), nil
+			}
+			return mcp.NewToolResultText(result), nil
+		},
+	)
+
 	// return_desktop — switch back to the virtual desktop that was active before
 	// the screen tools first jumped to another desktop to operate a window there.
 	s.AddTool(
@@ -386,6 +408,20 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultErrorFromErr("move failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("ok: moved to (%d,%d)", x, y)), nil
+		},
+	)
+
+	// get_cursor_position — read where the mouse currently is. Matches
+	// Anthropic's own computer-use reference tool, which offers this
+	// alongside move/click — useful to verify a move()/drag() actually
+	// landed, or as a base point for a relative next move.
+	s.AddTool(
+		mcp.NewTool("get_cursor_position",
+			mcp.WithDescription("Get the mouse cursor's current absolute screen position (x,y). Useful to confirm move()/drag() landed where expected, or as a reference point for a relative next move."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, y := cursorPos()
+			return mcp.NewToolResultText(fmt.Sprintf("(%d,%d)", x, y)), nil
 		},
 	)
 

@@ -44,6 +44,7 @@ var (
 	procLockSetForeground    = modUser32.NewProc("LockSetForegroundWindow")
 	procGetCurrentThreadID   = modKernel32App.NewProc("GetCurrentThreadId")
 	procSetWindowPos         = modUser32.NewProc("SetWindowPos")
+	procIsZoomed             = modUser32.NewProc("IsZoomed")
 )
 
 // originAnchor remembers a NON-pinned window on the desktop that was active when
@@ -130,6 +131,28 @@ func moveWindow(titleOrHwnd string, x, y, width, height int) (string, error) {
 		return "", fmt.Errorf("SetWindowPos failed: %v", err)
 	}
 	return fmt.Sprintf("%s | hwnd=0x%x moved to (%d,%d) %dx%d", getWindowText(hwnd), hwnd, x, y, width, height), nil
+}
+
+// getWindowRectInfo is the read-side counterpart to move_window/window_state
+// — added after noticing the same write-without-a-read asymmetry that was
+// fixed once already for set_value/get_value. Without this, verifying a
+// move_window call (or just checking current position/size/state before
+// deciding how to move a window) had no path except guessing from a
+// screenshot.
+func getWindowRectInfo(titleOrHwnd string) (string, error) {
+	hwnd, ok := findTopWindow(titleOrHwnd)
+	if !ok {
+		return "", fmt.Errorf("no window matching %q", titleOrHwnd)
+	}
+	rc := windowRect(hwnd)
+	state := "normal"
+	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+		state = "minimized"
+	} else if zoomed, _, _ := procIsZoomed.Call(hwnd); zoomed != 0 {
+		state = "maximized"
+	}
+	return fmt.Sprintf("%s | hwnd=0x%x | pos(%d,%d) %dx%d | %s",
+		getWindowText(hwnd), hwnd, rc.Left, rc.Top, rc.Right-rc.Left, rc.Bottom-rc.Top, state), nil
 }
 
 // win is one visible top-level window.

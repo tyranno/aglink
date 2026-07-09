@@ -2,12 +2,15 @@
 
 Standalone [agentlink](https://github.com/tyranno) plugin that lets teleclaude
 workers (Claude / Codex) drive the user's **real Chrome browser** — list tabs,
-navigate, and read page text — as a sibling to
-[`aglink-screen`](../aglink-screen) (Windows screen control).
+navigate, read page text, click, type, screenshot, and close tabs — as a
+sibling to [`aglink-screen`](../aglink-screen) (Windows screen control).
 
-Status: **v1 scaffold.** Minimal tool set (`list_tabs`, `navigate`,
-`get_page_text`) proving the architecture end-to-end. `click`, `screenshot`,
-and `web_search` come after the scaffold is validated.
+Status: scaffold validated end-to-end (live in teleclaude workers as
+`mcp__web__*`); tool set now covers `list_tabs`, `navigate`, `get_page_text`,
+`click`, `screenshot`, `type`, `close_tab`. `web_search` is still pending — the
+plan is to do it the same way a human would (navigate to a search engine in
+the real browser and read/screenshot the results), not call a search API, so
+it needs its own design pass rather than a one-line addition like the others.
 
 ## Why this architecture (and not Native Messaging)
 
@@ -41,7 +44,7 @@ One Go binary, three subcommands (mirrors `aglink-screen`):
 |---|---|
 | `aglink-web` / `aglink-web mcp` | stdio MCP server teleclaude spawns per worker (default). Thin forwarder. |
 | `aglink-web serve` | the persistent daemon the extension connects to. Auto-spawned by the bridge if not already up. |
-| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]`. |
+| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [tabId]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `close_tab [tabId]`. |
 
 ## Security
 
@@ -78,6 +81,43 @@ Point the worker's `--mcp-config` at the built binary (default `mcp`
 subcommand), same as `aglink-screen`. The first tool call auto-starts the daemon
 if it isn't running.
 
+## teleclaude와 연결
+
+teleclaude는 `web_control.binary_path`(config.yaml)로 이 실행파일 경로를
+찾는다. 값이 비어 있으면 teleclaude 실행파일과 **같은 폴더**에서
+`aglink-web(.exe)`를 찾는다 — `aglink-screen`과 완전히 동일한 자동탐색 관례라,
+배포 시 세 실행파일(teleclaude, aglink-screen, aglink-web)을 나란히 두면
+별도 설정 없이 다 같이 동작한다.
+
+```yaml
+web_control:
+  enabled: true
+  binary_path: ""   # 비우면 teleclaude exe와 같은 폴더에서 자동 탐색
+```
+
+teleclaude 쪽은 워커 실행 시 `aglink-screen`·`aglink-web` 등 활성화된
+플러그인 전부를 **하나의** `--mcp-config`/`--allowedTools`로 병합해서
+넘긴다(Claude CLI가 이 플래그들을 1회씩만 받기 때문 — 따로따로 넘기면
+나중 것이 앞 것을 덮어씀). 그래서 `screen_control`과 `web_control`을 동시에
+켜도 두 플러그인 다 정상적으로 워커에 노출된다.
+
+### 통합 배포 (`!update`)
+
+teleclaude와 이 저장소를 **형제 디렉터리**(예: `..\teleclaude`, `..\aglink-web`)로
+나란히 clone해두면, teleclaude의 텔레그램 `!update` 명령이 teleclaude 자체를
+빌드하기 전에 이 저장소도 함께 `go build`해서 teleclaude 실행파일 옆에
+떨어뜨려준다. 빌드 후에는 상시 데몬(`aglink-web serve`)이 낡은 바이너리를
+계속 메모리에서 서빙하지 않도록 자동으로 재시작까지 해준다(활성 대화 중인
+`mcp` 브리지 자식 프로세스는 건드리지 않고, `serve` 데몬만 정밀 종료). 형제
+디렉터리가 없으면 조용히 건너뛴다 — 자세한 내용은
+[teleclaude README의 "플러그인 확장" 절](https://github.com/tyranno/teleclaude#플러그인-확장-aglink-)
+참고.
+
+> ⚠️ 단, Chrome 확장(`extension/background.js`)이 바뀐 경우 `!update`가
+> 새 바이너리는 배포해주지만 **Chrome에 로드된 확장 자체는 자동으로 리로드되지
+> 않는다** — `chrome://extensions`에서 수동으로 새로고침 아이콘을 눌러야
+> 반영된다(확장 코드 주입이 `chrome://` 페이지에서 막혀있어 자동화가 어려움).
+
 ### Try it without teleclaude
 
 ```sh
@@ -85,34 +125,56 @@ if it isn't running.
 ./aglink-web.exe cmd list_tabs # terminal 2: should print the open tabs
 ./aglink-web.exe cmd navigate https://example.com
 ./aglink-web.exe cmd get_page_text
+./aglink-web.exe cmd click "button.submit"
+./aglink-web.exe cmd screenshot   # prints base64 PNG — e.g. pipe through `base64 -d > shot.png`
+./aglink-web.exe cmd type "input#q" "hello world"
+./aglink-web.exe cmd close_tab
 ```
 
 ## Config
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `AGLINK_WEB_PORT` | `48219` | Daemon/bridge port. If you change it, also update `PORT` in `extension/background.js`. |
+| `AGLINK_WEB_PORT` | `48219` | Daemon/bridge port. If you change it, also set the matching port in the extension's options page (see below) — the extension can't read env vars. |
 | `AGLINK_WEB_EXT_ID` | *(unset)* | Pin the accepted extension ID. Unset = accept any `chrome-extension://` origin. |
 
-The daemon writes its live port to `~/.teleclaude/aglink-web.port` so the bridge
-finds it; a stale/corrupt file falls back to the default.
+The daemon writes its live port to `~/.teleclaude/aglink-web.port` so the **bridge**
+finds it automatically; a stale/corrupt file falls back to the default. The
+**extension**, being a browser process, can't read env vars or that file, so it
+keeps its own copy of the port in `chrome.storage.local` (default `48219`).
+
+**If you override `AGLINK_WEB_PORT`**, set the same port once in the extension:
+`chrome://extensions` → aglink-web → **Details** → **Extension options** → enter
+the port → **Save**. The extension reconnects on the new port immediately (no
+reload needed). Leave the field blank to fall back to the default.
 
 ## Layout
 
 ```
 main.go        subcommand dispatch (mcp | serve | cmd)
-mcpweb.go      MCP tool definitions (forward to daemon)
+command.go     single source of truth for the browser command set (shared by mcp + cmd)
+mcpweb.go      MCP server: registers each command as a tool (forwards to daemon)
+cmd.go         `cmd` fast-path: dispatches a subcommand from the command table
 daemon.go      `serve`: WS /ext + HTTP /call + /health, request router
 client.go      bridge → daemon: ensureDaemon (auto-spawn) + call
 protocol.go    shared JSON wire types
 datadir.go     ~/.teleclaude, port file
-cmd.go         `cmd` fast-path
 proc_windows.go / proc_other.go   detached daemon spawn per OS
-extension/     MV3 extension (manifest.json + background.js)
+extension/     MV3 extension:
+                 manifest.json     permissions + options_ui
+                 background.js      service worker (WS client + command handlers)
+                 options.html/.js   set the daemon port (chrome.storage.local)
+                 background.test.js node:test unit tests (chrome.* mocked via vm)
 ```
+
+Adding a browser command is a three-file change: add an entry to `commands` in
+`command.go` (covers both the MCP tool and the `cmd` fast-path) and a matching
+handler in `extension/background.js` (the JS half can't share the Go table). Keep
+the method name and param names identical across the two.
 
 ## Development
 
 ```sh
-go build ./... && go vet ./... && go test ./...
+go build ./... && go vet ./... && go test ./...   # Go: bridge, daemon, protocol, port
+node --test                                       # extension JS unit tests
 ```

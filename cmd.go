@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 )
 
 // cmdResult is the JSON shape printed to stdout by `aglink-web cmd`, matching
@@ -16,51 +15,36 @@ type cmdResult struct {
 
 // runCmd is the no-LLM fast-path: it maps a subcommand to a daemon call and
 // prints the result as JSON. Mirrors aglink-screen's `cmd` so teleclaude's
-// !web-style shortcuts can drive the browser without spinning up a worker.
+// !web-style shortcuts can drive the browser without spinning up a worker. The
+// available subcommands and their args come from the shared command table in
+// command.go, e.g.:
 //
 //	aglink-web cmd list_tabs
 //	aglink-web cmd navigate <url> [tabId]
 //	aglink-web cmd get_page_text [tabId] [maxChars]
+//	aglink-web cmd click <selector> [tabId]
+//	aglink-web cmd screenshot [tabId]   — prints base64 PNG (pipe to a decoder to view)
+//	aglink-web cmd type <selector> <text> [tabId]
+//	aglink-web cmd close_tab [tabId]
 func runCmd(args []string) {
 	if len(args) == 0 {
-		emitCmd(cmdResult{Error: "cmd requires a subcommand (list_tabs | navigate | get_page_text)"})
+		emitCmd(cmdResult{Error: "cmd requires a subcommand (" + commandNames() + ")"})
 		os.Exit(2)
 	}
 
-	var res CallResult
-	switch args[0] {
-	case "list_tabs":
-		res = callDaemon("list_tabs", nil)
-	case "navigate":
-		if len(args) < 2 {
-			emitCmd(cmdResult{Error: "navigate requires a <url>"})
-			os.Exit(2)
-		}
-		params := map[string]any{"url": args[1]}
-		if len(args) >= 3 {
-			if tabID, err := strconv.Atoi(args[2]); err == nil {
-				params["tabId"] = tabID
-			}
-		}
-		res = callDaemon("navigate", params)
-	case "get_page_text":
-		params := map[string]any{}
-		if len(args) >= 2 {
-			if tabID, err := strconv.Atoi(args[1]); err == nil {
-				params["tabId"] = tabID
-			}
-		}
-		if len(args) >= 3 {
-			if maxChars, err := strconv.Atoi(args[2]); err == nil {
-				params["maxChars"] = maxChars
-			}
-		}
-		res = callDaemon("get_page_text", params)
-	default:
+	c, ok := lookupCommand(args[0])
+	if !ok {
 		emitCmd(cmdResult{Error: fmt.Sprintf("unknown subcommand %q", args[0])})
 		os.Exit(2)
 	}
 
+	params, err := c.parseCLIArgs(args[1:])
+	if err != nil {
+		emitCmd(cmdResult{Error: err.Error()})
+		os.Exit(2)
+	}
+
+	res := callDaemon(c.name, params)
 	if res.Error != "" {
 		emitCmd(cmdResult{Error: res.Error})
 		os.Exit(1)

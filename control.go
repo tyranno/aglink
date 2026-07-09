@@ -92,6 +92,13 @@ func (c *controlClient) connectOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// coder/websocket defaults to a 32KiB read limit, which a full get_history
+	// reply (e.g. the telegram stream after many turns) can exceed — the read
+	// then fails with "message too big", silently dropping the connection (and
+	// with it every in-flight request(), which only surfaces 10s later as a
+	// generic timeout). History payloads are plain JSON text with no attachment
+	// data, so 8MiB is a large, cheap ceiling rather than a tight fit.
+	conn.SetReadLimit(8 << 20)
 	c.setConn(conn)
 	defer c.setConn(nil)
 	defer conn.Close(websocket.StatusNormalClosure, "")

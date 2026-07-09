@@ -13,6 +13,8 @@
   const input = document.getElementById("input");
   const fileEl = document.getElementById("file");
   const fileNameEl = document.getElementById("file-name");
+  const fileThumbEl = document.getElementById("file-thumb");
+  const fileClearEl = document.getElementById("file-clear");
   const attachBtn = document.getElementById("attach-btn");
   const topicList = document.getElementById("topic-list");
   const currentTopic = document.getElementById("current-topic");
@@ -48,10 +50,34 @@
   let currentTarget = null;
 
   if (attachBtn) attachBtn.addEventListener("click", () => fileEl.click());
-  if (fileEl) fileEl.addEventListener("change", () => {
-    if (!fileNameEl) return;
-    if (fileEl.files.length > 0) { fileNameEl.textContent = fileEl.files[0].name; fileNameEl.hidden = false; }
-    else { fileNameEl.textContent = ""; fileNameEl.hidden = true; }
+
+  // The thumbnail's object URL must be revoked when replaced/cleared, or each
+  // paste/pick leaks the previous preview's memory for the life of the page.
+  let fileThumbURL = null;
+  function clearFileThumb() {
+    if (fileThumbURL) { URL.revokeObjectURL(fileThumbURL); fileThumbURL = null; }
+    if (fileThumbEl) { fileThumbEl.hidden = true; fileThumbEl.src = ""; }
+  }
+  function updateFileUI() {
+    const f = fileEl.files[0];
+    clearFileThumb();
+    if (!f) {
+      if (fileNameEl) { fileNameEl.textContent = ""; fileNameEl.hidden = true; }
+      if (fileClearEl) fileClearEl.hidden = true;
+      return;
+    }
+    if (fileNameEl) { fileNameEl.textContent = f.name; fileNameEl.hidden = false; }
+    if (fileClearEl) fileClearEl.hidden = false;
+    if (fileThumbEl && f.type && f.type.indexOf("image/") === 0) {
+      fileThumbURL = URL.createObjectURL(f);
+      fileThumbEl.src = fileThumbURL;
+      fileThumbEl.hidden = false;
+    }
+  }
+  if (fileEl) fileEl.addEventListener("change", updateFileUI);
+  if (fileClearEl) fileClearEl.addEventListener("click", () => {
+    fileEl.value = "";
+    updateFileUI();
   });
 
   // Paste an image from the clipboard (Ctrl+V in the input) as a file attachment,
@@ -80,15 +106,26 @@
     });
   }
 
-  let workingTimer = null, workingStart = 0;
+  // STALE_AFTER_MS: the server re-sends a "typing" frame roughly every 2
+  // minutes for as long as the worker is genuinely still running (see
+  // manager.go's runHeartbeat). If none has arrived in a while, that's a real
+  // signal something's off (worker died without telling us, or the WS itself
+  // dropped) — not just "still thinking". A generous multiple of the 2-minute
+  // heartbeat avoids false positives from a single delayed tick.
+  const STALE_AFTER_MS = 5 * 60 * 1000;
+  let workingTimer = null, workingStart = 0, lastAliveAt = 0;
   function workingElapsedText() {
     const secs = Math.max(0, Math.floor((Date.now() - workingStart) / 1000));
-    if (secs < 60) return `작업 진행 중… (${secs}초)`;
-    return `작업 진행 중… (${Math.floor(secs / 60)}분 ${secs % 60}초)`;
+    const elapsed = secs < 60 ? `${secs}초` : `${Math.floor(secs / 60)}분 ${secs % 60}초`;
+    if (Date.now() - lastAliveAt > STALE_AFTER_MS) {
+      return `⚠️ 작업 진행 중… (${elapsed} 경과, 서버 응답 확인 안 된 지 오래됨 — 멈췄을 수 있음)`;
+    }
+    return `작업 진행 중… (${elapsed} 경과)`;
   }
   function showWorking() {
     if (!workingEl) return;
-    if (workingTimer) return; // already showing
+    lastAliveAt = Date.now(); // every "typing" frame is a live-signal, not just the first
+    if (workingTimer) return; // already showing; the label timer will pick up the refreshed lastAliveAt
     workingStart = Date.now();
     workingEl.hidden = false;
     if (workingLabel) workingLabel.textContent = workingElapsedText();
@@ -376,24 +413,51 @@
     return button;
   }
 
+  // Sidebar items are grouped into two fixed channels: Telegram (always exactly
+  // one conversation — the single global stream) and Web (however many topics
+  // the user has created from the browser). The channel is where a conversation
+  // came from, not just a label on it, so the heading makes that grouping explicit
+  // rather than leaving telegram/web topics to look like one flat, mixed list.
+  function channelHeading(text) {
+    const h = document.createElement("div");
+    h.className = "channel-heading";
+    h.textContent = text;
+    return h;
+  }
+
+  // Wraps a channel's conversation buttons so they can be indented under their
+  // channel-heading (a visual parent/child relationship, not just adjacent rows).
+  function channelGroup() {
+    const g = document.createElement("div");
+    g.className = "channel-group";
+    return g;
+  }
+
   function renderConversations(data) {
     if (!topicList) return;
     topicList.replaceChildren();
 
     if (data && data.telegram) {
-      topicList.appendChild(makeTelegramButton(data.telegram));
+      topicList.appendChild(channelHeading("📱 텔레그램 채널"));
+      const group = channelGroup();
+      group.appendChild(makeTelegramButton(data.telegram));
+      topicList.appendChild(group);
     }
 
     const webConvs = Array.isArray(data && data.webConvs) ? data.webConvs : [];
+    topicList.appendChild(channelHeading("💬 웹 채널"));
+    const webGroup = channelGroup();
     if (webConvs.length === 0) {
       const empty = document.createElement("div");
       empty.className = "topic-empty";
       empty.textContent = "＋로 새 대화를 만들어 보세요";
-      topicList.appendChild(empty);
+      webGroup.appendChild(empty);
+      topicList.appendChild(webGroup);
       return;
     }
 
-    for (const wc of webConvs) topicList.appendChild(makeWebConvButton(wc));
+    for (const wc of webConvs) webGroup.appendChild(makeWebConvButton(wc));
+    topicList.appendChild(webGroup);
   }
 
   // Locate the active conversation for the #current-topic header. Prefers an
@@ -401,6 +465,24 @@
   // back to the legacy project/telegram active ref, then the per-conv active
   // flag. Returns { project, conv } or null.
   function findActiveConversation(data) {
+    // The header must reflect what the user actually has open (currentTarget),
+    // not a server-reported "active" flag — that flag is the store's own active
+    // pointer, which can lag or point at a different conversation right after
+    // switching channels (e.g. clicking 텔레그램 대화 doesn't itself change which
+    // conversation the store considers "active"). Without this, the title could
+    // keep showing the previous conversation while the log below had already
+    // switched to a different one.
+    if (currentTarget && currentTarget.kind === "telegram" && data && data.telegram) {
+      return { project: "", conv: data.telegram };
+    }
+    if (currentTarget && currentTarget.kind === "web") {
+      const webConvs = Array.isArray(data && data.webConvs) ? data.webConvs : [];
+      const wc = webConvs.find((w) => w.id === currentTarget.id);
+      if (wc) return { project: "", conv: wc };
+    }
+
+    // Fallback for the first load, before the user has clicked anything yet:
+    // whatever the server reports as active.
     const webConvs = Array.isArray(data && data.webConvs) ? data.webConvs : [];
     const activeWeb = webConvs.find((w) => w.active);
     if (activeWeb) return { project: "", conv: activeWeb };
@@ -500,7 +582,7 @@
       const resp = await fetch("/api/upload", { method: "POST", headers: authHeaders, body: fd });
       if (!resp.ok) { add("system", "업로드 실패: " + resp.status); hideWorking(); }
       fileEl.value = ""; input.value = "";
-      if (fileNameEl) { fileNameEl.textContent = ""; fileNameEl.hidden = true; }
+      updateFileUI();
       resizeInput();
       return;
     }

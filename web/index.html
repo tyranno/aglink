@@ -39,7 +39,9 @@
       <form id="composer">
         <button type="button" id="attach-btn" class="icon-button" title="파일 첨부" aria-label="파일 첨부">📎</button>
         <input id="file" type="file" hidden />
+        <img id="file-thumb" hidden alt="" />
         <span id="file-name" hidden></span>
+        <button type="button" id="file-clear" class="icon-button" hidden title="첨부 취소" aria-label="첨부 취소">✕</button>
         <textarea id="input" rows="1" autocomplete="off" spellcheck="false" placeholder="메시지 또는 !명령…"></textarea>
         <button type="submit" id="send-btn" class="icon-button" title="전송" aria-label="전송">➤</button>
       </form>
@@ -56,6 +58,13 @@
     <div class="panel">
       <div class="panel-head"><span>연결 / aglink 연동</span><button type="button" id="conn-close" class="icon-button" title="닫기" aria-label="닫기">✕</button></div>
       <div id="conn-body" class="conn-body"></div>
+    </div>
+  </div>
+  <div id="dialog-overlay" class="overlay" hidden>
+    <div class="panel dialog-panel">
+      <div class="panel-head"><span id="dialog-title"></span><button type="button" id="dialog-close" class="icon-button" title="닫기" aria-label="닫기">✕</button></div>
+      <div id="dialog-body" class="dialog-body"></div>
+      <div class="panel-foot dialog-foot" id="dialog-foot"></div>
     </div>
   </div>
   <script src="/static/app.js"></script>

@@ -316,6 +316,7 @@ func (m *Manager) CompactTelegramConversation(ctx context.Context, chatID int64,
 	if tc.WorkDir != "" {
 		workDir = tc.WorkDir
 	}
+	workDir = m.validWorkDirOrHome(workDir)
 
 	backend := m.Backend()
 	client := m.clientForBackend(backend)
@@ -694,6 +695,22 @@ func runHeartbeat(s MessageSender, chatID int64, label string, startTime time.Ti
 	}
 }
 
+// validWorkDirOrHome falls back to the service home when workDir no longer
+// exists as a directory. A project/conversation WorkDir persisted earlier can
+// go stale (folder moved, deleted, or never existed on this machine — e.g. a
+// store.json carried over from another PC). Passing a missing directory as
+// cmd.Dir makes Windows' CreateProcess fail with the cryptic "The directory
+// name is invalid.", which then surfaces as an opaque "OO worker 실행 실패"
+// with no clue it's a path problem — fail safe into the home dir instead of
+// erroring the whole turn.
+func (m *Manager) validWorkDirOrHome(workDir string) string {
+	if fi, err := os.Stat(workDir); err != nil || !fi.IsDir() {
+		log.Printf("[manager] workDir %q missing/invalid (%v) — falling back to home", workDir, err)
+		return resolveHomeDir(m.cfg())
+	}
+	return workDir
+}
+
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
 // workDir overrides the project's path as the Claude CLI working directory (e.g. a git worktree).
 // Pass "" to use the project's registered path.
@@ -726,6 +743,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	if workDir == "" {
 		workDir = resolveHomeDir(m.cfg())
 	}
+	workDir = m.validWorkDirOrHome(workDir)
 
 	// Forward tool images (screen MCP screenshot/capture_window/capture_region) to
 	// the chat. Only when screen control is on (images come only from those tools)

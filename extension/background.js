@@ -138,6 +138,8 @@ async function dispatch(method, params) {
       return await scroll(params);
     case "select_option":
       return await selectOption(params);
+    case "activate_tab":
+      return await activateTab(params);
     case "close_tab":
       return await closeTab(params);
     default:
@@ -674,6 +676,21 @@ async function selectOption(params) {
   if (r.isSelect === false) throw new Error(`element <${r.tag}> matched by ${selector} is not a <select>`);
   if (!r.matched) throw new Error(`no <option> matching value=${JSON.stringify(value)} label=${JSON.stringify(label)}`);
   return `ok: selected "${r.selected}"`;
+}
+
+// activateTab makes an existing tab the active tab of its window (and brings
+// that window to the foreground). Unlike every other command here, tabId is
+// NOT optional — "activate the currently active tab" is a no-op, so there's
+// no sensible default to fall back to. Added after repeatedly needing to open
+// a brand-new tab in this same session just to make an already-open one (a
+// chrome://extensions tab, mid-reload) the foreground tab for a screenshot —
+// this is the tool that should have been used instead.
+async function activateTab(params) {
+  const tabId = params.tabId;
+  if (!tabId) throw new Error("activate_tab requires 'tabId'");
+  const tab = await chrome.tabs.update(tabId, { active: true });
+  await chrome.windows.update(tab.windowId, { focused: true });
+  return `ok: activated tab ${tabId} — ${tab.title} — ${tab.url}`;
 }
 
 async function closeTab(params) {

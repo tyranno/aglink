@@ -148,6 +148,13 @@ var commands = []command{
 		},
 	},
 	{
+		name: "activate_tab",
+		desc: "Make an existing tab the active tab of its window and bring that window to the foreground. Unlike other commands, 'tabId' is required — there's no sensible default (\"activate the active tab\" is a no-op). Use this instead of opening a redundant new tab just to make an already-open one the foreground tab (e.g. before a screenshot).",
+		args: []argSpec{
+			{name: "tabId", typ: argInt, required: true, desc: "Tab id (from list_tabs) to activate."},
+		},
+	},
+	{
 		name: "close_tab",
 		desc: "Close a Chrome tab. If 'tabId' is omitted, the active tab of the focused window is closed.",
 		args: []argSpec{

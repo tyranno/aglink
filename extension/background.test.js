@@ -288,6 +288,30 @@ test("getValue requires a selector and surfaces a missing element", async () => 
   await assert.rejects(() => missing.getValue({ selector: "#nope" }), /no element matched selector: #nope/);
 });
 
+test("activateTab requires a tabId and activates the tab + focuses its window", async () => {
+  let updatedTabId, updatedTabOpts, focusedWindowId, focusedOpts;
+  const sb = loadBackground(
+    makeChrome({
+      tabs: {
+        update: async (id, opts) => {
+          updatedTabId = id;
+          updatedTabOpts = opts;
+          return { id, windowId: 55, title: "Example", url: "https://example.com" };
+        },
+      },
+      windows: { update: async (id, opts) => { focusedWindowId = id; focusedOpts = opts; } },
+    })
+  );
+  const out = await sb.activateTab({ tabId: 7 });
+  assert.strictEqual(updatedTabId, 7);
+  assert.strictEqual(updatedTabOpts.active, true); // cross-realm object: compare fields, not deepStrictEqual (see navigate test)
+  assert.strictEqual(focusedWindowId, 55);
+  assert.strictEqual(focusedOpts.focused, true);
+  assert.strictEqual(out, "ok: activated tab 7 — Example — https://example.com");
+
+  await assert.rejects(() => sb.activateTab({}), /activate_tab requires 'tabId'/);
+});
+
 test("keyCombo requires a combo", async () => {
   const sb = loadBackground(makeChrome());
   await assert.rejects(() => sb.keyCombo({}), /key requires 'combo'/);

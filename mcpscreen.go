@@ -232,6 +232,30 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// close_window — close a SPECIFIC window by title/hwnd (WM_CLOSE), unlike
+	// key("alt+f4") which acts on whatever the OS currently considers
+	// foreground. Prefer this whenever the target window is known, since
+	// foreground can shift unexpectedly (e.g. launch_app on an already-running
+	// single-instance app activates its existing window instead of opening a
+	// new one) — ambiguous alt+f4 targeting has caused real data loss.
+	s.AddTool(
+		mcp.NewTool("close_window",
+			mcp.WithDescription("Close a specific window by title substring or hwnd (sends WM_CLOSE — the same signal its own X button sends, so the app's own \"save changes?\" prompt still fires normally; use confirm_dialogs right after if you want that handled automatically). Prefer this over key(\"alt+f4\") whenever you know the target window: alt+f4 acts on whatever the OS currently considers foreground, which can shift unexpectedly (e.g. launch_app on an already-running single-instance app activates its existing window instead of opening a new one) — this targets the exact window by handle regardless of what currently has focus."),
+			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			result, err := closeWindow(window)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("close_window failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: sent close to " + result), nil
+		},
+	)
+
 	// return_desktop — switch back to the virtual desktop that was active before
 	// the screen tools first jumped to another desktop to operate a window there.
 	s.AddTool(

@@ -45,7 +45,12 @@ var (
 	procGetCurrentThreadID   = modKernel32App.NewProc("GetCurrentThreadId")
 	procSetWindowPos         = modUser32.NewProc("SetWindowPos")
 	procIsZoomed             = modUser32.NewProc("IsZoomed")
+	procPostMessage          = modUser32.NewProc("PostMessageW")
 )
+
+// wmClose is the WM_CLOSE message — the same signal a window's own X button
+// sends, so an app's own "save changes?" prompt still fires normally.
+const wmClose = 0x0010
 
 // originAnchor remembers a NON-pinned window on the desktop that was active when
 // the screen MCP first switched to another virtual desktop (to operate a window
@@ -153,6 +158,29 @@ func getWindowRectInfo(titleOrHwnd string) (string, error) {
 	}
 	return fmt.Sprintf("%s | hwnd=0x%x | pos(%d,%d) %dx%d | %s",
 		getWindowText(hwnd), hwnd, rc.Left, rc.Top, rc.Right-rc.Left, rc.Bottom-rc.Top, state), nil
+}
+
+// closeWindow sends WM_CLOSE to a specific, resolved window handle — the same
+// signal its own X button sends, so an app's own "save changes?" prompt still
+// fires normally; this only makes the TARGET precise, it doesn't skip
+// confirmation or force-kill anything.
+//
+// Added after a real incident: key("alt+f4") depends on whatever the OS
+// currently considers the foreground window, which can shift silently (e.g.
+// launch_app on an app that's already running as a single instance activates
+// the EXISTING window instead of opening a new one) — exactly what closed a
+// user's document with unsaved changes instead of the throwaway app that was
+// actually intended. Prefer this over alt+f4 whenever the target is known by
+// title/hwnd, since PostMessage targets that handle directly regardless of
+// which window currently has focus.
+func closeWindow(titleOrHwnd string) (string, error) {
+	hwnd, ok := findTopWindow(titleOrHwnd)
+	if !ok {
+		return "", fmt.Errorf("no window matching %q", titleOrHwnd)
+	}
+	title := getWindowText(hwnd)
+	procPostMessage.Call(hwnd, wmClose, 0, 0)
+	return fmt.Sprintf("%s | hwnd=0x%x", title, hwnd), nil
 }
 
 // win is one visible top-level window.

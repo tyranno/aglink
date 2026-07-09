@@ -155,6 +155,14 @@ var commands = []command{
 		},
 	},
 	{
+		name: "get_console_logs",
+		desc: "Read recent browser console messages (log/warn/error/info/debug, plus uncaught errors and unhandled promise rejections) captured from a tab since it loaded. Useful for web debugging tasks (\"did that click throw a JS error?\") — get_page_text can't see this, since console output isn't part of the rendered DOM.",
+		args: []argSpec{
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+			{name: "max", typ: argInt, desc: "Maximum number of recent messages to return (default 50)."},
+		},
+	},
+	{
 		name: "close_tab",
 		desc: "Close a Chrome tab. If 'tabId' is omitted, the active tab of the focused window is closed.",
 		args: []argSpec{

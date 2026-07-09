@@ -312,6 +312,33 @@ test("activateTab requires a tabId and activates the tab + focuses its window", 
   await assert.rejects(() => sb.activateTab({}), /activate_tab requires 'tabId'/);
 });
 
+test("getConsoleLogs formats captured messages and handles the empty case", async () => {
+  const withLogs = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 4, active: true }] },
+      scripting: {
+        executeScript: async () => [
+          {
+            result: [
+              { level: "log", time: 1, text: "hello" },
+              { level: "error", time: 2, text: "boom" },
+            ],
+          },
+        ],
+      },
+    })
+  );
+  assert.strictEqual(await withLogs.getConsoleLogs({}), "[log] hello\n[error] boom");
+
+  const empty = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 4, active: true }] },
+      scripting: { executeScript: async () => [{ result: [] }] },
+    })
+  );
+  assert.strictEqual(await empty.getConsoleLogs({}), "(no console messages captured)");
+});
+
 test("keyCombo requires a combo", async () => {
   const sb = loadBackground(makeChrome());
   await assert.rejects(() => sb.keyCombo({}), /key requires 'combo'/);

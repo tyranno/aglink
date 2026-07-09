@@ -140,6 +140,8 @@ async function dispatch(method, params) {
       return await selectOption(params);
     case "activate_tab":
       return await activateTab(params);
+    case "get_console_logs":
+      return await getConsoleLogs(params);
     case "close_tab":
       return await closeTab(params);
     default:
@@ -691,6 +693,30 @@ async function activateTab(params) {
   const tab = await chrome.tabs.update(tabId, { active: true });
   await chrome.windows.update(tab.windowId, { focused: true });
   return `ok: activated tab ${tabId} — ${tab.title} — ${tab.url}`;
+}
+
+// getConsoleLogs reads the buffer console-capture.js maintains on the page's
+// own window (MAIN world — see that file's comment for why isolated-world
+// scripts can't see it). Useful for web debugging tasks ("did this click
+// throw a JS error?") that get_page_text can't answer since console output
+// isn't part of the rendered DOM at all.
+async function getConsoleLogs(params) {
+  let tabId = params.tabId;
+  if (!tabId) {
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!active) throw new Error("no active tab");
+    tabId = active.id;
+  }
+  const max = params.max || 50;
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: (n) => (window.__aglinkConsole || []).slice(-n),
+    args: [max],
+  });
+  const logs = (results && results[0] && results[0].result) || [];
+  if (logs.length === 0) return "(no console messages captured)";
+  return logs.map((l) => `[${l.level}] ${l.text}`).join("\n");
 }
 
 async function closeTab(params) {

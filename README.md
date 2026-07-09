@@ -8,7 +8,8 @@ sibling to [`aglink-screen`](../aglink-screen) (Windows screen control).
 Status: scaffold validated end-to-end (live in teleclaude workers as
 `mcp__web__*`); tool set now covers `list_tabs`, `navigate`, `get_page_text`,
 `click`, `list_elements`, `screenshot`, `type`, `get_value`, `key`, `scroll`,
-`select_option`, `wait_for_element`, `activate_tab`, `close_tab`. `web_search` is still pending — the
+`select_option`, `wait_for_element`, `activate_tab`, `get_console_logs`,
+`close_tab`. `web_search` is still pending — the
 plan is to do it the same way a human would (navigate to a search engine in
 the real browser and read/screenshot the results), not call a search API, so
 it needs its own design pass rather than a one-line addition like the others.
@@ -45,7 +46,7 @@ One Go binary, three subcommands (mirrors `aglink-screen`):
 |---|---|
 | `aglink-web` / `aglink-web mcp` | stdio MCP server teleclaude spawns per worker (default). Thin forwarder. |
 | `aglink-web serve` | the persistent daemon the extension connects to. Auto-spawned by the bridge if not already up. |
-| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [button] [tabId]` / `list_elements [tabId] [max]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `get_value <selector> [tabId]` / `key <combo> [tabId]` / `scroll [selector] [dx] [dy] [tabId]` / `select_option <selector> [value] [label] [tabId]` / `wait_for_element <selector> [tabId] [timeoutMs]` / `activate_tab <tabId>` / `close_tab [tabId]`. |
+| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [button] [tabId]` / `list_elements [tabId] [max]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `get_value <selector> [tabId]` / `key <combo> [tabId]` / `scroll [selector] [dx] [dy] [tabId]` / `select_option <selector> [value] [label] [tabId]` / `wait_for_element <selector> [tabId] [timeoutMs]` / `activate_tab <tabId>` / `get_console_logs [tabId] [max]` / `close_tab [tabId]`. |
 
 ## Security
 
@@ -168,8 +169,11 @@ protocol.go    shared JSON wire types
 datadir.go     ~/.teleclaude, port file
 proc_windows.go / proc_other.go   detached daemon spawn per OS
 extension/     MV3 extension:
-                 manifest.json     permissions + options_ui
+                 manifest.json      permissions + options_ui + content_scripts
                  background.js      service worker (WS client + command handlers)
+                 console-capture.js MAIN-world content script buffering console output
+                                    (read by get_console_logs) — purely observational,
+                                    never changes page behavior
                  options.html/.js   set the daemon port (chrome.storage.local)
                  background.test.js node:test unit tests (chrome.* mocked via vm)
 ```

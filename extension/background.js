@@ -142,6 +142,8 @@ async function dispatch(method, params) {
       return await activateTab(params);
     case "get_console_logs":
       return await getConsoleLogs(params);
+    case "reload_extension":
+      return await reloadExtension();
     case "close_tab":
       return await closeTab(params);
     default:
@@ -717,6 +719,23 @@ async function getConsoleLogs(params) {
   const logs = (results && results[0] && results[0].result) || [];
   if (logs.length === 0) return "(no console messages captured)";
   return logs.map((l) => `[${l.level}] ${l.text}`).join("\n");
+}
+
+// reloadExtension restarts the extension itself (chrome.runtime.reload()) —
+// a dev-workflow convenience added after manually doing the
+// navigate-to-chrome://extensions, screenshot, click-reload dance about 8
+// times in one session whenever background.js changed. From here on, a
+// background.js/manifest.json edit can be picked up with a single call
+// instead of that whole sequence. The reload is delayed slightly so this
+// function's "ok" response actually reaches the caller over the WebSocket
+// before the service worker context is torn down — without the delay the
+// reload could win the race and the caller would see a connection-closed
+// error instead of a clean acknowledgement (still harmless, just less clean).
+// Not useful to an end user driving their own browsing — only relevant when
+// actively developing this extension.
+async function reloadExtension() {
+  setTimeout(() => chrome.runtime.reload(), 150);
+  return "ok: reloading extension in 150ms";
 }
 
 async function closeTab(params) {

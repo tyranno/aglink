@@ -163,6 +163,10 @@ var commands = []command{
 		},
 	},
 	{
+		name: "reload_extension",
+		desc: "Dev-workflow convenience: reload the aglink-web extension itself (chrome.runtime.reload()) so a background.js/manifest.json edit takes effect, instead of manually navigating to chrome://extensions and clicking reload. Not useful for driving a user's own browsing — only relevant when developing this extension.",
+	},
+	{
 		name: "close_tab",
 		desc: "Close a Chrome tab. If 'tabId' is omitted, the active tab of the focused window is closed.",
 		args: []argSpec{

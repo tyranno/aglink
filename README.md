@@ -115,10 +115,13 @@ teleclaude와 이 저장소를 **형제 디렉터리**(예: `..\teleclaude`, `..
 [teleclaude README의 "플러그인 확장" 절](https://github.com/tyranno/teleclaude#플러그인-확장-aglink-)
 참고.
 
-> ⚠️ 단, Chrome 확장(`extension/background.js`)이 바뀐 경우 `!update`가
+> ⚠️ 단, Chrome 확장(`extension/background.js`/`manifest.json`)이 바뀐 경우 `!update`가
 > 새 바이너리는 배포해주지만 **Chrome에 로드된 확장 자체는 자동으로 리로드되지
-> 않는다** — `chrome://extensions`에서 수동으로 새로고침 아이콘을 눌러야
-> 반영된다(확장 코드 주입이 `chrome://` 페이지에서 막혀있어 자동화가 어려움).
+> 않는다** — `chrome://extensions` 페이지 자체는 `chrome://` 스킴이라 확장 코드 주입이
+> 막혀 있어서 그 화면만큼은 자동화가 안 된다. 대신 `aglink-web cmd reload_extension`
+> (또는 MCP `reload_extension`)으로 확장 자체(`chrome.runtime.reload()`)를 재시작할
+> 수 있다 — `chrome://extensions`를 열 필요 없이 한 번의 호출로 반영됨. (최초 1회,
+> 이 기능이 아직 없는 옛 버전이 로드돼 있을 때만 수동 리로드가 필요하다.)
 
 ### Try it without teleclaude
 

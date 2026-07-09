@@ -412,6 +412,15 @@ func (b *Bot) handleCommand(chatID int64, text, origin string) {
 		b.handleParallel(chatID, text, origin)
 	case "!screen":
 		b.handleScreen(chatID, fields)
+	case "!compact":
+		b.mu.Lock()
+		active := b.activeCount
+		b.mu.Unlock()
+		if active > 0 {
+			_ = b.Send(chatID, "⏳ 작업 중에는 압축할 수 없습니다. !cancel 후 다시 시도하세요.")
+			return
+		}
+		b.manager.CompactTelegramConversation(context.Background(), chatID, b)
 	default:
 		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
@@ -1829,6 +1838,9 @@ func helpText() string {
 히스토리:
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
 !history list [프로젝트|all]          날짜 목록 (all = 전체 프로젝트)
+
+!compact   지금까지의 텔레그램 대화 핵심을 .teleclaude/memory.md에 저장하고
+           세션을 새로 시작 (컨텍스트가 길어져 느려졌을 때 사용)
 
 사용자 관리:
 !user add <id>               런타임 허용 사용자 추가 (재시작 후에도 유지)

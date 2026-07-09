@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -106,6 +107,92 @@ func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
 	// The carried summary made it into the worker prompt.
 	if !contains(fc.lastRun.Prompt, "이전에 많은 작업을 했습니다") {
 		t.Errorf("continuation prompt should include parent summary, got: %q", fc.lastRun.Prompt)
+	}
+}
+
+// !compact should ask the Worker to persist decisions to memory.md, then reset
+// the local history mirror and force the next turn onto a fresh CLI session
+// (Started=false) instead of resuming the now-externalized one.
+func TestCompactTelegramConversation_SavesAndResetsSession(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "메모리에 3가지 결정사항을 저장했습니다."}}
+	m, st, _ := tgManager(t, fc)
+
+	c := st.TelegramConversation()
+	c.Started = true
+	c.History = append(c.History, ConversationTurn{Prompt: "질문", Response: "답변"})
+	oldSession := c.SessionID
+	_ = st.UpdateTelegramConversation(c)
+
+	f := &fakeSender{}
+	m.CompactTelegramConversation(context.Background(), 1, f)
+
+	if fc.runCalls != 1 {
+		t.Fatalf("expected one compaction worker run, got %d", fc.runCalls)
+	}
+	if !contains(fc.lastRun.Prompt, "memory.md") {
+		t.Errorf("compaction prompt should ask to save to memory.md, got: %q", fc.lastRun.Prompt)
+	}
+	if !fc.lastRun.Resume || fc.lastRun.SessionID != oldSession {
+		t.Errorf("compaction turn should resume the existing session %q to see full context, got resume=%v session=%q",
+			oldSession, fc.lastRun.Resume, fc.lastRun.SessionID)
+	}
+
+	tc := st.TelegramConversation()
+	if len(tc.History) != 0 {
+		t.Errorf("history mirror should be cleared after compaction, got %d turns", len(tc.History))
+	}
+	if tc.Started {
+		t.Error("Started should be reset so the next turn starts a fresh session instead of resuming")
+	}
+	if tc.SessionID == oldSession {
+		t.Error("SessionID should be cleared, not left pointing at the now-compacted session")
+	}
+	if !contains(strings.Join(f.sent, ""), "저장했습니다") {
+		t.Errorf("user should see the compaction summary, got: %v", f.sent)
+	}
+}
+
+// A failed compaction turn must leave the conversation untouched — otherwise a
+// transient error would silently discard history that was never actually
+// saved anywhere durable.
+func TestCompactTelegramConversation_FailurePreservesState(t *testing.T) {
+	fc := &fakeClaude{runErr: fmt.Errorf("boom")}
+	m, st, _ := tgManager(t, fc)
+
+	c := st.TelegramConversation()
+	c.Started = true
+	c.History = append(c.History, ConversationTurn{Prompt: "질문", Response: "답변"})
+	_ = st.UpdateTelegramConversation(c)
+
+	f := &fakeSender{}
+	m.CompactTelegramConversation(context.Background(), 1, f)
+
+	tc := st.TelegramConversation()
+	if len(tc.History) != 1 {
+		t.Errorf("history must survive a failed compaction, got %d turns", len(tc.History))
+	}
+	if !tc.Started {
+		t.Error("Started must survive a failed compaction")
+	}
+	if !contains(strings.Join(f.sent, ""), "압축 실패") {
+		t.Errorf("user should be told compaction failed, got: %v", f.sent)
+	}
+}
+
+// A never-used telegram conversation (no history, never started) has nothing
+// to compact — must not spend a Worker turn on it.
+func TestCompactTelegramConversation_NothingToCompact(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "should not be called"}}
+	m, _, _ := tgManager(t, fc)
+
+	f := &fakeSender{}
+	m.CompactTelegramConversation(context.Background(), 1, f)
+
+	if fc.runCalls != 0 {
+		t.Errorf("nothing to compact should not spend a worker turn, runCalls=%d", fc.runCalls)
+	}
+	if !contains(strings.Join(f.sent, ""), "압축할 대화 내용이 없습니다") {
+		t.Errorf("user should be told there's nothing to compact, got: %v", f.sent)
 	}
 }
 

@@ -119,6 +119,21 @@ var vkMap = map[string]uint16{
 	"f10":       0x79,
 	"f11":       0x7A,
 	"f12":       0x7B,
+
+	// Media/system keys — same physical keys a real keyboard's media row sends.
+	// These are genuinely useful for "일반 컴퓨터 에이전트" requests ("볼륨 낮춰줘",
+	// "다음 곡") that have nothing to do with any particular foreground app.
+	"volumeup":    0xAF, // VK_VOLUME_UP
+	"volumedown":  0xAE, // VK_VOLUME_DOWN
+	"volumemute":  0xAD, // VK_VOLUME_MUTE
+	"mute":        0xAD,
+	"medianext":   0xB0, // VK_MEDIA_NEXT_TRACK
+	"mediaprev":   0xB1, // VK_MEDIA_PREV_TRACK
+	"mediastop":   0xB2, // VK_MEDIA_STOP
+	"mediaplay":   0xB3, // VK_MEDIA_PLAY_PAUSE
+	"playpause":   0xB3,
+	"printscreen": 0x2C, // VK_SNAPSHOT
+	"prtsc":       0x2C,
 }
 
 // Modifier virtual-key codes.

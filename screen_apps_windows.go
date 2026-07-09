@@ -43,6 +43,7 @@ var (
 	procSystemParametersInfo = modUser32.NewProc("SystemParametersInfoW")
 	procLockSetForeground    = modUser32.NewProc("LockSetForegroundWindow")
 	procGetCurrentThreadID   = modKernel32App.NewProc("GetCurrentThreadId")
+	procSetWindowPos         = modUser32.NewProc("SetWindowPos")
 )
 
 // originAnchor remembers a NON-pinned window on the desktop that was active when
@@ -61,7 +62,75 @@ func clearForegroundLock() {
 	procLockSetForeground.Call(lsfwUnlock)
 }
 
-const swRestore = 9
+const (
+	swRestore  = 9
+	swMinimize = 6
+	swMaximize = 3
+
+	// SetWindowPos flags used by moveWindow: keep the window's current
+	// z-order and activation state — this is a pure reposition/resize, not a
+	// focus change (focus_window already covers that separately).
+	swpNoZOrder   = 0x0004
+	swpNoActivate = 0x0010
+)
+
+// windowStateFlags maps a state name to the ShowWindow SW_* constant.
+// Logic-only (no Win32), so it is unit-testable on its own.
+func windowStateFlag(state string) (int32, error) {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "minimize", "minimized", "min":
+		return swMinimize, nil
+	case "maximize", "maximized", "max":
+		return swMaximize, nil
+	case "restore", "restored", "normal":
+		return swRestore, nil
+	default:
+		return 0, fmt.Errorf("unknown window state %q (want minimize/maximize/restore)", state)
+	}
+}
+
+// setWindowState resolves titleOrHwnd and applies a minimize/maximize/restore
+// via ShowWindow. Deliberately does not support "close" — that is a more
+// destructive action (unsaved-changes risk) than a pure state change, and
+// key("alt+f4") already covers it explicitly when that is really what's wanted.
+func setWindowState(titleOrHwnd, state string) (string, error) {
+	flag, err := windowStateFlag(state)
+	if err != nil {
+		return "", err
+	}
+	hwnd, ok := findTopWindow(titleOrHwnd)
+	if !ok {
+		return "", fmt.Errorf("no window matching %q", titleOrHwnd)
+	}
+	procShowWindow.Call(hwnd, uintptr(flag))
+	return fmt.Sprintf("%s | hwnd=0x%x", getWindowText(hwnd), hwnd), nil
+}
+
+// moveWindow resolves titleOrHwnd and repositions/resizes it via SetWindowPos.
+// A minimized window is restored first — SetWindowPos on an iconic window
+// would otherwise resize its off-screen iconic placeholder, not the window
+// the caller sees (the same pitfall captureWindow already guards against).
+func moveWindow(titleOrHwnd string, x, y, width, height int) (string, error) {
+	if width <= 0 || height <= 0 {
+		return "", fmt.Errorf("move_window: width/height must be positive (got %dx%d)", width, height)
+	}
+	hwnd, ok := findTopWindow(titleOrHwnd)
+	if !ok {
+		return "", fmt.Errorf("no window matching %q", titleOrHwnd)
+	}
+	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+		procShowWindow.Call(hwnd, swRestore)
+	}
+	r, _, err := procSetWindowPos.Call(
+		hwnd, 0,
+		uintptr(x), uintptr(y), uintptr(width), uintptr(height),
+		uintptr(swpNoZOrder|swpNoActivate),
+	)
+	if r == 0 {
+		return "", fmt.Errorf("SetWindowPos failed: %v", err)
+	}
+	return fmt.Sprintf("%s | hwnd=0x%x moved to (%d,%d) %dx%d", getWindowText(hwnd), hwnd, x, y, width, height), nil
+}
 
 // win is one visible top-level window.
 type win struct {
@@ -148,6 +217,33 @@ func findTopWindow(titleOrHwnd string) (uintptr, bool) {
 		return h, true
 	}
 	return 0, false
+}
+
+// findTopWindowProbe is a package var wrapping findTopWindow so waitForWindow
+// can be exercised deterministically in tests without real Win32 windows.
+var findTopWindowProbe = findTopWindow
+
+// waitForWindowPollEvery is how often waitForWindow re-checks while waiting.
+// A var (not const) so tests can shrink it.
+var waitForWindowPollEvery = 200 * time.Millisecond
+
+// waitForWindow polls findTopWindowProbe until a window matching titleOrHwnd
+// appears or timeoutMs elapses, instead of the caller polling list_windows in
+// a loop by hand. Returns the same "TITLE | hwnd=0x.." line list_windows uses.
+func waitForWindow(titleOrHwnd string, timeoutMs int) (string, error) {
+	if timeoutMs <= 0 {
+		timeoutMs = 8000
+	}
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for {
+		if hwnd, ok := findTopWindowProbe(titleOrHwnd); ok {
+			return fmt.Sprintf("%s | hwnd=0x%x", getWindowText(hwnd), hwnd), nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("timed out after %dms waiting for a window matching %q", timeoutMs, titleOrHwnd)
+		}
+		time.Sleep(waitForWindowPollEvery)
+	}
 }
 
 // matchWindowTitle returns the handle of the window whose title matches needle

@@ -98,6 +98,94 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// wait_for_window — block until a matching window appears instead of the
+	// caller polling list_windows in a loop.
+	s.AddTool(
+		mcp.NewTool("wait_for_window",
+			mcp.WithDescription("Block until a window whose title contains the given substring (or an hwnd) appears, instead of calling list_windows in a manual polling loop. Returns 'TITLE | hwnd=0x..' once found. Fails with a timeout error after 'timeout_ms' (default 8000) if it never appears."),
+			mcp.WithString("window", mcp.Description("Window title substring or hwnd to wait for."), mcp.Required()),
+			mcp.WithNumber("timeout_ms", mcp.Description("Max time to wait in milliseconds (default 8000).")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			timeoutMs := req.GetInt("timeout_ms", 8000)
+			result, err := waitForWindow(window, timeoutMs)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("wait_for_window failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: " + result), nil
+		},
+	)
+
+	// move_window — reposition/resize a window precisely (no keyboard-shortcut
+	// workarounds like win+left/right needed just to arrange windows on screen).
+	s.AddTool(
+		mcp.NewTool("move_window",
+			mcp.WithDescription("Move and/or resize a window to an exact screen position and size via SetWindowPos. Restores a minimized window first (its iconic placeholder isn't a meaningful target). Useful for arranging two windows side by side before a cross-window drag, or laying out a workspace precisely — an alternative to win+left/right style snap shortcuts when you need exact control."),
+			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
+			mcp.WithNumber("x", mcp.Description("New left position in screen pixels."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("New top position in screen pixels."), mcp.Required()),
+			mcp.WithNumber("width", mcp.Description("New width in pixels (>0)."), mcp.Required()),
+			mcp.WithNumber("height", mcp.Description("New height in pixels (>0)."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			w, err := req.RequireInt("width")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'width'"), nil
+			}
+			h, err := req.RequireInt("height")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'height'"), nil
+			}
+			result, err := moveWindow(window, x, y, w, h)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("move_window failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: " + result), nil
+		},
+	)
+
+	// window_state — minimize/maximize/restore a window. No "close": that is
+	// meaningfully more destructive (unsaved-changes risk) than a state
+	// change, and key("alt+f4") already covers it when that's really wanted.
+	s.AddTool(
+		mcp.NewTool("window_state",
+			mcp.WithDescription("Minimize, maximize, or restore a window. Does not close it — use key(\"alt+f4\") for that (more deliberate, since closing can lose unsaved work)."),
+			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
+			mcp.WithString("state", mcp.Description("One of: minimize, maximize, restore."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			state, err := req.RequireString("state")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'state'"), nil
+			}
+			result, err := setWindowState(window, state)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("window_state failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: " + result), nil
+		},
+	)
+
 	// return_desktop — switch back to the virtual desktop that was active before
 	// the screen tools first jumped to another desktop to operate a window there.
 	s.AddTool(
@@ -345,7 +433,7 @@ func RunMCPScreen() error {
 	// key — press a key combo (e.g. "ctrl+c", "alt+f4", "enter").
 	s.AddTool(
 		mcp.NewTool("key",
-			mcp.WithDescription("Press a key or key combo such as 'enter', 'ctrl+c', 'alt+f4', 'ctrl+shift+s'. Modifiers: ctrl, alt, shift, win."),
+			mcp.WithDescription("Press a key or key combo such as 'enter', 'ctrl+c', 'alt+f4', 'ctrl+shift+s'. Modifiers: ctrl, alt, shift, win. Also supports system media keys, which work regardless of which window is focused: 'volumeup', 'volumedown', 'volumemute'/'mute', 'medianext', 'mediaprev', 'mediastop', 'mediaplay'/'playpause', 'printscreen'/'prtsc'."),
 			mcp.WithString("combo", mcp.Description("Key combo, e.g. 'ctrl+c' or 'enter'."), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -625,6 +713,32 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultErrorFromErr("set_value failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("ok: set %q = %q", name, text)), nil
+		},
+	)
+
+	// get_value — read an editable element's CURRENT text via the UIA Value
+	// pattern. The read-side counterpart to set_value: useful for confirming
+	// what a field actually holds now (autocomplete may have rewritten it, a
+	// calculated field may have updated, etc.) rather than guessing from
+	// snapshot's truncated label.
+	s.AddTool(
+		mcp.NewTool("get_value",
+			mcp.WithDescription("Find an editable element by its Name (or AutomationId) in the foreground window and read its CURRENT text via the UIA Value pattern. The read-side counterpart to set_value — use this to confirm what a field actually holds now (e.g. after autocomplete rewrote it, or a calculated field updated) instead of guessing from snapshot's truncated label."),
+			mcp.WithString("name",
+				mcp.Description("The element Name or AutomationId of the input field."),
+				mcp.Required(),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			value, err := uiaGetValue(name)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("%q = %q", name, value)), nil
 		},
 	)
 

@@ -85,8 +85,11 @@ const (
 
 // ---- Pattern vtable slots (all inherit IUnknown 0,1,2) ----
 const (
-	invokePatternInvoke  = 3 // Invoke()
-	valuePatternSetValue = 3 // SetValue(BSTR)
+	invokePatternInvoke      = 3 // Invoke()
+	valuePatternSetValue     = 3 // SetValue(BSTR)
+	valuePatternCurrentValue = 4 // get_CurrentValue(BSTR*) — verified against
+	// Microsoft Learn's IUIAutomationValuePattern vtable order: SetValue,
+	// get_CurrentValue, get_CurrentIsReadOnly, get_CachedValue, get_CachedIsReadOnly.
 	togglePatternToggle  = 3 // Toggle()
 	selectionItemSelect  = 3 // Select()
 	expandCollapseExpand = 3 // Expand()
@@ -733,6 +736,51 @@ func uiaSetValue(name, text string) error {
 		return "", nil
 	})
 	return err
+}
+
+// ---- get_value ----
+
+// uiaGetValue finds an element by Name (or AutomationId) and reads its
+// current text via the UIA Value pattern — the read-side counterpart to
+// uiaSetValue. Useful after set_value/type/invoke to confirm what a field
+// actually holds now (e.g. autocomplete rewrote it, a calculated total field
+// updated, or to check the current value before deciding what to set it to).
+// A pure read, not synthetic input, so unlike uiaSetValue this does not go
+// through beginSyntheticInput.
+func uiaGetValue(name string) (string, error) {
+	return uiaDo(func(uia *ole.IUnknown) (string, error) {
+		root, err := foregroundElement(uia)
+		if err != nil {
+			return "", err
+		}
+		defer release(root)
+
+		el, err := findByNamePreferring(uia, root, name, valueCapable)
+		if err != nil {
+			return "", err
+		}
+		if el == nil {
+			return "", fmt.Errorf("no element named %q (try snapshot)", name)
+		}
+		defer release(el)
+
+		p := getPattern(el, uiaValuePatternId)
+		if p == nil {
+			return "", fmt.Errorf("element %q does not support the Value pattern", name)
+		}
+		defer release(p)
+
+		var bstr *uint16
+		if hr := vcall(p, valuePatternCurrentValue, uintptr(unsafe.Pointer(&bstr))); failed(hr) {
+			return "", fmt.Errorf("get_CurrentValue failed (hr=0x%x)", uint32(hr))
+		}
+		if bstr == nil {
+			return "", nil
+		}
+		s := ole.BstrToString(bstr)
+		ole.SysFreeString((*int16)(unsafe.Pointer(bstr)))
+		return s, nil
+	})
 }
 
 // keep windows import referenced even if other helpers change.

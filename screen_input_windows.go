@@ -430,6 +430,27 @@ func mouseDouble(x, y int) error {
 	return sendInputs(buf, 5)
 }
 
+// mouseTriple performs a left triple-click at (x,y) — selects a whole
+// line/paragraph in text editors and word processors, a common gesture
+// double_click alone doesn't cover. Matches Anthropic's own computer-use
+// reference tool, which offers triple_click alongside double_click.
+func mouseTriple(x, y int) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	var buf []byte
+	buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfMove|abs)...)
+	for i := 0; i < 3; i++ {
+		buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfLeftDown|abs)...)
+		buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfLeftUp|abs)...)
+	}
+	return sendInputs(buf, 7)
+}
+
 // typeText types a Unicode string by emitting KEYEVENTF_UNICODE down/up pairs per
 // UTF-16 code unit. This bypasses the keyboard layout, so any printable rune
 // (including non-ASCII) is entered verbatim.
@@ -461,6 +482,30 @@ func typeText(s string) error {
 // keyCombo parses a combo like "ctrl+c", "alt+f4", "ctrl+shift+s" or a bare key
 // like "enter", presses modifiers down, taps the key, then releases modifiers.
 func keyCombo(combo string) error {
+	return keyComboHold(combo, 0)
+}
+
+// keyRepeatInitialDelay / keyRepeatInterval approximate a physical keyboard's
+// typematic autorepeat timing (Windows' own defaults are in the same
+// ballpark). keyComboHold uses these to re-send the key's own keydown
+// periodically during a hold — a single sustained "down" key-state change
+// (no repeat keydowns) does NOT produce repeated characters in ordinary text
+// editors/fields, since those respond to WM_KEYDOWN repeat messages, not to
+// polling raw key state the way a game reading GetAsyncKeyState would. Found
+// by testing against real Notepad: holding "a" for 800ms with a single
+// keydown+sleep+keyup produced exactly one "a", not several — this fixes
+// that so hold_ms behaves like an actually-held key in both kinds of app.
+const (
+	keyRepeatInitialDelay = 500 * time.Millisecond
+	keyRepeatInterval     = 50 * time.Millisecond
+)
+
+// keyComboHold presses combo, and if holdMs > 0 holds it down for that long
+// before releasing instead of releasing immediately — e.g. games or UIs that
+// distinguish a long-press from a tap. Matches Anthropic's computer-use
+// hold_key action. holdMs <= 0 is the original instant tap (down+up sent as
+// one SendInput batch, unchanged from before this was added).
+func keyComboHold(combo string, holdMs int) error {
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}
@@ -493,23 +538,53 @@ func keyCombo(combo string) error {
 		return fmt.Errorf("unknown key %q in combo %q", key, combo)
 	}
 
-	var buf []byte
-	count := 0
-	// Press modifiers down (in order).
+	var modsDown, modsUp []byte
 	for _, m := range mods {
-		buf = append(buf, keyEvent(m, 0, 0)...)
-		count++
+		modsDown = append(modsDown, keyEvent(m, 0, 0)...)
 	}
-	// Key down + up.
-	buf = append(buf, keyEvent(keyVK, 0, 0)...)
-	buf = append(buf, keyEvent(keyVK, 0, keyeventfKeyUp)...)
-	count += 2
-	// Release modifiers (reverse order).
 	for i := len(mods) - 1; i >= 0; i-- {
-		buf = append(buf, keyEvent(mods[i], 0, keyeventfKeyUp)...)
-		count++
+		modsUp = append(modsUp, keyEvent(mods[i], 0, keyeventfKeyUp)...)
 	}
-	return sendInputs(buf, count)
+	keyDown := keyEvent(keyVK, 0, 0)
+	keyUp := keyEvent(keyVK, 0, keyeventfKeyUp)
+
+	if holdMs <= 0 {
+		buf := append(append(append([]byte{}, modsDown...), keyDown...), keyUp...)
+		buf = append(buf, modsUp...)
+		return sendInputs(buf, len(mods)*2+2)
+	}
+
+	if len(mods) > 0 {
+		if err := sendInputs(modsDown, len(mods)); err != nil {
+			return err
+		}
+	}
+	if err := sendInputs(keyDown, 1); err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(time.Duration(holdMs) * time.Millisecond)
+	if remain := time.Until(deadline); remain > 0 {
+		wait := keyRepeatInitialDelay
+		if remain < wait {
+			wait = remain
+		}
+		time.Sleep(wait)
+	}
+	for time.Now().Before(deadline) {
+		if err := sendInputs(keyDown, 1); err != nil {
+			break
+		}
+		time.Sleep(keyRepeatInterval)
+	}
+
+	if err := sendInputs(keyUp, 1); err != nil {
+		return err
+	}
+	if len(mods) > 0 {
+		return sendInputs(modsUp, len(mods))
+	}
+	return nil
 }
 
 // resolveKeyVK maps a key token to a virtual-key code. Named keys come from

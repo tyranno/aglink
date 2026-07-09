@@ -412,6 +412,30 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// triple_click — left triple-click, selects a whole line/paragraph in most
+	// text editors and word processors (a gesture double_click doesn't cover).
+	s.AddTool(
+		mcp.NewTool("triple_click",
+			mcp.WithDescription("Left triple-click at absolute screen pixel (x,y) — selects a whole line or paragraph in most text editors/word processors."),
+			mcp.WithNumber("x", mcp.Description("Absolute X pixel on the virtual desktop."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Absolute Y pixel on the virtual desktop."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			if err := mouseTriple(x, y); err != nil {
+				return mcp.NewToolResultErrorFromErr("triple_click failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: triple-clicked at (%d,%d)", x, y)), nil
+		},
+	)
+
 	// type — type a Unicode string at the current focus.
 	s.AddTool(
 		mcp.NewTool("type",
@@ -433,16 +457,21 @@ func RunMCPScreen() error {
 	// key — press a key combo (e.g. "ctrl+c", "alt+f4", "enter").
 	s.AddTool(
 		mcp.NewTool("key",
-			mcp.WithDescription("Press a key or key combo such as 'enter', 'ctrl+c', 'alt+f4', 'ctrl+shift+s'. Modifiers: ctrl, alt, shift, win. Also supports system media keys, which work regardless of which window is focused: 'volumeup', 'volumedown', 'volumemute'/'mute', 'medianext', 'mediaprev', 'mediastop', 'mediaplay'/'playpause', 'printscreen'/'prtsc'."),
+			mcp.WithDescription("Press a key or key combo such as 'enter', 'ctrl+c', 'alt+f4', 'ctrl+shift+s'. Modifiers: ctrl, alt, shift, win. Also supports system media keys, which work regardless of which window is focused: 'volumeup', 'volumedown', 'volumemute'/'mute', 'medianext', 'mediaprev', 'mediastop', 'mediaplay'/'playpause', 'printscreen'/'prtsc'. Optional 'hold_ms' holds the key down for that many milliseconds before releasing, instead of an instant tap — for UIs/games that distinguish a long-press."),
 			mcp.WithString("combo", mcp.Description("Key combo, e.g. 'ctrl+c' or 'enter'."), mcp.Required()),
+			mcp.WithNumber("hold_ms", mcp.Description("Hold the key down this many milliseconds before releasing (default: instant tap).")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			combo, err := req.RequireString("combo")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'combo'"), nil
 			}
-			if err := keyCombo(combo); err != nil {
+			holdMs := req.GetInt("hold_ms", 0)
+			if err := keyComboHold(combo, holdMs); err != nil {
 				return mcp.NewToolResultErrorFromErr("key failed", err), nil
+			}
+			if holdMs > 0 {
+				return mcp.NewToolResultText(fmt.Sprintf("ok: held %q for %dms", combo, holdMs)), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("ok: pressed %q", combo)), nil
 		},

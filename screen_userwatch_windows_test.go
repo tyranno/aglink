@@ -56,7 +56,7 @@ func TestEnsureControlNoticeSkipsLeadWhenUserAbsent(t *testing.T) {
 }
 
 // TestEnsureControlNoticeKeepsLeadWhenUserRecentlyPresent verifies the other
-// side: if the watcher shows real input within userPresentWindowMS, the
+// side: if the watcher shows real input within userAwayThresholdMS, the
 // session-start lead delay must still apply — someone may be about to
 // collide with our synthetic input.
 func TestEnsureControlNoticeKeepsLeadWhenUserRecentlyPresent(t *testing.T) {
@@ -80,6 +80,39 @@ func TestEnsureControlNoticeKeepsLeadWhenUserRecentlyPresent(t *testing.T) {
 
 	if elapsed < 150*time.Millisecond {
 		t.Errorf("ensureControlNotice took only %v with a recently-present user — the lead delay should have applied", elapsed)
+	}
+}
+
+// TestEnsureControlNoticeKeepsLeadDuringNormalThinkingGap guards a live-found
+// regression: a user just watching the agent work (not touching their own
+// mouse/keyboard) routinely goes 8-10s of silence between tool calls — that
+// used to be misread as "the user stepped away" (it reused controlNoticeGap,
+// 8s, as the absence threshold) and skipped the lead delay, so the warning
+// toast ended up firing with no perceptible pause before control resumed
+// (reported live 2026-07-09: "토스트가 제어와 거의 동시에 뜬다"). 10s of
+// silence must still be well within "present" now that the threshold is
+// userAwayThresholdMS (3 minutes) — only real, multi-minute absence skips it.
+func TestEnsureControlNoticeKeepsLeadDuringNormalThinkingGap(t *testing.T) {
+	t.Setenv("AGLINK_NOTICE_LEAD_MS", "150")
+	withFastNotice(t)
+
+	origOK := userWatcherOK.Load()
+	origProbe := msSinceRealUserInput
+	t.Cleanup(func() {
+		userWatcherOK.Store(origOK)
+		msSinceRealUserInput = origProbe
+		lastSyntheticInput.Store(0)
+	})
+	userWatcherOK.Store(true)
+	msSinceRealUserInput = func() int64 { return int64(10 * time.Second / time.Millisecond) }
+	lastSyntheticInput.Store(0)
+
+	start := time.Now()
+	ensureControlNotice()
+	elapsed := time.Since(start)
+
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("ensureControlNotice took only %v after a normal 10s thinking gap — the lead delay must still apply; only real absence (userAwayThresholdMS) should skip it", elapsed)
 	}
 }
 

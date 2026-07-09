@@ -73,12 +73,21 @@ const (
 	noticeDefaultLeadMS = 1000
 	noticeMaxLeadMS     = 5000
 
-	// userPresentWindowMS: if real (non-synthetic) input was seen within this
-	// long ago, the user is considered "recently present" and the session-start
-	// lead delay still applies. Reuses the same span as controlNoticeGap: if
-	// nobody has touched the mouse/keyboard for that long, they are not at the
-	// desk right now and there is no one to warn — see ensureControlNotice.
-	userPresentWindowMS = int64(controlNoticeGap / time.Millisecond)
+	// userAwayThresholdMS: only when real (non-synthetic) input is older than
+	// this is the user considered to have stepped away from the desk, letting
+	// ensureControlNotice skip the session-start lead delay (no one to warn).
+	// This must be MUCH longer than controlNoticeGap (8s) — a user who is
+	// present but passively WATCHING the agent work (the common case, e.g.
+	// during normal LLM thinking time between tool calls) routinely goes many
+	// seconds without touching their own mouse/keyboard. Originally this reused
+	// controlNoticeGap directly, which meant the lead delay — and with it the
+	// entire point of the warning toast — was skipped on nearly every
+	// session-start call, since 8s of silence is the norm, not the exception,
+	// for someone just watching. Found live: 2026-07-09, "토스트가 제어와
+	// 거의 동시에 뜬다" (the notice appears to fire right as control starts,
+	// not before it). A few minutes of real silence is a far more honest
+	// signal that nobody is there to see the warning.
+	userAwayThresholdMS = int64(3 * time.Minute / time.Millisecond)
 )
 
 // userActiveWindowMS, userYieldPollEvery, userYieldMaxWait, and
@@ -179,10 +188,10 @@ func ensureControlNotice() {
 		// apart than controlNoticeGap) paid the full tax even when nobody was at
 		// the keyboard. Now that the low-level input watcher gives ground truth,
 		// skip it when the watcher is active AND has not seen real input within
-		// userPresentWindowMS — there is no one to warn. If the watcher failed to
+		// userAwayThresholdMS — there is no one to warn. If the watcher failed to
 		// install, userWatcherOK is false and we keep the old unconditional delay
 		// so the safety warning never silently disappears.
-		skipLead := userWatcherOK.Load() && msSinceRealUserInput() >= userPresentWindowMS
+		skipLead := userWatcherOK.Load() && msSinceRealUserInput() >= userAwayThresholdMS
 		if lead := noticeLeadMS(); lead > 0 && !skipLead {
 			time.Sleep(time.Duration(lead) * time.Millisecond)
 		}

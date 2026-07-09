@@ -3,6 +3,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -155,5 +157,63 @@ func TestWaitForWindowTimesOut(t *testing.T) {
 	}
 	if elapsed > 100*time.Millisecond+500*time.Millisecond {
 		t.Errorf("returned after %v — the timeout did not bound the wait", elapsed)
+	}
+}
+
+// TestFindStartMenuShortcutExactBeatsSubstring guards a live-found bug:
+// launch_app("Word") opened WordPad instead of Microsoft Word. Root cause was
+// a naive first-hit substring search over a filepath.Walk — "Accessories"
+// sorts before "Word.lnk" in the same Programs folder, so the walk reached
+// "Accessories\Wordpad.lnk" (a substring match for "word") before the
+// top-level "Word.lnk" (the exact match). An exact base-name match must win
+// regardless of which one the walk visits first.
+func TestFindStartMenuShortcutExactBeatsSubstring(t *testing.T) {
+	programData := t.TempDir()
+	programs := filepath.Join(programData, "Microsoft", "Windows", "Start Menu", "Programs")
+	accessories := filepath.Join(programs, "Accessories")
+	if err := os.MkdirAll(accessories, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the real layout: Wordpad.lnk lives in a subfolder the walk
+	// visits before the top-level Word.lnk (Accessories < Word.lnk lexically).
+	write := func(path string) {
+		if err := os.WriteFile(path, []byte("stub"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(accessories, "Wordpad.lnk"))
+	write(filepath.Join(programs, "Excel.lnk"))
+	write(filepath.Join(programs, "PowerPoint.lnk"))
+	write(filepath.Join(programs, "Word.lnk"))
+
+	t.Setenv("ProgramData", programData)
+	t.Setenv("APPDATA", t.TempDir()) // empty per-user dir, ProgramData is the only real root
+
+	got := findStartMenuShortcut("Word")
+	want := filepath.Join(programs, "Word.lnk")
+	if got != want {
+		t.Errorf("findStartMenuShortcut(%q) = %q, want exact match %q (not the Wordpad substring hit)", "Word", got, want)
+	}
+}
+
+// TestFindStartMenuShortcutSubstringFallback verifies the fallback path still
+// works for names with no exact match, e.g. "Chrome" -> "Google Chrome.lnk".
+func TestFindStartMenuShortcutSubstringFallback(t *testing.T) {
+	programData := t.TempDir()
+	programs := filepath.Join(programData, "Microsoft", "Windows", "Start Menu", "Programs")
+	if err := os.MkdirAll(programs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(programs, "Google Chrome.lnk")
+	if err := os.WriteFile(target, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ProgramData", programData)
+	t.Setenv("APPDATA", t.TempDir())
+
+	got := findStartMenuShortcut("Chrome")
+	if got != target {
+		t.Errorf("findStartMenuShortcut(%q) = %q, want substring fallback %q", "Chrome", got, target)
 	}
 }

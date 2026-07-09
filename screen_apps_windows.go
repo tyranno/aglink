@@ -778,11 +778,20 @@ func startMenuDirs() []string {
 }
 
 // findStartMenuShortcut walks the Start Menu Programs folders and returns the
-// path of the first *.lnk whose base name contains name (case-insensitive).
+// path of the *.lnk that best matches name: an exact base-name match (case-
+// insensitive) is always preferred over a substring match, even if a
+// substring hit is visited earlier in the walk — otherwise an ambiguous name
+// like "Word" resolves to "Accessories\Wordpad.lnk" (walked before the
+// top-level "Word.lnk" since filepath.Walk visits entries in lexical order
+// and "Accessories" < "Word.lnk") instead of the actual Microsoft Word
+// shortcut. Found live: launch_app("Word") opened WordPad. Substring match
+// remains the fallback for names with no exact hit (e.g. "Chrome" ->
+// "Google Chrome.lnk").
 func findStartMenuShortcut(name string) string {
 	needle := strings.ToLower(name)
+	var substringMatch string
 	for _, root := range startMenuDirs() {
-		var found string
+		var exactMatch string
 		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info == nil || info.IsDir() {
 				return nil
@@ -791,17 +800,20 @@ func findStartMenuShortcut(name string) string {
 				return nil
 			}
 			base := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
-			if strings.Contains(base, needle) {
-				found = path
+			if base == needle {
+				exactMatch = path
 				return filepath.SkipAll
+			}
+			if substringMatch == "" && strings.Contains(base, needle) {
+				substringMatch = path
 			}
 			return nil
 		})
-		if found != "" {
-			return found
+		if exactMatch != "" {
+			return exactMatch
 		}
 	}
-	return ""
+	return substringMatch
 }
 
 // shellStart launches a target (a .lnk path or an app name) via the shell's

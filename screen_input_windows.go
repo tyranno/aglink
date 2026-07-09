@@ -471,12 +471,38 @@ func typeText(s string) error {
 		return nil
 	}
 
+	// vkReturn matches vkMap["enter"] below — kept local so typeText doesn't
+	// depend on map lookup for its hot path.
+	const vkReturn = 0x0D
+
 	var buf []byte
-	for _, u := range units {
+	count := 0
+	for i := 0; i < len(units); i++ {
+		u := units[i]
+		// A KEYEVENTF_UNICODE character event for CR/LF does NOT behave like
+		// pressing Enter in every app — e.g. VS Code's Monaco editor silently
+		// drops a raw WM_CHAR(0x0A) instead of inserting a line break, since it
+		// expects Enter as an actual VK_RETURN key event, not a composed
+		// character (found by testing: typing a multi-line string into a new
+		// VS Code file collapsed everything onto one line, dropping the
+		// leading text along with every embedded newline). Send a real
+		// VK_RETURN tap instead — the same mechanism key("enter") uses — and
+		// collapse a \r\n pair into a single Enter so CRLF-encoded input
+		// doesn't produce a double line break.
+		if u == '\r' || u == '\n' {
+			if u == '\r' && i+1 < len(units) && units[i+1] == '\n' {
+				i++
+			}
+			buf = append(buf, keyEvent(vkReturn, 0, 0)...)
+			buf = append(buf, keyEvent(vkReturn, 0, keyeventfKeyUp)...)
+			count += 2
+			continue
+		}
 		buf = append(buf, keyEvent(0, u, keyeventfUnicode)...)
 		buf = append(buf, keyEvent(0, u, keyeventfUnicode|keyeventfKeyUp)...)
+		count += 2
 	}
-	return sendInputs(buf, len(units)*2)
+	return sendInputs(buf, count)
 }
 
 // keyCombo parses a combo like "ctrl+c", "alt+f4", "ctrl+shift+s" or a bare key

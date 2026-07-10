@@ -78,9 +78,12 @@ func helpMentionsIgnoreUserConfig(stdout, stderr string) bool {
 // CLI builds don't have this flag yet — found live (2026-07-09) when a
 // tester's install rejected every codex-backed turn with "error: unexpected
 // argument '--ephemeral' found". Same probing approach as
-// supportsIgnoreUserConfig: if the probe fails, conservatively report false
-// so the turn still runs (falling back to the REPL-loop stdin behavior)
-// instead of never starting at all.
+// supportsIgnoreUserConfig: if the probe fails, conservatively report false so
+// the call still runs instead of never starting at all.
+//
+// Only Route uses it. A worker turn must NOT be ephemeral: codex records no
+// rollout for an ephemeral turn, and without a rollout `exec resume <thread>`
+// cannot continue the conversation (see codexRunBaseArgs).
 func (r *codexRunner) supportsEphemeral() bool {
 	r.ephemeralOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -676,6 +679,28 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	return dec, nil
 }
 
+// codexRunBaseArgs builds the leading arguments of a worker turn: the exec
+// subcommand, the working directory, and — when the conversation already owns a
+// codex thread — the resume subcommand that continues it.
+//
+// Split out from Run so the resume wiring is testable without spawning codex.
+// The order matters: codex rejects `exec resume <id> -C <dir>` with "unexpected
+// argument '-C'", so -C has to come first.
+func codexRunBaseArgs(workDir, sessionID string, resume, ignoreUserConfig bool) []string {
+	args := []string{"exec", "-C", workDir}
+	if resume && sessionID != "" {
+		args = append(args, "resume", sessionID)
+	}
+	if ignoreUserConfig {
+		args = append(args, "--ignore-user-config")
+	}
+	return append(args,
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--skip-git-repo-check",
+		"--json",
+	)
+}
+
 // Run executes a worker turn via codex exec.
 // Uses a powerful model (codex_model) for actual work.
 func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -690,22 +715,20 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 		model = codexWorkerModel(r.cfg())
 	}
 
-	// Codex exec without --ephemeral enters a REPL loop and waits for more stdin after
-	// each turn, causing "Reading additional input from stdin..." on EOF.
-	// With --ephemeral, exec runs a single non-interactive turn and exits cleanly.
-	// Conversation context is preserved via buildContextPrompt (history in every prompt).
-	args := []string{"exec", "-C", req.WorkDir}
-	if r.supportsIgnoreUserConfig() {
-		args = append(args, "--ignore-user-config")
-	}
-	args = append(args,
-		"--dangerously-bypass-approvals-and-sandbox",
-		"--skip-git-repo-check",
-	)
-	if r.supportsEphemeral() {
-		args = append(args, "--ephemeral")
-	}
-	args = append(args, "--json")
+	// Continue the conversation's codex thread when we have one. Without this the
+	// worker only ever saw the few history turns buildContextPrompt inlines, so a
+	// long conversation was answered from a three-turn memory; resuming also lets
+	// the server reuse its prompt cache (cached_input_tokens on turn.completed).
+	//
+	// --ephemeral is what prevented it: an ephemeral turn records no rollout, so
+	// `exec resume <id>` fails with "no rollout found". It was there because exec
+	// otherwise waits for more stdin after a turn — but only when stdin stays
+	// open, and r.exec passes no stdin here, so the turn ends on EOF regardless.
+	// Route still uses --ephemeral: a throwaway classification should not leave a
+	// rollout behind.
+	//
+	// -C must precede the resume subcommand; codex rejects `resume <id> -C dir`.
+	args := codexRunBaseArgs(req.WorkDir, req.SessionID, req.Resume, r.supportsIgnoreUserConfig())
 	if useOutFile {
 		args = append(args, "-o", outFile)
 	}

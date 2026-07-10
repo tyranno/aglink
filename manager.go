@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -138,6 +139,34 @@ func detectBackendSwitchIntent(text string) string {
 	return ""
 }
 
+// scheduleWordRe matches an explicit request to schedule or be reminded.
+var scheduleWordRe = regexp.MustCompile(`(?i)예약|스케줄|스케쥴|리마인|알림|크론|cron|schedule|remind`)
+
+// scheduleTimeRe matches the temporal shapes a scheduling request takes: a
+// recurrence ("매일", "every 5 minutes", "daily"), a delay ("30분 뒤", "in 2
+// hours"), or a clock time ("14:30", "3시", "at 9am").
+var scheduleTimeRe = regexp.MustCompile(`(?i)매\s*(일|주|시간|분|달|초)|내일|모레|이따|잠시\s*후|` +
+	`\d+\s*(초|분|시간|일|주)\s*(뒤|후)|\d{1,2}\s*:\s*\d{2}|\d{1,2}\s*시\b|오전|오후|` +
+	`\bdaily\b|\bhourly\b|\bweekly\b|\btomorrow\b|every\s+\d*\s*(second|minute|hour|day|week)|` +
+	`\bin\s+\d+\s*(second|minute|hour|day|week)s?\b|\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)\b`)
+
+// mightBeScheduleRequest is the cheap gate in front of the manager LLM call.
+//
+// Every telegram message used to pay for one Route() round-trip whose only jobs
+// were to spot a scheduling request and hand back a project hint — measured at 7
+// to 20 seconds on the codex manager model, before the worker even started. The
+// project hint is redundant (detectProjectSwitchIntent already resolves it
+// locally), so the LLM is now only consulted when the text carries some surface
+// sign of scheduling.
+//
+// It errs toward calling the LLM: a false positive merely costs what every
+// message used to cost. A false negative means a scheduling request is answered
+// as an ordinary turn — the user can rephrase, or use !task / !remind / !cron,
+// which never went through this path.
+func mightBeScheduleRequest(text string) bool {
+	return scheduleWordRe.MatchString(text) || scheduleTimeRe.MatchString(text)
+}
+
 // detectProjectSwitchIntent returns a registered project name mentioned in text,
 // preferring the longest match (so "voice-server" wins over "voice"). Case-
 // insensitive. Deterministic; no LLM. Returns ("", false) when none match.
@@ -222,17 +251,22 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 		}
 	}
 
-	// One manager LLM call: honor a schedule request; otherwise keep the project hint.
-	m.backendMu.RLock()
-	routeClient := m.client
-	m.backendMu.RUnlock()
+	// The manager LLM call exists to honor a schedule request (and, incidentally,
+	// to hint at a project). It is skipped unless the message looks like one:
+	// otherwise every message paid 7-20s for a routing decision the local
+	// detectors below already make. See mightBeScheduleRequest.
 	hint := ""
-	if dec, err := routeClient.Route(ctx, m.buildRouteRequest(text)); err == nil {
-		if dec.Action == ActionSchedule {
-			m.handleSchedule(chatID, dec, s)
-			return
+	if mightBeScheduleRequest(text) {
+		m.backendMu.RLock()
+		routeClient := m.client
+		m.backendMu.RUnlock()
+		if dec, err := routeClient.Route(ctx, m.buildRouteRequest(text)); err == nil {
+			if dec.Action == ActionSchedule {
+				m.handleSchedule(chatID, dec, s)
+				return
+			}
+			hint = dec.Project
 		}
-		hint = dec.Project
 	}
 
 	// Working directory: the active project's path if set & valid, else the service
@@ -587,7 +621,10 @@ func isContextOverflow(text string) bool {
 func isSessionNotFound(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "no conversation found") ||
-		strings.Contains(lower, "session not found")
+		strings.Contains(lower, "session not found") ||
+		// codex, when the rollout behind a thread id is gone (pruned, or the
+		// thread was first created before we stopped passing --ephemeral).
+		strings.Contains(lower, "no rollout found")
 }
 
 // workerModelForBackend returns the right model string based on the active backend.

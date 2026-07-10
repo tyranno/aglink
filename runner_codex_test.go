@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,163 @@ func TestHelpMentionsIgnoreUserConfig(t *testing.T) {
 	}
 	if helpMentionsIgnoreUserConfig("", "") {
 		t.Error("empty output (failed probe) must not be reported as supporting the flag")
+	}
+}
+
+// TestHelpMentionsEphemeral guards a live-found bug: an older codex CLI that
+// doesn't support --ephemeral rejected every codex-backed turn with "error:
+// unexpected argument '--ephemeral' found". The runner probes `codex exec
+// --help` once and must correctly detect presence/absence so it only passes
+// the flag to codex builds that actually accept it.
+func TestHelpMentionsEphemeral(t *testing.T) {
+	newerHelp := "      --ephemeral\n          Run a single non-interactive turn and exit\n"
+	olderHelp := "  -C, --cd <DIR>\n          Tell the agent to use the specified directory as its working root\n"
+
+	if !helpMentionsEphemeral(newerHelp, "") {
+		t.Error("newer codex --help output mentions --ephemeral but was not detected")
+	}
+	if helpMentionsEphemeral(olderHelp, "") {
+		t.Error("older codex --help output (no --ephemeral) was incorrectly detected as supporting it")
+	}
+	// codex sometimes writes --help to stderr depending on version/platform.
+	if !helpMentionsEphemeral("", newerHelp) {
+		t.Error("--ephemeral on stderr was not detected")
+	}
+	if helpMentionsEphemeral("", "") {
+		t.Error("empty output (failed probe) must not be reported as supporting the flag")
+	}
+}
+
+// TestHelpMentionsOutputLastMessage guards a live-found bug: an older codex
+// CLI that doesn't support -o/--output-last-message rejected every
+// codex-backed turn with "error: unexpected argument '-o' found". The runner
+// probes `codex exec --help` once and must correctly detect presence/absence
+// so it only passes the flag to codex builds that actually accept it.
+func TestHelpMentionsOutputLastMessage(t *testing.T) {
+	newerHelp := "  -o, --output-last-message <FILE>\n          Specifies file where the last message from the agent should be written\n"
+	olderHelp := "  -C, --cd <DIR>\n          Tell the agent to use the specified directory as its working root\n"
+
+	if !helpMentionsOutputLastMessage(newerHelp, "") {
+		t.Error("newer codex --help output mentions --output-last-message but was not detected")
+	}
+	if helpMentionsOutputLastMessage(olderHelp, "") {
+		t.Error("older codex --help output (no --output-last-message) was incorrectly detected as supporting it")
+	}
+	// codex sometimes writes --help to stderr depending on version/platform.
+	if !helpMentionsOutputLastMessage("", newerHelp) {
+		t.Error("--output-last-message on stderr was not detected")
+	}
+	if helpMentionsOutputLastMessage("", "") {
+		t.Error("empty output (failed probe) must not be reported as supporting the flag")
+	}
+}
+
+// TestExtractLastAgentMessage guards the fallback used when
+// supportsOutputLastMessage is false: the final answer must come out of the
+// --json NDJSON stream itself, picking the LAST agent_message item (earlier
+// ones may just be the agent narrating its plan).
+func TestExtractLastAgentMessage(t *testing.T) {
+	jsonl := `{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"thinking out loud"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"final answer"}}
+{"type":"turn.completed","usage":{}}`
+
+	if got := extractLastAgentMessage(jsonl); got != "final answer" {
+		t.Errorf("extractLastAgentMessage() = %q, want %q", got, "final answer")
+	}
+	if got := extractLastAgentMessage(""); got != "" {
+		t.Errorf("extractLastAgentMessage(\"\") = %q, want empty", got)
+	}
+}
+
+func TestExtractLastAgentMessageLegacyAgentMessageEvent(t *testing.T) {
+	jsonl := `{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.started"}
+{"type":"agent_reasoning","content":"thinking out loud"}
+{"type":"agent_message","content":"final answer"}`
+
+	if got := extractLastAgentMessage(jsonl); got != "final answer" {
+		t.Errorf("extractLastAgentMessage() = %q, want %q", got, "final answer")
+	}
+}
+
+// TestParseCodexVersion covers the version-token extraction used by the codex
+// readiness notice: it must survive both `codex --version` and `codex exec
+// --version` label forms and return "" when no version is present.
+func TestParseCodexVersion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"codex-cli 0.142.5", "0.142.5"},
+		{"codex-cli-exec 0.142.5", "0.142.5"},
+		{"  codex-cli   1.0.0  \n", "1.0.0"},
+		{"codex-cli 0.142.5\ncodex-cli-exec 0.142.5", "0.142.5"},
+		{"no version here", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := parseCodexVersion(c.in); got != c.want {
+			t.Errorf("parseCodexVersion(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestCodexReadinessDecision locks the gate logic: a codex missing
+// --ignore-user-config is blocked with upgrade guidance naming the version; a
+// ready codex emits a one-time notice on first use and proceeds silently after.
+func TestCodexReadinessDecision(t *testing.T) {
+	// Not ready → blocked, guidance names the detected version and upgrade cmd.
+	ok, msg := codexReadinessDecision(false, "0.10.0", true)
+	if ok {
+		t.Fatal("missing --ignore-user-config must block the turn")
+	}
+	if !strings.Contains(msg, "0.10.0") {
+		t.Errorf("block guidance should name the detected version, got: %q", msg)
+	}
+	if !strings.Contains(msg, "npm i -g @openai/codex@latest") {
+		t.Errorf("block guidance should include the upgrade command, got: %q", msg)
+	}
+
+	// Not ready with unknown version → still blocked, no empty version leak.
+	ok, msg = codexReadinessDecision(false, "", true)
+	if ok || !strings.Contains(msg, "알 수 없음") {
+		t.Errorf("blocked-with-unknown-version = (%v, %q)", ok, msg)
+	}
+
+	// Ready + first use → proceed with a one-time notice naming the version.
+	ok, msg = codexReadinessDecision(true, "0.142.5", true)
+	if !ok {
+		t.Fatal("ready codex must proceed")
+	}
+	if !strings.Contains(msg, "0.142.5") {
+		t.Errorf("ready notice should name the version, got: %q", msg)
+	}
+
+	// Ready + not first use → proceed silently (no repeated notice).
+	ok, msg = codexReadinessDecision(true, "0.142.5", false)
+	if !ok || msg != "" {
+		t.Errorf("subsequent ready turns must proceed silently, got (%v, %q)", ok, msg)
+	}
+}
+
+// TestCodexRunnerCheckReadinessNoticeFiresOnce verifies the runner-level
+// one-time guard: with the capability probe pre-seeded true (no process
+// spawned), the first CheckReadiness returns a notice and the second is silent.
+func TestCodexRunnerCheckReadinessNoticeFiresOnce(t *testing.T) {
+	r := &codexRunner{}
+	// Pre-seed the probes so CheckReadiness doesn't spawn codex.
+	r.ignoreUserConfigOnce.Do(func() { r.ignoreUserConfigOK = true })
+	r.versionOnce.Do(func() { r.versionStr = "0.142.5" })
+
+	ok, msg := r.CheckReadiness()
+	if !ok || msg == "" {
+		t.Fatalf("first CheckReadiness = (%v, %q), want ready + notice", ok, msg)
+	}
+	ok2, msg2 := r.CheckReadiness()
+	if !ok2 || msg2 != "" {
+		t.Errorf("second CheckReadiness = (%v, %q), want ready + silent", ok2, msg2)
 	}
 }

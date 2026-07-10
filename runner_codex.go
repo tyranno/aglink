@@ -27,6 +27,25 @@ type codexRunner struct {
 	// cached for this runner's lifetime.
 	ignoreUserConfigOnce sync.Once
 	ignoreUserConfigOK   bool
+
+	// ephemeralOnce/OK back supportsEphemeral — a one-time probe cached for
+	// this runner's lifetime.
+	ephemeralOnce sync.Once
+	ephemeralOK   bool
+
+	// outputLastMessageOnce/OK back supportsOutputLastMessage — a one-time
+	// probe cached for this runner's lifetime.
+	outputLastMessageOnce sync.Once
+	outputLastMessageOK   bool
+
+	// versionOnce/Str cache the codex CLI version string ("0.142.5"), detected
+	// once via `codex --version` for the readiness notice.
+	versionOnce sync.Once
+	versionStr  string
+
+	// readyNoticeOnce guards the one-time "codex backend ready" heads-up so it
+	// fires only on the first codex-backed worker turn of this runner's life.
+	readyNoticeOnce sync.Once
 }
 
 // supportsIgnoreUserConfig reports whether the installed codex CLI accepts
@@ -52,6 +71,144 @@ func (r *codexRunner) supportsIgnoreUserConfig() bool {
 // split out so it's testable without spawning a real codex process.
 func helpMentionsIgnoreUserConfig(stdout, stderr string) bool {
 	return strings.Contains(stdout, "--ignore-user-config") || strings.Contains(stderr, "--ignore-user-config")
+}
+
+// supportsEphemeral reports whether the installed codex CLI accepts
+// --ephemeral, probed once via `codex exec --help` and cached. Older codex
+// CLI builds don't have this flag yet — found live (2026-07-09) when a
+// tester's install rejected every codex-backed turn with "error: unexpected
+// argument '--ephemeral' found". Same probing approach as
+// supportsIgnoreUserConfig: if the probe fails, conservatively report false
+// so the turn still runs (falling back to the REPL-loop stdin behavior)
+// instead of never starting at all.
+func (r *codexRunner) supportsEphemeral() bool {
+	r.ephemeralOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "")
+		r.ephemeralOK = helpMentionsEphemeral(stdout, stderr)
+	})
+	return r.ephemeralOK
+}
+
+// helpMentionsEphemeral is the pure decision behind supportsEphemeral, split
+// out so it's testable without spawning a real codex process.
+func helpMentionsEphemeral(stdout, stderr string) bool {
+	return strings.Contains(stdout, "--ephemeral") || strings.Contains(stderr, "--ephemeral")
+}
+
+// supportsOutputLastMessage reports whether the installed codex CLI accepts
+// -o/--output-last-message, probed once via `codex exec --help` and cached.
+// Older codex CLI builds don't have this flag yet — found live (2026-07-09)
+// when a tester's install rejected every codex-backed turn with "error:
+// unexpected argument '-o' found". Same probing approach as
+// supportsIgnoreUserConfig/supportsEphemeral: if the probe fails,
+// conservatively report false so the turn falls back to reading the final
+// agent_message straight out of the --json stdout stream instead of never
+// starting at all.
+func (r *codexRunner) supportsOutputLastMessage() bool {
+	r.outputLastMessageOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "")
+		r.outputLastMessageOK = helpMentionsOutputLastMessage(stdout, stderr)
+	})
+	return r.outputLastMessageOK
+}
+
+// helpMentionsOutputLastMessage is the pure decision behind
+// supportsOutputLastMessage, split out so it's testable without spawning a
+// real codex process.
+func helpMentionsOutputLastMessage(stdout, stderr string) bool {
+	return strings.Contains(stdout, "--output-last-message") || strings.Contains(stderr, "--output-last-message")
+}
+
+// codexVersion detects the installed codex CLI version once via `codex
+// --version` ("codex-cli 0.142.5" → "0.142.5") and caches it. Best-effort: an
+// empty string means the version couldn't be determined (surfaced to the user
+// as "알 수 없음" in the readiness messages).
+func (r *codexRunner) codexVersion() string {
+	r.versionOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stdout, stderr, _ := r.exec(ctx, "", []string{"--version"}, "")
+		r.versionStr = parseCodexVersion(stdout + " " + stderr)
+	})
+	return r.versionStr
+}
+
+// parseCodexVersion pulls the semver-ish token out of `codex --version` output.
+// It scans for the first whitespace-separated field that starts with a digit
+// and contains a dot, so it survives label changes ("codex-cli 0.142.5",
+// "codex-cli-exec 0.142.5"). Returns "" when nothing matches.
+func parseCodexVersion(out string) string {
+	for _, f := range strings.Fields(out) {
+		if len(f) > 0 && f[0] >= '0' && f[0] <= '9' && strings.Contains(f, ".") {
+			return f
+		}
+	}
+	return ""
+}
+
+// CheckReadiness gates a codex-backed worker turn on CLI capability and returns
+// a one-time heads-up. It implements the backendReadiness interface the manager
+// consults before running a turn.
+//
+// The gate is --ignore-user-config support: without it, an older codex-cli
+// pulls the user's global ~/.codex config (skills, MCP servers) into every
+// turn, which was observed to break execution outright (the sandbox setup
+// helper exiting non-zero while running a skill's shell command). So a codex
+// too old to accept the flag is blocked with upgrade guidance rather than left
+// to dead-end mid-turn. When ready, the first call returns a one-time notice
+// naming the detected version; later calls return ("", true).
+func (r *codexRunner) CheckReadiness() (ok bool, msg string) {
+	hasIgnoreUserConfig := r.supportsIgnoreUserConfig()
+	version := r.codexVersion()
+	first := false
+	if hasIgnoreUserConfig {
+		r.readyNoticeOnce.Do(func() { first = true })
+	}
+	return codexReadinessDecision(hasIgnoreUserConfig, version, first)
+}
+
+// codexReadinessDecision is the pure logic behind CheckReadiness, split out so
+// it's testable without spawning codex. ok=false → block the turn and show msg;
+// ok=true with a non-empty msg → one-time informational notice; ok=true with an
+// empty msg → proceed silently.
+func codexReadinessDecision(hasIgnoreUserConfig bool, version string, firstUse bool) (ok bool, msg string) {
+	if !hasIgnoreUserConfig {
+		return false, codexUpgradeGuidance(version)
+	}
+	if firstUse {
+		return true, codexReadyNotice(version)
+	}
+	return true, ""
+}
+
+// codexUpgradeGuidance is the block message shown when the installed codex-cli
+// is too old to run a clean turn. It names the detected version and the exact
+// upgrade command.
+func codexUpgradeGuidance(version string) string {
+	v := version
+	if v == "" {
+		v = "알 수 없음"
+	}
+	return "⚠️ codex 백엔드를 사용할 수 없습니다 (설치된 codex-cli: " + v + ").\n\n" +
+		"정상 동작에 필요한 `--ignore-user-config` 옵션을 이 버전은 지원하지 않습니다. " +
+		"이 옵션이 없으면 사용자 전역 ~/.codex 설정(스킬·MCP)이 매 턴에 끼어들어 실행이 실패합니다.\n\n" +
+		"최신 codex-cli로 업데이트한 뒤 다시 시도하세요:\n" +
+		"  npm i -g @openai/codex@latest\n" +
+		"또는 설정에서 백엔드를 claude로 전환하세요."
+}
+
+// codexReadyNotice is the one-time heads-up shown on the first codex-backed
+// worker turn, confirming the detected version supports the required options.
+func codexReadyNotice(version string) string {
+	v := version
+	if v == "" {
+		v = "확인 불가"
+	}
+	return "ℹ️ codex 백엔드 v" + v + " 사용 중 — 정상 동작에 필요한 옵션(--ignore-user-config 등)을 모두 지원합니다."
 }
 
 func (r *codexRunner) cfg() *Config { return r.cfgh.Get() }
@@ -256,6 +413,45 @@ func parseCodexOutput(content string) string {
 	return strings.TrimSpace(content)
 }
 
+// extractLastAgentMessage scans --json NDJSON output for the last agent
+// message. Newer codex emits item.completed events with item.type ==
+// "agent_message"; older builds emitted top-level agent_message events with a
+// content field. This is the fallback used in place of -o/--output-last-message
+// on codex CLI builds too old to support that flag.
+func extractLastAgentMessage(jsonl string) string {
+	last := ""
+	for _, line := range strings.Split(jsonl, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			Type    string `json:"type"`
+			Content string `json:"content"`
+			Text    string `json:"text"`
+			Item    *struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"item"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		if ev.Type == "item.completed" && ev.Item != nil && ev.Item.Type == "agent_message" {
+			last = ev.Item.Text
+			continue
+		}
+		if ev.Type == "agent_message" {
+			if ev.Content != "" {
+				last = ev.Content
+			} else {
+				last = ev.Text
+			}
+		}
+	}
+	return strings.TrimSpace(last)
+}
+
 // parseCodexRouteDecision parses a RouteDecision from the codex output string.
 func parseCodexRouteDecision(s string) (RouteDecision, error) {
 	if dec, ok := unmarshalDecision(s); ok {
@@ -418,13 +614,17 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	routeCtx, routeCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer routeCancel()
 
-	of, err := os.CreateTemp("", "teleclaude_route_out_*.txt")
-	if err != nil {
-		return RouteDecision{}, fmt.Errorf("codex route 출력 임시 파일 생성 실패: %w", err)
+	useOutFile := r.supportsOutputLastMessage()
+	var outFile string
+	if useOutFile {
+		of, err := os.CreateTemp("", "teleclaude_route_out_*.txt")
+		if err != nil {
+			return RouteDecision{}, fmt.Errorf("codex route 출력 임시 파일 생성 실패: %w", err)
+		}
+		outFile = of.Name()
+		of.Close()
+		defer os.Remove(outFile)
 	}
-	outFile := of.Name()
-	of.Close()
-	defer os.Remove(outFile)
 
 	prompt := buildRoutePrompt(req)
 	args := []string{"exec"}
@@ -434,11 +634,17 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	args = append(args,
 		"--skip-git-repo-check",
 		"--dangerously-bypass-approvals-and-sandbox",
-		"--ephemeral",
+	)
+	if r.supportsEphemeral() {
+		args = append(args, "--ephemeral")
+	}
+	args = append(args,
 		"--sandbox", "read-only",
 		"--json",
-		"-o", outFile,
 	)
+	if useOutFile {
+		args = append(args, "-o", outFile)
+	}
 	if m := codexManagerModel(r.cfg()); m != "" {
 		args = append(args, "-m", m)
 	}
@@ -446,18 +652,24 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 
 	log.Printf("[codex] route: model=%q projects=%d", codexManagerModel(r.cfg()), len(req.Projects))
 	home, _ := os.UserHomeDir()
-	_, stderr, err := r.exec(routeCtx, home, args, "")
+	stdout, stderr, err := r.exec(routeCtx, home, args, "")
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("codex manager 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
 	}
 
-	content, rerr := os.ReadFile(outFile)
-	if rerr != nil {
-		return RouteDecision{}, fmt.Errorf("codex route 결과 파일 읽기 실패: %w", rerr)
+	raw := ""
+	if useOutFile {
+		content, rerr := os.ReadFile(outFile)
+		if rerr != nil {
+			return RouteDecision{}, fmt.Errorf("codex route 결과 파일 읽기 실패: %w", rerr)
+		}
+		raw = string(content)
+	} else {
+		raw = extractLastAgentMessage(stdout)
 	}
-	dec, perr := parseCodexRouteDecision(string(content))
+	dec, perr := parseCodexRouteDecision(raw)
 	if perr != nil {
-		log.Printf("[codex] route parse error — raw output: %q", string(content))
+		log.Printf("[codex] route parse error — raw output: %q", raw)
 		return RouteDecision{}, perr
 	}
 	log.Printf("[codex] route: action=%s project=%q conv=%q", dec.Action, dec.Project, dec.ConversationID)
@@ -467,8 +679,11 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 // Run executes a worker turn via codex exec.
 // Uses a powerful model (codex_model) for actual work.
 func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	useOutFile := r.supportsOutputLastMessage()
 	outFile := filepath.Join(os.TempDir(), fmt.Sprintf("teleclaude_codex_%d_%s.txt", os.Getpid(), req.SessionID))
-	defer os.Remove(outFile)
+	if useOutFile {
+		defer os.Remove(outFile)
+	}
 
 	model := req.Model
 	if model == "" {
@@ -486,10 +701,14 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	args = append(args,
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--skip-git-repo-check",
-		"--ephemeral",
-		"--json",
-		"-o", outFile,
 	)
+	if r.supportsEphemeral() {
+		args = append(args, "--ephemeral")
+	}
+	args = append(args, "--json")
+	if useOutFile {
+		args = append(args, "-o", outFile)
+	}
 	if model != "" {
 		args = append(args, "-m", model)
 	}
@@ -525,9 +744,14 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 			return RunResult{}, ctx.Err()
 		}
 		// Read output file even on non-zero exit — codex may still produce output.
-		if content, rerr := os.ReadFile(outFile); rerr == nil && len(content) > 0 {
-			log.Printf("[codex] run: partial output on error (%d bytes)", len(content))
-			return RunResult{Text: parseCodexOutput(string(content))}, nil
+		if useOutFile {
+			if content, rerr := os.ReadFile(outFile); rerr == nil && len(content) > 0 {
+				log.Printf("[codex] run: partial output on error (%d bytes)", len(content))
+				return RunResult{Text: parseCodexOutput(string(content))}, nil
+			}
+		} else if text := extractLastAgentMessage(stdout); text != "" {
+			log.Printf("[codex] run: partial output on error (%d bytes)", len(text))
+			return RunResult{Text: text}, nil
 		}
 		return RunResult{}, fmt.Errorf("codex worker 실행 실패: %w (%s)", err, strings.TrimSpace(stderr))
 	}
@@ -538,12 +762,16 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 		log.Printf("[codex] warning: thread_id not found in JSONL output; session resume may not work")
 	}
 
-	content, rerr := os.ReadFile(outFile)
-	if rerr != nil {
-		return RunResult{}, fmt.Errorf("codex 결과 파일 읽기 실패: %w", rerr)
+	var text string
+	if useOutFile {
+		content, rerr := os.ReadFile(outFile)
+		if rerr != nil {
+			return RunResult{}, fmt.Errorf("codex 결과 파일 읽기 실패: %w", rerr)
+		}
+		text = parseCodexOutput(string(content))
+	} else {
+		text = extractLastAgentMessage(stdout)
 	}
-
-	text := parseCodexOutput(string(content))
 	log.Printf("[codex] run done: output=%d bytes session=%s", len(text), threadID)
 
 	result := RunResult{Text: text}

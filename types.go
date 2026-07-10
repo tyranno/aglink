@@ -225,6 +225,18 @@ type ClaudeClient interface {
 	Run(ctx context.Context, req RunRequest) (RunResult, error)
 }
 
+// backendReadiness is an optional interface a ClaudeClient may implement to gate
+// a worker turn on CLI capability and surface a one-time heads-up before the
+// first turn. The manager consults it (via a type assertion) right before
+// running a turn. Only codexRunner implements it — claudeRunner does not, so
+// claude-backed turns skip the check entirely.
+type backendReadiness interface {
+	// CheckReadiness reports whether a worker turn may proceed. ok=false means
+	// block the turn and show msg to the user. ok=true with a non-empty msg is a
+	// one-time informational notice to show before the turn.
+	CheckReadiness() (ok bool, msg string)
+}
+
 // --- Worker status tracking (real-time monitoring) ---
 
 // WorkerStatus tracks the state of a running or completed Worker task.

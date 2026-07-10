@@ -817,6 +817,27 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	})
 
 	startTime := time.Now()
+	// Gate the turn on backend CLI readiness before any "starting" signal or
+	// heartbeat. Only codexRunner implements backendReadiness: an older codex-cli
+	// missing --ignore-user-config can't run a clean turn, so block with upgrade
+	// guidance instead of dead-ending mid-turn; on the first ready codex turn,
+	// surface a one-time heads-up naming the detected version. Claude-backed
+	// turns don't implement the interface and skip this entirely.
+	if rc, ok := client.(backendReadiness); ok {
+		proceed, msg := rc.CheckReadiness()
+		if !proceed {
+			log.Printf("[worker] ✗ backend=%s blocked: CLI not ready", backend)
+			if msg != "" {
+				_ = s.Send(chatID, msg)
+			}
+			_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", "backend not ready")
+			return
+		}
+		if msg != "" {
+			_ = s.Send(chatID, msg)
+		}
+	}
+
 	// Give the user a sense of scale before the wait starts, not just silence
 	// until the (up to 2-minute-away) first heartbeat tick — a turn that
 	// finishes in 90s currently produces zero progress signal at all.

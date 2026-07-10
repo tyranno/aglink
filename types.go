@@ -189,6 +189,19 @@ type Target struct {
 // TelegramTarget is the global telegram stream.
 func TelegramTarget() Target { return Target{Kind: TargetTelegram} }
 
+// WebTarget names a specific web topic. Anything addressed to a web target is
+// withheld from Telegram by Hub.targets, so web-only operations can never leak.
+func WebTarget(id string) Target { return Target{Kind: TargetWeb, ID: id} }
+
+// AsWebTarget coerces t to a web target, so a reply to a web-only operation can
+// never be addressed to the telegram stream even if the requester sent no target.
+func AsWebTarget(t Target) Target {
+	if t.IsWeb() {
+		return t
+	}
+	return Target{Kind: TargetWeb}
+}
+
 // IsWeb reports whether t addresses a web topic rather than the telegram stream.
 func (t Target) IsWeb() bool { return t.Kind == TargetWeb }
 

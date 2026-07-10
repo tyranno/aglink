@@ -88,7 +88,7 @@ func TestHandleChat_NewFromWeb_TagsWebOrigin(t *testing.T) {
 
 	b := &Bot{store: st}
 	b.out = NewHub()
-	b.handleChat(7, "!chat new 웹세션", strings.Fields("!chat new 웹세션"), OriginWeb)
+	b.handleChat(b.ReplyTo(TelegramTarget()), 7, "!chat new 웹세션", strings.Fields("!chat new 웹세션"), OriginWeb)
 
 	p, _ := st.GetProject("p")
 	found := false

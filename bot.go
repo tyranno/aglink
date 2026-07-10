@@ -29,6 +29,16 @@ type queuedMsg struct {
 	target *Target // non-nil for web sends with an explicit target (telegram stream vs web topic)
 }
 
+// conversation is where this message's queue/timeout/cancel notices belong: the
+// conversation it was sent from. A message with no explicit target (Telegram
+// input, scheduled tasks) belongs to the telegram stream.
+func (m queuedMsg) conversation() Target {
+	if m.target != nil {
+		return *m.target
+	}
+	return TelegramTarget()
+}
+
 // Bot dispatches Telegram messages to concurrent Workers.
 // Up to cfg.MaxWorkers (default 3) can run at the same time; extras are queued.
 type Bot struct {
@@ -189,6 +199,16 @@ func (s boundSender) SendPhoto(chatID int64, png []byte, caption string) error {
 func (s boundSender) Typing(chatID int64) { s.hub.Typing(s.tgt, chatID) }
 func (s boundSender) Done(chatID int64)   { s.hub.Done(s.tgt, chatID) }
 
+// replySender is the output surface a command handler needs to answer the
+// conversation it was invoked from: text, images (!screen), and indicators.
+type replySender interface {
+	MessageSender
+	SendPhoto(chatID int64, png []byte, caption string) error
+}
+
+// ReplyTo returns a sender that answers only tgt's conversation.
+func (b *Bot) ReplyTo(tgt Target) replySender { return boundSender{hub: b.out, tgt: tgt} }
+
 // targetBinder is implemented by senders that can rebind themselves to a Target.
 // The manager uses it to scope a turn's output; a sender that doesn't implement
 // it (test fakes) simply keeps its default addressing.
@@ -268,7 +288,7 @@ func (b *Bot) Run() {
 				continue
 			}
 			if strings.HasPrefix(text, "!") {
-				b.handleCommand(chatID, text, OriginTelegram)
+				b.handleCommand(chatID, text, OriginTelegram, TelegramTarget())
 				continue
 			}
 			b.dispatchText(chatID, text, OriginTelegram)
@@ -331,7 +351,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 		maxW := b.cfg().MaxWorkers
 		b.mu.Unlock()
 		if !msg.isTask {
-			_ = b.Send(msg.chatID, fmt.Sprintf(
+			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
 				"📋 대기열 추가 (%d번째) — 동시 처리 중 %d/%d. !cancel 로 취소 가능.",
 				pos, maxW, maxW))
 		} else {
@@ -353,7 +373,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[bot] panic recovered (wid=%d): %v", wid, r)
-				_ = b.Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
+				_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
 			}
 			cancel()
 			b.mu.Lock()
@@ -368,7 +388,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 			b.mu.Unlock()
 			if next != nil {
 				if !next.isTask {
-					_ = b.Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
+					_ = b.ReplyTo(next.conversation()).Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
 				}
 				b.dispatch(*next)
 			}
@@ -384,11 +404,11 @@ func (b *Bot) dispatch(msg queuedMsg) {
 
 		switch ctx.Err() {
 		case context.DeadlineExceeded:
-			_ = b.Send(msg.chatID, fmt.Sprintf(
+			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
 				"⏱ 제한 시간(%d분)을 초과해 작업을 중단했습니다 — 죽은 게 아니라 시간 안에 못 끝낸 것입니다. 다시 메시지를 보내시면 이어서 진행됩니다(같은 대화 세션이라 지금까지 맥락은 유지됩니다).",
 				b.cfg().TimeoutMinutes))
 		case context.Canceled:
-			_ = b.Send(msg.chatID, "🛑 작업이 취소되었습니다.")
+			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "🛑 작업이 취소되었습니다.")
 		}
 	}()
 }
@@ -399,19 +419,25 @@ func (b *Bot) dispatch(msg queuedMsg) {
 // handleCommand runs a "!" command. origin ("telegram"|"web") is the channel it
 // came from; it is forwarded to handlers that create conversations (handleChat's
 // "!chat new", handleParallel) so those get tagged with the right origin.
-func (b *Bot) handleCommand(chatID int64, text, origin string) {
+//
+// tgt names the conversation the command was sent from, and every reply goes
+// back through a sender bound to it instead of b.Send, which always addresses
+// the telegram stream. A command issued in a web topic used to answer in
+// Telegram: the answer must return only to whoever asked.
+func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 	b.cmdMu.Lock()
 	defer b.cmdMu.Unlock()
 	if b.commandHook != nil {
 		b.commandHook(chatID, text)
 		return
 	}
+	reply := b.ReplyTo(tgt)
 	fields := strings.Fields(text)
 	switch fields[0] {
 	case "!start", "!help":
-		_ = b.Send(chatID, helpText())
+		_ = reply.Send(chatID, helpText())
 	case "!cancel":
-		b.cancel(chatID)
+		b.cancel(reply, chatID)
 	case "!status":
 		workers := b.manager.DescribeActiveWorkers()
 		var msg string
@@ -431,47 +457,47 @@ func (b *Bot) handleCommand(chatID int64, text, origin string) {
 			msg += fmt.Sprintf("\n📋 대기 중: %d개", qLen)
 		}
 		msg += "\n🔧 백엔드: " + strings.ToUpper(b.manager.Backend())
-		_ = b.Send(chatID, msg)
+		_ = reply.Send(chatID, msg)
 	case "!project":
-		b.handleProject(chatID, text, fields)
+		b.handleProject(reply, chatID, text, fields)
 	case "!chat":
-		b.handleChat(chatID, text, fields, origin)
+		b.handleChat(reply, chatID, text, fields, origin)
 	case "!update":
 		b.mu.Lock()
 		active := b.activeCount
 		b.mu.Unlock()
 		if active > 0 {
-			_ = b.Send(chatID, "⏳ 작업 중에는 업데이트할 수 없습니다. !cancel 후 다시 시도하세요.")
+			_ = reply.Send(chatID, "⏳ 작업 중에는 업데이트할 수 없습니다. !cancel 후 다시 시도하세요.")
 			return
 		}
-		b.handleUpdate(chatID)
+		b.handleUpdate(reply, chatID)
 	case "!task":
-		b.handleTask(chatID, text, fields)
+		b.handleTask(reply, chatID, text, fields)
 	case "!remind":
-		b.handleRemind(chatID, text, fields)
+		b.handleRemind(reply, chatID, text, fields)
 	case "!cron":
-		b.handleCron(chatID, text, fields)
+		b.handleCron(reply, chatID, text, fields)
 	case "!history":
-		b.handleHistory(chatID, fields)
+		b.handleHistory(reply, chatID, fields)
 	case "!backend":
-		b.handleBackend(chatID, fields)
+		b.handleBackend(reply, chatID, fields)
 	case "!user":
-		b.handleUser(chatID, fields)
+		b.handleUser(reply, chatID, fields)
 	case "!parallel":
-		b.handleParallel(chatID, text, origin)
+		b.handleParallel(reply, chatID, text, origin)
 	case "!screen":
-		b.handleScreen(chatID, fields)
+		b.handleScreen(reply, chatID, fields)
 	case "!compact":
 		b.mu.Lock()
 		active := b.activeCount
 		b.mu.Unlock()
 		if active > 0 {
-			_ = b.Send(chatID, "⏳ 작업 중에는 압축할 수 없습니다. !cancel 후 다시 시도하세요.")
+			_ = reply.Send(chatID, "⏳ 작업 중에는 압축할 수 없습니다. !cancel 후 다시 시도하세요.")
 			return
 		}
 		b.manager.CompactTelegramConversation(context.Background(), chatID, b)
 	default:
-		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
+		_ = reply.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
 }
 
@@ -484,9 +510,9 @@ func (b *Bot) handleCommand(chatID int64, text, origin string) {
 //	!screen shot [창이름]          screenshot (cropped to a window, or full screen)
 //	!screen preset save <이름>     save current cursor position
 //	!screen click <프리셋이름>      click a saved preset (no LLM)
-func (b *Bot) handleScreen(chatID int64, fields []string) {
+func (b *Bot) handleScreen(reply replySender, chatID int64, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !screen list | !screen shot [창이름] | !screen region <x> <y> <너비> <높이> [창이름] | !screen preset save <이름> | !screen click <프리셋이름>")
+		_ = reply.Send(chatID, "사용법: !screen list | !screen shot [창이름] | !screen region <x> <y> <너비> <높이> [창이름] | !screen preset save <이름> | !screen click <프리셋이름>")
 		return
 	}
 	// Honor the yaml switch: screen_control.enabled gates the MCP server for
@@ -494,13 +520,13 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 	// fast-path too, or !screen would drive the screen from a config that says
 	// screen control is off.
 	if !b.cfg().ScreenControl {
-		_ = b.Send(chatID, "❌ 화면제어가 비활성화되어 있습니다. config.yaml의 screen_control.enabled를 true로 설정하세요.")
+		_ = reply.Send(chatID, "❌ 화면제어가 비활성화되어 있습니다. config.yaml의 screen_control.enabled를 true로 설정하세요.")
 		return
 	}
 	selfExe, _ := os.Executable()
 	screenBin := resolveScreenBinaryPath(b.cfg(), selfExe)
 	if screenBin == "" {
-		_ = b.Send(chatID, "❌ 화면제어 실행파일(aglink-screen)을 찾을 수 없습니다. screen_control.binary_path를 설정하세요.")
+		_ = reply.Send(chatID, "❌ 화면제어 실행파일(aglink-screen)을 찾을 수 없습니다. screen_control.binary_path를 설정하세요.")
 		return
 	}
 
@@ -530,41 +556,41 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 
 	if err != nil && !parsed {
 		if ctx.Err() == context.DeadlineExceeded {
-			_ = b.Send(chatID, "❌ aglink-screen 응답 시간 초과 (30초)")
+			_ = reply.Send(chatID, "❌ aglink-screen 응답 시간 초과 (30초)")
 			return
 		}
 		msg := err.Error()
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 			msg += ": " + strings.TrimSpace(string(ee.Stderr))
 		}
-		_ = b.Send(chatID, "❌ aglink-screen 실행 실패: "+msg)
+		_ = reply.Send(chatID, "❌ aglink-screen 실행 실패: "+msg)
 		return
 	}
 	if !parsed {
-		_ = b.Send(chatID, "❌ aglink-screen 응답 파싱 실패")
+		_ = reply.Send(chatID, "❌ aglink-screen 응답 파싱 실패")
 		return
 	}
 	if res.Error != "" {
-		_ = b.Send(chatID, "❌ "+res.Error)
+		_ = reply.Send(chatID, "❌ "+res.Error)
 		return
 	}
 	if res.Image != "" {
 		img, derr := base64.StdEncoding.DecodeString(res.Image)
 		if derr != nil {
-			_ = b.Send(chatID, "❌ 이미지 디코드 실패: "+derr.Error())
+			_ = reply.Send(chatID, "❌ 이미지 디코드 실패: "+derr.Error())
 			return
 		}
-		if perr := b.SendPhoto(chatID, img, res.Text); perr != nil {
+		if perr := reply.SendPhoto(chatID, img, res.Text); perr != nil {
 			// e.g. image exceeds Telegram's photo size limit — tell the user
 			// instead of silently dropping the capture.
-			_ = b.Send(chatID, "⚠️ 캡처는 됐지만 이미지 전송 실패: "+perr.Error())
+			_ = reply.Send(chatID, "⚠️ 캡처는 됐지만 이미지 전송 실패: "+perr.Error())
 		}
 		return
 	}
-	_ = b.Send(chatID, res.Text)
+	_ = reply.Send(chatID, res.Text)
 }
 
-func (b *Bot) cancel(chatID int64) {
+func (b *Bot) cancel(reply replySender, chatID int64) {
 	b.mu.Lock()
 	fns := make([]context.CancelFunc, 0, len(b.cancels))
 	for _, fn := range b.cancels {
@@ -572,19 +598,19 @@ func (b *Bot) cancel(chatID int64) {
 	}
 	b.mu.Unlock()
 	if len(fns) == 0 {
-		_ = b.Send(chatID, "취소할 작업이 없습니다.")
+		_ = reply.Send(chatID, "취소할 작업이 없습니다.")
 		return
 	}
 	for _, fn := range fns {
 		fn()
 	}
-	_ = b.Send(chatID, fmt.Sprintf("🛑 %d개 작업 취소 요청됨.", len(fns)))
+	_ = reply.Send(chatID, fmt.Sprintf("🛑 %d개 작업 취소 요청됨.", len(fns)))
 }
 
 // handleProject: !project add <name> <path> | remove <name> | list
-func (b *Bot) handleProject(chatID int64, text string, fields []string) {
+func (b *Bot) handleProject(reply replySender, chatID int64, text string, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !project add <이름> <경로> | !project remove <이름> | !project list")
+		_ = reply.Send(chatID, "사용법: !project add <이름> <경로> | !project remove <이름> | !project list")
 		return
 	}
 	switch fields[1] {
@@ -592,29 +618,29 @@ func (b *Bot) handleProject(chatID int64, text string, fields []string) {
 		// SplitN keeps spaces in the Windows path intact: [!project add name path...]
 		parts := strings.SplitN(text, " ", 4)
 		if len(parts) < 4 {
-			_ = b.Send(chatID, "사용법: !project add <이름> <경로>")
+			_ = reply.Send(chatID, "사용법: !project add <이름> <경로>")
 			return
 		}
 		name, path := parts[2], strings.TrimSpace(parts[3])
 		if err := b.store.AddProject(name, path); err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 			return
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 프로젝트 등록: %s → %s", name, path))
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 프로젝트 등록: %s → %s", name, path))
 	case "remove":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !project remove <이름>")
+			_ = reply.Send(chatID, "사용법: !project remove <이름>")
 			return
 		}
 		if err := b.store.RemoveProject(fields[2]); err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 			return
 		}
-		_ = b.Send(chatID, "🗑 프로젝트 제거: "+fields[2])
+		_ = reply.Send(chatID, "🗑 프로젝트 제거: "+fields[2])
 	case "list":
-		_ = b.Send(chatID, b.formatProjectList())
+		_ = reply.Send(chatID, b.formatProjectList())
 	default:
-		_ = b.Send(chatID, "사용법: !project add <이름> <경로> | !project remove <이름> | !project list")
+		_ = reply.Send(chatID, "사용법: !project add <이름> <경로> | !project remove <이름> | !project list")
 	}
 }
 
@@ -650,20 +676,20 @@ func (b *Bot) formatProjectList() string {
 // handleChat: !chat new [title] | list | use <id> | use <project> <id>.
 // origin tags a "!chat new" conversation with the channel that created it so the
 // two channels' chat lists can be managed separately.
-func (b *Bot) handleChat(chatID int64, text string, fields []string, origin string) {
+func (b *Bot) handleChat(reply replySender, chatID int64, text string, fields []string, origin string) {
 	if origin != OriginWeb {
-		_ = b.Send(chatID, "ℹ️ 텔레그램에서는 대화 주제를 관리하지 않습니다. 대화 주제는 웹에서 관리하세요. (텔레그램은 \"이제 <프로젝트명> 하자\"로 작업 대상만 전환)")
+		_ = reply.Send(chatID, "ℹ️ 텔레그램에서는 대화 주제를 관리하지 않습니다. 대화 주제는 웹에서 관리하세요. (텔레그램은 \"이제 <프로젝트명> 하자\"로 작업 대상만 전환)")
 		return
 	}
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id> | !chat rename <새 제목>")
+		_ = reply.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id> | !chat rename <새 제목>")
 		return
 	}
 	active := b.store.GetActive()
 	switch fields[1] {
 	case "new":
 		if active.Project == "" {
-			_ = b.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
+			_ = reply.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
 			return
 		}
 		title := ""
@@ -672,20 +698,20 @@ func (b *Bot) handleChat(chatID int64, text string, fields []string, origin stri
 		}
 		c, err := b.store.NewConversation(active.Project, title, origin)
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 			return
 		}
 		_ = b.store.SetActive(active.Project, c.ID)
-		_ = b.Send(chatID, fmt.Sprintf("🆕 새 대화 [%s] %s (활성화됨)", c.ID, c.Title))
+		_ = reply.Send(chatID, fmt.Sprintf("🆕 새 대화 [%s] %s (활성화됨)", c.ID, c.Title))
 	case "list":
 		if active.Project == "" {
-			_ = b.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
+			_ = reply.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
 			return
 		}
-		_ = b.Send(chatID, b.formatChatList(active.Project))
+		_ = reply.Send(chatID, b.formatChatList(active.Project))
 	case "use":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !chat use <id> | !chat use <프로젝트> <id>")
+			_ = reply.Send(chatID, "사용법: !chat use <id> | !chat use <프로젝트> <id>")
 			return
 		}
 		project := active.Project
@@ -695,19 +721,19 @@ func (b *Bot) handleChat(chatID int64, text string, fields []string, origin stri
 			convID = fields[3]
 		}
 		if project == "" {
-			_ = b.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
+			_ = reply.Send(chatID, "활성 프로젝트가 없습니다. 먼저 메시지를 보내거나 !project list 후 작업하세요.")
 			return
 		}
 		c, ok := b.store.GetConversation(project, convID)
 		if !ok {
-			_ = b.Send(chatID, "해당 대화를 찾을 수 없습니다: "+project+"/"+convID)
+			_ = reply.Send(chatID, "해당 대화를 찾을 수 없습니다: "+project+"/"+convID)
 			return
 		}
 		_ = b.store.SetActive(project, c.ID)
-		_ = b.Send(chatID, fmt.Sprintf("✅ 대화 전환 [%s] %s", c.ID, c.Title))
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 대화 전환 [%s] %s", c.ID, c.Title))
 	case "rename":
 		if active.Project == "" || active.ConversationID == "" {
-			_ = b.Send(chatID, "이름을 바꿀 활성 웹 토픽이 없습니다. 먼저 토픽을 선택하세요.")
+			_ = reply.Send(chatID, "이름을 바꿀 활성 웹 토픽이 없습니다. 먼저 토픽을 선택하세요.")
 			return
 		}
 		newTitle := ""
@@ -715,22 +741,22 @@ func (b *Bot) handleChat(chatID int64, text string, fields []string, origin stri
 			newTitle = strings.TrimSpace(parts[2])
 		}
 		if newTitle == "" {
-			_ = b.Send(chatID, "사용법: !chat rename <새 제목>")
+			_ = reply.Send(chatID, "사용법: !chat rename <새 제목>")
 			return
 		}
 		c, ok := b.store.GetConversation(active.Project, active.ConversationID)
 		if !ok {
-			_ = b.Send(chatID, "활성 토픽을 찾을 수 없습니다.")
+			_ = reply.Send(chatID, "활성 토픽을 찾을 수 없습니다.")
 			return
 		}
 		c.Title = newTitle
 		if err := b.store.UpdateConversation(active.Project, c); err != nil {
-			_ = b.Send(chatID, "⚠️ 이름 변경 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 이름 변경 실패: "+err.Error())
 			return
 		}
-		_ = b.Send(chatID, "✏️ 대화 이름을 변경했습니다: "+newTitle)
+		_ = reply.Send(chatID, "✏️ 대화 이름을 변경했습니다: "+newTitle)
 	default:
-		_ = b.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id> | !chat rename <새 제목>")
+		_ = reply.Send(chatID, "사용법: !chat new [제목] | !chat list | !chat use <id> | !chat use <프로젝트> <id> | !chat rename <새 제목>")
 	}
 }
 
@@ -773,12 +799,12 @@ func (b *Bot) formatChatList(project string) string {
 // handleUpdate builds teleclaude_new.exe, starts it, waits for it to connect to
 // Telegram, then hands over: old process exits cleanly, new process renames itself.
 // Works without launcher.ps1 — zero downtime.
-func (b *Bot) handleUpdate(chatID int64) {
-	_ = b.Send(chatID, "🔨 빌드 시작...")
+func (b *Bot) handleUpdate(reply replySender, chatID int64) {
+	_ = reply.Send(chatID, "🔨 빌드 시작...")
 
 	exe, err := os.Executable()
 	if err != nil {
-		_ = b.Send(chatID, "⚠️ 실행 파일 경로 확인 실패: "+err.Error())
+		_ = reply.Send(chatID, "⚠️ 실행 파일 경로 확인 실패: "+err.Error())
 		return
 	}
 	srcDir := filepath.Dir(exe)
@@ -787,7 +813,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 
 	// Verify source code exists in srcDir (fix: exe copied to different dir would silently fail)
 	if _, serr := os.Stat(filepath.Join(srcDir, "main.go")); serr != nil {
-		_ = b.Send(chatID, "⚠️ 소스 코드를 찾을 수 없습니다 ("+srcDir+")\nexe와 소스 코드가 같은 디렉터리에 있어야 !update가 작동합니다.")
+		_ = reply.Send(chatID, "⚠️ 소스 코드를 찾을 수 없습니다 ("+srcDir+")\nexe와 소스 코드가 같은 디렉터리에 있어야 !update가 작동합니다.")
 		return
 	}
 
@@ -796,7 +822,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 	// so go build cannot overwrite it. Abort and instruct the user.
 	if filepath.Base(exe) == "teleclaude_new"+exeSuffix {
 		if _, serr := os.Stat(newExe); serr == nil {
-			_ = b.Send(chatID, "⚠️ 이전 핸드오프의 이름 변경이 아직 완료되지 않았습니다.\n잠시 후 다시 시도하거나 teleclaude_new를 teleclaude로 수동 교체 후 재시작하세요.")
+			_ = reply.Send(chatID, "⚠️ 이전 핸드오프의 이름 변경이 아직 완료되지 않았습니다.\n잠시 후 다시 시도하거나 teleclaude_new를 teleclaude로 수동 교체 후 재시작하세요.")
 			return
 		}
 	}
@@ -806,11 +832,11 @@ func (b *Bot) handleUpdate(chatID int64) {
 	// aglink-screen/aglink-web checked out next to teleclaude.
 	pluginReport, perr := updatePlugins(srcDir)
 	if perr != nil {
-		_ = b.Send(chatID, "⚠️ "+perr.Error())
+		_ = reply.Send(chatID, "⚠️ "+perr.Error())
 		return
 	}
 	if len(pluginReport) > 0 {
-		_ = b.Send(chatID, "🔌 플러그인 갱신됨: "+strings.Join(pluginReport, ", "))
+		_ = reply.Send(chatID, "🔌 플러그인 갱신됨: "+strings.Join(pluginReport, ", "))
 	}
 
 	// Build
@@ -830,11 +856,11 @@ func (b *Bot) handleUpdate(chatID int64) {
 	buildCmd := exec.CommandContext(buildCtx, "go", buildArgs...)
 	buildCmd.Dir = srcDir
 	if out, berr := buildCmd.CombinedOutput(); berr != nil {
-		_ = b.Send(chatID, "⚠️ 빌드 실패:\n"+strings.TrimSpace(string(out)))
+		_ = reply.Send(chatID, "⚠️ 빌드 실패:\n"+strings.TrimSpace(string(out)))
 		return
 	}
 
-	_ = b.Send(chatID, "✅ 빌드 성공! 새 버전 연결 중...")
+	_ = reply.Send(chatID, "✅ 빌드 성공! 새 버전 연결 중...")
 	_ = os.Remove(readyFile)
 
 	// Start new process — passes readyFile + chatID so it can signal and notify via Telegram
@@ -843,7 +869,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 		"--notify-chat", fmt.Sprintf("%d", chatID),
 	)
 	if err := newProc.Start(); err != nil {
-		_ = b.Send(chatID, "⚠️ 새 버전 시작 실패: "+err.Error())
+		_ = reply.Send(chatID, "⚠️ 새 버전 시작 실패: "+err.Error())
 		return
 	}
 
@@ -854,7 +880,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 		time.Sleep(500 * time.Millisecond)
 		if _, serr := os.Stat(readyFile); serr == nil {
 			_ = os.Remove(readyFile)
-			_ = b.Send(chatID, "🔄 새 버전 연결됨! 전환합니다...")
+			_ = reply.Send(chatID, "🔄 새 버전 연결됨! 전환합니다...")
 			log.Println("[bot] handoff: new instance ready, exiting")
 			os.Exit(0)
 		}
@@ -862,7 +888,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 
 	// Timeout — kill new process, keep current running
 	_ = newProc.Process.Kill()
-	_ = b.Send(chatID, "⚠️ 새 버전 연결 대기 시간 초과 (60초). 이전 버전 계속 사용합니다.")
+	_ = reply.Send(chatID, "⚠️ 새 버전 연결 대기 시간 초과 (60초). 이전 버전 계속 사용합니다.")
 }
 
 // handleRemind processes !remind commands.
@@ -872,16 +898,16 @@ func (b *Bot) handleUpdate(chatID int64) {
 //	!remind 2h task 서버 확인해줘   — 2시간 후 Claude 작업
 //	!remind list                    — 대기 중 목록
 //	!remind cancel <id>             — 취소
-func (b *Bot) handleRemind(chatID int64, _ string, fields []string) {
+func (b *Bot) handleRemind(reply replySender, chatID int64, _ string, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !remind <시간> [task] <메시지>  |  !remind list  |  !remind cancel <id>\n시간 예) 30m, 2h, 1d — 단위: m(분) h(시간) d(일)\n예) !remind 30m 배포 확인, !remind 2h task 서버 상태 확인해줘")
+		_ = reply.Send(chatID, "사용법: !remind <시간> [task] <메시지>  |  !remind list  |  !remind cancel <id>\n시간 예) 30m, 2h, 1d — 단위: m(분) h(시간) d(일)\n예) !remind 30m 배포 확인, !remind 2h task 서버 상태 확인해줘")
 		return
 	}
 	switch fields[1] {
 	case "list":
 		reminders := b.scheduler.ListReminders()
 		if len(reminders) == 0 {
-			_ = b.Send(chatID, "대기 중인 알림이 없습니다.")
+			_ = reply.Send(chatID, "대기 중인 알림이 없습니다.")
 			return
 		}
 		var sb strings.Builder
@@ -896,22 +922,22 @@ func (b *Bot) handleRemind(chatID int64, _ string, fields []string) {
 			}
 			fmt.Fprintf(&sb, "[%s] %s — %s\n", r.ID, timeStr, r.Prompt)
 		}
-		_ = b.Send(chatID, sb.String())
+		_ = reply.Send(chatID, sb.String())
 	case "cancel":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !remind cancel <id>")
+			_ = reply.Send(chatID, "사용법: !remind cancel <id>")
 			return
 		}
 		if b.scheduler.Remove(fields[2]) {
-			_ = b.Send(chatID, "✅ 알림 취소됨: "+fields[2])
+			_ = reply.Send(chatID, "✅ 알림 취소됨: "+fields[2])
 		} else {
-			_ = b.Send(chatID, "⚠️ 알림을 찾을 수 없습니다: "+fields[2])
+			_ = reply.Send(chatID, "⚠️ 알림을 찾을 수 없습니다: "+fields[2])
 		}
 	default:
 		// !remind <duration> [task] <message>
 		dur, _, err := ParseSchedule(fields[1])
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ 시간 형식 오류: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 시간 형식 오류: "+err.Error())
 			return
 		}
 		isTask := len(fields) > 2 && fields[2] == "task"
@@ -920,7 +946,7 @@ func (b *Bot) handleRemind(chatID int64, _ string, fields []string) {
 			msgStart = 3
 		}
 		if msgStart >= len(fields) {
-			_ = b.Send(chatID, "⚠️ 메시지를 입력해주세요.")
+			_ = reply.Send(chatID, "⚠️ 메시지를 입력해주세요.")
 			return
 		}
 		msg := strings.Join(fields[msgStart:], " ")
@@ -936,14 +962,14 @@ func (b *Bot) handleRemind(chatID int64, _ string, fields []string) {
 			CreatedAt: time.Now(),
 		}
 		if err := b.scheduler.AddTask(t); err != nil {
-			_ = b.Send(chatID, "⚠️ 알림 등록 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 알림 등록 실패: "+err.Error())
 			return
 		}
 		kind := "알림"
 		if isTask {
 			kind = "Claude 작업"
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후 (%s): %s", t.ID, dur.Round(time.Second), kind, msg))
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후 (%s): %s", t.ID, dur.Round(time.Second), kind, msg))
 	}
 }
 
@@ -954,16 +980,16 @@ func (b *Bot) handleRemind(chatID int64, _ string, fields []string) {
 //	!cron add <schedule> task <프롬프트>   — 반복 Claude 작업
 //	!cron list                             — 목록
 //	!cron remove <id>                      — 제거
-func (b *Bot) handleCron(chatID int64, _ string, fields []string) {
+func (b *Bot) handleCron(reply replySender, chatID int64, _ string, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !cron add <주기> [task] <내용>  |  !cron list  |  !cron remove <id>\n주기 예) 30m, 2h, 1d, 1w, 매시간, 매일, 매주\n예) !cron add 1h 서버 상태 확인, !cron add 매일 task 오늘의 작업 요약해줘")
+		_ = reply.Send(chatID, "사용법: !cron add <주기> [task] <내용>  |  !cron list  |  !cron remove <id>\n주기 예) 30m, 2h, 1d, 1w, 매시간, 매일, 매주\n예) !cron add 1h 서버 상태 확인, !cron add 매일 task 오늘의 작업 요약해줘")
 		return
 	}
 	switch fields[1] {
 	case "list":
 		crons := b.scheduler.ListCrons()
 		if len(crons) == 0 {
-			_ = b.Send(chatID, "등록된 크론 작업이 없습니다.")
+			_ = reply.Send(chatID, "등록된 크론 작업이 없습니다.")
 			return
 		}
 		var sb strings.Builder
@@ -987,25 +1013,25 @@ func (b *Bot) handleCron(chatID int64, _ string, fields []string) {
 			}
 			fmt.Fprintf(&sb, "[%s] %s (%s) — 다음: %s\n  %s\n", c.ID, c.Label, kind, nextStr, c.Prompt)
 		}
-		_ = b.Send(chatID, sb.String())
+		_ = reply.Send(chatID, sb.String())
 	case "remove":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !cron remove <id>")
+			_ = reply.Send(chatID, "사용법: !cron remove <id>")
 			return
 		}
 		if b.scheduler.Remove(fields[2]) {
-			_ = b.Send(chatID, "✅ 크론 제거됨: "+fields[2])
+			_ = reply.Send(chatID, "✅ 크론 제거됨: "+fields[2])
 		} else {
-			_ = b.Send(chatID, "⚠️ 크론을 찾을 수 없습니다: "+fields[2])
+			_ = reply.Send(chatID, "⚠️ 크론을 찾을 수 없습니다: "+fields[2])
 		}
 	case "add":
 		if len(fields) < 4 {
-			_ = b.Send(chatID, "사용법: !cron add <주기> [task] <내용>")
+			_ = reply.Send(chatID, "사용법: !cron add <주기> [task] <내용>")
 			return
 		}
 		dur, label, err := ParseSchedule(fields[2])
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ 주기 형식 오류: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 주기 형식 오류: "+err.Error())
 			return
 		}
 		isTask := fields[3] == "task"
@@ -1014,22 +1040,22 @@ func (b *Bot) handleCron(chatID int64, _ string, fields []string) {
 			msgStart = 4
 		}
 		if msgStart >= len(fields) {
-			_ = b.Send(chatID, "⚠️ 내용을 입력해주세요.")
+			_ = reply.Send(chatID, "⚠️ 내용을 입력해주세요.")
 			return
 		}
 		task := strings.Join(fields[msgStart:], " ")
 		c, err := b.scheduler.AddCron(chatID, label, dur, task, isTask)
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ 크론 등록 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 크론 등록 실패: "+err.Error())
 			return
 		}
 		kind := "알림"
 		if isTask {
 			kind = "Claude 작업"
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 크론 등록 [%s] %s (%s)\n  내용: %s", c.ID, label, kind, task))
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 크론 등록 [%s] %s (%s)\n  내용: %s", c.ID, label, kind, task))
 	default:
-		_ = b.Send(chatID, "사용법: !cron add | list | remove")
+		_ = reply.Send(chatID, "사용법: !cron add | list | remove")
 	}
 }
 
@@ -1043,14 +1069,14 @@ func (b *Bot) handleCron(chatID int64, _ string, fields []string) {
 //	!task list [pending|paused|all]
 //	!task pause|resume|cancel <id>
 //	!task update <id> [--cron <expr>] [--prompt <text>] [--script <script>]
-func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
+func (b *Bot) handleTask(reply replySender, chatID int64, _ string, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, taskHelpText())
+		_ = reply.Send(chatID, taskHelpText())
 		return
 	}
 	switch fields[1] {
 	case "help":
-		_ = b.Send(chatID, taskHelpText())
+		_ = reply.Send(chatID, taskHelpText())
 
 	case "list":
 		filter := "pending"
@@ -1059,7 +1085,7 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 		}
 		tasks := b.scheduler.ListTasks(filter)
 		if len(tasks) == 0 {
-			_ = b.Send(chatID, "등록된 작업이 없습니다. (필터: "+filter+")")
+			_ = reply.Send(chatID, "등록된 작업이 없습니다. (필터: "+filter+")")
 			return
 		}
 		var sb strings.Builder
@@ -1102,51 +1128,51 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			fmt.Fprintf(&sb, "[%s] %s (%s/%s)%s\n  %s%s%s\n",
 				t.ID, t.Label, t.Status, kind, scriptMark, schedule, nextStr, promptSuffix)
 		}
-		_ = b.Send(chatID, sb.String())
+		_ = reply.Send(chatID, sb.String())
 
 	case "pause":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !task pause <id>")
+			_ = reply.Send(chatID, "사용법: !task pause <id>")
 			return
 		}
 		if err := b.scheduler.PauseTask(fields[2]); err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 		} else {
-			_ = b.Send(chatID, "⏸ 작업 일시정지됨: "+fields[2])
+			_ = reply.Send(chatID, "⏸ 작업 일시정지됨: "+fields[2])
 		}
 
 	case "resume":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !task resume <id>")
+			_ = reply.Send(chatID, "사용법: !task resume <id>")
 			return
 		}
 		if err := b.scheduler.ResumeTask(fields[2]); err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 		} else {
-			_ = b.Send(chatID, "▶️ 작업 재개됨: "+fields[2])
+			_ = reply.Send(chatID, "▶️ 작업 재개됨: "+fields[2])
 		}
 
 	case "cancel":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !task cancel <id>")
+			_ = reply.Send(chatID, "사용법: !task cancel <id>")
 			return
 		}
 		if err := b.scheduler.CancelTask(fields[2]); err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 		} else {
-			_ = b.Send(chatID, "✅ 작업 취소됨: "+fields[2])
+			_ = reply.Send(chatID, "✅ 작업 취소됨: "+fields[2])
 		}
 
 	case "update":
 		// !task update <id> [--cron <expr>] [--prompt <text>] [--script <script>] [--depends-on <id,...>]
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트|clear>] [--depends-on <id,...|none>]")
+			_ = reply.Send(chatID, "사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트|clear>] [--depends-on <id,...|none>]")
 			return
 		}
 		id := fields[2]
 		cronExpr, prompt, script, depsRaw := parseFlags4(fields[3:], "--cron", "--prompt", "--script", "--depends-on")
 		if cronExpr == "" && prompt == "" && script == "" && depsRaw == "" {
-			_ = b.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트|clear>] [--depends-on <id,...|none>]")
+			_ = reply.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트|clear>] [--depends-on <id,...|none>]")
 			return
 		}
 		// Sentinels: "--script clear" removes the script; "--depends-on none" clears deps.
@@ -1154,7 +1180,7 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			script = "\x00" // marker passed to UpdateTask to clear
 		} else if script != "" {
 			if verr := validateScript(b.cfg(), script); verr != nil {
-				_ = b.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
+				_ = reply.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
 				return
 			}
 		}
@@ -1165,30 +1191,30 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			deps = parseDependsOn(depsRaw)
 		}
 		if err := b.scheduler.UpdateTask(id, cronExpr, prompt, script, deps); err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 		} else {
-			_ = b.Send(chatID, "✅ 작업 업데이트됨: "+id)
+			_ = reply.Send(chatID, "✅ 작업 업데이트됨: "+id)
 		}
 
 	case "once":
 		// !task once <HH:MM|YYYY-MM-DD HH:MM> <message>
 		if len(fields) < 4 {
-			_ = b.Send(chatID, "사용법: !task once <HH:MM|YYYY-MM-DD HH:MM> <메시지>")
+			_ = reply.Send(chatID, "사용법: !task once <HH:MM|YYYY-MM-DD HH:MM> <메시지>")
 			return
 		}
 		fireAt, msgStart, err := parseOnceDatetime(fields[2:])
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ 시각 형식 오류: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 시각 형식 오류: "+err.Error())
 			return
 		}
 		msg := strings.Join(fields[2+msgStart:], " ")
 		if msg == "" {
-			_ = b.Send(chatID, "⚠️ 메시지를 입력해주세요.")
+			_ = reply.Send(chatID, "⚠️ 메시지를 입력해주세요.")
 			return
 		}
 		t, err := b.scheduler.AddReminder(chatID, msg, fireAt)
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ 등록 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 등록 실패: "+err.Error())
 			return
 		}
 		dayLabel := ""
@@ -1198,23 +1224,23 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 		} else if fireAt.Sub(now) < 48*time.Hour {
 			dayLabel = " (내일)"
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 일회성 등록 [%s] — %s%s에 실행\n  %s",
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 일회성 등록 [%s] — %s%s에 실행\n  %s",
 			t.ID, fireAt.Format("2006-01-02 15:04"), dayLabel, msg))
 
 	case "add":
 		// !task add <cron|duration> [--script <script>] [task] <prompt>
 		if len(fields) < 4 {
-			_ = b.Send(chatID, "사용법: !task add <주기> [task] <프롬프트>\n주기: 30m, 2h, 1d, 1w, 매시간, 매일, 매주, 또는 5-field cron\n예) !task add 매일 task 오늘 요약해줘\n    !task add 0 9 * * 1-5 task 주식 확인")
+			_ = reply.Send(chatID, "사용법: !task add <주기> [task] <프롬프트>\n주기: 30m, 2h, 1d, 1w, 매시간, 매일, 매주, 또는 5-field cron\n예) !task add 매일 task 오늘 요약해줘\n    !task add 0 9 * * 1-5 task 주식 확인")
 			return
 		}
 		cronExpr, script, dependsOn, isTask, prompt, err := parseTaskAddArgs(fields[2:])
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ "+err.Error())
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
 			return
 		}
 		if script != "" {
 			if verr := validateScript(b.cfg(), script); verr != nil {
-				_ = b.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
+				_ = reply.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
 				return
 			}
 		}
@@ -1235,18 +1261,18 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			CreatedAt: time.Now(),
 		}
 		if err := b.scheduler.AddTask(t); err != nil {
-			_ = b.Send(chatID, "⚠️ 등록 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 등록 실패: "+err.Error())
 			return
 		}
 		scriptNote := ""
 		if script != "" {
 			scriptNote = " [스크립트 사전확인 있음]"
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 작업 등록 [%s] %s (%s)%s\n  %s",
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 작업 등록 [%s] %s (%s)%s\n  %s",
 			t.ID, cronExpr, kind, scriptNote, prompt))
 
 	default:
-		_ = b.Send(chatID, "알 수 없는 !task 하위 명령. !task help 참조")
+		_ = reply.Send(chatID, "알 수 없는 !task 하위 명령. !task help 참조")
 	}
 }
 
@@ -1607,7 +1633,7 @@ func extFromMIME(mime string) string {
 //	!history <YYYY-MM-DD>             — specific date, active project
 //	!history <project>                — today's log for named project
 //	!history <project> <YYYY-MM-DD>   — specific project + date
-func (b *Bot) handleHistory(chatID int64, fields []string) {
+func (b *Bot) handleHistory(reply replySender, chatID int64, fields []string) {
 	active := b.store.GetActive()
 	defaultProject := active.Project
 
@@ -1616,14 +1642,14 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 		if len(fields) >= 3 && fields[2] == "all" {
 			projects, err := ListHistoryProjects()
 			if err != nil {
-				_ = b.Send(chatID, "⚠️ 히스토리 프로젝트 목록 조회 실패: "+err.Error())
+				_ = reply.Send(chatID, "⚠️ 히스토리 프로젝트 목록 조회 실패: "+err.Error())
 				return
 			}
 			if len(projects) == 0 {
-				_ = b.Send(chatID, "📅 기록된 히스토리가 없습니다.")
+				_ = reply.Send(chatID, "📅 기록된 히스토리가 없습니다.")
 				return
 			}
-			_ = b.Send(chatID, "📅 히스토리가 있는 프로젝트:\n"+strings.Join(projects, "\n"))
+			_ = reply.Send(chatID, "📅 히스토리가 있는 프로젝트:\n"+strings.Join(projects, "\n"))
 			return
 		}
 
@@ -1632,19 +1658,19 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 			project = fields[2]
 		}
 		if project == "" {
-			_ = b.Send(chatID, "활성 프로젝트가 없습니다. !history list <프로젝트명> 또는 !history list all")
+			_ = reply.Send(chatID, "활성 프로젝트가 없습니다. !history list <프로젝트명> 또는 !history list all")
 			return
 		}
 		dates, err := ListHistoryDates(project)
 		if err != nil {
-			_ = b.Send(chatID, "⚠️ 히스토리 목록 조회 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 히스토리 목록 조회 실패: "+err.Error())
 			return
 		}
 		if len(dates) == 0 {
-			_ = b.Send(chatID, "📅 "+project+": 기록된 날짜 없음")
+			_ = reply.Send(chatID, "📅 "+project+": 기록된 날짜 없음")
 			return
 		}
-		_ = b.Send(chatID, "📅 "+project+" 히스토리 날짜:\n"+strings.Join(dates, "\n"))
+		_ = reply.Send(chatID, "📅 "+project+" 히스토리 날짜:\n"+strings.Join(dates, "\n"))
 		return
 	}
 
@@ -1654,7 +1680,7 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 	for _, arg := range fields[1:] {
 		if len(arg) == 10 && arg[4] == '-' && arg[7] == '-' {
 			if _, err := time.Parse("2006-01-02", arg); err != nil {
-				_ = b.Send(chatID, "⚠️ 날짜 형식 오류: "+arg+" (YYYY-MM-DD 사용)")
+				_ = reply.Send(chatID, "⚠️ 날짜 형식 오류: "+arg+" (YYYY-MM-DD 사용)")
 				return
 			}
 			date = arg
@@ -1664,17 +1690,17 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 	}
 
 	if project == "" {
-		_ = b.Send(chatID, "활성 프로젝트가 없습니다.\n!history list all 로 기록이 있는 프로젝트를 확인하거나 !history <프로젝트명> 형식으로 사용하세요.")
+		_ = reply.Send(chatID, "활성 프로젝트가 없습니다.\n!history list all 로 기록이 있는 프로젝트를 확인하거나 !history <프로젝트명> 형식으로 사용하세요.")
 		return
 	}
 
 	content, err := ReadHistory(project, date)
 	if err != nil {
-		_ = b.Send(chatID, "⚠️ 히스토리 조회 실패: "+err.Error())
+		_ = reply.Send(chatID, "⚠️ 히스토리 조회 실패: "+err.Error())
 		return
 	}
 	if content == "" {
-		_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s: 기록 없음", project, date))
+		_ = reply.Send(chatID, fmt.Sprintf("📅 %s / %s: 기록 없음", project, date))
 		return
 	}
 	// Telegram's sendMessage limit is 4096 characters.
@@ -1690,20 +1716,20 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 		}
 		content = string(b2[:end]) + "\n...(잘림)"
 	}
-	_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s:\n%s", project, date, content))
+	_ = reply.Send(chatID, fmt.Sprintf("📅 %s / %s:\n%s", project, date, content))
 }
 
 // handleBackend handles !backend — displays or switches the active AI backend.
-func (b *Bot) handleBackend(chatID int64, fields []string) {
+func (b *Bot) handleBackend(reply replySender, chatID int64, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "현재 백엔드: "+strings.ToUpper(b.manager.Backend()))
+		_ = reply.Send(chatID, "현재 백엔드: "+strings.ToUpper(b.manager.Backend()))
 		return
 	}
 	target := strings.ToLower(fields[1])
 	switch target {
 	case "claude", "codex":
 	default:
-		_ = b.Send(chatID, "사용법: !backend [claude|codex]")
+		_ = reply.Send(chatID, "사용법: !backend [claude|codex]")
 		return
 	}
 
@@ -1711,30 +1737,30 @@ func (b *Bot) handleBackend(chatID int64, fields []string) {
 	active := b.activeCount
 	b.mu.Unlock()
 	if active > 0 {
-		_ = b.Send(chatID, "⏳ 작업 중에는 백엔드를 전환할 수 없습니다. !cancel 후 다시 시도하세요.")
+		_ = reply.Send(chatID, "⏳ 작업 중에는 백엔드를 전환할 수 없습니다. !cancel 후 다시 시도하세요.")
 		return
 	}
 
 	current := b.manager.Backend()
 	if current == target {
-		_ = b.Send(chatID, "이미 "+strings.ToUpper(target)+" 백엔드입니다.")
+		_ = reply.Send(chatID, "이미 "+strings.ToUpper(target)+" 백엔드입니다.")
 		return
 	}
 
 	if err := b.manager.SetBackend(target); err != nil {
-		_ = b.Send(chatID, "⚠️ "+err.Error())
+		_ = reply.Send(chatID, "⚠️ "+err.Error())
 		return
 	}
-	_ = b.Send(chatID, fmt.Sprintf("✅ 백엔드 전환됨: %s → %s", strings.ToUpper(current), strings.ToUpper(target)))
+	_ = reply.Send(chatID, fmt.Sprintf("✅ 백엔드 전환됨: %s → %s", strings.ToUpper(current), strings.ToUpper(target)))
 }
 
 // handleParallel dispatches multiple independent prompts concurrently.
 // Syntax: !parallel <prompt1> | <prompt2> | ...
 // Each |-separated prompt becomes its own worker; responses arrive independently.
-func (b *Bot) handleParallel(chatID int64, text, origin string) {
+func (b *Bot) handleParallel(reply replySender, chatID int64, text, origin string) {
 	rest := strings.TrimSpace(strings.TrimPrefix(text, "!parallel"))
 	if rest == "" {
-		_ = b.Send(chatID, "사용법: !parallel <프롬프트1> | <프롬프트2> | ...\n예) !parallel 테스트 작성해줘 | 문서 업데이트해줘")
+		_ = reply.Send(chatID, "사용법: !parallel <프롬프트1> | <프롬프트2> | ...\n예) !parallel 테스트 작성해줘 | 문서 업데이트해줘")
 		return
 	}
 	parts := strings.Split(rest, "|")
@@ -1745,7 +1771,7 @@ func (b *Bot) handleParallel(chatID int64, text, origin string) {
 		}
 	}
 	if len(prompts) == 0 {
-		_ = b.Send(chatID, "⚠️ 유효한 프롬프트가 없습니다.")
+		_ = reply.Send(chatID, "⚠️ 유효한 프롬프트가 없습니다.")
 		return
 	}
 	// Cap to MaxWorkers to prevent unbounded resource / rate-limit bypass.
@@ -1754,14 +1780,14 @@ func (b *Bot) handleParallel(chatID int64, text, origin string) {
 		maxP = 1
 	}
 	if len(prompts) > maxP {
-		_ = b.Send(chatID, fmt.Sprintf("⚠️ !parallel 최대 %d개까지 허용됩니다 (%d개 입력됨). 앞의 %d개만 실행합니다.", maxP, len(prompts), maxP))
+		_ = reply.Send(chatID, fmt.Sprintf("⚠️ !parallel 최대 %d개까지 허용됩니다 (%d개 입력됨). 앞의 %d개만 실행합니다.", maxP, len(prompts), maxP))
 		prompts = prompts[:maxP]
 	}
 	if len(prompts) == 1 {
 		b.dispatchText(chatID, prompts[0], origin)
 		return
 	}
-	_ = b.Send(chatID, fmt.Sprintf("🔀 %d개 병렬 작업 시작합니다...", len(prompts)))
+	_ = reply.Send(chatID, fmt.Sprintf("🔀 %d개 병렬 작업 시작합니다...", len(prompts)))
 	for _, p := range prompts {
 		b.dispatchText(chatID, p, origin)
 	}
@@ -1779,57 +1805,57 @@ func removeInt64(ids []int64, v int64) []int64 {
 }
 
 // handleUser manages the runtime allow-list: !user add <id> | remove <id> | list
-func (b *Bot) handleUser(chatID int64, fields []string) {
+func (b *Bot) handleUser(reply replySender, chatID int64, fields []string) {
 	if b.userStore == nil {
-		_ = b.Send(chatID, "⚠️ UserStore를 사용할 수 없습니다.")
+		_ = reply.Send(chatID, "⚠️ UserStore를 사용할 수 없습니다.")
 		return
 	}
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !user add <id> | !user remove <id> | !user list")
+		_ = reply.Send(chatID, "사용법: !user add <id> | !user remove <id> | !user list")
 		return
 	}
 	switch fields[1] {
 	case "add":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !user add <telegram_user_id>")
+			_ = reply.Send(chatID, "사용법: !user add <telegram_user_id>")
 			return
 		}
 		var id int64
 		if _, err := fmt.Sscanf(fields[2], "%d", &id); err != nil {
-			_ = b.Send(chatID, "⚠️ 잘못된 사용자 ID (숫자 입력 필요): "+fields[2])
+			_ = reply.Send(chatID, "⚠️ 잘못된 사용자 ID (숫자 입력 필요): "+fields[2])
 			return
 		}
 		if err := b.userStore.Add(id); err != nil {
-			_ = b.Send(chatID, "⚠️ 저장 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 저장 실패: "+err.Error())
 			return
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 사용자 추가됨: %d", id))
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 사용자 추가됨: %d", id))
 	case "remove":
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !user remove <telegram_user_id>")
+			_ = reply.Send(chatID, "사용법: !user remove <telegram_user_id>")
 			return
 		}
 		var id int64
 		if _, err := fmt.Sscanf(fields[2], "%d", &id); err != nil {
-			_ = b.Send(chatID, "⚠️ 잘못된 사용자 ID: "+fields[2])
+			_ = reply.Send(chatID, "⚠️ 잘못된 사용자 ID: "+fields[2])
 			return
 		}
 		if b.cfg().IsAllowed(id) {
-			_ = b.Send(chatID, "⚠️ config.txt AllowedUserIDs에 있는 사용자는 !user remove로 제거할 수 없습니다.")
+			_ = reply.Send(chatID, "⚠️ config.txt AllowedUserIDs에 있는 사용자는 !user remove로 제거할 수 없습니다.")
 			return
 		}
 		// Lockout guard: refuse if removing this ID would leave no allowed users.
 		runtimeAfter := b.userStore.List()
 		runtimeAfter = removeInt64(runtimeAfter, id)
 		if len(b.cfg().AllowedUserIDs) == 0 && len(b.cfg().AllowedUsernames) == 0 && len(runtimeAfter) == 0 {
-			_ = b.Send(chatID, "⚠️ 이 사용자를 제거하면 허용된 사용자가 없어져 봇이 잠깁니다. 먼저 다른 사용자를 추가하세요.")
+			_ = reply.Send(chatID, "⚠️ 이 사용자를 제거하면 허용된 사용자가 없어져 봇이 잠깁니다. 먼저 다른 사용자를 추가하세요.")
 			return
 		}
 		if err := b.userStore.Remove(id); err != nil {
-			_ = b.Send(chatID, "⚠️ 저장 실패: "+err.Error())
+			_ = reply.Send(chatID, "⚠️ 저장 실패: "+err.Error())
 			return
 		}
-		_ = b.Send(chatID, fmt.Sprintf("🗑 사용자 제거됨: %d", id))
+		_ = reply.Send(chatID, fmt.Sprintf("🗑 사용자 제거됨: %d", id))
 	case "list":
 		var sb strings.Builder
 		sb.WriteString("👥 허용된 사용자:\n")
@@ -1855,9 +1881,9 @@ func (b *Bot) handleUser(chatID int64, fields []string) {
 		} else {
 			sb.WriteString("\n  [runtime] 없음")
 		}
-		_ = b.Send(chatID, sb.String())
+		_ = reply.Send(chatID, sb.String())
 	default:
-		_ = b.Send(chatID, "사용법: !user add <id> | !user remove <id> | !user list")
+		_ = reply.Send(chatID, "사용법: !user add <id> | !user remove <id> | !user list")
 	}
 }
 
@@ -1938,61 +1964,61 @@ func validateDir(path string) error {
 
 // webNew creates a new top-level web conversation and makes it the active one
 // so the web UI can select it immediately.
-func (b *Bot) webNew(chatID int64, title string) {
+func (b *Bot) webNew(reply replySender, chatID int64, title string) {
 	c, err := b.store.NewWebConv(title)
 	if err != nil {
-		_ = b.Send(chatID, "⚠️ 새 웹 대화 생성 실패: "+err.Error())
+		_ = reply.Send(chatID, "⚠️ 새 웹 대화 생성 실패: "+err.Error())
 		return
 	}
 	_ = b.store.SetActive("", c.ID)
-	_ = b.Send(chatID, "🆕 새 웹 대화: "+c.Title)
+	_ = reply.Send(chatID, "🆕 새 웹 대화: "+c.Title)
 }
 
 // webSetDir sets the working directory for a web conversation, validating the
 // path exists and is a directory first (never persist a non-existent WorkDir).
-func (b *Bot) webSetDir(chatID int64, id, path string) {
+func (b *Bot) webSetDir(reply replySender, chatID int64, id, path string) {
 	c, ok := b.store.GetWebConv(id)
 	if !ok {
-		_ = b.Send(chatID, "웹 대화를 찾을 수 없습니다.")
+		_ = reply.Send(chatID, "웹 대화를 찾을 수 없습니다.")
 		return
 	}
 	if err := validateDir(path); err != nil {
-		_ = b.Send(chatID, "⚠️ "+err.Error())
+		_ = reply.Send(chatID, "⚠️ "+err.Error())
 		return
 	}
 	c.WorkDir = path
 	if err := b.store.UpdateWebConv(c); err != nil {
-		_ = b.Send(chatID, "⚠️ 설정 실패: "+err.Error())
+		_ = reply.Send(chatID, "⚠️ 설정 실패: "+err.Error())
 		return
 	}
-	_ = b.Send(chatID, "📁 작업 폴더 설정: "+path)
+	_ = reply.Send(chatID, "📁 작업 폴더 설정: "+path)
 }
 
 // webRename renames a web conversation.
-func (b *Bot) webRename(chatID int64, id, title string) {
+func (b *Bot) webRename(reply replySender, chatID int64, id, title string) {
 	c, ok := b.store.GetWebConv(id)
 	if !ok || title == "" {
-		_ = b.Send(chatID, "이름 변경 실패: 대화가 없거나 제목이 비었습니다.")
+		_ = reply.Send(chatID, "이름 변경 실패: 대화가 없거나 제목이 비었습니다.")
 		return
 	}
 	c.Title = title
 	if err := b.store.UpdateWebConv(c); err != nil {
-		_ = b.Send(chatID, "⚠️ 이름 변경 실패: "+err.Error())
+		_ = reply.Send(chatID, "⚠️ 이름 변경 실패: "+err.Error())
 		return
 	}
-	_ = b.Send(chatID, "✏️ 이름 변경: "+title)
+	_ = reply.Send(chatID, "✏️ 이름 변경: "+title)
 }
 
 // webDelete removes a top-level web conversation. store.DeleteWebConv already
 // clears the active pointer when it referenced the deleted conversation.
-func (b *Bot) webDelete(chatID int64, id string) {
+func (b *Bot) webDelete(reply replySender, chatID int64, id string) {
 	if _, ok := b.store.GetWebConv(id); !ok {
-		_ = b.Send(chatID, "웹 대화를 찾을 수 없습니다.")
+		_ = reply.Send(chatID, "웹 대화를 찾을 수 없습니다.")
 		return
 	}
 	if err := b.store.DeleteWebConv(id); err != nil {
-		_ = b.Send(chatID, "⚠️ 삭제 실패: "+err.Error())
+		_ = reply.Send(chatID, "⚠️ 삭제 실패: "+err.Error())
 		return
 	}
-	_ = b.Send(chatID, "🗑️ 대화가 삭제되었습니다.")
+	_ = reply.Send(chatID, "🗑️ 대화가 삭제되었습니다.")
 }

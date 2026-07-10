@@ -29,7 +29,7 @@ func chatCmdBot(t *testing.T) (*Bot, *fileStore, *recCh) {
 
 func TestHandleChat_TelegramRejected(t *testing.T) {
 	b, _, w := chatCmdBot(t)
-	b.handleChat(1, "!chat new x", []string{"!chat", "new", "x"}, OriginTelegram)
+	b.handleChat(b.ReplyTo(TelegramTarget()), 1, "!chat new x", []string{"!chat", "new", "x"}, OriginTelegram)
 	joined := strings.Join(w.texts, "\n")
 	if !strings.Contains(joined, "웹") {
 		t.Errorf("telegram !chat should be rejected with web guidance, got %v", w.texts)
@@ -40,7 +40,7 @@ func TestHandleChat_WebRename(t *testing.T) {
 	b, st, _ := chatCmdBot(t)
 	c, _ := st.NewConversation("myapp", "old", OriginWeb)
 	_ = st.SetActive("myapp", c.ID)
-	b.handleChat(1, "!chat rename 새 제목", []string{"!chat", "rename", "새", "제목"}, OriginWeb)
+	b.handleChat(b.ReplyTo(TelegramTarget()), 1, "!chat rename 새 제목", []string{"!chat", "rename", "새", "제목"}, OriginWeb)
 	got, _ := st.GetConversation("myapp", c.ID)
 	if got.Title != "새 제목" {
 		t.Errorf("rename should update title, got %q", got.Title)

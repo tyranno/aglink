@@ -236,3 +236,83 @@ func TestBotHubAccessorRegistersTelegram(t *testing.T) {
 		t.Errorf("Bot.Send must delegate to Hub, got %v", w.texts)
 	}
 }
+
+// A command must answer only the conversation it was sent from. A "!" command
+// typed into a web topic used to reply through b.Send, which always addresses
+// the telegram stream — so the answer showed up in Telegram instead.
+func TestHandleCommand_RepliesOnlyToRequestingConversation(t *testing.T) {
+	b := &Bot{}
+	b.out = NewHub()
+	tg := &recCh{}
+	web := &recCh{}
+	b.out.RegisterGlobal(tg)
+	b.out.Register(7, web)
+
+	b.handleCommand(7, "!help", OriginWeb, webTarget("c1"))
+
+	if len(tg.texts) != 0 {
+		t.Errorf("a web-topic command must not answer in telegram, got %v", tg.texts)
+	}
+	if len(web.texts) != 1 {
+		t.Fatalf("the web topic should get the answer, got %v", web.texts)
+	}
+	if !web.targets[0].IsWeb() || web.targets[0].ID != "c1" {
+		t.Errorf("answer target = %+v, want web/c1", web.targets[0])
+	}
+}
+
+// The same command from Telegram still answers on the telegram stream (and the
+// browser, which renders that stream as one of its conversations).
+func TestHandleCommand_TelegramCommandAnswersTelegramStream(t *testing.T) {
+	b := &Bot{}
+	b.out = NewHub()
+	tg := &recCh{}
+	web := &recCh{}
+	b.out.RegisterGlobal(tg)
+	b.out.Register(7, web)
+
+	b.handleCommand(7, "!help", OriginTelegram, TelegramTarget())
+
+	if len(tg.texts) != 1 {
+		t.Errorf("telegram command should answer in telegram, got %v", tg.texts)
+	}
+	if len(web.texts) != 1 || web.targets[0].IsWeb() {
+		t.Errorf("browser should see it tagged as the telegram stream, got %+v", web.targets)
+	}
+}
+
+// Web-conversation management is browser-only: its confirmations must never
+// reach Telegram, whatever target the requester sent.
+func TestWebNew_ConfirmationNeverReachesTelegram(t *testing.T) {
+	st := newTestStore(t)
+	b := &Bot{store: st}
+	b.out = NewHub()
+	tg := &recCh{}
+	web := &recCh{}
+	b.out.RegisterGlobal(tg)
+	b.out.Register(7, web)
+
+	b.webNew(b.ReplyTo(AsWebTarget(TelegramTarget())), 7, "topic")
+
+	if len(tg.texts) != 0 {
+		t.Errorf("web_new confirmation must not reach telegram, got %v", tg.texts)
+	}
+	if len(web.texts) != 1 {
+		t.Errorf("browser should get the confirmation, got %v", web.texts)
+	}
+}
+
+// AsWebTarget coerces a telegram/empty target to web, so a web-only reply can
+// never be addressed to the telegram stream.
+func TestAsWebTarget(t *testing.T) {
+	if got := AsWebTarget(TelegramTarget()); !got.IsWeb() {
+		t.Errorf("AsWebTarget(telegram) = %+v, want web", got)
+	}
+	if got := AsWebTarget(Target{}); !got.IsWeb() {
+		t.Errorf("AsWebTarget(empty) = %+v, want web", got)
+	}
+	wt := webTarget("keep")
+	if got := AsWebTarget(wt); got.ID != "keep" {
+		t.Errorf("AsWebTarget must preserve an existing web target, got %+v", got)
+	}
+}

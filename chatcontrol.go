@@ -175,6 +175,14 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 	if origin == "" {
 		origin = OriginWeb
 	}
+	// The conversation this request came from. Every reply — command output,
+	// errors, rate-limit notices — goes back to it and nowhere else. A request
+	// with no target is the telegram stream, the always-present default.
+	tgt := TelegramTarget()
+	if m.Target != nil {
+		tgt = *m.Target
+	}
+
 	switch m.Type {
 	case "send_text":
 		text := strings.TrimSpace(m.Text)
@@ -182,16 +190,16 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 			return
 		}
 		if strings.HasPrefix(text, "!") {
-			go s.bot.handleCommand(chatID, text, origin)
+			go s.bot.handleCommand(chatID, text, origin, tgt)
 			return
 		}
 		if s.bot.rateLimiter != nil && !s.bot.rateLimiter.Allow(chatID) {
-			_ = s.bot.Send(chatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+			_ = s.bot.ReplyTo(tgt).Send(chatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
 			return
 		}
 		go s.bot.dispatchTargeted(chatID, text, m.Target)
 	case "handle_command":
-		go s.bot.handleCommand(chatID, m.Text, origin)
+		go s.bot.handleCommand(chatID, m.Text, origin, tgt)
 	case "list_conversations":
 		data, err := json.Marshal(buildConversationsResponse(s.bot.store))
 		if err != nil {
@@ -212,14 +220,17 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "upload_attachment":
 		go s.bot.ingestAttachment(chatID, m.Path, m.Caption, origin)
+	// Web-conversation management is browser-only. Addressing the reply to a web
+	// target keeps these confirmations out of Telegram by construction (see
+	// Hub.targets), whatever the requester sent.
 	case "web_new":
-		go s.bot.webNew(chatID, m.Title)
+		go s.bot.webNew(s.bot.ReplyTo(AsWebTarget(tgt)), chatID, m.Title)
 	case "web_setdir":
-		go s.bot.webSetDir(chatID, m.ID, m.Path)
+		go s.bot.webSetDir(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID, m.Path)
 	case "web_rename":
-		go s.bot.webRename(chatID, m.ID, m.Title)
+		go s.bot.webRename(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID, m.Title)
 	case "web_delete":
-		go s.bot.webDelete(chatID, m.ID)
+		go s.bot.webDelete(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID)
 	case "get_version":
 		backend := ""
 		if s.bot != nil && s.bot.manager != nil {

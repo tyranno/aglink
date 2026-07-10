@@ -69,7 +69,7 @@ func TestHandleChatUseQualifiedProjectConversation(t *testing.T) {
 	b.out.Register(55, w)
 	// !chat is web-only (Task 6); origin must be OriginWeb for the subcommand
 	// to run at all — see TestHandleChat_TelegramRejected in chat_cmd_test.go.
-	b.handleChat(55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID), OriginWeb)
+	b.handleChat(b.ReplyTo(TelegramTarget()), 55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID), OriginWeb)
 
 	active := st.GetActive()
 	if active.Project != "beta" || active.ConversationID != betaConv.ID {
@@ -426,7 +426,7 @@ func TestHandleCommand_SerializedAcrossConcurrentCalls(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			b.handleCommand(7, "!status", "")
+			b.handleCommand(7, "!status", "", TelegramTarget())
 		}()
 	}
 	wg.Wait()

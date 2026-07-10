@@ -77,25 +77,31 @@ func (r *remoteChatChannel) push(o controlOut) {
 }
 func (r *remoteChatChannel) close() { r.closeOnce.Do(func() { r.cancel() }) }
 
-func (r *remoteChatChannel) Send(_ int64, text string) error {
-	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "text", Text: text}})
+// Every frame carries its Target so the browser files it under the conversation
+// it belongs to. Without the tag the browser appends whatever arrives to
+// whichever conversation is open, mixing the telegram stream into web topics.
+// The web channel receives both kinds — it renders the telegram stream as one of
+// its conversations — so this tag is the only thing separating them.
+
+func (r *remoteChatChannel) Send(tgt Target, _ int64, text string) error {
+	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "text", Text: text, Target: &tgt}})
 	return nil
 }
-func (r *remoteChatChannel) SendPhoto(_ int64, png []byte, caption string) error {
-	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "image", Caption: caption, Data: base64.StdEncoding.EncodeToString(png)}})
+func (r *remoteChatChannel) SendPhoto(tgt Target, _ int64, png []byte, caption string) error {
+	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "image", Caption: caption, Data: base64.StdEncoding.EncodeToString(png), Target: &tgt}})
 	return nil
 }
-func (r *remoteChatChannel) Typing(_ int64) {
-	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "typing"}})
+func (r *remoteChatChannel) Typing(tgt Target, _ int64) {
+	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "typing", Target: &tgt}})
 }
-func (r *remoteChatChannel) Done(_ int64) {
-	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "done"}})
+func (r *remoteChatChannel) Done(tgt Target, _ int64) {
+	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "done", Target: &tgt}})
 }
-func (r *remoteChatChannel) EchoUser(_ int64, text, origin string) {
+func (r *remoteChatChannel) EchoUser(tgt Target, _ int64, text, origin string) {
 	// Same rule as webChannel: mirror Telegram input as a user bubble; web-origin
 	// was already rendered locally by the sending browser.
 	if origin == OriginTelegram {
-		r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "user", Text: text}})
+		r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "user", Text: text, Target: &tgt}})
 	}
 }
 

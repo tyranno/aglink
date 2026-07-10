@@ -169,12 +169,39 @@ type Task struct {
 	DependsOn []string  `json:"dependsOn,omitempty"` // task IDs that must complete before this fires
 }
 
-// Target identifies what a web send continues: the global telegram stream, or a
-// specific web topic. Kind is "telegram" or "web".
+// Target kinds. An empty or unrecognized Kind means the telegram stream: it is
+// the always-present default, so a not-yet-updated client can never accidentally
+// address a web topic.
+const (
+	TargetTelegram = "telegram"
+	TargetWeb      = "web"
+)
+
+// Target identifies a conversation channel: the global telegram stream, or a
+// specific web topic. It addresses both inbound sends and outbound frames, so
+// each channel's output stays in its own conversation.
 type Target struct {
 	Kind    string `json:"kind"`
 	Project string `json:"project,omitempty"`
 	ID      string `json:"id,omitempty"`
+}
+
+// TelegramTarget is the global telegram stream.
+func TelegramTarget() Target { return Target{Kind: TargetTelegram} }
+
+// IsWeb reports whether t addresses a web topic rather than the telegram stream.
+func (t Target) IsWeb() bool { return t.Kind == TargetWeb }
+
+// SameConversation reports whether two targets name the same conversation. Used
+// by clients to decide whether an incoming frame belongs to what's on screen.
+func (t Target) SameConversation(o Target) bool {
+	if t.IsWeb() != o.IsWeb() {
+		return false
+	}
+	if t.IsWeb() {
+		return t.ID == o.ID
+	}
+	return true // all non-web targets are the single telegram stream
 }
 
 // Action constants.

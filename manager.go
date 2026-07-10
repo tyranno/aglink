@@ -204,6 +204,9 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text, origin string,
 // project/conversation routing, but one manager LLM call still serves natural-
 // language scheduling (and, incidentally, a project hint).
 func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string, s MessageSender) {
+	// Scope every output of this turn to the telegram stream.
+	s = bindTarget(s, TelegramTarget())
+
 	// Backend auto-switch pre-check (unchanged behavior).
 	if target := detectBackendSwitchIntent(text); target != "" && target != m.Backend() {
 		if err := m.SetBackend(target); err != nil {
@@ -354,13 +357,18 @@ func (m *Manager) CompactTelegramConversation(ctx context.Context, chatID int64,
 // handleWeb handles a web send with no explicit target (legacy path): default to
 // the telegram stream, the always-present conversation.
 func (m *Manager) handleWeb(ctx context.Context, chatID int64, text string, s MessageSender) {
-	m.HandleWebTarget(ctx, chatID, text, Target{Kind: "telegram"}, s)
+	m.HandleWebTarget(ctx, chatID, text, TelegramTarget(), s)
 }
 
 // HandleWebTarget routes a web send to its explicit target: the global telegram
 // stream or a specific web topic. Web never does LLM project routing.
 func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string, tgt Target, s MessageSender) {
-	if tgt.Kind != "web" {
+	// Scope every output of this turn — replies, errors, typing, images — to the
+	// conversation it belongs to. Without this a web topic's output fans out to
+	// the global (Telegram) channels too, surfacing web conversations in Telegram.
+	s = bindTarget(s, tgt)
+
+	if !tgt.IsWeb() {
 		// Telegram stream: the default for kind "telegram", and for any unknown
 		// or empty kind (e.g. a not-yet-updated web client). Working directory
 		// resolution mirrors handleTelegram: the active project's path if set &

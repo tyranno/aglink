@@ -13,32 +13,36 @@ type recCh struct {
 	photos  int
 	typings int
 	echoes  []string // "origin:text" for each EchoUser call
+	targets []Target // the Target each Send carried
 	sendErr error
 }
 
-func (r *recCh) Send(_ int64, text string) error {
+func (r *recCh) Send(tgt Target, _ int64, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.texts = append(r.texts, text)
+	r.targets = append(r.targets, tgt)
 	return r.sendErr
 }
-func (r *recCh) SendPhoto(_ int64, _ []byte, _ string) error {
+func (r *recCh) SendPhoto(_ Target, _ int64, _ []byte, _ string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.photos++
 	return nil
 }
-func (r *recCh) Typing(_ int64) {
+func (r *recCh) Typing(_ Target, _ int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.typings++
 }
-func (r *recCh) Done(_ int64) {}
-func (r *recCh) EchoUser(_ int64, text, origin string) {
+func (r *recCh) Done(Target, int64) {}
+func (r *recCh) EchoUser(_ Target, _ int64, text, origin string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.echoes = append(r.echoes, origin+":"+text)
 }
+
+func webTarget(id string) Target { return Target{Kind: TargetWeb, ID: id} }
 
 func TestHubFanOut_GlobalPlusPerChat(t *testing.T) {
 	h := NewHub()
@@ -49,9 +53,9 @@ func TestHubFanOut_GlobalPlusPerChat(t *testing.T) {
 	h.Register(7, w)
 	h.Register(99, other)
 
-	_ = h.Send(7, "hi")
-	_ = h.SendPhoto(7, []byte("png"), "cap")
-	h.Typing(7)
+	_ = h.Send(TelegramTarget(), 7, "hi")
+	_ = h.SendPhoto(TelegramTarget(), 7, []byte("png"), "cap")
+	h.Typing(TelegramTarget(), 7)
 
 	if len(g.texts) != 1 || g.texts[0] != "hi" {
 		t.Errorf("global should get the text, got %v", g.texts)
@@ -64,12 +68,69 @@ func TestHubFanOut_GlobalPlusPerChat(t *testing.T) {
 	}
 }
 
+// A web topic is invisible from Telegram: its output must reach only the web
+// channels, never a global (Telegram) channel. This is the isolation that was
+// missing — every web-topic reply used to be posted into Telegram as well.
+func TestHubFanOut_WebTargetNeverReachesGlobal(t *testing.T) {
+	h := NewHub()
+	tg := &recCh{} // telegram (global)
+	web := &recCh{}
+	h.RegisterGlobal(tg)
+	h.Register(7, web)
+
+	_ = h.Send(webTarget("conv-1"), 7, "web only")
+	_ = h.SendPhoto(webTarget("conv-1"), 7, []byte("png"), "cap")
+	h.Typing(webTarget("conv-1"), 7)
+	h.Done(webTarget("conv-1"), 7)
+	h.EchoUser(webTarget("conv-1"), 7, "typed in web", OriginWeb)
+
+	if len(tg.texts) != 0 || tg.photos != 0 || tg.typings != 0 || len(tg.echoes) != 0 {
+		t.Errorf("telegram must not receive web-topic output, got %+v", tg)
+	}
+	if len(web.texts) != 1 || web.texts[0] != "web only" || web.photos != 1 || web.typings != 1 {
+		t.Errorf("web channel should receive its own topic output, got %+v", web)
+	}
+}
+
+// The telegram stream still reaches both: Telegram itself, and the browser,
+// which renders it as one of its conversations.
+func TestHubFanOut_TelegramTargetReachesBoth(t *testing.T) {
+	h := NewHub()
+	tg := &recCh{}
+	web := &recCh{}
+	h.RegisterGlobal(tg)
+	h.Register(7, web)
+
+	_ = h.Send(TelegramTarget(), 7, "stream")
+
+	if len(tg.texts) != 1 || len(web.texts) != 1 {
+		t.Fatalf("telegram stream should reach both, tg=%v web=%v", tg.texts, web.texts)
+	}
+	if web.targets[0].IsWeb() {
+		t.Errorf("frame handed to the web channel must be tagged telegram, got %+v", web.targets[0])
+	}
+}
+
+// An empty/unknown Kind is the telegram stream, so an outdated client can never
+// silently address a web topic.
+func TestHubFanOut_EmptyKindIsTelegramStream(t *testing.T) {
+	h := NewHub()
+	tg := &recCh{}
+	h.RegisterGlobal(tg)
+
+	_ = h.Send(Target{}, 7, "no kind")
+
+	if len(tg.texts) != 1 {
+		t.Errorf("empty Kind must fan out to the telegram stream, got %v", tg.texts)
+	}
+}
+
 func TestHubUnregister(t *testing.T) {
 	h := NewHub()
 	w := &recCh{}
 	h.Register(7, w)
 	h.Unregister(7, w)
-	_ = h.Send(7, "hi")
+	_ = h.Send(TelegramTarget(), 7, "hi")
 	if len(w.texts) != 0 {
 		t.Errorf("unregistered channel must not receive, got %v", w.texts)
 	}
@@ -81,7 +142,7 @@ func TestHubErrorIsolation(t *testing.T) {
 	good := &recCh{}
 	h.RegisterGlobal(bad)
 	h.Register(7, good)
-	if err := h.Send(7, "hi"); err != nil {
+	if err := h.Send(TelegramTarget(), 7, "hi"); err != nil {
 		t.Errorf("Hub.Send should swallow per-channel errors, got %v", err)
 	}
 	if len(good.texts) != 1 {
@@ -100,7 +161,7 @@ func TestHubFanOut_MultipleWebChannels(t *testing.T) {
 	h.Register(7, w2)
 	h.Register(8, other)
 
-	_ = h.Send(7, "hi")
+	_ = h.Send(TelegramTarget(), 7, "hi")
 
 	if len(g.texts) != 1 || g.texts[0] != "hi" {
 		t.Errorf("global should get the text, got %v", g.texts)
@@ -115,6 +176,46 @@ func TestHubFanOut_MultipleWebChannels(t *testing.T) {
 		t.Errorf("chat-8 channel must NOT receive chat-7 traffic, got %v", other.texts)
 	}
 }
+
+// Bot.For binds a Target to the sender, so the manager's unchanged
+// s.Send(chatID, …) call sites address the right conversation.
+func TestBotFor_BindsTargetToSender(t *testing.T) {
+	b := &Bot{}
+	b.out = NewHub()
+	tg := &recCh{}
+	web := &recCh{}
+	b.out.RegisterGlobal(tg)
+	b.out.Register(7, web)
+
+	_ = b.For(webTarget("c1")).Send(7, "to web topic")
+	if len(tg.texts) != 0 {
+		t.Errorf("web-bound sender must not reach telegram, got %v", tg.texts)
+	}
+	if len(web.texts) != 1 || web.targets[0].ID != "c1" {
+		t.Errorf("web channel should get the tagged frame, got %+v", web)
+	}
+
+	// Bot itself keeps addressing the telegram stream.
+	_ = b.Send(7, "to telegram")
+	if len(tg.texts) != 1 || tg.texts[0] != "to telegram" {
+		t.Errorf("Bot.Send must address the telegram stream, got %v", tg.texts)
+	}
+}
+
+// bindTarget leaves a sender that can't rebind untouched (test fakes, relays).
+func TestBindTarget_PassthroughForPlainSender(t *testing.T) {
+	plain := &recMsgSender{}
+	if got := bindTarget(plain, webTarget("x")); got != MessageSender(plain) {
+		t.Error("a sender without For() must be returned unchanged")
+	}
+}
+
+// recMsgSender is a MessageSender with no target binding.
+type recMsgSender struct{ texts []string }
+
+func (r *recMsgSender) Send(_ int64, text string) error { r.texts = append(r.texts, text); return nil }
+func (r *recMsgSender) Typing(int64)                    {}
+func (r *recMsgSender) Done(int64)                      {}
 
 func TestBotHubAccessorRegistersTelegram(t *testing.T) {
 	// A freshly constructed Bot must expose a Hub that already has the Telegram

@@ -23,11 +23,12 @@ func drainControlOut(ch chan controlOut) []controlOut {
 // no-op (mirrors webChannel).
 func TestRemoteChatChannel_Frames(t *testing.T) {
 	r := &remoteChatChannel{send: make(chan controlOut, 16), cancel: func() {}}
-	_ = r.Send(7, "hi")
-	r.Typing(7)
-	r.Done(7)
-	r.EchoUser(7, "from telegram", OriginTelegram)
-	r.EchoUser(7, "from web", OriginWeb) // no-op
+	tg := TelegramTarget()
+	_ = r.Send(tg, 7, "hi")
+	r.Typing(tg, 7)
+	r.Done(tg, 7)
+	r.EchoUser(tg, 7, "from telegram", OriginTelegram)
+	r.EchoUser(tg, 7, "from web", OriginWeb) // no-op
 
 	outs := drainControlOut(r.send)
 	if len(outs) != 4 {
@@ -41,6 +42,30 @@ func TestRemoteChatChannel_Frames(t *testing.T) {
 	}
 	if outs[3].Frame.Type != "user" || outs[3].Frame.Text != "from telegram" {
 		t.Errorf("echo frame = %+v", outs[3].Frame)
+	}
+}
+
+// Every frame carries the Target it belongs to, so the browser can file it under
+// the right conversation instead of appending it to whatever is on screen.
+func TestRemoteChatChannel_FramesCarryTarget(t *testing.T) {
+	r := &remoteChatChannel{send: make(chan controlOut, 16), cancel: func() {}}
+	wt := Target{Kind: TargetWeb, ID: "conv-9"}
+	_ = r.Send(wt, 7, "hi")
+	_ = r.SendPhoto(wt, 7, []byte("png"), "cap")
+	r.Typing(wt, 7)
+	r.Done(wt, 7)
+
+	outs := drainControlOut(r.send)
+	if len(outs) != 4 {
+		t.Fatalf("expected 4 frames, got %d", len(outs))
+	}
+	for i, o := range outs {
+		if o.Frame.Target == nil {
+			t.Fatalf("frame %d (%s) has no target", i, o.Frame.Type)
+		}
+		if !o.Frame.Target.IsWeb() || o.Frame.Target.ID != "conv-9" {
+			t.Errorf("frame %d target = %+v, want web/conv-9", i, *o.Frame.Target)
+		}
 	}
 }
 

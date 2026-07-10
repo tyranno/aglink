@@ -92,6 +92,11 @@ type wsFrame struct {
 	Text    string `json:"text,omitempty"`
 	Caption string `json:"caption,omitempty"`
 	Data    string `json:"data,omitempty"` // base64 PNG for images
+	// Target names the conversation this frame belongs to, so a client files it
+	// under the right topic instead of whatever is on screen. A frame with no
+	// target means the telegram stream — the same default an empty Target.Kind
+	// carries everywhere else.
+	Target *Target `json:"target,omitempty"`
 }
 
 type webConversationTopic struct {

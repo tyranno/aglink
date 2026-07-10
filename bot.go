@@ -99,7 +99,11 @@ func newTelegramChannel(api *tgbotapi.BotAPI) *telegramChannel {
 	return &telegramChannel{api: api}
 }
 
-func (t *telegramChannel) Send(chatID int64, text string) error {
+// Every telegramChannel method ignores the Target: the Hub already withholds
+// web-topic output from global channels (see Hub.targets), so anything reaching
+// here belongs to the telegram stream by construction.
+
+func (t *telegramChannel) Send(_ Target, chatID int64, text string) error {
 	msg := tgbotapi.NewMessage(chatID, text)
 	_, err := t.api.Send(msg)
 	if err != nil {
@@ -108,7 +112,7 @@ func (t *telegramChannel) Send(chatID int64, text string) error {
 	return err
 }
 
-func (t *telegramChannel) SendPhoto(chatID int64, png []byte, caption string) error {
+func (t *telegramChannel) SendPhoto(_ Target, chatID int64, png []byte, caption string) error {
 	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "screen.png", Bytes: png})
 	if caption != "" {
 		photo.Caption = caption
@@ -120,42 +124,84 @@ func (t *telegramChannel) SendPhoto(chatID int64, png []byte, caption string) er
 	return err
 }
 
-func (t *telegramChannel) Typing(chatID int64) {
+func (t *telegramChannel) Typing(_ Target, chatID int64) {
 	if _, err := t.api.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
 		log.Printf("[tg] typing error: %v", err)
 	}
 }
 
 // Done is a no-op for Telegram — it has no persistent "working" indicator to clear.
-func (t *telegramChannel) Done(int64) {}
+func (t *telegramChannel) Done(Target, int64) {}
 
 // EchoUser relays user input that originated from the web to Telegram. A Telegram
 // user's own message is already visible in their client, so telegram-origin is a
 // no-op. Bots can't post as the user, so web input arrives as a bot-authored line.
-func (t *telegramChannel) EchoUser(chatID int64, text, origin string) {
+// Only input addressed to the telegram stream reaches here, so a web topic's
+// input is never mirrored into Telegram.
+func (t *telegramChannel) EchoUser(tgt Target, chatID int64, text, origin string) {
 	if origin == OriginWeb {
-		_ = t.Send(chatID, "🌐 (웹) "+text)
+		_ = t.Send(tgt, chatID, "🌐 (웹) "+text)
 	}
 }
 
-// Send delivers a plain-text message, fanning out to all channels (MessageSender).
+// Bot itself is a MessageSender addressing the telegram stream — the right
+// default for bot commands and startup notices, which are telegram-originated.
+// Work that belongs to a web topic must go through For(tgt) instead, so its
+// output never reaches Telegram.
+
+// Send delivers a plain-text message to the telegram stream's channels.
 func (b *Bot) Send(chatID int64, text string) error {
-	return b.out.Send(chatID, text)
+	return b.out.Send(TelegramTarget(), chatID, text)
 }
 
-// SendPhoto delivers a PNG image with optional caption to all channels.
+// SendPhoto delivers a PNG image with optional caption to the telegram stream.
 func (b *Bot) SendPhoto(chatID int64, png []byte, caption string) error {
-	return b.out.SendPhoto(chatID, png, caption)
+	return b.out.SendPhoto(TelegramTarget(), chatID, png, caption)
 }
 
-// Typing shows the "typing…" indicator on all channels (MessageSender).
+// Typing shows the "typing…" indicator on the telegram stream's channels.
 func (b *Bot) Typing(chatID int64) {
-	b.out.Typing(chatID)
+	b.out.Typing(TelegramTarget(), chatID)
 }
 
-// Done signals turn completion on all channels (MessageSender).
+// Done signals turn completion on the telegram stream's channels.
 func (b *Bot) Done(chatID int64) {
-	b.out.Done(chatID)
+	b.out.Done(TelegramTarget(), chatID)
+}
+
+// For returns a sender bound to tgt. Binding the target to the sender (rather
+// than threading it through every Send/Typing/Done call) keeps the manager's
+// output call sites unchanged while still addressing each turn's output to the
+// conversation it belongs to.
+func (b *Bot) For(tgt Target) MessageSender { return boundSender{hub: b.out, tgt: tgt} }
+
+// boundSender is a Target-bound view of the Hub. It satisfies MessageSender and
+// also SendPhoto, which runWorker type-asserts for screen-capture images.
+type boundSender struct {
+	hub *Hub
+	tgt Target
+}
+
+func (s boundSender) Send(chatID int64, text string) error { return s.hub.Send(s.tgt, chatID, text) }
+func (s boundSender) SendPhoto(chatID int64, png []byte, caption string) error {
+	return s.hub.SendPhoto(s.tgt, chatID, png, caption)
+}
+func (s boundSender) Typing(chatID int64) { s.hub.Typing(s.tgt, chatID) }
+func (s boundSender) Done(chatID int64)   { s.hub.Done(s.tgt, chatID) }
+
+// targetBinder is implemented by senders that can rebind themselves to a Target.
+// The manager uses it to scope a turn's output; a sender that doesn't implement
+// it (test fakes) simply keeps its default addressing.
+type targetBinder interface {
+	For(Target) MessageSender
+}
+
+// bindTarget scopes s to tgt when it supports it, else returns s unchanged.
+func bindTarget(s MessageSender, tgt Target) MessageSender {
+	if tb, ok := s.(targetBinder); ok {
+		return tb.For(tgt)
+	}
+	return s
 }
 
 // Hub returns the output fan-out hub so other transports (web chat) can register
@@ -236,8 +282,9 @@ func (b *Bot) dispatchText(chatID int64, text, origin string) {
 	// Mirror the user's input to the OTHER channel so both web and Telegram show
 	// what was typed, wherever it was entered. Each channel no-ops for its own
 	// origin (ChannelSender.EchoUser), so the origin channel never double-echoes.
+	// This path carries no explicit target, so it is the telegram stream.
 	if b.out != nil {
-		b.out.EchoUser(chatID, text, origin)
+		b.out.EchoUser(TelegramTarget(), chatID, text, origin)
 	}
 	if b.dispatchHook != nil {
 		b.dispatchHook(chatID, text)
@@ -254,13 +301,15 @@ func (b *Bot) dispatchText(chatID int64, text, origin string) {
 // TimeoutMinutes deadline, !cancel registration, and panic recovery as every
 // other dispatch — rather than calling the Manager directly.
 func (b *Bot) dispatchTargeted(chatID int64, text string, tgt *Target) {
-	t := Target{Kind: "telegram"}
+	t := TelegramTarget()
 	if tgt != nil {
 		t = *tgt
 	}
-	// Mirror web-typed input to the other channel (Telegram), same as dispatchText.
+	// Mirror web-typed input to the other channel, same as dispatchText. Echoing
+	// to t (not the telegram stream) is what keeps a web topic's input out of
+	// Telegram: Hub.targets drops the global channels for a web target.
 	if b.out != nil {
-		b.out.EchoUser(chatID, text, OriginWeb)
+		b.out.EchoUser(t, chatID, text, OriginWeb)
 	}
 	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: OriginWeb, target: &t})
 }

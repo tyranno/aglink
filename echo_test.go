@@ -11,11 +11,11 @@ func TestTelegramChannelEchoUser_TelegramOriginNoOp(t *testing.T) {
 			t.Fatalf("telegram-origin EchoUser must be a no-op, but it called Send (panic: %v)", r)
 		}
 	}()
-	tc.EchoUser(7, "user's own telegram message", OriginTelegram)
+	tc.EchoUser(TelegramTarget(), 7, "user's own telegram message", OriginTelegram)
 }
 
-// Hub.EchoUser fans to every channel (global + per-chat); each channel decides
-// whether to act based on origin.
+// Hub.EchoUser fans to every channel for the telegram stream (global + per-chat);
+// each channel decides whether to act based on origin.
 func TestHubEchoUser_FansToAll(t *testing.T) {
 	h := NewHub()
 	g := &recCh{}
@@ -25,7 +25,7 @@ func TestHubEchoUser_FansToAll(t *testing.T) {
 	h.Register(7, w)
 	h.Register(99, other)
 
-	h.EchoUser(7, "hi", OriginWeb)
+	h.EchoUser(TelegramTarget(), 7, "hi", OriginWeb)
 
 	if len(g.echoes) != 1 || g.echoes[0] != "web:hi" {
 		t.Errorf("global should receive echo, got %v", g.echoes)
@@ -35,6 +35,27 @@ func TestHubEchoUser_FansToAll(t *testing.T) {
 	}
 	if len(other.echoes) != 0 {
 		t.Errorf("chat-99 channel must not receive chat-7 echo, got %v", other.echoes)
+	}
+}
+
+// Input typed into a web topic must not be mirrored into Telegram — only input
+// addressed to the telegram stream is.
+func TestDispatchTargeted_WebTopicInputNotEchoedToTelegram(t *testing.T) {
+	b := newParallelTestBot(0)
+	b.out = NewHub()
+	tg := &recCh{}
+	web := &recCh{}
+	b.out.RegisterGlobal(tg)
+	b.out.Register(7, web)
+
+	wt := Target{Kind: TargetWeb, ID: "c1"}
+	b.dispatchTargeted(7, "secret web note", &wt)
+
+	if len(tg.echoes) != 0 {
+		t.Errorf("web-topic input must not be echoed to telegram, got %v", tg.echoes)
+	}
+	if len(web.echoes) != 1 {
+		t.Errorf("web channel should still receive the echo, got %v", web.echoes)
 	}
 }
 

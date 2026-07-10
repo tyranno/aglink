@@ -542,8 +542,44 @@ func runScriptPrecheck(script string) (wakeAgent bool, data map[string]any) {
 
 // --- ParseSchedule (backward compat for !remind / !cron duration parsing) ---
 
+// humanDelay renders a one-shot delay, e.g. "45분", "1시간 30분", "2일".
+//
+// ParseSchedule's label describes a *recurrence* ("45분마다"), which is right for
+// a cron but wrong for a reminder that fires once: "remind me in 45 minutes"
+// used to be confirmed as "45분마다 후". Callers append 후/뒤 themselves.
+func humanDelay(d time.Duration) string {
+	if d < time.Minute {
+		secs := int(d.Round(time.Second).Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		return fmt.Sprintf("%d초", secs)
+	}
+	d = d.Round(time.Minute)
+	days := int(d / (24 * time.Hour))
+	hours := int(d % (24 * time.Hour) / time.Hour)
+	mins := int(d % time.Hour / time.Minute)
+
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%d일", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%d시간", hours))
+	}
+	// Minutes are noise next to a multi-day delay.
+	if mins > 0 && days == 0 {
+		parts = append(parts, fmt.Sprintf("%d분", mins))
+	}
+	if len(parts) == 0 {
+		return "1분"
+	}
+	return strings.Join(parts, " ")
+}
+
 // ParseSchedule parses duration strings: English ("30m", "2h", "1d", "1w", "hourly", "daily", "weekly")
-// and Korean aliases ("매시간", "매일", "매주").
+// and Korean aliases ("매시간", "매일", "매주"). The returned label describes a
+// recurrence; for a one-shot delay use humanDelay.
 func ParseSchedule(raw string) (time.Duration, string, error) {
 	raw = strings.TrimSpace(strings.ToLower(raw))
 	switch raw {

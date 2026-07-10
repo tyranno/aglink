@@ -1286,7 +1286,8 @@ func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSende
 			_ = s.Send(chatID, "⚠️ 알림 등록 실패: "+err.Error())
 			return
 		}
-		_ = s.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후\n  %s", r.ID, label, dec.ScheduleTask))
+		// label describes a recurrence ("45분마다"); a reminder fires once.
+		_ = s.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후\n  %s", r.ID, humanDelay(dur), dec.ScheduleTask))
 	case "cron":
 		c, err := m.scheduler.AddCron(chatID, label, dur, dec.ScheduleTask, dec.ScheduleIsTask)
 		if err != nil {

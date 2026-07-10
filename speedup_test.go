@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The manager LLM call is only worth its 7-20s when the message is plausibly a
@@ -97,5 +98,35 @@ func TestIsSessionNotFound_CodexRollout(t *testing.T) {
 	}
 	if isSessionNotFound("some other failure") {
 		t.Error("unrelated errors must not trigger recovery")
+	}
+}
+
+// A reminder fires once, so its confirmation must describe a delay, not a
+// recurrence. ParseSchedule's label ("45분마다") was being suffixed with "후",
+// producing "45분마다 후" for "remind me in 45 minutes".
+func TestHumanDelay(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{45 * time.Minute, "45분"},
+		{90 * time.Minute, "1시간 30분"},
+		{2 * time.Hour, "2시간"},
+		{24 * time.Hour, "1일"},
+		{50 * time.Hour, "2일 2시간"},
+		{30 * time.Second, "30초"},
+		{time.Second, "1초"},
+		{0, "1초"},
+		{61 * time.Second, "1분"},
+	}
+	for _, c := range cases {
+		if got := humanDelay(c.d); got != c.want {
+			t.Errorf("humanDelay(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+
+	// The recurrence label is unchanged — cron still needs it.
+	if _, label, err := ParseSchedule("45m"); err != nil || label != "45분마다" {
+		t.Errorf("ParseSchedule(45m) label = %q (err %v), want 45분마다", label, err)
 	}
 }

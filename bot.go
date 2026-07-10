@@ -976,7 +976,7 @@ func (b *Bot) handleRemind(reply replySender, chatID int64, _ string, fields []s
 		if isTask {
 			kind = "Claude 작업"
 		}
-		_ = reply.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후 (%s): %s", t.ID, dur.Round(time.Second), kind, msg))
+		_ = reply.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후 (%s): %s", t.ID, humanDelay(dur), kind, msg))
 	}
 }
 

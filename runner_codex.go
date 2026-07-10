@@ -701,13 +701,39 @@ func codexRunBaseArgs(workDir, sessionID string, resume, ignoreUserConfig bool) 
 	)
 }
 
+// newCodexOutFile creates the file codex writes its final message to (-o), one
+// per turn.
+//
+// It used to be named after (pid, SessionID), which is per *conversation*, not
+// per turn — and nothing serializes turns of the same web conversation (only the
+// telegram stream takes a lock). Two overlapping turns therefore shared one
+// file: each codex wrote its answer over the other's, and whichever read first
+// could hand the user the other turn's reply. Route already used os.CreateTemp;
+// this brings Run in line.
+func newCodexOutFile() (string, error) {
+	of, err := os.CreateTemp("", "teleclaude_codex_out_*.txt")
+	if err != nil {
+		return "", err
+	}
+	name := of.Name()
+	return name, of.Close()
+}
+
 // Run executes a worker turn via codex exec.
 // Uses a powerful model (codex_model) for actual work.
 func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	useOutFile := r.supportsOutputLastMessage()
-	outFile := filepath.Join(os.TempDir(), fmt.Sprintf("teleclaude_codex_%d_%s.txt", os.Getpid(), req.SessionID))
+	var outFile string
 	if useOutFile {
-		defer os.Remove(outFile)
+		f, err := newCodexOutFile()
+		if err != nil {
+			// Not fatal: fall back to reading the last agent_message off stdout.
+			log.Printf("[codex] run: out-file create failed (%v) — reading stdout instead", err)
+			useOutFile = false
+		} else {
+			outFile = f
+			defer os.Remove(outFile)
+		}
 	}
 
 	model := req.Model

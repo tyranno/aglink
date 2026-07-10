@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -85,5 +86,27 @@ func TestRunWorker_ResumedTurnKeepsSessionID(t *testing.T) {
 
 	if got := st.TelegramConversation().SessionID; got != "live-session-id" {
 		t.Errorf("stored session id = %q, want it untouched", got)
+	}
+}
+
+// codex writes its final message to a -o file. That file must be unique per
+// turn: nothing serializes two turns of the same web conversation (only the
+// telegram stream takes a lock), and they carry the same SessionID. Naming the
+// file after the conversation let one turn overwrite the other's answer.
+func TestNewCodexOutFile_UniquePerTurn(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		p, err := newCodexOutFile()
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(p) })
+		if seen[p] {
+			t.Fatalf("two turns got the same out-file: %q", p)
+		}
+		seen[p] = true
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("out-file should exist: %v", err)
+		}
 	}
 }

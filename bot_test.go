@@ -375,20 +375,42 @@ func TestParseTaskAddArgs_ErrorInvalidSchedule(t *testing.T) {
 
 // --- ingestAttachment ---
 
+// savedAttachment points HOME at a temp dir and returns a path inside the
+// attachments directory. ingestAttachment refuses anything outside it, so these
+// tests can no longer hand it an arbitrary path — which is the point: the old
+// ones named C:\a and /tmp, the very directories the prune would have emptied.
+func savedAttachment(t *testing.T, name string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".teleclaude", "attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func TestIngestAttachment_BuildsPrompt(t *testing.T) {
+	p := savedAttachment(t, "file.png")
 	var got string
 	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
-	b.ingestAttachment(7, "C:\\a\\file.png", "설명해줘", "")
-	if !strings.Contains(got, "설명해줘") || !strings.Contains(got, "[첨부파일: C:\\a\\file.png]") {
+	b.ingestAttachment(7, p, "설명해줘", "")
+	if !strings.Contains(got, "설명해줘") || !strings.Contains(got, "[첨부파일: "+p+"]") {
 		t.Errorf("prompt = %q", got)
 	}
 }
 
 func TestIngestAttachment_DefaultCaption(t *testing.T) {
+	p := savedAttachment(t, "x.pdf")
 	var got string
 	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
-	b.ingestAttachment(7, "/tmp/x.pdf", "", "")
-	if !strings.Contains(got, "첨부파일을 분석해줘") || !strings.Contains(got, "[첨부파일: /tmp/x.pdf]") {
+	b.ingestAttachment(7, p, "", "")
+	if !strings.Contains(got, "첨부파일을 분석해줘") || !strings.Contains(got, "[첨부파일: "+p+"]") {
 		t.Errorf("prompt = %q", got)
 	}
 }

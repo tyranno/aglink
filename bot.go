@@ -1544,13 +1544,58 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 	b.ingestAttachment(chatID, savePath, caption, OriginTelegram)
 }
 
+// attachmentsDir is the one directory teleclaude saves attachments into. Both
+// producers — the Telegram download and aglink-chat's upload relay — write here.
+func attachmentsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".teleclaude", "attachments"), nil
+}
+
+// insideDir reports whether path resolves to something under dir. Purely
+// lexical after cleaning, which is what we want: the caller must not be able to
+// escape with ".." or by naming an unrelated absolute path.
+func insideDir(dir, path string) bool {
+	ad, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	ap, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(ad, ap)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // ingestAttachment builds a prompt from a saved file path + caption and dispatches
 // it. Shared by the Telegram attachment path and the web upload endpoint so both
 // behave identically.
+//
+// savePath is not trusted. The control API's upload_attachment carries it from
+// the client, and it used to be pruned by directory: filepath.Dir(savePath) was
+// handed to pruneAttachments, which deletes everything but the newest
+// maxAttachments files. A path naming any other directory therefore deleted the
+// user's files there. It was also passed straight to a worker to read.
 func (b *Bot) ingestAttachment(chatID int64, savePath, caption, origin string) {
+	dir, err := attachmentsDir()
+	if err != nil {
+		log.Printf("[bot] attachment rejected: cannot resolve attachments dir: %v", err)
+		return
+	}
+	if !insideDir(dir, savePath) {
+		log.Printf("[bot] attachment rejected: %q is outside %q", savePath, dir)
+		return
+	}
+
 	// Cap the attachments directory to the most recent maxAttachments files. The
 	// just-saved file is the newest, so it always survives. Best-effort.
-	pruneAttachments(filepath.Dir(savePath), maxAttachments)
+	pruneAttachments(dir, maxAttachments)
 
 	prompt := caption
 	if prompt == "" {
@@ -1587,11 +1632,10 @@ func attachFileInfo(msg *tgbotapi.Message) (fileID, ext string) {
 
 // downloadAttachment fetches a Telegram file by ID and saves it to the attachments directory.
 func (b *Bot) downloadAttachment(fileID, ext string) (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := attachmentsDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".teleclaude", "attachments")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("첨부파일 디렉터리 생성 실패: %w", err)
 	}

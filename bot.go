@@ -424,9 +424,16 @@ func (b *Bot) dispatch(msg queuedMsg) {
 // back through a sender bound to it instead of b.Send, which always addresses
 // the telegram stream. A command issued in a web topic used to answer in
 // Telegram: the answer must return only to whoever asked.
+// Done is signalled on every exit path. The web client shows its working
+// indicator the moment it sends anything — including a "!" command — and only a
+// Done clears it. Commands never ran a worker, so nothing used to clear it and
+// the indicator span forever behind an answer that had already arrived.
 func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 	b.cmdMu.Lock()
 	defer b.cmdMu.Unlock()
+	if b.out != nil {
+		defer b.ReplyTo(tgt).Done(chatID)
+	}
 	if b.commandHook != nil {
 		b.commandHook(chatID, text)
 		return

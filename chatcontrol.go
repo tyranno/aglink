@@ -33,7 +33,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | get_version | get_aux | get_config | set_config
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | get_version | get_aux | get_config | set_config
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -204,6 +204,20 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		data, err := json.Marshal(buildConversationsResponse(s.bot.store))
 		if err != nil {
 			log.Printf("[chatcontrol] list_conversations marshal: %v", err)
+			return
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	// The authoritative answer to "is this conversation still working?". A client
+	// polls it to correct an indicator that a dropped Done frame would otherwise
+	// leave spinning; the pushed frames stay the fast path.
+	case "get_active_workers":
+		var workers []WorkerStatus
+		if s.bot != nil && s.bot.manager != nil {
+			workers = s.bot.manager.ActiveWorkers()
+		}
+		data, err := json.Marshal(buildActiveWorkersResponse(workers))
+		if err != nil {
+			log.Printf("[chatcontrol] get_active_workers marshal: %v", err)
 			return
 		}
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})

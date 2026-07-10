@@ -143,6 +143,39 @@ type webConversationsResponse struct {
 	WebConvs []webWebConv       `json:"webConvs"`
 }
 
+// webActiveWorker is one still-running worker turn. Clients poll these to
+// reconcile a working indicator: a conversation missing from the list is idle,
+// whatever frames did or didn't arrive.
+type webActiveWorker struct {
+	Project        string `json:"project,omitempty"`
+	ConversationID string `json:"conversationId"`
+	Title          string `json:"title,omitempty"`
+	StartedAt      string `json:"startedAt,omitempty"` // RFC3339
+}
+
+type webActiveWorkersResponse struct {
+	Workers []webActiveWorker `json:"workers"`
+}
+
+// buildActiveWorkersResponse projects the manager's running workers onto the
+// wire shape. Conversation IDs match the client's target ids — the telegram
+// stream's conversation is literally "telegram" — so a client can key on them.
+func buildActiveWorkersResponse(workers []WorkerStatus) webActiveWorkersResponse {
+	out := webActiveWorkersResponse{Workers: make([]webActiveWorker, 0, len(workers))}
+	for _, w := range workers {
+		aw := webActiveWorker{
+			Project:        w.Project,
+			ConversationID: w.ConversationID,
+			Title:          w.Title,
+		}
+		if !w.StartTime.IsZero() {
+			aw.StartedAt = w.StartTime.UTC().Format(time.RFC3339)
+		}
+		out.Workers = append(out.Workers, aw)
+	}
+	return out
+}
+
 // webWebConv is a top-level web conversation entry (store.WebConvs), distinct
 // from webProjectTopics/webConversationTopic which describe project-scoped
 // (Telegram-origin) conversation trees.

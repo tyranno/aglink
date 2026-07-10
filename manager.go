@@ -207,6 +207,12 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	// Scope every output of this turn to the telegram stream.
 	s = bindTarget(s, TelegramTarget())
 
+	// Signal completion however this turn ends. runWorker signals its own, but
+	// the early returns below (routing errors, a missing backend, a schedule
+	// request) never reach it, and a web client that already showed its working
+	// indicator would spin forever behind an answer that had arrived.
+	defer s.Done(chatID)
+
 	// Backend auto-switch pre-check (unchanged behavior).
 	if target := detectBackendSwitchIntent(text); target != "" && target != m.Backend() {
 		if err := m.SetBackend(target); err != nil {
@@ -367,6 +373,11 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 	// conversation it belongs to. Without this a web topic's output fans out to
 	// the global (Telegram) channels too, surfacing web conversations in Telegram.
 	s = bindTarget(s, tgt)
+
+	// Signal completion however this turn ends: the early returns below (unknown
+	// conversation, missing backend) never reach runWorker, which is the only
+	// other place that signals it.
+	defer s.Done(chatID)
 
 	if !tgt.IsWeb() {
 		// Telegram stream: the default for kind "telegram", and for any unknown
@@ -1069,6 +1080,13 @@ func (m *Manager) describeActive() string {
 // GetWorkerStatus returns status of a specific Worker or empty if not found.
 func (m *Manager) GetWorkerStatus(project, convID string) (WorkerStatus, bool) {
 	return m.workerStatus.GetStatus(project, convID)
+}
+
+// ActiveWorkers returns the workers still running. Clients poll this to
+// reconcile a "working" indicator that a lost or out-of-order Done frame would
+// otherwise leave spinning: a conversation absent from this list is not busy.
+func (m *Manager) ActiveWorkers() []WorkerStatus {
+	return m.workerStatus.ListActive()
 }
 
 // DescribeActiveWorkers returns a human-readable status of all running Workers.

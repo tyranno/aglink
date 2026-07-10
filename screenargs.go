@@ -1,10 +1,5 @@
 package main
 
-import (
-	"os"
-	"path/filepath"
-)
-
 // Design Ref: §1 (structure), §2 (tool priority / worker system prompt).
 //
 // This file assembles the worker guidance and binary resolution for the screen
@@ -44,23 +39,14 @@ func screenSystemPrompt() string {
 }
 
 // resolveScreenBinaryPath locates the aglink-screen executable that provides
-// the screen MCP server and the !screen fast-path. cfg.ScreenBinaryPath
-// overrides (honored as-is, so a misconfigured path surfaces the real exec error);
-// otherwise it looks next to teleclaude's own executable (the expected deployment
-// layout: drop aglink-screen(.exe) alongside teleclaude) and only claims it when
-// the file actually exists. Returns "" when unresolved — the worker then simply
+// the screen MCP server and the !screen fast-path. See resolveAglinkBinary for
+// the shared lookup order. Returns "" when unresolved — the worker then simply
 // runs without screen tools, and !screen reports the binary is missing, rather
 // than pointing claude/the shell at a nonexistent path.
 func resolveScreenBinaryPath(cfg *Config, selfExe string) string {
-	if cfg != nil && cfg.ScreenBinaryPath != "" {
-		return cfg.ScreenBinaryPath
+	var configured string
+	if cfg != nil {
+		configured = cfg.ScreenBinaryPath
 	}
-	if selfExe == "" {
-		return ""
-	}
-	path := filepath.Join(filepath.Dir(selfExe), "aglink-screen"+exeSuffix)
-	if _, err := os.Stat(path); err != nil {
-		return ""
-	}
-	return path
+	return resolveAglinkBinary("aglink-screen", configured, selfExe)
 }

@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"log"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 )
@@ -15,33 +13,18 @@ import (
 // next teleclaude respawns it fresh).
 var aglinkChatUpdating atomic.Bool
 
-// resolveAglinkChatBinary locates the aglink-chat executable, in order:
-// the explicit aglink_chat.binary_path from config, then next to teleclaude
-// (where !update deploys it), then the sibling source repo, and finally PATH —
-// so a system-installed aglink-chat runs with no config at all, the same way
-// findCodex/findClaude locate their CLIs. Returns "" when none exists.
+// fastExitWarnThreshold is how many back-to-back immediate exits the supervisor
+// tolerates before warning that the failure looks permanent.
+const fastExitWarnThreshold = 3
+
+// resolveAglinkChatBinary locates the aglink-chat executable. See
+// resolveAglinkBinary for the shared lookup order.
 func resolveAglinkChatBinary(cfg *Config, selfExe string) string {
-	if cfg != nil && cfg.AglinkChatBinaryPath != "" {
-		if _, err := os.Stat(cfg.AglinkChatBinaryPath); err == nil {
-			return cfg.AglinkChatBinaryPath
-		}
-		log.Printf("[aglinkchat] configured binary_path %q not found — falling back to sibling/PATH lookup", cfg.AglinkChatBinaryPath)
+	var configured string
+	if cfg != nil {
+		configured = cfg.AglinkChatBinaryPath
 	}
-	name := "aglink-chat" + exeSuffix
-	srcDir := filepath.Dir(selfExe)
-	candidates := []string{
-		filepath.Join(srcDir, name),
-		filepath.Join(filepath.Dir(srcDir), "aglink-chat", name),
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if p, err := exec.LookPath(name); err == nil {
-		return p
-	}
-	return ""
+	return resolveAglinkBinary("aglink-chat", configured, selfExe)
 }
 
 // startAglinkChat spawns and supervises `aglink-chat serve`, restarting it with
@@ -51,14 +34,15 @@ func resolveAglinkChatBinary(cfg *Config, selfExe string) string {
 func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlToken, browserToken string) {
 	killByImageName("aglink-chat" + exeSuffix) // clear an orphan from a prior instance
 	backoff := time.Second
+	fastExits := 0
 	for ctx.Err() == nil {
 		cmd := exec.CommandContext(ctx, binPath, "serve",
 			"--addr", addr,
 			"--control-addr", controlAddr,
 			"--control-token", controlToken,
 			"--token", browserToken)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = childLogWriter
+		cmd.Stderr = childLogWriter
 		log.Printf("[aglinkchat] starting %s serve on %s", binPath, addr)
 		start := time.Now()
 		err := cmd.Run()
@@ -77,6 +61,23 @@ func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlTok
 		}
 
 		log.Printf("[aglinkchat] serve exited after %s: %v — restarting in %s", ran.Round(time.Second), err, backoff)
+
+		// A child that never stays up is failing on something a restart cannot
+		// fix (a port it may not bind, a missing dependency). Say so once, loudly,
+		// instead of looping quietly forever — that silence hid an unbindable
+		// 1717 (reserved by WinNAT) behind a 15s backoff.
+		if ran < 5*time.Second {
+			fastExits++
+			if fastExits == fastExitWarnThreshold {
+				log.Printf("[aglinkchat] WARNING: exited immediately %d times in a row — likely a permanent failure. "+
+					"Check that %s is free (a Windows/WinNAT reserved port range can block it: "+
+					"`netsh int ipv4 show excludedportrange protocol=tcp`) and see the child's output above.",
+					fastExits, addr)
+			}
+		} else {
+			fastExits = 0
+		}
+
 		select {
 		case <-ctx.Done():
 			return

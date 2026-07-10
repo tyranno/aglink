@@ -440,6 +440,14 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 		_ = b.Send(chatID, "사용법: !screen list | !screen shot [창이름] | !screen region <x> <y> <너비> <높이> [창이름] | !screen preset save <이름> | !screen click <프리셋이름>")
 		return
 	}
+	// Honor the yaml switch: screen_control.enabled gates the MCP server for
+	// worker turns (pluginWorkerArgs / codexScreenArgs) and must gate this
+	// fast-path too, or !screen would drive the screen from a config that says
+	// screen control is off.
+	if !b.cfg().ScreenControl {
+		_ = b.Send(chatID, "❌ 화면제어가 비활성화되어 있습니다. config.yaml의 screen_control.enabled를 true로 설정하세요.")
+		return
+	}
 	selfExe, _ := os.Executable()
 	screenBin := resolveScreenBinaryPath(b.cfg(), selfExe)
 	if screenBin == "" {

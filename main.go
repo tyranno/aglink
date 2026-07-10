@@ -93,6 +93,15 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		return err
 	}
 
+	// Tee logs to a file before anything else can fail: the elevated instance
+	// runs with a hidden console, so this file is the only record of startup,
+	// elevation and supervised-child failures.
+	if closer, lerr := setupFileLogging(dir); lerr != nil {
+		log.Printf("[log] file logging disabled: %v", lerr)
+	} else {
+		defer closer.Close()
+	}
+
 	// cfgPath is the YAML path the wizard writes to (and the path we reload from).
 	cfgPath := configOverride
 	if cfgPath == "" {

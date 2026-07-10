@@ -1,10 +1,5 @@
 package main
 
-import (
-	"os"
-	"path/filepath"
-)
-
 // This file assembles the worker guidance and binary resolution for the web
 // MCP server — the standalone "aglink-web" binary (see
 // https://github.com/tyranno/aglink-web), a sibling of aglink-screen that lets
@@ -26,20 +21,13 @@ func webSystemPrompt() string {
 }
 
 // resolveWebBinaryPath locates the aglink-web executable that provides the web
-// MCP server, mirroring resolveScreenBinaryPath: cfg.WebBinaryPath overrides
-// (honored as-is); otherwise it looks next to teleclaude's own executable and
-// only claims it when the file actually exists. Returns "" when unresolved —
-// the worker then simply runs without web tools.
+// MCP server, mirroring resolveScreenBinaryPath. See resolveAglinkBinary for
+// the shared lookup order. Returns "" when unresolved — the worker then simply
+// runs without web tools.
 func resolveWebBinaryPath(cfg *Config, selfExe string) string {
-	if cfg != nil && cfg.WebBinaryPath != "" {
-		return cfg.WebBinaryPath
+	var configured string
+	if cfg != nil {
+		configured = cfg.WebBinaryPath
 	}
-	if selfExe == "" {
-		return ""
-	}
-	path := filepath.Join(filepath.Dir(selfExe), "aglink-web"+exeSuffix)
-	if _, err := os.Stat(path); err != nil {
-		return ""
-	}
-	return path
+	return resolveAglinkBinary("aglink-web", configured, selfExe)
 }

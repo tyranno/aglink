@@ -927,6 +927,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
 		backend, workerModel, project, workConv.ID, workConv.Started, len(prompt))
 
+	// sessionRecovered records that this turn ran as a fresh CLI session after the
+	// stored one turned out to be gone. The persistence guard below skips a
+	// SessionID on an already-started conversation — right for a resumed turn,
+	// which returns none — but a recovered turn returns a *new* id that must
+	// replace the dead one, or every later turn repeats the failed resume.
+	sessionRecovered := false
+
 	res, err := client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   workDir,
@@ -953,6 +960,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			// session — the prompt carries a recent-history reminder so the chat
 			// continues seamlessly. This is internal recovery; don't tell the user.
 			log.Printf("[worker] session lost (%v) — retrying once without --resume", err)
+			sessionRecovered = true
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
@@ -1068,7 +1076,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		// next occurrence is visible in the server log instead of a surprise.
 		log.Printf("[manager] conv %s history capped at %d turns, dropped %d oldest", workConv.ID, maxHistoryTurns, dropped)
 	}
-	if res.SessionID != "" && !wasStarted {
+	if res.SessionID != "" && (!wasStarted || sessionRecovered) {
 		workConv.SessionID = res.SessionID
 	}
 

@@ -15,14 +15,17 @@ import (
 // next teleclaude respawns it fresh).
 var aglinkChatUpdating atomic.Bool
 
-// resolveAglinkChatBinary locates the aglink-chat executable: explicit config
-// path first, then next to teleclaude (where !update deploys it), then the
-// sibling source repo. Returns "" when none exists.
+// resolveAglinkChatBinary locates the aglink-chat executable, in order:
+// the explicit aglink_chat.binary_path from config, then next to teleclaude
+// (where !update deploys it), then the sibling source repo, and finally PATH —
+// so a system-installed aglink-chat runs with no config at all, the same way
+// findCodex/findClaude locate their CLIs. Returns "" when none exists.
 func resolveAglinkChatBinary(cfg *Config, selfExe string) string {
 	if cfg != nil && cfg.AglinkChatBinaryPath != "" {
 		if _, err := os.Stat(cfg.AglinkChatBinaryPath); err == nil {
 			return cfg.AglinkChatBinaryPath
 		}
+		log.Printf("[aglinkchat] configured binary_path %q not found — falling back to sibling/PATH lookup", cfg.AglinkChatBinaryPath)
 	}
 	name := "aglink-chat" + exeSuffix
 	srcDir := filepath.Dir(selfExe)
@@ -34,6 +37,9 @@ func resolveAglinkChatBinary(cfg *Config, selfExe string) string {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
 	}
 	return ""
 }

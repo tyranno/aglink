@@ -622,13 +622,26 @@ func (s *Scheduler) findByID(id string) *Task {
 	return nil
 }
 
+// removeByID drops a task and the timer bookkeeping that belongs to it.
+//
+// It used to trim only the task slice, so every one-shot that fired left its
+// entry behind in stopChs — one dead channel per reminder, for the life of the
+// process. Lock must be held by caller.
 func (s *Scheduler) removeByID(id string) {
 	for i, t := range s.tasks {
 		if t.ID == id {
 			s.tasks = append(s.tasks[:i], s.tasks[i+1:]...)
-			return
+			break
 		}
 	}
+	// The one-shot's goroutine has already returned, so its channel is only
+	// waiting to be forgotten; deregister would close it, which is harmless but
+	// pointless. Drop the entries directly.
+	if entryID, ok := s.cronEntries[id]; ok {
+		s.cronRunner.Remove(entryID)
+		delete(s.cronEntries, id)
+	}
+	delete(s.stopChs, id)
 }
 
 func newTaskID() string {

@@ -34,7 +34,7 @@ var childLogWriter io.Writer = os.Stderr
 // Failure to open the log is not fatal: logging falls back to stderr alone.
 func setupFileLogging(dir string) (io.Closer, error) {
 	path := filepath.Join(dir, logFileName)
-	rotateLogIfLarge(path)
+	rotateLogIfLarge(path, maxLogBytes)
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -48,10 +48,13 @@ func setupFileLogging(dir string) (io.Closer, error) {
 }
 
 // rotateLogIfLarge moves an oversized log aside, keeping a single .old
-// generation. Errors are ignored — a rotation failure must not stop startup.
-func rotateLogIfLarge(path string) {
+// generation. Errors are ignored — a rotation failure must not stop startup;
+// the log simply keeps growing rather than the process refusing to run.
+//
+// cap is a parameter only so the boundary is testable without writing 10 MiB.
+func rotateLogIfLarge(path string, cap int64) {
 	fi, err := os.Stat(path)
-	if err != nil || fi.Size() < maxLogBytes {
+	if err != nil || fi.Size() < cap {
 		return
 	}
 	_ = os.Remove(path + ".old")

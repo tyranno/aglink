@@ -17,6 +17,13 @@ var aglinkChatUpdating atomic.Bool
 // tolerates before warning that the failure looks permanent.
 const fastExitWarnThreshold = 3
 
+// healthyRunDuration is how long a child must stay up for its next crash to be
+// treated as a one-off rather than a loop; maxRespawnBackoff caps the wait.
+const (
+	healthyRunDuration = 30 * time.Second
+	maxRespawnBackoff  = 15 * time.Second
+)
+
 // resolveAglinkChatBinary locates the aglink-chat executable. See
 // resolveAglinkBinary for the shared lookup order.
 func resolveAglinkChatBinary(cfg *Config, selfExe string) string {
@@ -83,10 +90,17 @@ func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlTok
 			return
 		case <-time.After(backoff):
 		}
-		if ran > 30*time.Second {
-			backoff = time.Second // healthy run → reset backoff
-		} else {
-			backoff = min(backoff*2, 15*time.Second)
-		}
+		backoff = nextBackoff(ran, backoff)
 	}
+}
+
+// nextBackoff decides how long to wait before the next respawn. A child that
+// stayed up long enough to be healthy resets the delay; anything shorter doubles
+// it, up to a ceiling — so a child failing on something a restart cannot fix
+// stops hammering, but a one-off crash recovers immediately.
+func nextBackoff(ran, current time.Duration) time.Duration {
+	if ran > healthyRunDuration {
+		return time.Second
+	}
+	return min(current*2, maxRespawnBackoff)
 }

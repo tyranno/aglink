@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestResolveAglinkChatBinary_Priority(t *testing.T) {
@@ -111,5 +112,29 @@ func TestResolveAglinkChatBinary_MissingConfiguredPathFallsThrough(t *testing.T)
 	cfg := &Config{AglinkChatBinaryPath: filepath.Join(dir, "does-not-exist"+exeSuffix)}
 	if got := resolveAglinkChatBinary(cfg, selfExe); got != srcBin {
 		t.Errorf("missing configured path should fall through: got %q, want %q", got, srcBin)
+	}
+}
+
+// The respawn delay must climb while a child keeps dying and drop back the
+// moment one stays up, so a permanent failure stops hammering while a one-off
+// crash recovers at once.
+func TestNextBackoff(t *testing.T) {
+	cases := []struct {
+		name    string
+		ran     time.Duration
+		current time.Duration
+		want    time.Duration
+	}{
+		{"immediate exit doubles", 100 * time.Millisecond, time.Second, 2 * time.Second},
+		{"short run doubles", 10 * time.Second, 4 * time.Second, 8 * time.Second},
+		{"doubling is capped", 100 * time.Millisecond, 12 * time.Second, maxRespawnBackoff},
+		{"already at the cap stays", 100 * time.Millisecond, maxRespawnBackoff, maxRespawnBackoff},
+		{"exactly the healthy threshold still doubles", healthyRunDuration, 2 * time.Second, 4 * time.Second},
+		{"a healthy run resets", healthyRunDuration + time.Second, maxRespawnBackoff, time.Second},
+	}
+	for _, c := range cases {
+		if got := nextBackoff(c.ran, c.current); got != c.want {
+			t.Errorf("%s: nextBackoff(%v, %v) = %v, want %v", c.name, c.ran, c.current, got, c.want)
+		}
 	}
 }

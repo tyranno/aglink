@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -99,12 +98,52 @@ func (s *fileStore) saveLocked() error {
 	return os.Rename(tmp, s.path)
 }
 
-// ListProjects returns a shallow copy of the project map.
+// clone returns a copy a caller can read and mutate without touching the store.
+// Only History is a reference; everything else is a value.
+func (c *Conversation) clone() *Conversation {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if c.History != nil {
+		cp.History = make([]ConversationTurn, len(c.History))
+		copy(cp.History, c.History)
+	}
+	return &cp
+}
+
+// clone deep-copies a project, including every conversation in it.
+func (p *Project) clone() *Project {
+	if p == nil {
+		return nil
+	}
+	cp := Project{Path: p.Path}
+	if p.Conversations != nil {
+		cp.Conversations = make(map[string]*Conversation, len(p.Conversations))
+		for id, c := range p.Conversations {
+			cp.Conversations[id] = c.clone()
+		}
+	}
+	return &cp
+}
+
+// The read accessors below hand back copies. They used to return the store's own
+// objects, so the lock they take protected nothing: a caller read (or appended
+// to) a conversation's History, or ranged over a project's Conversations map,
+// while a writer mutated the very same object under the lock. Ranging over a map
+// that another goroutine writes is fatal to the process, not merely wrong.
+//
+// Mutating a copy and handing it to the matching Update* is the intended flow,
+// and still works: Update* stores what it is given.
+
+// ListProjects returns a deep copy of the project map.
 func (s *fileStore) ListProjects() map[string]*Project {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[string]*Project, len(s.data.Projects))
-	maps.Copy(out, s.data.Projects)
+	for name, p := range s.data.Projects {
+		out[name] = p.clone()
+	}
 	return out
 }
 
@@ -153,7 +192,7 @@ func (s *fileStore) GetProject(name string) (*Project, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.data.Projects[name]
-	return p, ok
+	return p.clone(), ok
 }
 
 // NewConversation creates a conversation in a project, assigning a numeric ID and a session UUID.
@@ -204,7 +243,7 @@ func (s *fileStore) GetConversation(project, convID string) (*Conversation, bool
 		return nil, false
 	}
 	c, ok := p.Conversations[convID]
-	return c, ok
+	return c.clone(), ok
 }
 
 // UpdateConversation persists changes to a conversation.
@@ -360,7 +399,7 @@ func (s *fileStore) TelegramConversation() *Conversation {
 		}
 		_ = s.saveLocked()
 	}
-	return s.data.TelegramConv
+	return s.data.TelegramConv.clone()
 }
 
 // UpdateTelegramConversation persists changes to the global telegram conversation.
@@ -447,7 +486,7 @@ func (s *fileStore) GetWebConv(id string) (*Conversation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.data.WebConvs[id]
-	return c, ok
+	return c.clone(), ok
 }
 
 // UpdateWebConv persists changes to a top-level web conversation.
@@ -461,12 +500,14 @@ func (s *fileStore) UpdateWebConv(c *Conversation) error {
 	return s.saveLocked()
 }
 
-// ListWebConvs returns a shallow copy of the top-level web conversation map.
+// ListWebConvs returns a deep copy of the top-level web conversation map.
 func (s *fileStore) ListWebConvs() map[string]*Conversation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[string]*Conversation, len(s.data.WebConvs))
-	maps.Copy(out, s.data.WebConvs)
+	for id, c := range s.data.WebConvs {
+		out[id] = c.clone()
+	}
 	return out
 }
 

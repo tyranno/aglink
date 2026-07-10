@@ -359,58 +359,76 @@ func (b *Bot) dispatch(msg queuedMsg) {
 		}
 		return
 	}
+	b.activeCount++ // slot reserved; runTurn owns it from here
+	b.mu.Unlock()
+
+	go b.runTurn(msg)
+}
+
+// finishTurn ends a turn's bookkeeping and decides what happens to its slot.
+//
+// It hands the slot straight to the next queued message rather than releasing it
+// and re-entering dispatch: dispatch re-checks capacity, so anything that took
+// the freed slot in the meantime would push the queued message back onto the
+// tail — after it had already been announced as starting, and out of order.
+// Returns the message that inherits the slot, if any.
+func (b *Bot) finishTurn(wid int) (queuedMsg, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.cancels, wid)
+	if len(b.queue) > 0 {
+		next := b.queue[0]
+		b.queue = b.queue[1:]
+		return next, true // slot stays reserved, now for next
+	}
+	b.activeCount--
+	return queuedMsg{}, false
+}
+
+// runTurn runs one turn on an already-reserved worker slot, then either releases
+// the slot or passes it to the next queued message.
+func (b *Bot) runTurn(msg queuedMsg) {
+	b.mu.Lock()
 	b.workerSeq++
 	wid := b.workerSeq
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
 		time.Duration(b.cfg().TimeoutMinutes)*time.Minute,
 	)
-	b.activeCount++
 	b.cancels[wid] = cancel
 	b.mu.Unlock()
 
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[bot] panic recovered (wid=%d): %v", wid, r)
-				_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
-			}
-			cancel()
-			b.mu.Lock()
-			b.activeCount--
-			delete(b.cancels, wid)
-			var next *queuedMsg
-			if len(b.queue) > 0 {
-				n := b.queue[0]
-				next = &n
-				b.queue = b.queue[1:]
-			}
-			b.mu.Unlock()
-			if next != nil {
-				if !next.isTask {
-					_ = b.ReplyTo(next.conversation()).Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
-				}
-				b.dispatch(*next)
-			}
-		}()
-
-		if msg.isTask {
-			b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, b)
-		} else if msg.target != nil {
-			b.manager.HandleWebTarget(ctx, msg.chatID, msg.text, *msg.target, b)
-		} else {
-			b.manager.Handle(ctx, msg.chatID, msg.text, msg.origin, b)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[bot] panic recovered (wid=%d): %v", wid, r)
+			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
 		}
-
-		switch ctx.Err() {
-		case context.DeadlineExceeded:
-			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
-				"⏱ 제한 시간(%d분)을 초과해 작업을 중단했습니다 — 죽은 게 아니라 시간 안에 못 끝낸 것입니다. 다시 메시지를 보내시면 이어서 진행됩니다(같은 대화 세션이라 지금까지 맥락은 유지됩니다).",
-				b.cfg().TimeoutMinutes))
-		case context.Canceled:
-			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "🛑 작업이 취소되었습니다.")
+		cancel()
+		next, ok := b.finishTurn(wid)
+		if ok {
+			if !next.isTask {
+				_ = b.ReplyTo(next.conversation()).Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
+			}
+			go b.runTurn(next)
 		}
 	}()
+
+	if msg.isTask {
+		b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, b)
+	} else if msg.target != nil {
+		b.manager.HandleWebTarget(ctx, msg.chatID, msg.text, *msg.target, b)
+	} else {
+		b.manager.Handle(ctx, msg.chatID, msg.text, msg.origin, b)
+	}
+
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
+		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
+			"⏱ 제한 시간(%d분)을 초과해 작업을 중단했습니다 — 죽은 게 아니라 시간 안에 못 끝낸 것입니다. 다시 메시지를 보내시면 이어서 진행됩니다(같은 대화 세션이라 지금까지 맥락은 유지됩니다).",
+			b.cfg().TimeoutMinutes))
+	case context.Canceled:
+		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "🛑 작업이 취소되었습니다.")
+	}
 }
 
 // handleCommand processes commands synchronously. Serialized via cmdMu so

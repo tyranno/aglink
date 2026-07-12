@@ -238,8 +238,12 @@ func parseBool(val string, def bool) bool {
 const maxAllowedWorkers = 50
 
 func (c *Config) validate() error {
-	if c.TelegramBotToken == "" {
-		return fmt.Errorf("TELEGRAM_BOT_TOKEN이 설정되지 않았습니다")
+	// Web-chat-only mode: teleclaude can boot without a Telegram bot token as long
+	// as a web frontend is enabled (chat_control/aglink_chat, or the legacy web_chat).
+	// In that mode Telegram polling is skipped and the browser UI is the only surface.
+	webFrontendEnabled := c.ChatControl || c.AglinkChat || c.WebChat
+	if c.TelegramBotToken == "" && !webFrontendEnabled {
+		return fmt.Errorf("TELEGRAM_BOT_TOKEN이 설정되지 않았습니다 (웹채팅만 쓰려면 chat_control 또는 aglink_chat을 활성화하세요)")
 	}
 	if len(c.AllowedUserIDs) == 0 {
 		return fmt.Errorf("ALLOWED_USER_IDS가 비어 있습니다 (보안상 최소 1개 필요)")
@@ -269,19 +273,23 @@ func (c *Config) IsAllowedByUsername(username string) bool {
 
 // findClaude resolves the claude CLI path: explicit > PATH > platform-specific locations.
 func findClaude(explicit string) (string, error) {
+	// preferNativeClaude unwraps a Windows claude.cmd/.ps1 shim to the native
+	// bin\claude.exe (no-op elsewhere) so workers exec claude directly rather
+	// than through cmd.exe, which would mangle plugin MCP args. Applied to every
+	// resolution path — explicit config, PATH lookup, and OS candidates.
 	if explicit != "" {
 		if _, err := os.Stat(explicit); err == nil {
-			return explicit, nil
+			return preferNativeClaude(explicit), nil
 		}
 		return "", fmt.Errorf("CLAUDE_PATH가 존재하지 않습니다: %s", explicit)
 	}
 	if p, err := exec.LookPath("claude"); err == nil {
-		return p, nil
+		return preferNativeClaude(p), nil
 	}
 	home, _ := os.UserHomeDir()
 	for _, c := range findClaudeOS(home) {
 		if _, err := os.Stat(c); err == nil {
-			return c, nil
+			return preferNativeClaude(c), nil
 		}
 	}
 	return "", fmt.Errorf("claude CLI를 찾을 수 없습니다. PATH에 추가하거나 CLAUDE_PATH를 설정하세요")

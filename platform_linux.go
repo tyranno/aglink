@@ -117,3 +117,8 @@ func findClaudeOS(home string) []string {
 	}
 	return candidates
 }
+
+// preferNativeClaude is a no-op off Windows: the claude launcher here is already
+// a native binary / shell script exec'd directly, so there is no cmd.exe
+// argument-mangling to work around (see the Windows implementation).
+func preferNativeClaude(path string) string { return path }

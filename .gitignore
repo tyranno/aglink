@@ -15,6 +15,7 @@ store.json
 
 # Runtime logs and backup files
 *.log
+*.err
 *.exe~
 
 # Local test scripts

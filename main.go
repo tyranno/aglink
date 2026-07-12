@@ -218,9 +218,17 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		log.Printf("[main] backend: %s", backend)
 	}
 
-	api, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
-	if err != nil {
-		return fmt.Errorf("텔레그램 봇 초기화 실패: %w", err)
+	// Web-chat-only mode: with no bot token, skip NewBotAPI entirely (it does a
+	// network getMe that would fail) and boot with a nil api. Telegram polling is
+	// disabled below; the web frontend (chat_control/aglink_chat) is the only surface.
+	var api *tgbotapi.BotAPI
+	if cfg.TelegramBotToken != "" {
+		api, err = tgbotapi.NewBotAPI(cfg.TelegramBotToken)
+		if err != nil {
+			return fmt.Errorf("텔레그램 봇 초기화 실패: %w", err)
+		}
+	} else {
+		log.Printf("[main] 텔레그램 봇 토큰 없음 → 웹채팅 전용 모드 (텔레그램 폴링 비활성)")
 	}
 	activeBackend := manager.Backend()
 	var activeManagerModel, activeWorkerModel string

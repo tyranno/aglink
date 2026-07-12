@@ -93,3 +93,28 @@ func TestConfigDefaultWebChatAddr(t *testing.T) {
 		t.Errorf("expected explicit addr to survive, got %q", got2.WebChatAddr)
 	}
 }
+
+// TestAglinkChatImpliesChatControl verifies that enabling only aglink_chat also
+// turns on the control API it depends on (previously both had to be set).
+func TestAglinkChatImpliesChatControl(t *testing.T) {
+	y := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\naglink_chat:\n  enabled: true\n")
+	got, err := unmarshalConfigYAML(y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AglinkChat {
+		t.Fatalf("expected AglinkChat enabled, got %+v", got)
+	}
+	if !got.ChatControl {
+		t.Errorf("aglink_chat.enabled should imply ChatControl, got ChatControl=false")
+	}
+	// Sanity: not enabling aglink_chat leaves ChatControl untouched (off here).
+	y2 := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\n")
+	got2, err := unmarshalConfigYAML(y2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.ChatControl {
+		t.Errorf("ChatControl should stay off when neither chat_control nor aglink_chat is set")
+	}
+}

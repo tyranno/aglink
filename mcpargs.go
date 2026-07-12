@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -51,9 +53,26 @@ func pluginWorkerArgs(cfg *Config, screenBin, webBin string) []string {
 		inline = []byte(`{"mcpServers":{}}`)
 	}
 
+	// Pass --mcp-config as a FILE PATH, not inline JSON. On Windows claude is a
+	// .cmd shim (e.g. C:\Program Files\nodejs\claude.cmd); Go runs a .cmd via
+	// cmd.exe, and an inline JSON arg — full of quotes and backslashes — gets
+	// mangled by cmd.exe's command-line parsing. The worker then dies with a
+	// spurious 'C:\Program' "not a recognized command" error instead of loading
+	// the plugin. A temp-file path (no spaces, no quotes) survives cmd.exe intact,
+	// and claude accepts `--mcp-config <file>` on every platform. The content is
+	// deterministic for a given config, so one stable file is safe even with
+	// concurrent workers (they all write/read identical bytes).
+	mcpArg := string(inline)
+	if dir, derr := dataDir(); derr == nil {
+		p := filepath.Join(dir, "worker-mcp.json")
+		if werr := os.WriteFile(p, inline, 0o600); werr == nil {
+			mcpArg = p
+		}
+	}
+
 	return []string{
 		"--strict-mcp-config",
-		"--mcp-config", string(inline),
+		"--mcp-config", mcpArg,
 		"--allowedTools", strings.Join(allowed, ","),
 		"--append-system-prompt", strings.Join(prompts, "\n\n"),
 	}

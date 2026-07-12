@@ -163,3 +163,25 @@ func findClaudeOS(home string) []string {
 		`C:\Program Files\nodejs\claude.cmd`,
 	}
 }
+
+// preferNativeClaude maps an npm `claude.cmd`/`claude.ps1` shim to the native
+// `bin\claude.exe` it wraps. Go runs a .cmd/.ps1 via cmd.exe/powershell, which
+// mangles complex worker args — the inline --mcp-config JSON and the multiline
+// --append-system-prompt that pluginWorkerArgs adds once an aglink-* MCP plugin
+// (screen/web) is active — so the worker dies with a spurious "'C:\Program' is
+// not recognized" error. Plain chat (simple args) survives, which is why this
+// only bites when a plugin is enabled. Exec'ing the native .exe directly avoids
+// the shell entirely, so every arg reaches claude intact. Falls back to the
+// shim if the expected node_modules layout isn't found.
+func preferNativeClaude(path string) string {
+	lower := strings.ToLower(path)
+	if !strings.HasSuffix(lower, ".cmd") && !strings.HasSuffix(lower, ".ps1") {
+		return path // already native (or an unknown launcher) — leave as-is
+	}
+	exe := filepath.Join(filepath.Dir(path),
+		"node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+	if _, err := os.Stat(exe); err == nil {
+		return exe
+	}
+	return path
+}

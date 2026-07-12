@@ -1,10 +1,28 @@
 package main
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
 )
+
+// mcpConfigContent returns the effective --mcp-config document: the arg value is
+// a temp-file path (the normal case — see pluginWorkerArgs), so read it; if the
+// file doesn't exist (write failed → inline fallback) treat the value as the
+// JSON itself.
+func mcpConfigContent(t *testing.T, args []string) string {
+	t.Helper()
+	i := slices.Index(args, "--mcp-config")
+	if i < 0 || i+1 >= len(args) {
+		t.Fatalf("no --mcp-config value in %v", args)
+	}
+	v := args[i+1]
+	if b, err := os.ReadFile(v); err == nil {
+		return string(b)
+	}
+	return v
+}
 
 // TestWorkerBaseArgs_ScreenControlInjection verifies that the worker arg builder
 // injects the screen MCP args only when cfg.ScreenControl is enabled (and a
@@ -25,10 +43,10 @@ func TestWorkerBaseArgs_ScreenControlInjection(t *testing.T) {
 	if !slices.Contains(on, "--append-system-prompt") {
 		t.Errorf("ScreenControl=true: missing --append-system-prompt in %v", on)
 	}
-	// The inline mcp-config must reference the resolved aglink-screen binary.
-	joined := strings.Join(on, " ")
-	if !strings.Contains(joined, "aglink-screen") {
-		t.Errorf("ScreenControl=true: inline config missing aglink-screen path in %v", on)
+	// The mcp-config document (written to a temp file, its path passed to claude)
+	// must reference the resolved aglink-screen binary.
+	if c := mcpConfigContent(t, on); !strings.Contains(c, "aglink-screen") {
+		t.Errorf("ScreenControl=true: mcp-config missing aglink-screen path: %s", c)
 	}
 
 	// ScreenControl OFF → no screen MCP args.
@@ -88,9 +106,8 @@ func TestWorkerBaseArgs_WebControlInjection(t *testing.T) {
 	if n := slices.Index(both, "--mcp-config"); n < 0 || slices.Index(both[n+2:], "--mcp-config") >= 0 {
 		t.Errorf("both enabled: expected exactly one --mcp-config in %v", both)
 	}
-	joined := strings.Join(both, " ")
-	if !strings.Contains(joined, "aglink-screen") || !strings.Contains(joined, "aglink-web") {
-		t.Errorf("both enabled: inline config missing one of the binary paths in %v", both)
+	if c := mcpConfigContent(t, both); !strings.Contains(c, "aglink-screen") || !strings.Contains(c, "aglink-web") {
+		t.Errorf("both enabled: mcp-config missing one of the binary paths: %s", c)
 	}
 	idx := slices.Index(both, "--allowedTools")
 	if idx < 0 || idx+1 >= len(both) {

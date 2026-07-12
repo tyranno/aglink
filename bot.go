@@ -74,7 +74,11 @@ type Bot struct {
 
 func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
 	hub := NewHub()
-	hub.RegisterGlobal(newTelegramChannel(api))
+	// In web-chat-only mode api is nil: register no Telegram channel, so the
+	// telegram stream simply has no global sink (web channels register separately).
+	if api != nil {
+		hub.RegisterGlobal(newTelegramChannel(api))
+	}
 	return &Bot{
 		api:         api,
 		cfgh:        cfgh,
@@ -232,6 +236,15 @@ func (b *Bot) Hub() *Hub { return b.out }
 // Uses GetUpdates directly (not GetUpdatesChan) so Conflict errors are visible
 // and trigger an automatic restart via os.Exit(1) + systemd Restart=on-failure.
 func (b *Bot) Run() {
+	// Web-chat-only mode: no Telegram api → no polling. Block forever so the
+	// process stays alive while the web frontend goroutines serve the browser.
+	if b.api == nil {
+		log.Printf("[bot] 웹채팅 전용 모드 — 텔레그램 폴링 없음. 웹 프론트엔드 대기 중.")
+		if b.onReady != nil {
+			b.onReady()
+		}
+		select {}
+	}
 	log.Printf("[bot] @%s online, long-polling started", b.api.Self.UserName)
 	if b.onReady != nil {
 		b.onReady() // fire after polling confirmed — used by handoff to signal old process

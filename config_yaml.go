@@ -150,6 +150,13 @@ func yamlToConfig(y *yamlConfig) *Config {
 	}
 	c.AglinkChatBinaryPath = y.AglinkChat.BinaryPath
 	c.AglinkChatToken = y.AglinkChat.Token
+	// aglink-chat is a frontend for the control API and cannot work without it.
+	// Enabling the frontend therefore implies chat_control — one switch, not two
+	// (previously both aglink_chat.enabled AND chat_control.enabled were required,
+	// and enabling only the former silently started nothing).
+	if c.AglinkChat {
+		c.ChatControl = true
+	}
 	return c
 }
 

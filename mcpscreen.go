@@ -779,6 +779,33 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// element_at — resolve the UIA element under a screen point. The bridge
+	// between "I saw something in a screenshot" and "here is its accessible
+	// name" — spot a target visually, then act on it via invoke/set_value/
+	// click_control instead of a raw coordinate click.
+	s.AddTool(
+		mcp.NewTool("element_at",
+			mcp.WithDescription("Resolve the UI Automation element at an absolute screen point (x,y) — same info as one snapshot line: control type, name, automation id, capabilities. Use this after spotting something in a screenshot but before acting on it: get its name here, then drive it with invoke/set_value/click_control (far more reliable than a raw coordinate click, which can silently land on the wrong control)."),
+			mcp.WithNumber("x", mcp.Description("Absolute screen X pixel."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Absolute screen Y pixel."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			text, err := uiaElementAtPoint(int32(x), int32(y))
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("element_at failed", err), nil
+			}
+			return mcp.NewToolResultText(text), nil
+		},
+	)
+
 	// invoke — activate an element found by name (or automation id).
 	s.AddTool(
 		mcp.NewTool("invoke",

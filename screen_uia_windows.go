@@ -60,6 +60,7 @@ const (
 const (
 	uiaGetRootElement          = 5 // GetRootElement(out **IUIAutomationElement)
 	uiaElementFromHandle       = 6 // ElementFromHandle(HWND, out **IUIAutomationElement)
+	uiaElementFromPoint        = 7 // ElementFromPoint(POINT, out **IUIAutomationElement)
 	uiaGetFocusedElement       = 8 // GetFocusedElement(out **IUIAutomationElement)
 	uiaCreateTrueCondition     = 21
 	uiaCreatePropertyCondition = 23 // CreatePropertyCondition(PROPERTYID, VARIANT, out **IUIAutomationCondition)
@@ -297,6 +298,21 @@ func foregroundElement(uia *ole.IUnknown) (*ole.IUnknown, error) {
 	return root, nil
 }
 
+// elementFromPoint returns the UIA element at absolute screen coordinates
+// (x,y), the bridge between "I saw something at this pixel in a screenshot"
+// and an actual accessibility element. Caller must release the result.
+func elementFromPoint(uia *ole.IUnknown, x, y int32) (*ole.IUnknown, error) {
+	// POINT is two 32-bit LONGs packed into one 64-bit register on amd64,
+	// same packing as WindowFromPoint's raw syscall (see windowUnderCursor).
+	pt := uintptr(uint32(x)) | uintptr(uint32(y))<<32
+	var elem *ole.IUnknown
+	hr := vcall(uia, uiaElementFromPoint, pt, uintptr(unsafe.Pointer(&elem)))
+	if failed(hr) || elem == nil {
+		return nil, fmt.Errorf("UIA: ElementFromPoint(%d,%d) failed (hr=0x%x) — point may be off-screen or over no element", x, y, uint32(hr))
+	}
+	return elem, nil
+}
+
 // elemString reads a BSTR-returning property (Name / AutomationId).
 func elemString(elem *ole.IUnknown, slot int) string {
 	var bstr *uint16
@@ -486,6 +502,59 @@ func uiaSnapshot(maxElems int) (string, error) {
 			fmt.Fprintf(&b, "(truncated to %d elements; increase 'max' to see more)\n", maxElems)
 		}
 		return strings.TrimRight(b.String(), "\n"), nil
+	})
+}
+
+// uiaElementAtPoint resolves the UIA element under absolute screen point
+// (x,y) and describes it the same way a snapshot line does. This is the
+// missing link between screenshot-based visual identification and reliable
+// UIA-based action: spot something in a screenshot, get its accessible name
+// here, then drive it with invoke/set_value/click_control instead of a raw
+// coordinate click.
+func uiaElementAtPoint(x, y int32) (string, error) {
+	return uiaDo(func(uia *ole.IUnknown) (string, error) {
+		el, err := elementFromPoint(uia, x, y)
+		if err != nil {
+			return "", err
+		}
+		defer release(el)
+
+		name := elemString(el, elemGetCurrentName)
+		ct := elemInt32(el, elemGetCurrentControlType)
+		autoId := elemString(el, elemGetCurrentAutomationId)
+		enabled := elemInt32(el, elemGetCurrentIsEnabled) != 0
+		canInvoke := elemSupportsPattern(el, uiaInvokePatternId)
+		canValue := elemSupportsPattern(el, uiaValuePatternId)
+
+		caps := ""
+		if canInvoke {
+			caps += " [invokable]"
+		}
+		if canValue {
+			caps += " [editable]"
+		}
+		if !enabled {
+			caps += " [disabled]"
+		}
+		displayName := name
+		if displayName == "" {
+			displayName = "(unnamed)"
+		}
+
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s | %q", controlTypeName(ct), displayName)
+		if autoId != "" {
+			fmt.Fprintf(&b, " | id=%s", autoId)
+		}
+		b.WriteString(caps)
+		if name != "" {
+			fmt.Fprintf(&b, "\nUse invoke/set_value/click_control with name %q to act on it (prefer name over automationId if both are set).", name)
+		} else if autoId != "" {
+			fmt.Fprintf(&b, "\nNo accessible name, but has an automationId — invoke/set_value also match against automationId, so try %q there.", autoId)
+		} else {
+			b.WriteString("\nNo accessible name or automationId — this element can't be targeted by invoke/set_value/click_control; fall back to win_controls for a coordinate, or click(x,y) as a last resort.")
+		}
+		return b.String(), nil
 	})
 }
 

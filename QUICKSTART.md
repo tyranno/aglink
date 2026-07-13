@@ -10,7 +10,8 @@
 ## 0. 준비물
 
 - Go 1.25+ ([설치](https://go.dev/dl/))
-- `claude` CLI 설치 + 로그인 완료 (`claude` 명령이 그냥 실행되는 상태)
+- `claude` 또는 `codex` CLI 중 최소 하나 설치 + 로그인 완료 (해당 명령이 그냥 실행되는 상태).
+  claude만 있어도, codex만 있어도, 둘 다 있어도 됩니다 — 설정 마법사가 설치된 것을 자동 감지합니다.
 - 텔레그램 계정 (봇 토큰은 실행 중 마법사가 만들어줌)
 - Windows 또는 Linux
 
@@ -112,6 +113,8 @@ voice 서버에 헬스체크 엔드포인트 새로 만들자
 
 워커를 Claude 대신 [OpenAI Codex CLI](https://github.com/openai/codex)로 돌릴 수 있습니다.
 teleclaude 설치와 무관하게 완전히 선택사항이며, 설치가 안 돼 있으면 조용히 무시됩니다.
+**claude가 아예 없는 codex 전용 환경**도 지원합니다 — `teleclaude setup` 마법사가 claude를
+못 찾으면 자동으로 codex 전용 설정으로 진행하고, 부팅 시에도 둘 중 하나만 있으면 됩니다.
 
 **1) codex CLI 설치 + 로그인**
 

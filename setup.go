@@ -29,17 +29,31 @@ func RunSetup(cfgPath string) error {
 	in := bufio.NewReader(os.Stdin)
 	fmt.Println("================ teleclaude 설정 마법사 ================")
 
-	// Prerequisite (hard constraint): claude CLI must be present + logged in.
-	claudePath, err := findClaude("")
-	if err != nil {
-		fmt.Println("❌ claude CLI를 찾을 수 없습니다.")
-		fmt.Println("   먼저 claude를 설치하고 로그인하세요:")
-		fmt.Println("     1) claude Code 설치  2) `claude` 실행 후 로그인  3) `claude --version` 확인")
+	// Prerequisite: at least one of claude/codex CLI must be present. Neither is
+	// individually required — a codex-only machine (no claude installed) must be
+	// able to complete setup, same as main.go's boot-time backend fallback.
+	claudePath, claudeErr := findClaude("")
+	codexPath, _ := findCodex("")
+	if claudeErr != nil && codexPath == "" {
+		fmt.Println("❌ claude, codex CLI 둘 다 찾을 수 없습니다.")
+		fmt.Println("   둘 중 하나를 설치하고 로그인하세요:")
+		fmt.Println("     - claude: claude Code 설치 → `claude` 실행해 로그인 → `claude --version` 확인")
+		fmt.Println("     - codex:  codex CLI 설치   → `codex login` 실행           → `codex --version` 확인")
 		fmt.Println("   그 다음 다시 실행해 주세요.")
-		return err
+		return claudeErr
 	}
-	fmt.Printf("✅ claude 발견: %s\n", claudePath)
-	fmt.Println("   ⚠️ claude가 로그인되어 있어야 합니다. (안 되어 있으면 먼저 `claude` 실행해 로그인)")
+	defaultBackend := "claude"
+	if claudeErr != nil {
+		fmt.Printf("ℹ️ claude CLI 없음 (%v) — codex 전용으로 진행합니다.\n", claudeErr)
+		defaultBackend = "codex"
+	} else {
+		fmt.Printf("✅ claude 발견: %s\n", claudePath)
+		fmt.Println("   ⚠️ claude가 로그인되어 있어야 합니다. (안 되어 있으면 먼저 `claude` 실행해 로그인)")
+	}
+	if codexPath != "" {
+		fmt.Printf("✅ codex 발견: %s\n", codexPath)
+		fmt.Println("   ⚠️ codex가 로그인되어 있어야 합니다. (안 되어 있으면 먼저 `codex login` 실행)")
+	}
 
 	// [1/4] Create bot (guided) + token → validate via getMe.
 	fmt.Println("\n[1/4] Telegram 봇 만들기 + 토큰")
@@ -62,15 +76,20 @@ func RunSetup(cfgPath string) error {
 		return err
 	}
 
-	// [4/4] claude OAuth token (so headless services authenticate via config — no systemd env setup).
-	fmt.Println("\n[4/4] claude 인증 토큰 (headless 서버용, 선택)")
-	claudeToken, err := promptClaudeToken(in, claudePath)
-	if err != nil {
-		return err
+	// [4/4] claude OAuth token (so headless services authenticate via config — no
+	// systemd env setup). Only applicable when claude is installed; codex authenticates
+	// via its own `codex login` and has no equivalent config-file token.
+	var claudeToken string
+	if claudeErr == nil {
+		fmt.Println("\n[4/4] claude 인증 토큰 (headless 서버용, 선택)")
+		claudeToken, err = promptClaudeToken(in, claudePath)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Save config.
-	if err := writeConfigFile(cfgPath, api.Token, userID, claudeToken); err != nil {
+	if err := writeConfigFile(cfgPath, api.Token, userID, claudeToken, defaultBackend); err != nil {
 		return fmt.Errorf("설정 저장 실패: %w", err)
 	}
 	fmt.Printf("\n✅ 설정 저장됨: %s\n", cfgPath)
@@ -252,7 +271,8 @@ func verifyClaudeToken(claudePath, token string) error {
 
 // writeConfigFile writes a complete config.yaml with sensible defaults.
 // claudeToken (optional) is persisted as claude.oauth_token for headless auth.
-func writeConfigFile(path, token string, userID int64, claudeToken string) error {
+// defaultBackend is "claude" or "codex", picked by which CLI setup found installed.
+func writeConfigFile(path, token string, userID int64, claudeToken, defaultBackend string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -265,7 +285,7 @@ func writeConfigFile(path, token string, userID int64, claudeToken string) error
 		MaxWorkers:       3,
 		RateLimitPerMin:  20,
 		ClaudeOauthToken: claudeToken,
-		DefaultBackend:   "claude",
+		DefaultBackend:   defaultBackend,
 	}
 	out, err := marshalConfigYAML(cfg)
 	if err != nil {

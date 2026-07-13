@@ -7,7 +7,7 @@ import (
 
 func TestWriteConfigFile_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.yaml") // also tests dir creation
-	if err := writeConfigFile(path, "123:ABC", 6723802240, ""); err != nil {
+	if err := writeConfigFile(path, "123:ABC", 6723802240, "", "claude"); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
 	cfg, err := LoadConfig(path)
@@ -26,11 +26,14 @@ func TestWriteConfigFile_RoundTrip(t *testing.T) {
 	if cfg.ClaudeOauthToken != "" {
 		t.Errorf("expected no oauth token, got %q", cfg.ClaudeOauthToken)
 	}
+	if cfg.DefaultBackend != "claude" {
+		t.Errorf("backend = %q, want claude", cfg.DefaultBackend)
+	}
 }
 
 func TestWriteConfigFile_WithOauthToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := writeConfigFile(path, "123:ABC", 1, "sk-ant-oat01-TESTONLY"); err != nil {
+	if err := writeConfigFile(path, "123:ABC", 1, "sk-ant-oat01-TESTONLY", "claude"); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
 	cfg, err := LoadConfig(path)
@@ -39,5 +42,19 @@ func TestWriteConfigFile_WithOauthToken(t *testing.T) {
 	}
 	if cfg.ClaudeOauthToken != "sk-ant-oat01-TESTONLY" {
 		t.Errorf("oauth token = %q", cfg.ClaudeOauthToken)
+	}
+}
+
+func TestWriteConfigFile_CodexOnlyBackend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := writeConfigFile(path, "123:ABC", 1, "", "codex"); err != nil {
+		t.Fatalf("writeConfigFile: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultBackend != "codex" {
+		t.Errorf("backend = %q, want codex", cfg.DefaultBackend)
 	}
 }

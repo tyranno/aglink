@@ -64,6 +64,11 @@
   // it fetched a moment earlier may predate that turn.
   const loadingBuffers = new Map(); // key -> buffered frame[]
 
+  // Unsent composer text per conversation. The textarea is a single shared DOM
+  // element, so without this a draft typed in one channel silently appears
+  // in whichever channel is on screen when it's sent.
+  const drafts = new Map(); // key -> draft text
+
   // targetKey identifies a conversation. All non-web targets are the single
   // telegram stream, matching teleclaude's Target.SameConversation.
   function targetKey(t) {
@@ -438,8 +443,12 @@
   // stream (frames keep appending after this). Falls back silently on error
   // so whatever is already shown stays put.
   async function selectTarget(tgt) {
-    currentTarget = tgt;
     const key = targetKey(tgt);
+    const prevKey = currentTarget ? targetKey(currentTarget) : null;
+    if (prevKey && prevKey !== key) drafts.set(prevKey, input.value);
+    currentTarget = tgt;
+    input.value = drafts.get(key) || "";
+    resizeInput();
     unread.delete(key); // opening it reloads everything below
     renderWorking(); // show this conversation's busy state, not the previous one's
     const qs = tgt.kind === "telegram"

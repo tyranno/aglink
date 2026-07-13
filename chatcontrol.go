@@ -242,7 +242,21 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 	case "web_setdir":
 		go s.bot.webSetDir(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID, m.Path)
 	case "web_rename":
-		go s.bot.webRename(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID, m.Title)
+		// Synchronous + acknowledged: a rename must be durable before the client
+		// refreshes, or a fast page reload re-fetches /api/conversations while the
+		// write is still in flight and shows the old title. webRename is a map
+		// write + one file save — short enough to run inline on the read loop.
+		err := s.bot.webRename(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID, m.Title)
+		result := map[string]any{"ok": err == nil}
+		if err != nil {
+			result["error"] = err.Error()
+		}
+		data, merr := json.Marshal(result)
+		if merr != nil {
+			log.Printf("[chatcontrol] web_rename marshal: %v", merr)
+			return
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "web_delete":
 		go s.bot.webDelete(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID)
 	case "get_version":

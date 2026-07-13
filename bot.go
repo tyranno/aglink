@@ -2077,18 +2077,24 @@ func (b *Bot) webSetDir(reply replySender, chatID int64, id, path string) {
 }
 
 // webRename renames a web conversation.
-func (b *Bot) webRename(reply replySender, chatID int64, id, title string) {
+// webRename renames a web conversation. It returns an error (nil on success) so
+// a caller can synchronously observe whether the rename actually landed — the
+// control API relays that to the browser so a fast reload can't race ahead of
+// the store write. The reply.Send confirmations stay: other channels still show
+// them in the chat log.
+func (b *Bot) webRename(reply replySender, chatID int64, id, title string) error {
 	c, ok := b.store.GetWebConv(id)
 	if !ok || title == "" {
 		_ = reply.Send(chatID, "이름 변경 실패: 대화가 없거나 제목이 비었습니다.")
-		return
+		return fmt.Errorf("대화가 없거나 제목이 비었습니다")
 	}
 	c.Title = title
 	if err := b.store.UpdateWebConv(c); err != nil {
 		_ = reply.Send(chatID, "⚠️ 이름 변경 실패: "+err.Error())
-		return
+		return err
 	}
 	_ = reply.Send(chatID, "✏️ 이름 변경: "+title)
+	return nil
 }
 
 // webDelete removes a top-level web conversation. store.DeleteWebConv already

@@ -47,6 +47,28 @@ func main() {
 			log.Fatalf("fatal: %v", err)
 		}
 	case "setup":
+		// `setup telegram [config-path]` connects Telegram to an existing
+		// config without the full wizard rewrite — the "add it later" path
+		// for someone who started web-chat-only. Any other second arg is the
+		// config path override, same as before.
+		if len(args) > 1 && args[1] == "telegram" {
+			var override string
+			if len(args) > 2 {
+				override = args[2]
+			}
+			path := override
+			if path == "" {
+				p, e := defaultYAMLPath()
+				if e != nil {
+					log.Fatal(e)
+				}
+				path = p
+			}
+			if err := RunTelegramSetup(path); err != nil {
+				log.Fatalf("텔레그램 연결 중단: %v", err)
+			}
+			return
+		}
 		var override string
 		if len(args) > 1 {
 			override = args[1]
@@ -72,7 +94,7 @@ func main() {
 		}
 		fmt.Println(line)
 	default:
-		fmt.Println("usage: teleclaude [run [config-path]] | setup [config-path] | version")
+		fmt.Println("usage: teleclaude [run [config-path]] | setup [config-path] | setup telegram [config-path] | version")
 	}
 }
 

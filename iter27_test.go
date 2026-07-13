@@ -169,7 +169,7 @@ func TestParseOnceDatetime_EmptyTokens_Error(t *testing.T) {
 
 func TestWriteConfigFile_CreatesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := writeConfigFile(path, "testtoken:123", 42, "", "claude"); err != nil {
+	if err := writeConfigFile(path, writeConfigOpts{token: "testtoken:123", userID: 42, backend: "claude"}); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
 	cfg, err := LoadConfig(path)

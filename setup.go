@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,14 @@ import (
 
 // Interactive first-run setup wizard. Goal: install → run → guided config,
 // so no manual config-file editing is ever required.
+
+// webOnlyPlaceholderUserID is AllowedUserIDs[0] when setup skips Telegram
+// entirely (web-chat-only). It is never checked against a real Telegram user
+// — the polling loop that calls IsAllowed only runs once a bot token exists
+// — it only serves as the internal "owner" identity WebChatOwnerChatID/
+// ChatControlOwnerChatID fall back to for scheduling and web-originated
+// actions. RunTelegramSetup replaces it once a real Telegram ID is linked.
+const webOnlyPlaceholderUserID int64 = 1
 
 // isInteractive reports whether stdin is a terminal (wizard is usable).
 func isInteractive() bool {
@@ -55,55 +64,174 @@ func RunSetup(cfgPath string) error {
 		fmt.Println("   ⚠️ codex가 로그인되어 있어야 합니다. (안 되어 있으면 먼저 `codex login` 실행)")
 	}
 
-	// [1/4] Create bot (guided) + token → validate via getMe.
-	fmt.Println("\n[1/4] Telegram 봇 만들기 + 토큰")
-	printBotFatherGuide()
-	api, err := promptToken(in)
+	// [1/5] Channel: Telegram requires a BotFather-created bot + linking your
+	// account; web chat needs neither (aglink-chat just serves a browser UI on
+	// localhost). Defaulting to "yes" here would force every web-only user
+	// through bot creation they don't want — the exact gap a user hit in
+	// practice (main.go's boot already tolerates no bot token; the wizard
+	// didn't offer that path at all).
+	fmt.Println("\n[1/5] 사용 방식")
+	useTelegram, err := confirm(in, "   텔레그램 봇을 연결할까요? 아니요를 고르면 웹 채팅만으로 시작합니다 (나중에 `teleclaude setup telegram`으로 언제든 추가 가능) [Y/n]: ")
 	if err != nil {
 		return err
 	}
 
-	// [2/4] My Telegram user ID → auto-detect, manual fallback.
-	fmt.Println("\n[2/4] 내 Telegram 계정 연결")
-	userID, err := promptUserID(in, api)
-	if err != nil {
-		return err
+	var api *tgbotapi.BotAPI
+	userID := webOnlyPlaceholderUserID
+	if useTelegram {
+		fmt.Println("\n[2/5] Telegram 봇 만들기 + 토큰")
+		printBotFatherGuide()
+		api, err = promptToken(in)
+		if err != nil {
+			return err
+		}
+		fmt.Println("\n   내 Telegram 계정 연결")
+		userID, err = promptUserID(in, api)
+		if err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("   ℹ️ 텔레그램 없이 진행합니다. 실행 후 콘솔 로그에 뜨는 http://127.0.0.1:<포트>/?token=... 주소로 웹 채팅에 접속하세요.")
 	}
 
-	// [3/4] First project (optional).
-	fmt.Println("\n[3/4] 첫 프로젝트 등록 (선택, 나중에 /project add 가능)")
+	// [3/5] First project (optional).
+	fmt.Println("\n[3/5] 첫 프로젝트 등록 (선택, 나중에 /project add 가능)")
 	if err := promptFirstProject(in); err != nil {
 		return err
 	}
 
-	// [4/4] claude OAuth token (so headless services authenticate via config — no
+	// [4/5] claude OAuth token (so headless services authenticate via config — no
 	// systemd env setup). Only applicable when claude is installed; codex authenticates
 	// via its own `codex login` and has no equivalent config-file token.
 	var claudeToken string
 	if claudeErr == nil {
-		fmt.Println("\n[4/4] claude 인증 토큰 (headless 서버용, 선택)")
+		fmt.Println("\n[4/5] claude 인증 토큰 (headless 서버용, 선택)")
 		claudeToken, err = promptClaudeToken(in, claudePath)
 		if err != nil {
 			return err
 		}
 	}
 
+	// [5/5] aglink-* plugins: offer to fetch+build any missing sibling
+	// (screen/browser/web-chat control) so a from-source setup doesn't require
+	// manually cloning 4 repos, then default-enable whichever ones are actually
+	// present — they were deployed alongside teleclaude for a reason, so a
+	// present-but-disabled binary would just be a silent dead weight the user
+	// has to discover and turn on by hand. Screen control is the one exception:
+	// it hands the AI direct mouse/keyboard control, so it stays opt-in even
+	// when the binary is right there.
+	fmt.Println("\n[5/5] aglink 보조 기능 (화면 제어 / 브라우저 제어 / 웹 채팅)")
+	exe, eerr := os.Executable()
+	if eerr == nil {
+		ensureAglinkPlugins(in, filepath.Dir(exe))
+	}
+	enableAglinkChat := resolveAglinkBinary("aglink-chat", "", exe) != ""
+	enableWebControl := resolveAglinkBinary("aglink-web", "", exe) != ""
+	enableScreenControl := false
+	if resolveAglinkBinary("aglink-screen", "", exe) != "" {
+		ans, _ := prompt(in, "   화면 제어(마우스/키보드를 직접 조작)도 켤까요? 민감한 권한이라 기본은 끔입니다 [y/N]: ")
+		enableScreenControl = strings.EqualFold(ans, "y") || strings.EqualFold(ans, "yes")
+	}
+	if !useTelegram && !enableAglinkChat {
+		fmt.Println("   ⚠️ 텔레그램도 없고 aglink-chat도 못 찾았습니다 — 이대로면 봇과 대화할 방법이 없습니다.")
+		fmt.Println("      나중에 aglink-chat을 설치하거나 `teleclaude setup telegram`으로 텔레그램을 연결하세요.")
+	}
+
 	// Save config.
-	if err := writeConfigFile(cfgPath, api.Token, userID, claudeToken, defaultBackend); err != nil {
+	if err := writeConfigFile(cfgPath, writeConfigOpts{
+		token:         tokenOf(api),
+		userID:        userID,
+		claudeToken:   claudeToken,
+		backend:       defaultBackend,
+		aglinkChat:    enableAglinkChat,
+		webControl:    enableWebControl,
+		screenControl: enableScreenControl,
+	}); err != nil {
 		return fmt.Errorf("설정 저장 실패: %w", err)
 	}
 	fmt.Printf("\n✅ 설정 저장됨: %s\n", cfgPath)
-	fmt.Printf("   봇 @%s, 허용 ID %d. 이제 바로 사용할 수 있어요!\n", api.Self.UserName, userID)
-
-	// Offer to fetch+build any missing aglink-* sibling (screen/browser/web-chat
-	// control) so a from-source setup doesn't require manually cloning 4 repos.
-	// No-op on non-Windows and when teleclaude's own exe path can't be resolved.
-	if exe, eerr := os.Executable(); eerr == nil {
-		ensureAglinkPlugins(in, filepath.Dir(exe))
+	if useTelegram {
+		fmt.Printf("   봇 @%s, 허용 ID %d. 이제 바로 사용할 수 있어요!\n", api.Self.UserName, userID)
+	} else {
+		fmt.Println("   이제 바로 사용할 수 있어요! (웹 채팅 전용)")
 	}
-
 	fmt.Println("=======================================================")
 	return nil
+}
+
+// tokenOf returns api.Token, or "" if api is nil (web-only setup skipped
+// Telegram entirely, so there is no *tgbotapi.BotAPI to read from).
+func tokenOf(api *tgbotapi.BotAPI) string {
+	if api == nil {
+		return ""
+	}
+	return api.Token
+}
+
+// RunTelegramSetup connects Telegram to an EXISTING config — the path back in
+// for someone who started web-chat-only via RunSetup and later wants
+// Telegram too. It merges just the bot token + allowed user id into the
+// config already on disk, instead of RunSetup's full rewrite, which would
+// silently wipe any aglink-*/screen-control settings configured since
+// (writeConfigFile always constructs a fresh Config from scratch).
+func RunTelegramSetup(cfgPath string) error {
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		return fmt.Errorf("기존 설정을 불러오지 못했습니다 (%s): %w — 설정이 아예 없다면 `teleclaude setup`을 먼저 실행하세요", cfgPath, err)
+	}
+	in := bufio.NewReader(os.Stdin)
+	fmt.Println("================ Telegram 연결 ================")
+	if cfg.TelegramBotToken != "" {
+		ok, cerr := confirm(in, "   이미 텔레그램 봇이 연결되어 있습니다. 새 봇으로 바꿀까요? [Y/n]: ")
+		if cerr != nil {
+			return cerr
+		}
+		if !ok {
+			fmt.Println("   건너뜀. 기존 연결을 그대로 둡니다.")
+			return nil
+		}
+	}
+
+	printBotFatherGuide()
+	api, err := promptToken(in)
+	if err != nil {
+		return err
+	}
+	fmt.Println("\n   내 Telegram 계정 연결")
+	userID, err := promptUserID(in, api)
+	if err != nil {
+		return err
+	}
+
+	cfg.TelegramBotToken = api.Token
+	cfg.AllowedUserIDs = mergeTelegramUserID(cfg.AllowedUserIDs, userID)
+
+	out, merr := marshalConfigYAML(cfg)
+	if merr != nil {
+		return merr
+	}
+	if werr := os.WriteFile(cfgPath, out, 0o600); werr != nil {
+		return werr
+	}
+	fmt.Printf("\n✅ 텔레그램 연결 완료: 봇 @%s, 허용 ID %d\n", api.Self.UserName, userID)
+	fmt.Println("   teleclaude를 재시작하면(또는 `!update`) 텔레그램에서도 대화할 수 있습니다.")
+	fmt.Println("===================================================")
+	return nil
+}
+
+// mergeTelegramUserID folds a newly-linked Telegram id into an existing
+// AllowedUserIDs list. A web-only setup's placeholder id is meaningless once
+// a real Telegram user is linked, so it is replaced outright rather than
+// left sitting alongside a real id; otherwise the new id is appended (unless
+// already present).
+func mergeTelegramUserID(existing []int64, userID int64) []int64 {
+	if len(existing) == 1 && existing[0] == webOnlyPlaceholderUserID {
+		return []int64{userID}
+	}
+	if slices.Contains(existing, userID) {
+		return existing
+	}
+	return append(existing, userID)
 }
 
 // printBotFatherGuide walks the user through creating a Telegram bot.
@@ -277,23 +405,38 @@ func verifyClaudeToken(claudePath, token string) error {
 	return nil
 }
 
+// writeConfigOpts bundles writeConfigFile's inputs — grouped into a struct
+// once a plain positional call (token, userID, claudeToken, backend) grew a
+// second, unrelated concern (which aglink-* features to default on).
+type writeConfigOpts struct {
+	token         string // Telegram bot token; "" for a web-chat-only setup
+	userID        int64
+	claudeToken   string // optional, persisted as claude.oauth_token for headless auth
+	backend       string // "claude" or "codex", picked by which CLI setup found installed
+	aglinkChat    bool   // web chat frontend (implies chat_control)
+	webControl    bool   // aglink-web browser control
+	screenControl bool   // aglink-screen desktop control (opt-in even when installed)
+}
+
 // writeConfigFile writes a complete config.yaml with sensible defaults.
-// claudeToken (optional) is persisted as claude.oauth_token for headless auth.
-// defaultBackend is "claude" or "codex", picked by which CLI setup found installed.
-func writeConfigFile(path, token string, userID int64, claudeToken, defaultBackend string) error {
+func writeConfigFile(path string, o writeConfigOpts) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	cfg := &Config{
-		TelegramBotToken: token,
-		AllowedUserIDs:   []int64{userID},
+		TelegramBotToken: o.token,
+		AllowedUserIDs:   []int64{o.userID},
 		ManagerModel:     "haiku",
 		TimeoutMinutes:   10,
 		ManagerAlways:    true,
 		MaxWorkers:       3,
 		RateLimitPerMin:  20,
-		ClaudeOauthToken: claudeToken,
-		DefaultBackend:   defaultBackend,
+		ClaudeOauthToken: o.claudeToken,
+		DefaultBackend:   o.backend,
+		AglinkChat:       o.aglinkChat,
+		ChatControl:      o.aglinkChat, // AglinkChat implies ChatControl on load anyway; set both so the on-disk file isn't misleading
+		WebControl:       o.webControl,
+		ScreenControl:    o.screenControl,
 	}
 	out, err := marshalConfigYAML(cfg)
 	if err != nil {

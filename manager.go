@@ -774,6 +774,21 @@ func (m *Manager) validWorkDirOrHome(workDir string) string {
 // passed explicitly (rather than read from the global active backend) so a
 // conversation resumed on its own backend uses the right model, logging, and
 // continuation tagging even when the global backend differs.
+// recordCompletedTurn fills in the response on the pending prompt-only turn at
+// pendingIdx (persisted when the run started) by replacing it in place, so the
+// turn isn't duplicated. If that slot no longer holds the matching pending turn
+// (e.g. dropped by the history cap or shifted by a concurrent turn), it appends
+// a fresh completed turn instead.
+func recordCompletedTurn(history []ConversationTurn, pendingIdx int, prompt, response string, now time.Time) []ConversationTurn {
+	completed := ConversationTurn{Timestamp: now, Prompt: prompt, Response: response}
+	if pendingIdx >= 0 && pendingIdx < len(history) &&
+		history[pendingIdx].Response == "" && history[pendingIdx].Prompt == prompt {
+		history[pendingIdx] = completed
+		return history
+	}
+	return append(history, completed)
+}
+
 func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink convSink, workDir string, c *Conversation, s MessageSender, client ClaudeClient, backend string) {
 	// Signal turn completion on every exit path (success, error, timeout, or the
 	// early "project not found" return) so channels with a live "working"
@@ -934,6 +949,22 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// replace the dead one, or every later turn repeats the failed resume.
 	sessionRecovered := false
 
+	// Persist the user's prompt immediately (response filled in at completion),
+	// so it survives a web reload/reconnect during the — possibly minutes-long —
+	// run. Without this the turn only becomes durable when it completes, and a
+	// reload in between re-fetches /api/history without the just-sent message and
+	// wipes the client's optimistic echo (see aglink-chat selectTarget/
+	// replaceChildren). historyForPrompt above was already built, so this pending
+	// turn is not double-counted in the LLM context.
+	pendingIdx := len(workConv.History)
+	workConv.History = append(workConv.History, ConversationTurn{
+		Timestamp: time.Now().UTC(),
+		Prompt:    text,
+	})
+	if err := sink.save(workConv); err != nil {
+		log.Printf("[manager] persist pending prompt: %v", err)
+	}
+
 	res, err := client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   workDir,
@@ -1060,11 +1091,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// visible in Telegram's own server-side scrollback) well before it mattered
 	// for prompt size — kept generous so that doesn't happen in normal use.
 	const maxHistoryTurns = 200
-	workConv.History = append(workConv.History, ConversationTurn{
-		Timestamp: time.Now().UTC(),
-		Prompt:    text,
-		Response:  res.Text,
-	})
+	// Fill in the response on the pending turn persisted before the run (update in
+	// place), or append a completed turn if that slot no longer holds it.
+	workConv.History = recordCompletedTurn(workConv.History, pendingIdx, text, res.Text, time.Now().UTC())
 	if len(workConv.History) > maxHistoryTurns {
 		dropped := len(workConv.History) - maxHistoryTurns
 		workConv.History = workConv.History[dropped:]

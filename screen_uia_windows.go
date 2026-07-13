@@ -298,15 +298,22 @@ func foregroundElement(uia *ole.IUnknown) (*ole.IUnknown, error) {
 	return root, nil
 }
 
+// packPoint packs a POINT{LONG x; LONG y} into the single 64-bit register it
+// is passed in by value on amd64: x in the low 32 bits, y in the high 32.
+// Extracted so the packing — the one non-obvious bit, and the one that must
+// survive negative coordinates (monitors left of / above the primary sit at
+// negative virtual-screen coords) — is unit-testable without a live COM call.
+// uint32(int32) round-trips the sign so Windows reads the LONG back correctly.
+func packPoint(x, y int32) uintptr {
+	return uintptr(uint32(x)) | uintptr(uint32(y))<<32
+}
+
 // elementFromPoint returns the UIA element at absolute screen coordinates
 // (x,y), the bridge between "I saw something at this pixel in a screenshot"
 // and an actual accessibility element. Caller must release the result.
 func elementFromPoint(uia *ole.IUnknown, x, y int32) (*ole.IUnknown, error) {
-	// POINT is two 32-bit LONGs packed into one 64-bit register on amd64,
-	// same packing as WindowFromPoint's raw syscall (see windowUnderCursor).
-	pt := uintptr(uint32(x)) | uintptr(uint32(y))<<32
 	var elem *ole.IUnknown
-	hr := vcall(uia, uiaElementFromPoint, pt, uintptr(unsafe.Pointer(&elem)))
+	hr := vcall(uia, uiaElementFromPoint, packPoint(x, y), uintptr(unsafe.Pointer(&elem)))
 	if failed(hr) || elem == nil {
 		return nil, fmt.Errorf("UIA: ElementFromPoint(%d,%d) failed (hr=0x%x) — point may be off-screen or over no element", x, y, uint32(hr))
 	}

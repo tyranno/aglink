@@ -69,3 +69,27 @@ func TestUiaWaitForControlTimesOut(t *testing.T) {
 		t.Errorf("returned after %v — the timeout did not bound the wait", elapsed)
 	}
 }
+
+// packPoint feeds ElementFromPoint the POINT it acts on. If the packing is wrong
+// — x/y swapped, or a sign-extension slip — element_at resolves the element at
+// the wrong pixel, and the failure mode on a multi-monitor setup (negative
+// coords for monitors left of / above the primary) is silent and misleading.
+func TestPackPoint(t *testing.T) {
+	cases := []struct {
+		x, y int32
+		want uintptr
+	}{
+		{0, 0, 0},
+		{100, 200, uintptr(0x000000C800000064)},                // y in high 32, x in low 32
+		{1, 2, uintptr(0x0000000200000001)},                    // not swapped
+		{-1, -1, uintptr(0xFFFFFFFFFFFFFFFF)},                  // both LONGs = -1
+		{-100, 50, uintptr(0x00000032FFFFFF9C)},                // negative x (monitor to the left)
+		{50, -100, uintptr(0xFFFFFF9C00000032)},                // negative y (monitor above)
+		{2147483647, -2147483648, uintptr(0x800000007FFFFFFF)}, // LONG_MAX x, LONG_MIN y
+	}
+	for _, c := range cases {
+		if got := packPoint(c.x, c.y); got != c.want {
+			t.Errorf("packPoint(%d, %d) = %#016x, want %#016x", c.x, c.y, got, c.want)
+		}
+	}
+}

@@ -65,3 +65,24 @@ func TestEnsureAglinkPlugins_SkipsWhenAllPresent(t *testing.T) {
 	// reaching the end without a panic confirms it took the early-return path.
 	ensureAglinkPlugins(nil, teleclaudeDir)
 }
+
+// A machine with no git/go on PATH must skip auto-install silently, not try to
+// prompt — the guard exists precisely so a from-source setup without the
+// toolchain degrades to "no plugins offered" instead of proceeding to a
+// confirm() it can't service. With a nil reader and a genuinely missing plugin,
+// any attempt to prompt panics, so reaching the end proves the guard held.
+func TestEnsureAglinkPlugins_NoToolchainSkips(t *testing.T) {
+	orig := pluginNames
+	defer func() { pluginNames = orig }()
+	pluginNames = []string{"definitely-not-checked-out"}
+
+	t.Setenv("PATH", "") // hide git and go
+
+	parent := t.TempDir()
+	teleclaudeDir := filepath.Join(parent, "teleclaude")
+	mustMkdir(t, teleclaudeDir)
+	// The plugin dir is absent, so without the toolchain guard the loop would
+	// reach confirm(nil, …) and panic on the nil reader.
+
+	ensureAglinkPlugins(nil, teleclaudeDir)
+}

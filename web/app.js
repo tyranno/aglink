@@ -789,6 +789,7 @@
       tip += v.updateAvailable ? " → 업데이트 필요" : " (동일)";
     }
     versionBadge.title = tip;
+    renderBackendBadge(v.backend);
   }
 
   // Render the header backend badge (claude / codex). The backend is global
@@ -798,11 +799,10 @@
   function renderBackendBadge(backend) {
     if (!backendBadge) return;
     if (!backend) { backendBadge.hidden = true; return; }
+    backendBadge.textContent = backend;
+    backendBadge.dataset.backend = String(backend).toLowerCase();
+    backendBadge.title = "AI 백엔드: " + backend;
     backendBadge.hidden = false;
-    backendBadge.textContent = "🤖 " + backend;
-    backendBadge.classList.toggle("backend-claude", backend === "claude");
-    backendBadge.classList.toggle("backend-codex", backend === "codex");
-    backendBadge.title = "현재 연결된 백엔드: " + backend;
   }
 
   async function bootstrapCapabilities() {
@@ -859,7 +859,7 @@
     return row;
   }
   function connNote(text) {
-    const n = document.createElement("div"); n.className = "topic-summary"; n.textContent = text;
+    const n = document.createElement("div"); n.className = "conn-note"; n.textContent = text;
     return n;
   }
   async function openConnections() {
@@ -872,6 +872,7 @@
     let ver = {};
     try { const vr = await fetch("/api/version", { headers: authHeaders }); if (vr.ok) ver = await vr.json(); } catch (e) { /* skip */ }
     connBody.appendChild(connHeading("버전"));
+    if (ver.backend) connBody.appendChild(connRow("AI 백엔드", ver.backend));
     connBody.appendChild(connRow("실행 중", (ver.version || "?") + (ver.commit ? " (" + ver.commit + ")" : "")));
     if (ver.latestVersion) {
       connBody.appendChild(connRow("최신 소스", ver.latestVersion + (ver.latestCommit ? " (" + ver.latestCommit + ")" : "")));
@@ -900,17 +901,17 @@
       connBody.appendChild(connNote("상태 정보를 불러오지 못했습니다."));
     } else {
       const stateMap = {
-        running: ["🟢 실행 중", "conn-ok"],
-        idle:    ["⚪ 미사용", "conn-idle"],
-        absent:  ["🔴 설치 안 됨", "conn-off"],
+        running: ["실행 중", "conn-ok"],
+        idle:    ["미사용", "conn-idle"],
+        absent:  ["설치 안 됨", "conn-off"],
       };
       for (const f of features) {
-        const [txt, cls] = stateMap[f.state] || ["⚫ 알 수 없음", ""];
+        const [txt, cls] = stateMap[f.state] || ["알 수 없음", ""];
         const label = f.label + (f.version ? " (" + f.version + ")" : "");
         connBody.appendChild(connRow(label, txt, cls));
-        if (f.detail) connBody.appendChild(connNote("↳ " + f.detail));
+        if (f.detail) connBody.appendChild(connNote(f.detail));
       }
-      connBody.appendChild(connNote("⚪ 미사용은 정상입니다(필요할 때만 실행). 🔴만 조치가 필요합니다."));
+      connBody.appendChild(connNote("미사용은 정상입니다 (필요할 때만 실행) — 설치 안 됨만 조치가 필요합니다."));
     }
 
     connBody.appendChild(connNote("주소/포트 변경은 ⚙ 설정에서 config.yaml을 편집한 뒤 재시작하세요."));

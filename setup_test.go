@@ -110,6 +110,10 @@ func TestMergeTelegramUserID(t *testing.T) {
 		{"appends to existing real ids", []int64{111, 222}, 333, []int64{111, 222, 333}},
 		{"no duplicate for already-present id", []int64{111, 222}, 222, []int64{111, 222}},
 		{"empty existing gets the new id", nil, 42, []int64{42}},
+		// The placeholder must never survive alongside a real id, however the
+		// mixed list arose (e.g. a hand-edited config).
+		{"strips placeholder mixed with a real id", []int64{webOnlyPlaceholderUserID, 100}, 200, []int64{100, 200}},
+		{"strips placeholder when re-linking an already-present id", []int64{webOnlyPlaceholderUserID, 100}, 100, []int64{100}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

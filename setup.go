@@ -225,13 +225,22 @@ func RunTelegramSetup(cfgPath string) error {
 // left sitting alongside a real id; otherwise the new id is appended (unless
 // already present).
 func mergeTelegramUserID(existing []int64, userID int64) []int64 {
-	if len(existing) == 1 && existing[0] == webOnlyPlaceholderUserID {
-		return []int64{userID}
+	// Once a real Telegram id is linked, the web-only placeholder (which stands
+	// in for "no bot" so validate() passes) must never remain as an allowed id.
+	// The common shape is exactly [placeholder]; strip it wherever it appears so
+	// a [placeholder, realid] list — however it arose, e.g. a hand-edited config
+	// — can't leave id 1 authorized alongside the real user. Returns a fresh
+	// slice, so the caller's backing array is never mutated.
+	out := make([]int64, 0, len(existing)+1)
+	for _, id := range existing {
+		if id != webOnlyPlaceholderUserID {
+			out = append(out, id)
+		}
 	}
-	if slices.Contains(existing, userID) {
-		return existing
+	if !slices.Contains(out, userID) {
+		out = append(out, userID)
 	}
-	return append(existing, userID)
+	return out
 }
 
 // printBotFatherGuide walks the user through creating a Telegram bot.

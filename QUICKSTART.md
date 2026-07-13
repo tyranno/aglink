@@ -29,6 +29,10 @@ git clone https://github.com/tyranno/aglink-screen    # Windows 화면 제어 (W
 git clone https://github.com/tyranno/aglink-web       # 실제 Chrome 브라우저 제어
 ```
 
+> 이 단계는 사실 건너뛰어도 됩니다 — `teleclaude`만 clone해서 3단계(설정 마법사)까지
+> 진행하면, 없는 aglink-* 저장소를 마법사가 자동으로 clone+빌드해줄지 하나씩 물어봅니다
+> (Windows 전용, git/go가 PATH에 있어야 함).
+
 ```
 myfolder/
 ├── teleclaude/        ← 봇 본체
@@ -59,6 +63,10 @@ cd teleclaude
 1. **봇 만들기** — [@BotFather](https://t.me/BotFather)에게 `/newbot` → 토큰 발급 → 붙여넣기 (즉시 검증)
 2. **내 계정 연결** — 안내대로 봇에게 아무 메시지나 한 번 보내면 자동으로 내 user ID 등록
 3. **(선택) 첫 프로젝트 폴더 등록**
+4. **(선택, Windows) 빠진 aglink-\* 자동 설치** — 형제 폴더에 없는 것마다 clone+빌드할지 물어봄.
+   `aglink-web`을 새로 설치했다면 Chrome을 열어 `chrome://extensions`까지 띄워주는데,
+   압축해제된 확장은 크롬 정책상 완전 무클릭 설치가 안 되어 "개발자 모드 켜기 → 압축해제된
+   확장 프로그램을 로드합니다 → 폴더 선택"까지는 직접 클릭해야 합니다.
 
 완료되면 `~/.teleclaude/config.yaml`이 생성되고, 텔레그램에서 봇에게 말을 걸면 바로 동작합니다.
 

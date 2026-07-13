@@ -94,6 +94,14 @@ func RunSetup(cfgPath string) error {
 	}
 	fmt.Printf("\n✅ 설정 저장됨: %s\n", cfgPath)
 	fmt.Printf("   봇 @%s, 허용 ID %d. 이제 바로 사용할 수 있어요!\n", api.Self.UserName, userID)
+
+	// Offer to fetch+build any missing aglink-* sibling (screen/browser/web-chat
+	// control) so a from-source setup doesn't require manually cloning 4 repos.
+	// No-op on non-Windows and when teleclaude's own exe path can't be resolved.
+	if exe, eerr := os.Executable(); eerr == nil {
+		ensureAglinkPlugins(in, filepath.Dir(exe))
+	}
+
 	fmt.Println("=======================================================")
 	return nil
 }

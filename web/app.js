@@ -579,7 +579,20 @@
       ]);
       if (action === "rename") {
         const title = await askText("이름 변경", "새 이름", wc.title || "");
-        if (title) { ws.send(JSON.stringify({ type: "web_rename", id: wc.id, title })); window.setTimeout(loadConversations, 400); }
+        if (title) {
+          // Await the server's acknowledgment before refreshing, so a fast page
+          // reload can't race ahead of the store write and show the old title.
+          // Replaces the old fire-and-forget ws.send + blind setTimeout(400).
+          try {
+            const resp = await fetch("/api/webconv/rename", {
+              method: "PUT",
+              headers: { ...authHeaders, "Content-Type": "application/json" },
+              body: JSON.stringify({ id: wc.id, title }),
+            });
+            if (!resp.ok) add("system", "이름 변경 실패: " + resp.status);
+          } catch (e) { add("system", "이름 변경 실패: " + e); }
+          await loadConversations();
+        }
       } else if (action === "workdir") {
         const path = await askText("작업 폴더 변경", "이 대화의 작업 폴더 경로", wc.workDir || "");
         if (path) { ws.send(JSON.stringify({ type: "web_setdir", id: wc.id, path })); window.setTimeout(loadConversations, 400); }

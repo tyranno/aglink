@@ -263,6 +263,34 @@ func (s *browserServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// handleWebconvRename renames a web conversation and WAITS for teleclaude to
+// confirm the write landed, so the browser can refresh its list only after the
+// new title is durable. The old path was a fire-and-forget ws.send with no ack,
+// which let a fast page reload re-fetch /api/conversations before the rename
+// finished and show the stale title. Uses s.control.request (blocks for the
+// reply / times out) rather than s.control.send.
+func (s *browserServer) handleWebconvRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	data, err := s.control.request(controlIn{Type: "web_rename", ID: body.ID, Title: body.Title, Origin: "web"})
+	if err != nil {
+		http.Error(w, "control API error", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(data)
+}
+
 // --- Admin endpoints (proxied to teleclaude via the control API) -------------
 // aglink-chat is the primary frontend, so it exposes the same /api/* the
 // embedded teleclaude web server does. Version/config/aux data lives in
@@ -463,6 +491,7 @@ func (s *browserServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/workers", s.handleWorkers)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/webconv/rename", s.handleWebconvRename)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
 	mux.HandleFunc("/api/version", s.handleVersion)

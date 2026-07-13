@@ -1044,8 +1044,6 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		}
 	}
 
-	_ = sendChunked(s, chatID, res.Text)
-
 	// Persist conversation progress and history.
 	wasStarted := workConv.Started
 	workConv.Started = true
@@ -1086,6 +1084,14 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	if err := sink.setActive(workConv); err != nil {
 		log.Printf("[manager] set active: %v", err)
 	}
+
+	// Send only after the turn is durably in workConv.History and saved above —
+	// otherwise a web client's concurrent /api/history read (e.g. on page
+	// refresh/reconnect) can land in between and fetch a snapshot that doesn't
+	// yet include the turn it just watched stream in live, silently losing it
+	// once the client's history reload replaces the DOM (see aglink-chat's
+	// selectTarget/replaceChildren).
+	_ = sendChunked(s, chatID, res.Text)
 
 	// Append to date-based history log for !history command. When there's no
 	// project scope (project==""), which would make WriteHistory write to the

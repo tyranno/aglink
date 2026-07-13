@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -879,6 +880,37 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("%q = %q", name, value)), nil
+		},
+	)
+
+	// ---- batch execution ----
+
+	// run_sequence — execute several actions in one call instead of one
+	// round-trip per step. The bulk of a screen-control turn's wall-clock time
+	// is the reasoning between tool calls, not the calls themselves, so this
+	// is the highest-leverage way to cut that down for any sequence whose
+	// targets are already known (e.g. from a prior snapshot) — fill a form,
+	// a known multi-click flow, etc. It deliberately does NOT try to be
+	// "smart": no embedded model, no branching. It stops at the first failed
+	// step and reports how far it got, so a sequence never silently partially
+	// applies — genuinely unpredictable steps (reacting to a popup that may
+	// or may not appear) belong outside the batch, split at that point.
+	s.AddTool(
+		mcp.NewTool("run_sequence",
+			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one tool round-trip per step. Supported actions (same params as each action's own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name}, set_value{name,text}, click_control{window,text,nth?}, wait_for_control{name,timeout_ms?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}. Stops at the first failed step and reports exactly how far it got (never silently partial). Use this ONLY for a sequence whose targets you already know (e.g. from a prior snapshot) — a step that depends on reacting to something unpredictable (a popup that may or may not appear) belongs outside the batch; split the sequence there and inspect state before continuing. Deliberately exclude a final destructive/committing action (send, delete, confirm) from the batch — verify state after the batch completes, then issue that as its own separate call.`),
+			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			stepsJSON, err := req.RequireString("steps")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'steps'"), nil
+			}
+			results, rerr := runSequence(stepsJSON)
+			b, _ := json.MarshalIndent(results, "", "  ")
+			if rerr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("run_sequence stopped early: %v\n%s", rerr, string(b))), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: %d step(s) completed\n%s", len(results), string(b))), nil
 		},
 	)
 

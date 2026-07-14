@@ -109,11 +109,23 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 	}
 }
 
-// lane is one conversation's serialized work: a FIFO of pending turns and a flag
-// for whether one is currently executing. Turns in a lane never overlap.
+// lane is one conversation's work: normally a FIFO of pending turns that never
+// overlap (running/queue), but an interactive lane (Manager.IsInteractive, set
+// once when the lane is created — see dispatch) instead lets turns run
+// concurrently against the same live ConPTY session, steering a message in
+// while an earlier one is still producing output instead of making it wait.
+// inFlight counts turns currently executing in this lane: always 0 or 1 for a
+// normal lane, but can be >1 for an interactive one. Known caveat: two
+// runWorker calls racing on the same *Conversation's persisted History/
+// SessionID can clobber each other's write (last one to save wins) — the live
+// claude.exe session itself still holds full context either way, so this can
+// at worst drop a turn from the on-disk history log, not from the
+// conversation's actual context.
 type lane struct {
-	queue   []queuedMsg
-	running bool
+	queue       []queuedMsg
+	running     bool
+	interactive bool
+	inFlight    int
 }
 
 // cancelEntry ties a running worker's cancel func to the lane it belongs to, so
@@ -399,8 +411,14 @@ func (b *Bot) dispatchScheduledTask(chatID int64, text, project string) {
 // dispatch routes a message into its conversation's lane. A message whose lane
 // is idle and can grab a global slot starts immediately; one whose lane is busy
 // waits in that lane (its own earlier turn is still running); one blocked only by
-// the global cap waits for a slot to free. Turns in the same lane never overlap;
-// different lanes run in parallel up to cfg.MaxWorkers at once.
+// the global cap waits for a slot to free. Turns in the same lane never overlap
+// — except an interactive lane (Manager.IsInteractive), where a message that
+// arrives while the lane is already running is steered straight into the live
+// ConPTY session as a second concurrent turn instead of FIFO-queueing behind
+// the first (see runTurn/finishTurn and pendingTurn in
+// runner_conpty_windows.go, which resolves each concurrent turn independently
+// in submission order). Different lanes always run in parallel up to
+// cfg.MaxWorkers at once.
 func (b *Bot) dispatch(msg queuedMsg) {
 	key := msg.queueKey()
 	b.mu.Lock()
@@ -409,9 +427,19 @@ func (b *Bot) dispatch(msg queuedMsg) {
 	}
 	l := b.lanes[key]
 	if l == nil {
-		l = &lane{}
+		l = &lane{interactive: b.manager != nil && b.manager.IsInteractive(msg.conversation())}
 		b.lanes[key] = l
 	}
+
+	if l.interactive && l.running {
+		// Steer into the live session: same lane, same global slot it already
+		// holds — no FIFO wait, no new slot consumed.
+		l.inFlight++
+		b.mu.Unlock()
+		go b.runTurn(key, msg)
+		return
+	}
+
 	l.queue = append(l.queue, msg)
 
 	if l.running {
@@ -431,6 +459,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 	}
 	if b.runningLanes < b.cfg().MaxWorkers {
 		l.running = true
+		l.inFlight = 1
 		b.runningLanes++
 		head := l.queue[0]
 		b.mu.Unlock()
@@ -489,6 +518,7 @@ func (b *Bot) scheduleLocked() {
 			continue
 		}
 		l.running = true
+		l.inFlight = 1
 		b.runningLanes++
 		go b.runTurn(key, l.queue[0])
 	}
@@ -498,22 +528,40 @@ func (b *Bot) scheduleLocked() {
 // conversation has more queued, that lane keeps its global slot and its next
 // turn runs (serialized). Otherwise the lane is freed and a waiting lane is
 // promoted into the slot. Returns the same lane's next message, if any.
+//
+// Interactive lanes take a different path: steered turns never touch l.queue
+// (dispatch spawns them directly — see its interactive branch), so inFlight
+// alone tracks how many concurrent turns are still live, and the lane keeps
+// its slot until the last one resolves. Never returns a "next" turn to chain
+// for an interactive lane — there's nothing queued to chain.
 func (b *Bot) finishTurn(key string, wid int) (queuedMsg, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.cancels, wid)
 	l := b.lanes[key]
-	if l != nil && len(l.queue) > 0 {
+	if l == nil {
+		return queuedMsg{}, false
+	}
+	if l.interactive {
+		l.inFlight--
+		if l.inFlight > 0 {
+			return queuedMsg{}, false // other steered turns still in flight
+		}
+		l.running = false
+		delete(b.lanes, key)
+		b.runningLanes--
+		b.scheduleLocked()
+		return queuedMsg{}, false
+	}
+	if len(l.queue) > 0 {
 		l.queue = l.queue[1:] // pop the completed head
 	}
-	if l != nil && len(l.queue) > 0 {
+	if len(l.queue) > 0 {
 		return l.queue[0], true // same lane, same slot — next turn in order
 	}
 	// Lane drained: release the slot and hand it to a waiting conversation.
-	if l != nil {
-		l.running = false
-		delete(b.lanes, key)
-	}
+	l.running = false
+	delete(b.lanes, key)
 	b.runningLanes--
 	b.scheduleLocked()
 	return queuedMsg{}, false
@@ -634,6 +682,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleHistory(reply, chatID, fields)
 	case "!backend":
 		b.handleBackend(reply, chatID, fields)
+	case "!interactive":
+		b.handleInteractive(reply, chatID, fields, tgt)
 	case "!user":
 		b.handleUser(reply, chatID, fields)
 	case "!parallel":
@@ -1959,6 +2009,39 @@ func (b *Bot) handleBackend(reply replySender, chatID int64, fields []string) {
 	_ = reply.Send(chatID, fmt.Sprintf("✅ 백엔드 전환됨: %s → %s", strings.ToUpper(current), strings.ToUpper(target)))
 }
 
+// handleInteractive toggles this conversation between the normal per-turn
+// headless client and a persistent ConPTY-backed session
+// (interactiveClaudeRunner), so a message sent while an earlier one is still
+// running steers into the live session instead of queueing behind it. Web
+// conversations only — see Manager.SetInteractive for why the telegram stream
+// doesn't support this.
+func (b *Bot) handleInteractive(reply replySender, chatID int64, fields []string, tgt Target) {
+	if len(fields) < 2 {
+		state := "꺼짐"
+		if b.manager.IsInteractive(tgt) {
+			state = "켜짐"
+		}
+		_ = reply.Send(chatID, "현재 interactive 모드: "+state+"\n사용법: !interactive on|off")
+		return
+	}
+	switch strings.ToLower(fields[1]) {
+	case "on":
+		if err := b.manager.SetInteractive(tgt, true); err != nil {
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
+			return
+		}
+		_ = reply.Send(chatID, "✅ interactive 모드 켜짐 — 이 대화는 이제 상주 세션을 사용하며, 처리 중에 보낸 메시지는 끼워넣기(steering)됩니다.")
+	case "off":
+		if err := b.manager.SetInteractive(tgt, false); err != nil {
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
+			return
+		}
+		_ = reply.Send(chatID, "✅ interactive 모드 꺼짐 — 다음 메시지부터 일반 방식으로 처리됩니다.")
+	default:
+		_ = reply.Send(chatID, "사용법: !interactive on|off")
+	}
+}
+
 // handleParallel dispatches multiple independent prompts concurrently.
 // Syntax: !parallel <prompt1> | <prompt2> | ...
 // Each |-separated prompt becomes its own worker; responses arrive independently.
@@ -2146,6 +2229,8 @@ func helpText() string {
 !remind <시간> <메시지>      일회성 알림 (구버전 호환)
 !cron add|list|remove        반복 작업 (구버전 호환)
 !backend [claude|codex]      AI 백엔드 전환
+!interactive [on|off]        상주 세션 모드 전환 (웹 대화 전용, 실험적)
+                              처리 중에도 메시지를 보내면 끼워넣기(steering)됩니다
 !update                      새 버전 빌드 & 자동 재시작
 !help                        이 도움말
 `)

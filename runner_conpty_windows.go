@@ -61,7 +61,10 @@ type interactiveClaudeRunner struct {
 
 // NewInteractiveClaudeRunner builds a ClaudeClient backed by persistent
 // ConPTY-attached claude.exe sessions (Phase 1 of "B안"; see file doc comment).
-func NewInteractiveClaudeRunner(claudePath string, cfgh *ConfigHolder) *interactiveClaudeRunner {
+// Returns the interface type (rather than *interactiveClaudeRunner) so
+// main.go's call site compiles unchanged against runner_conpty_stub.go's
+// always-nil non-Windows stand-in.
+func NewInteractiveClaudeRunner(claudePath string, cfgh *ConfigHolder) ClaudeClient {
 	return &interactiveClaudeRunner{
 		claudePath: claudePath,
 		cfgh:       cfgh,

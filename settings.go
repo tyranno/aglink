@@ -71,6 +71,7 @@ func buildSettings(cfg *Config) []settingSection {
 			{Key: "backend.default", Label: "기본 백엔드", Desc: "부팅 시 사용할 AI 백엔드. 채팅 중 !backend로도 전환 가능.", Type: "select", Value: cfg.DefaultBackend, Options: []string{"claude", "codex"}},
 			{Key: "backend.codex_model", Label: "Codex 워커 모델", Desc: "Codex 백엔드일 때 워커 모델.", Type: "string", Value: cfg.CodexModel},
 			{Key: "backend.codex_manager_model", Label: "Codex 매니저 모델", Desc: "Codex 백엔드일 때 매니저 모델.", Type: "string", Value: cfg.CodexManagerModel},
+			{Key: "interactive_claude.enabled", Label: "Interactive Claude (실험적)", Desc: "상주 ConPTY 세션 백엔드 구성. 웹 대화별로 \"!interactive on\"으로 켜야 실제 사용됨. Windows 전용. (변경 시 재시작 필요)", Type: "bool", Value: cfg.InteractiveClaude},
 		}},
 		{Title: "런타임", Fields: []settingField{
 			{Key: "runtime.timeout_minutes", Label: "작업 타임아웃(분)", Desc: "한 턴이 이 시간을 넘기면 취소.", Type: "int", Value: cfg.TimeoutMinutes},
@@ -114,6 +115,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.CodexModel = asString(v)
 		case "backend.codex_manager_model":
 			cfg.CodexManagerModel = asString(v)
+		case "interactive_claude.enabled":
+			cfg.InteractiveClaude = asBool(v)
 		case "runtime.timeout_minutes":
 			cfg.TimeoutMinutes = asInt(v)
 		case "runtime.max_workers":

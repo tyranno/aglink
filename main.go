@@ -220,6 +220,23 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 
 	manager := NewManager(claudeRunner, codexRunner, store, holder)
 
+	// Interactive (B안): a persistent ConPTY-backed claude session, opted into
+	// per web conversation via "!interactive on" (see bot.go handleInteractive).
+	// Gated behind its own config flag — off by default — since it is
+	// experimental and Windows-only (see runner_conpty_stub.go for other OSes).
+	if cfg.InteractiveClaude {
+		if claudePath, err := findClaude(cfg.ClaudePath); err == nil {
+			if ir := NewInteractiveClaudeRunner(claudePath, holder); ir != nil {
+				manager.SetInteractiveClient(ir)
+				log.Printf("[main] interactive claude session: enabled")
+			} else {
+				log.Printf("[main] interactive_claude.enabled=true but not supported on this OS — ignoring")
+			}
+		} else {
+			log.Printf("[main] interactive_claude.enabled=true but claude not installed — ignoring: %v", err)
+		}
+	}
+
 	// Choose the active backend: persisted choice first, then DEFAULT_BACKEND, then
 	// fall back to whichever backend is actually installed. Startup selection does
 	// not persist, so a temporary fallback never clobbers the saved preference.

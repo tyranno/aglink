@@ -391,6 +391,20 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// control_status — report cross-process screen-control ownership (read-only).
+	// Lets a caller check, BEFORE driving the screen, whether another concurrent
+	// teleclaude session currently holds control — the proactive counterpart to the
+	// SCREEN_BUSY error a control op returns when contended. See
+	// docs/control-ownership.md §4.2. Does not acquire the lease.
+	s.AddTool(
+		mcp.NewTool("control_status",
+			mcp.WithDescription("Report who currently holds screen-control ownership across concurrent teleclaude sessions (each conversation runs its own aglink-screen process driving the same screen). Read-only: does NOT take control. Returns one of: 'control: free', 'control: held by me (...)', or 'control: held by another (owner_pid=.., ...)'. Use this before driving the screen to avoid colliding with another session; a control tool (click/type/...) will itself return a 'SCREEN_BUSY: ...' error if another session owns the screen."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(controlStatusText()), nil
+		},
+	)
+
 	// ---- Input tools (mouse / keyboard / scroll) ----
 
 	// click — move to (x,y) and click a mouse button, optionally holding modifiers.

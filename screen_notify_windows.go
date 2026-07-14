@@ -274,6 +274,14 @@ func ensureControlNotice() {
 // active to begin with, this just delegates to ensureControlNotice, whose own
 // lead-delay skip (above) removes the fixed tax for that common case.
 func beginSyntheticInput() error {
+	// Cross-process gate first: if another teleclaude session currently owns the
+	// screen, refuse immediately (SCREEN_BUSY) — no point yielding to the human or
+	// showing a notice for a control op we are not allowed to perform. See
+	// docs/control-ownership.md.
+	if err := acquireControlLease(); err != nil {
+		return err
+	}
+
 	installUserInputWatcher()
 
 	yielded := false

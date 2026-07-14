@@ -919,18 +919,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	heartbeatDone := make(chan struct{})
 	go runHeartbeat(s, chatID, "작업 진행 중", startTime, timeoutMinutes, heartbeatDone)
 
-	// Pass history in the prompt as a restart-safe fallback.
-	// When --resume is in play, the CLI session already carries full context server-side,
-	// so only a short trailing reminder is needed (avoids re-sending the whole history
-	// every turn, which was making prompts — and response times — grow with each message).
-	// Without an existing session (fresh conversation), history is empty anyway.
-	// If the session is ever lost (e.g. after restart or CLI update), the short reminder
-	// is what's available; deeper recovery relies on parentSummary/.teleclaude/memory.md.
-	const maxHistoryInPrompt = 3
-	historyForPrompt := workConv.History
-	if len(historyForPrompt) > maxHistoryInPrompt {
-		historyForPrompt = historyForPrompt[len(historyForPrompt)-maxHistoryInPrompt:]
-	}
+	// Pass history in the prompt sized to whether the CLI carries the session.
+	// A resuming turn only needs a short trailing reminder (the CLI holds the
+	// rest); a non-resuming turn — a fresh conversation, or the session-loss
+	// recovery below — gets a much larger, char-bounded slice, because then the
+	// stored history is the only context there is. historyForContext(...,
+	// workConv.Started): Started is true exactly when a CLI session should exist.
+	historyForPrompt := historyForContext(workConv.History, workConv.Started)
 	globalMemory := readGlobalMemory()
 	projectMemory := ""
 	if pPath != "" {
@@ -987,17 +982,25 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		// prompt already carries the recent-history reminder, so the conversation
 		// continues seamlessly instead of dead-ending on an error.
 		if workConv.Started && isSessionNotFound(err.Error()) {
-			// Session store was lost (bot restart / CLI update). Retry as a fresh
-			// session — the prompt carries a recent-history reminder so the chat
-			// continues seamlessly. This is internal recovery; don't tell the user.
-			log.Printf("[worker] session lost (%v) — retrying once without --resume", err)
+			// Session store was lost (bot restart / CLI update / rollout pruned /
+			// backend switch). Retry as a fresh session. The first prompt only
+			// carried a 3-turn reminder because the CLI was supposed to hold the
+			// rest — but it doesn't now, so rebuild the prompt with a much larger,
+			// char-bounded slice of the stored history, or the conversation
+			// "forgets" everything older than three turns. workConv.History[:
+			// pendingIdx] is the history as it stood before this turn's own prompt
+			// was appended — the same view the first build used. Internal
+			// recovery; don't tell the user.
+			log.Printf("[worker] session lost (%v) — retrying once without --resume, with fuller history", err)
 			sessionRecovered = true
+			recoveryHistory := historyForContext(workConv.History[:pendingIdx], false)
+			recoveryPrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, recoveryHistory)
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
 			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
 			res, err = client.Run(ctx, RunRequest{
-				Prompt:    prompt,
+				Prompt:    recoveryPrompt,
 				WorkDir:   workDir,
 				SessionID: workConv.SessionID,
 				Resume:    false,
@@ -1233,6 +1236,56 @@ func readGlobalMemory() string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+const (
+	// maxHistoryInPromptResume: when the CLI session carries the full
+	// conversation server-side (a --resume / codex-resume turn), only a short
+	// trailing reminder is inlined, so the prompt doesn't grow every turn.
+	maxHistoryInPromptResume = 3
+	// maxHistoryOnRecovery / maxHistoryCharsOnRecovery: when there is NO
+	// server-side session — a fresh run, or a session-loss recovery after the
+	// CLI's rollout was pruned / expired / a bot restart / a backend switch —
+	// the stored history is the only context the model has. Inline much more of
+	// it, bounded by a char budget so a long conversation can't produce an
+	// oversized prompt (see the past "Request too large" incident).
+	maxHistoryOnRecovery      = 40
+	maxHistoryCharsOnRecovery = 24000
+)
+
+// historyForContext picks how much stored history to inline in a worker prompt.
+// resume=true (the CLI already holds the conversation) → a short reminder;
+// resume=false (fresh or recovering, the CLI holds nothing) → as much recent
+// history as the budget allows, because that store IS the context now.
+func historyForContext(history []ConversationTurn, resume bool) []ConversationTurn {
+	if resume {
+		return tailTurns(history, maxHistoryInPromptResume, 0)
+	}
+	return tailTurns(history, maxHistoryOnRecovery, maxHistoryCharsOnRecovery)
+}
+
+// tailTurns returns the last turns of history: at most maxTurns, and — when
+// maxChars > 0 — trimmed from the front so the inlined prompt+response text
+// stays within maxChars. The most recent turn is always kept even if it alone
+// exceeds the budget.
+func tailTurns(history []ConversationTurn, maxTurns, maxChars int) []ConversationTurn {
+	n := len(history)
+	if maxTurns <= 0 || n == 0 {
+		return nil
+	}
+	chars := 0
+	start := n
+	for start > 0 && n-start < maxTurns {
+		t := history[start-1]
+		if maxChars > 0 {
+			chars += len(t.Prompt) + len(t.Response)
+			if chars > maxChars && start < n {
+				break // budget exceeded; keep what fits (at least the last turn)
+			}
+		}
+		start--
+	}
+	return history[start:]
 }
 
 // buildContextPrompt assembles the Worker prompt from available context layers.

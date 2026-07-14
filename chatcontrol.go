@@ -33,7 +33,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | get_version | get_aux | get_config | set_config
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | get_version | get_aux | get_config | set_config | get_settings | set_settings
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -288,6 +288,11 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		}
 		data, _ := json.Marshal(out)
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "get_settings":
+		data, _ := json.Marshal(map[string]any{"sections": buildSettings(s.bot.cfg())})
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "set_settings":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: applySettingsUpdate(s.cfgPath, s.bot.cfg(), []byte(m.Body))})
 	default:
 		log.Printf("[chatcontrol] unknown control message type %q", m.Type)
 	}

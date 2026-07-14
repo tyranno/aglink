@@ -2,108 +2,34 @@ package main
 
 import (
 	"context"
-	"sync"
+	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 )
 
-// newTestBot builds a minimal Bot wired for parallel-pool unit tests.
-// It uses a nil API; tests must not call dispatchText (which calls b.Send via the API).
-// Instead they manipulate state directly to verify the pool invariants.
+// newParallelTestBot builds a minimal Bot wired for lane-dispatch unit tests.
+// It uses a nil API; tests that need a worker to actually run wire a manager and
+// client explicitly (see TestDispatch_ChattyConversationDoesNotStarveOthers).
 func newParallelTestBot(maxWorkers int) *Bot {
 	return &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: maxWorkers, TimeoutMinutes: 1}),
 		cancels: make(map[int]context.CancelFunc),
+		lanes:   make(map[string]*lane),
 	}
 }
 
-func TestBot_InitialParallelState(t *testing.T) {
+func TestBot_InitialLaneState(t *testing.T) {
 	b := newParallelTestBot(3)
+	if running, queued := b.dispatchLoad(); running != 0 || queued != 0 {
+		t.Errorf("initial load = (running %d, queued %d), want (0, 0)", running, queued)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.activeCount != 0 {
-		t.Errorf("activeCount = %d, want 0", b.activeCount)
-	}
 	if len(b.cancels) != 0 {
 		t.Errorf("cancels len = %d, want 0", len(b.cancels))
 	}
-	if len(b.queue) != 0 {
-		t.Errorf("queue len = %d, want 0", len(b.queue))
-	}
-}
-
-// TestBot_QueueWhenFull verifies the queueing branch of dispatch:
-// when activeCount >= MaxWorkers the message is enqueued instead of spawning.
-func TestBot_QueueWhenFull(t *testing.T) {
-	b := newParallelTestBot(2)
-	b.mu.Lock()
-	b.activeCount = 2 // simulate both slots taken
-	b.mu.Unlock()
-
-	// Reproduce the queueing branch from dispatch().
-	msg := queuedMsg{chatID: 42, text: "overflow message"}
-	b.mu.Lock()
-	if b.activeCount >= b.cfg().MaxWorkers {
-		b.queue = append(b.queue, msg)
-	}
-	b.mu.Unlock()
-
-	b.mu.Lock()
-	qLen := len(b.queue)
-	b.mu.Unlock()
-
-	if qLen != 1 {
-		t.Fatalf("queue len = %d, want 1", qLen)
-	}
-	b.mu.Lock()
-	firstChatID := b.queue[0].chatID
-	b.mu.Unlock()
-	if firstChatID != 42 {
-		t.Errorf("queued chatID = %d, want 42", firstChatID)
-	}
-}
-
-// TestBot_SlotNotExceededUnderLoad verifies that activeCount never exceeds MaxWorkers
-// when workers are acquired and released concurrently.
-func TestBot_SlotNotExceededUnderLoad(t *testing.T) {
-	const maxW = 3
-	b := newParallelTestBot(maxW)
-
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		maxSeen int
-	)
-
-	// Simulate 10 concurrent workers trying to acquire slots.
-	for range 10 {
-		wg.Go(func() {
-			b.mu.Lock()
-			if b.activeCount < b.cfg().MaxWorkers {
-				b.activeCount++
-				cur := b.activeCount
-				b.mu.Unlock()
-
-				mu.Lock()
-				if cur > maxSeen {
-					maxSeen = cur
-				}
-				mu.Unlock()
-
-				time.Sleep(5 * time.Millisecond)
-
-				b.mu.Lock()
-				b.activeCount--
-				b.mu.Unlock()
-			} else {
-				b.mu.Unlock()
-			}
-		})
-	}
-	wg.Wait()
-
-	if maxSeen > maxW {
-		t.Errorf("activeCount exceeded MaxWorkers: max seen = %d, limit = %d", maxSeen, maxW)
+	if len(b.lanes) != 0 {
+		t.Errorf("lanes len = %d, want 0", len(b.lanes))
 	}
 }
 
@@ -135,15 +61,13 @@ func TestBot_CancelClearsAll(t *testing.T) {
 	}
 }
 
-// TestDispatchTargeted_RoutesThroughQueue verifies the Task 5 review fix:
-// dispatchTargeted must go through the shared worker-slot queue (dispatch()),
-// not call the Manager directly — so it gets MaxWorkers limiting, the
-// TimeoutMinutes deadline, !cancel registration, and panic recovery like every
-// other dispatch. With MaxWorkers=0, dispatch()'s queueing branch always fires
-// (activeCount 0 >= MaxWorkers 0) instead of spawning a worker goroutine, so
-// this is deterministic: we can inspect the queued message directly rather
-// than racing a background goroutine.
-func TestDispatchTargeted_RoutesThroughQueue(t *testing.T) {
+// TestDispatchTargeted_RoutesThroughLane verifies dispatchTargeted enqueues via
+// dispatch() — so it gets MaxWorkers limiting, the TimeoutMinutes deadline,
+// !cancel registration, and panic recovery like every other dispatch — rather
+// than calling the Manager directly. With MaxWorkers=0 no global slot is ever
+// free, so the message parks in its conversation's lane and can be inspected
+// without racing a background goroutine.
+func TestDispatchTargeted_RoutesThroughLane(t *testing.T) {
 	b := newParallelTestBot(0)
 	b.out = NewHub()
 
@@ -152,10 +76,11 @@ func TestDispatchTargeted_RoutesThroughQueue(t *testing.T) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.queue) != 1 {
-		t.Fatalf("queue len = %d, want 1 (dispatchTargeted must enqueue via dispatch(), not call the Manager directly)", len(b.queue))
+	l := b.lanes[laneKeyOf(*tgt)]
+	if l == nil || len(l.queue) != 1 {
+		t.Fatalf("lane queue = %v, want one parked message (dispatchTargeted must enqueue via dispatch())", l)
 	}
-	qm := b.queue[0]
+	qm := l.queue[0]
 	if qm.chatID != 42 || qm.text != "hello" {
 		t.Errorf("queued msg = %+v, want chatID=42 text=hello", qm)
 	}
@@ -164,10 +89,10 @@ func TestDispatchTargeted_RoutesThroughQueue(t *testing.T) {
 	}
 }
 
-// TestDispatchTargeted_DefaultsToTelegramTarget verifies a nil tgt (web client
-// that hasn't sent an explicit target) still enqueues with target.Kind ==
-// "telegram", matching dispatchTargeted's documented default.
-func TestDispatchTargeted_DefaultsToTelegramTarget(t *testing.T) {
+// TestDispatchTargeted_DefaultsToTelegramLane verifies a nil tgt (web client
+// that hasn't sent an explicit target) parks in the telegram lane with
+// target.Kind == "telegram", matching dispatchTargeted's documented default.
+func TestDispatchTargeted_DefaultsToTelegramLane(t *testing.T) {
 	b := newParallelTestBot(0)
 	b.out = NewHub()
 
@@ -175,11 +100,12 @@ func TestDispatchTargeted_DefaultsToTelegramTarget(t *testing.T) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.queue) != 1 {
-		t.Fatalf("queue len = %d, want 1", len(b.queue))
+	l := b.lanes[laneKeyOf(TelegramTarget())]
+	if l == nil || len(l.queue) != 1 {
+		t.Fatalf("telegram lane queue = %v, want one parked message", l)
 	}
-	if b.queue[0].target == nil || b.queue[0].target.Kind != "telegram" {
-		t.Errorf("queued msg target = %+v, want Kind=telegram", b.queue[0].target)
+	if l.queue[0].target == nil || l.queue[0].target.Kind != "telegram" {
+		t.Errorf("queued msg target = %+v, want Kind=telegram", l.queue[0].target)
 	}
 }
 
@@ -195,4 +121,102 @@ func TestBot_WorkerSeqMonotonic(t *testing.T) {
 			t.Errorf("workerSeq after %d increments = %d, want %d", i, got, i)
 		}
 	}
+}
+
+// laneClient signals each turn as it enters Run and blocks it until released, so
+// a test can observe which turns the dispatcher chose to run concurrently.
+type laneClient struct {
+	entered chan string   // marker of each turn as it starts running
+	release chan struct{} // closed to let all parked turns finish
+}
+
+func (c *laneClient) Route(context.Context, RouteRequest) (RouteDecision, error) {
+	return RouteDecision{}, nil
+}
+
+func (c *laneClient) Run(_ context.Context, req RunRequest) (RunResult, error) {
+	c.entered <- laneMarkerOf(req.Prompt)
+	<-c.release
+	return RunResult{Text: "done"}, nil
+}
+
+// laneMarkerOf returns the marker appearing LAST in the prompt. A conversation's
+// second turn inlines its first turn's text as history, so earlier markers are
+// present too; only the last identifies the current turn.
+func laneMarkerOf(prompt string) string {
+	best, at := "", -1
+	for _, m := range []string{"MK_A1", "MK_A2", "MK_B1"} {
+		if i := strings.LastIndex(prompt, m); i > at {
+			best, at = m, i
+		}
+	}
+	return best
+}
+
+// A single chatty conversation must not consume every global slot and starve
+// other channels. With per-conversation lanes, a conversation already running
+// serializes its own backlog into one slot, leaving the other slot free for a
+// different conversation. Under the old global pool, the same conversation's
+// second turn grabbed the second slot and the other channel waited.
+//
+// Setup: MaxWorkers=2. A1 starts and holds one slot. Then A2 (same conversation)
+// and B1 (different conversation) are queued. The next turn to run must be B1,
+// not A2 — proving cross-conversation parallelism wins over same-conversation
+// backlog.
+func TestDispatch_ChattyConversationDoesNotStarveOthers(t *testing.T) {
+	cl := &laneClient{entered: make(chan string, 8), release: make(chan struct{})}
+
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	convA, err := st.NewWebConv("A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	convB, err := st.NewWebConv("B")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := &Bot{
+		cfgh:    NewConfigHolder(&Config{MaxWorkers: 2, TimeoutMinutes: 1}),
+		cancels: make(map[int]context.CancelFunc),
+		lanes:   make(map[string]*lane),
+		store:   st,
+	}
+	b.manager = NewManager(cl, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
+	b.out = NewHub()
+
+	tgtA := Target{Kind: "web", ID: convA.ID}
+	tgtB := Target{Kind: "web", ID: convB.ID}
+
+	// A1 starts and holds one of the two global slots.
+	b.dispatchTargeted(1, "MK_A1", &tgtA)
+	if got := <-cl.entered; got != "MK_A1" {
+		t.Fatalf("first running turn = %q, want MK_A1", got)
+	}
+
+	// Queue a second turn for conversation A, then one for conversation B. A2
+	// must wait behind A1 in lane A; B1 takes the free slot.
+	b.dispatchTargeted(1, "MK_A2", &tgtA)
+	b.dispatchTargeted(1, "MK_B1", &tgtB)
+
+	if got := <-cl.entered; got != "MK_B1" {
+		t.Fatalf("second concurrent turn = %q, want MK_B1 — a chatty conversation "+
+			"starved another channel (global pool instead of per-conversation lanes)", got)
+	}
+
+	close(cl.release)
+	// A1 finishes and lane A hands its slot to its own backlog: A2 runs next.
+	if got := <-cl.entered; got != "MK_A2" {
+		t.Fatalf("final turn = %q, want MK_A2 (lane A's serialized backlog)", got)
+	}
+
+	// Let every worker goroutine fully drain (including its store write) before
+	// the test returns, so t.TempDir cleanup does not race an in-flight write.
+	waitFor(t, func() bool {
+		running, queued := b.dispatchLoad()
+		return running == 0 && queued == 0
+	})
 }

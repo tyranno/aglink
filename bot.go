@@ -55,11 +55,18 @@ type Bot struct {
 	dispatchHook func(chatID int64, text string) // test seam; nil in production
 	commandHook  func(chatID int64, text string) // test seam; nil in production
 
-	mu          sync.Mutex
-	activeCount int                        // current running workers
-	workerSeq   int                        // monotonic counter for worker IDs
-	cancels     map[int]context.CancelFunc // workerID → cancel (for !cancel)
-	queue       []queuedMsg                // messages waiting for a free slot
+	// Per-conversation lanes. Each conversation (the telegram stream, or a web
+	// topic) is a lane: turns within a lane run strictly one at a time and in
+	// order (a turn's context depends on the previous turn's result), while
+	// different lanes run in parallel. cfg.MaxWorkers bounds how many lanes run
+	// concurrently — it no longer serializes unrelated conversations behind one
+	// global pool, which is what stopped them running in parallel.
+	mu           sync.Mutex
+	workerSeq    int                        // monotonic counter for worker IDs
+	cancels      map[int]context.CancelFunc // workerID → cancel (for !cancel)
+	lanes        map[string]*lane           // laneKey → its queue + running flag
+	readyLanes   []string                   // idle lanes with queued work, waiting for a global slot (FIFO)
+	runningLanes int                        // lanes currently executing a turn (== global concurrency)
 
 	// cmdMu serializes handleCommand. Telegram's Run() loop already calls
 	// handleCommand from a single goroutine, so this is uncontended there.
@@ -88,8 +95,27 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 		rateLimiter: NewRateLimiter(cfgh.Get().RateLimitPerMin),
 		userStore:   userStore,
 		cancels:     make(map[int]context.CancelFunc),
+		lanes:       make(map[string]*lane),
 		out:         hub,
 	}
+}
+
+// lane is one conversation's serialized work: a FIFO of pending turns and a flag
+// for whether one is currently executing. Turns in a lane never overlap.
+type lane struct {
+	queue   []queuedMsg
+	running bool
+}
+
+// laneKeyOf maps a message's conversation to its lane key. All non-web targets
+// are the single telegram stream ("telegram"); each web topic is its own lane
+// ("web:<id>"). Matches Target.SameConversation, so two messages share a lane
+// exactly when they belong to the same conversation.
+func laneKeyOf(t Target) string {
+	if t.IsWeb() {
+		return "web:" + t.ID
+	}
+	return "telegram"
 }
 
 func (b *Bot) cfg() *Config { return b.cfgh.Get() }
@@ -354,53 +380,132 @@ func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
 	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true, origin: OriginTelegram})
 }
 
-// dispatch is the shared entry point for both text and scheduled-task dispatches.
-// It acquires a worker slot (or queues the message) then runs the appropriate handler.
+// dispatch routes a message into its conversation's lane. A message whose lane
+// is idle and can grab a global slot starts immediately; one whose lane is busy
+// waits in that lane (its own earlier turn is still running); one blocked only by
+// the global cap waits for a slot to free. Turns in the same lane never overlap;
+// different lanes run in parallel up to cfg.MaxWorkers at once.
 func (b *Bot) dispatch(msg queuedMsg) {
+	key := laneKeyOf(msg.conversation())
 	b.mu.Lock()
-	if b.activeCount >= b.cfg().MaxWorkers {
-		b.queue = append(b.queue, msg)
-		pos := len(b.queue)
-		maxW := b.cfg().MaxWorkers
+	if b.lanes == nil {
+		b.lanes = make(map[string]*lane)
+	}
+	l := b.lanes[key]
+	if l == nil {
+		l = &lane{}
+		b.lanes[key] = l
+	}
+	l.queue = append(l.queue, msg)
+
+	if l.running {
+		ahead := len(l.queue) - 1 // turns of THIS conversation still ahead of it
 		b.mu.Unlock()
 		if !msg.isTask {
 			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
-				"📋 대기열 추가 (%d번째) — 동시 처리 중 %d/%d. !cancel 로 취소 가능.",
-				pos, maxW, maxW))
+				"📋 이 대화가 처리 중입니다 — 앞선 요청 %d건 뒤에 이어서 실행됩니다.", ahead))
 		} else {
-			log.Printf("[scheduler] 예약 작업 대기열 추가 (%d번째)", pos)
+			log.Printf("[scheduler] 예약 작업: 대화 처리 중 — 뒤에 대기")
 		}
 		return
 	}
-	b.activeCount++ // slot reserved; runTurn owns it from here
+	if b.laneQueuedLocked(key) { // idle lane already waiting for a global slot
+		b.mu.Unlock()
+		return
+	}
+	if b.runningLanes < b.cfg().MaxWorkers {
+		l.running = true
+		b.runningLanes++
+		head := l.queue[0]
+		b.mu.Unlock()
+		go b.runTurn(key, head)
+		return
+	}
+	// Lane is idle but every global slot is taken by another conversation.
+	b.readyLanes = append(b.readyLanes, key)
+	running, maxW := b.runningLanes, b.cfg().MaxWorkers
 	b.mu.Unlock()
-
-	go b.runTurn(msg)
+	if !msg.isTask {
+		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
+			"📋 대기열 추가 — 동시 실행 대화 %d/%d. 앞선 대화가 끝나면 시작됩니다.", running, maxW))
+	} else {
+		log.Printf("[scheduler] 예약 작업 대기열 추가 — 동시 대화 %d/%d", running, maxW)
+	}
 }
 
-// finishTurn ends a turn's bookkeeping and decides what happens to its slot.
-//
-// It hands the slot straight to the next queued message rather than releasing it
-// and re-entering dispatch: dispatch re-checks capacity, so anything that took
-// the freed slot in the meantime would push the queued message back onto the
-// tail — after it had already been announced as starting, and out of order.
-// Returns the message that inherits the slot, if any.
-func (b *Bot) finishTurn(wid int) (queuedMsg, bool) {
+// dispatchLoad reports the current run: how many conversations are executing a
+// turn (running) and how many turns are waiting across all lanes (queued —
+// same-lane backlogs plus lanes waiting for a global slot).
+func (b *Bot) dispatchLoad() (running, queued int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	running = b.runningLanes
+	for _, l := range b.lanes {
+		q := len(l.queue)
+		if l.running && q > 0 {
+			q-- // the head is the one running, not waiting
+		}
+		queued += q
+	}
+	return running, queued
+}
+
+// laneQueuedLocked reports whether key is already waiting in readyLanes. Caller
+// holds b.mu.
+func (b *Bot) laneQueuedLocked(key string) bool {
+	for _, k := range b.readyLanes {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// scheduleLocked starts as many waiting lanes as free global slots allow. Caller
+// holds b.mu. Skips stale ready entries (a lane drained or already running).
+func (b *Bot) scheduleLocked() {
+	maxW := b.cfg().MaxWorkers
+	for b.runningLanes < maxW && len(b.readyLanes) > 0 {
+		key := b.readyLanes[0]
+		b.readyLanes = b.readyLanes[1:]
+		l := b.lanes[key]
+		if l == nil || l.running || len(l.queue) == 0 {
+			continue
+		}
+		l.running = true
+		b.runningLanes++
+		go b.runTurn(key, l.queue[0])
+	}
+}
+
+// finishTurn ends a turn and decides the lane's next step. If the same
+// conversation has more queued, that lane keeps its global slot and its next
+// turn runs (serialized). Otherwise the lane is freed and a waiting lane is
+// promoted into the slot. Returns the same lane's next message, if any.
+func (b *Bot) finishTurn(key string, wid int) (queuedMsg, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.cancels, wid)
-	if len(b.queue) > 0 {
-		next := b.queue[0]
-		b.queue = b.queue[1:]
-		return next, true // slot stays reserved, now for next
+	l := b.lanes[key]
+	if l != nil && len(l.queue) > 0 {
+		l.queue = l.queue[1:] // pop the completed head
 	}
-	b.activeCount--
+	if l != nil && len(l.queue) > 0 {
+		return l.queue[0], true // same lane, same slot — next turn in order
+	}
+	// Lane drained: release the slot and hand it to a waiting conversation.
+	if l != nil {
+		l.running = false
+		delete(b.lanes, key)
+	}
+	b.runningLanes--
+	b.scheduleLocked()
 	return queuedMsg{}, false
 }
 
-// runTurn runs one turn on an already-reserved worker slot, then either releases
-// the slot or passes it to the next queued message.
-func (b *Bot) runTurn(msg queuedMsg) {
+// runTurn runs one turn of a lane, then either continues that lane or lets its
+// slot pass to a waiting conversation.
+func (b *Bot) runTurn(key string, msg queuedMsg) {
 	b.mu.Lock()
 	b.workerSeq++
 	wid := b.workerSeq
@@ -417,12 +522,12 @@ func (b *Bot) runTurn(msg queuedMsg) {
 			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
 		}
 		cancel()
-		next, ok := b.finishTurn(wid)
+		next, ok := b.finishTurn(key, wid)
 		if ok {
 			if !next.isTask {
 				_ = b.ReplyTo(next.conversation()).Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
 			}
-			go b.runTurn(next)
+			go b.runTurn(key, next)
 		}
 	}()
 
@@ -484,12 +589,9 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		} else {
 			msg = workers + "\n" + b.manager.describeActive()
 		}
-		b.mu.Lock()
-		active := b.activeCount
-		qLen := len(b.queue)
-		b.mu.Unlock()
+		active, qLen := b.dispatchLoad()
 		if active > 0 {
-			msg += fmt.Sprintf("\n⚡ 동시 실행: %d/%d", active, b.cfg().MaxWorkers)
+			msg += fmt.Sprintf("\n⚡ 동시 실행 대화: %d/%d", active, b.cfg().MaxWorkers)
 		}
 		if qLen > 0 {
 			msg += fmt.Sprintf("\n📋 대기 중: %d개", qLen)
@@ -501,10 +603,7 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 	case "!chat":
 		b.handleChat(reply, chatID, text, fields, origin)
 	case "!update":
-		b.mu.Lock()
-		active := b.activeCount
-		b.mu.Unlock()
-		if active > 0 {
+		if active, _ := b.dispatchLoad(); active > 0 {
 			_ = reply.Send(chatID, "⏳ 작업 중에는 업데이트할 수 없습니다. !cancel 후 다시 시도하세요.")
 			return
 		}
@@ -526,10 +625,7 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 	case "!screen":
 		b.handleScreen(reply, chatID, fields)
 	case "!compact":
-		b.mu.Lock()
-		active := b.activeCount
-		b.mu.Unlock()
-		if active > 0 {
+		if active, _ := b.dispatchLoad(); active > 0 {
 			_ = reply.Send(chatID, "⏳ 작업 중에는 압축할 수 없습니다. !cancel 후 다시 시도하세요.")
 			return
 		}
@@ -1815,10 +1911,7 @@ func (b *Bot) handleBackend(reply replySender, chatID int64, fields []string) {
 		return
 	}
 
-	b.mu.Lock()
-	active := b.activeCount
-	b.mu.Unlock()
-	if active > 0 {
+	if active, _ := b.dispatchLoad(); active > 0 {
 		_ = reply.Send(chatID, "⏳ 작업 중에는 백엔드를 전환할 수 없습니다. !cancel 후 다시 시도하세요.")
 		return
 	}

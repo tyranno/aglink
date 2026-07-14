@@ -99,6 +99,7 @@ func TestDispatch_QueuedMessageKeepsItsSlotAfterBeingAnnounced(t *testing.T) {
 	b := &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: 1, TimeoutMinutes: 1}),
 		cancels: make(map[int]context.CancelFunc),
+		lanes:   make(map[string]*lane),
 		store:   st,
 	}
 	b.manager = NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
@@ -134,17 +135,17 @@ func TestDispatch_QueuedMessageKeepsItsSlotAfterBeingAnnounced(t *testing.T) {
 	}
 }
 
-// active/queued read the dispatch bookkeeping under the bot's lock.
+// active/queued read the dispatch bookkeeping under the bot's lock. active is
+// the number of conversations currently executing a turn; queued is the number
+// of turns waiting across all lanes.
 func (b *Bot) active() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.activeCount
+	running, _ := b.dispatchLoad()
+	return running
 }
 
 func (b *Bot) queued() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.queue)
+	_, q := b.dispatchLoad()
+	return q
 }
 
 // waitFor polls cond for up to ~5s. Used instead of sleeps so the test is fast

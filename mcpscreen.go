@@ -14,6 +14,24 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// controlCompleteMiddleware wraps every tool handler so that a tool call which
+// actually drove the screen is followed by the green "control complete" notice.
+// It snapshots syntheticInputCount around the handler: control ops funnel through
+// ensureControlNotice (which increments it), while read-only tools leave it
+// unchanged, so this cleanly distinguishes "제어" calls from reads with no
+// per-tool special-casing. showControlComplete is spawned so the overlay work
+// (and any preempt wait) never delays the tool's response.
+func controlCompleteMiddleware(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		before := syntheticInputCount.Load()
+		res, err := next(ctx, req)
+		if syntheticInputCount.Load() != before {
+			go showControlComplete()
+		}
+		return res, err
+	}
+}
+
 // Design Ref: §1 (self-spawned stdio MCP server), §2 (tool table), §4 (mcpscreen.go).
 //
 // RunMCPScreen runs the "screen" MCP server over stdio (blocking). It is started
@@ -28,6 +46,12 @@ func RunMCPScreen() error {
 		"screen",
 		"0.1.0",
 		server.WithToolCapabilities(true),
+		// After any tool call that actually drove the screen, show the green
+		// "control complete" ack. The counter advances only for ops that pass
+		// through beginSyntheticInput → ensureControlNotice, so read-only tools
+		// (screenshot, snapshot, get_value, …) never trigger it. Fire-and-forget
+		// so the tool response is never delayed by the overlay.
+		server.WithToolHandlerMiddleware(controlCompleteMiddleware),
 	)
 
 	// list_windows — visible top-level windows as "TITLE | hwnd=0x..".

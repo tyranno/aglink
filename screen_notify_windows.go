@@ -38,6 +38,20 @@ import (
 // own OS-locked goroutine with a message pump. (A colored icon is drawn as a GDI
 // accent dot rather than an emoji, since classic GDI cannot render color emoji.)
 //
+// Completion ack: the start warning has a mirror-image counterpart. After any MCP
+// tool call that actually drove the screen, a green "AI가 화면 제어를 마쳤습니다" toast
+// is shown — same overlay, green accent instead of amber, a shorter duration since
+// it is an after-the-fact acknowledgment rather than a warning to react to. The MCP
+// tool-handler middleware detects a screen-driving call by watching syntheticInputCount
+// (bumped in ensureControlNotice), so read-only tools (screenshot/snapshot/...) never
+// trigger it. Because the start toast's on-screen time outlasts its ~1s lead, it is
+// usually still fading when control finishes, so the completion ack PREEMPTS it (via
+// noticeCloseRequested, polled by the overlay's own timer so DestroyWindow runs on the
+// owning thread) — the stale "시작합니다" warning yields to "완료". It is fire-and-forget
+// so the tool response is never delayed. Like the start toast, it always shows
+// when notices are enabled — it is not gated on user presence, so a user watching
+// the automation still sees the "완료" they asked for.
+//
 // Lead time: at session start, ensureControlNotice() shows the notice and then
 // briefly BLOCKS before returning, so synthetic input begins only after the user
 // has had a moment to see the warning and pause their own typing/clicking. The
@@ -48,9 +62,10 @@ import (
 // on session start (the first input, or after an idle gap) — continuous control
 // within a session proceeds with no delay, so it stays responsive.
 //
-//	AGLINK_NO_CONTROL_NOTICE=1      disable entirely (headless / no user present)
-//	AGLINK_NOTICE_DURATION_MS=4500  override the on-screen time (clamped 1500..15000)
+//	AGLINK_NO_CONTROL_NOTICE=1      disable entirely (both start + completion; headless / no user present)
+//	AGLINK_NOTICE_DURATION_MS=4500  override the start notice on-screen time (clamped 1500..15000)
 //	AGLINK_NOTICE_LEAD_MS=1500      override the session-start lead delay (clamped 0..5000)
+//	AGLINK_NOTICE_COMPLETE_MS=1800  override the completion ack on-screen time (clamped 1200..8000)
 
 const (
 	// controlNoticeGap is the idle time after which a new control session is
@@ -61,6 +76,14 @@ const (
 	noticeDefaultMS = 3800
 	noticeMinMS     = 1500
 	noticeMaxMS     = 15000
+
+	// Completion notice: a brief green acknowledgment shown at the end of each
+	// control tool call ("AI가 화면 제어를 마쳤습니다"). Shorter than the start notice —
+	// it is an ack after the fact, not a warning the user must react to before
+	// input begins. Overridable with AGLINK_NOTICE_COMPLETE_MS (clamped).
+	completeDefaultMS = 1800
+	completeMinMS     = 1200
+	completeMaxMS     = 8000
 
 	// Fade envelope (subset of the total duration).
 	noticeFadeInMS  = 170
@@ -111,11 +134,27 @@ var (
 
 var noticeText = "AI가 화면 제어를 시작합니다 — 손을 떼어 주세요"
 
+// completeText is the wording of the green completion ack. Kept shorter than
+// noticeText so it comfortably fits the same overlay box (see TestCompleteTextFitsBox).
+var completeText = "AI가 화면 제어를 마쳤습니다"
+
 var (
 	lastSyntheticInput atomic.Int64 // UnixNano of the last synthetic input
 	noticeShowing      atomic.Bool  // guards against stacking overlays
 	controlNoticeOff   = os.Getenv("AGLINK_NO_CONTROL_NOTICE") != ""
 )
+
+// syntheticInputCount increments once per control op that passes the user-yield
+// gate (see ensureControlNotice). The MCP tool-handler middleware snapshots it
+// around each tool call: if it advanced, that call actually drove the screen and
+// a completion notice is shown afterward. Read-only tools never touch it.
+var syntheticInputCount atomic.Int64
+
+// noticeCloseRequested asks the currently-showing overlay to self-destroy on its
+// next timer tick — on its own OS thread, the only safe place to DestroyWindow.
+// showControlComplete sets it to preempt a still-fading start toast so the "완료"
+// ack appears immediately instead of being swallowed by the one-overlay guard.
+var noticeCloseRequested atomic.Bool
 
 // noticeDurationMS returns the total on-screen time, honoring
 // AGLINK_NOTICE_DURATION_MS (clamped) and defaulting to noticeDefaultMS.
@@ -131,6 +170,24 @@ func noticeDurationMS() int {
 	}
 	if d > noticeMaxMS {
 		d = noticeMaxMS
+	}
+	return d
+}
+
+// completeDurationMS returns the completion notice's total on-screen time,
+// honoring AGLINK_NOTICE_COMPLETE_MS (clamped) and defaulting to completeDefaultMS.
+func completeDurationMS() int {
+	d := completeDefaultMS
+	if v := os.Getenv("AGLINK_NOTICE_COMPLETE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			d = n
+		}
+	}
+	if d < completeMinMS {
+		d = completeMinMS
+	}
+	if d > completeMaxMS {
+		d = completeMaxMS
 	}
 	return d
 }
@@ -161,6 +218,11 @@ func noticeLeadMS() int {
 // warning is always visible before synthetic input begins. Mid-session calls
 // return immediately.
 func ensureControlNotice() {
+	// A control op has passed the yield gate and is about to drive the screen.
+	// Count it so the tool-handler middleware can tell this tool call apart from
+	// a read-only one and fire a completion notice afterward.
+	syntheticInputCount.Add(1)
+
 	now := time.Now().UnixNano()
 	prev := lastSyntheticInput.Swap(now)
 	if controlNoticeOff {
@@ -269,15 +331,24 @@ func signalNoticeShown() {
 	})
 }
 
-// showControlNotice shows the overlay on a dedicated goroutine. The fade
-// animation runs asynchronously, but the returned channel is closed the moment
-// the toast is actually on screen (first paint) — or if it cannot be shown — so
-// the caller can guarantee the warning is visible before synthetic input begins.
-// Returns nil when a notice is already showing (nothing new to wait on).
-func showControlNotice() <-chan struct{} {
+// noticeCloseWaitMax bounds how long showControlComplete waits for a preempted
+// start toast to tear down before giving up. Teardown happens on the overlay's
+// next ~60fps timer tick, so this is generous; a var for testability.
+var noticeCloseWaitMax = 400 * time.Millisecond
+
+// showNoticeOverlay spawns the overlay on a dedicated goroutine using the given
+// style and total on-screen time. The fade runs asynchronously, but the returned
+// channel is closed the moment the toast is on screen (first paint) — or if it
+// cannot be shown. Returns nil when a notice is already showing (nothing new to
+// wait on). Shared by the start-warning and completion-ack paths.
+func showNoticeOverlay(style *noticeStyle, totalMS int) <-chan struct{} {
 	if !noticeShowing.CompareAndSwap(false, true) {
 		return nil // one already on screen
 	}
+	// A fresh overlay must not inherit a preempt request aimed at the previous one.
+	noticeCloseRequested.Store(false)
+	activeStyle = style
+	pendingNoticeTotalMS = totalMS
 	noticeShownOnce = sync.Once{}
 	shown := make(chan struct{})
 	noticeShownCh = shown
@@ -287,6 +358,45 @@ func showControlNotice() <-chan struct{} {
 		noticeShow()
 	}()
 	return shown
+}
+
+// showControlNotice shows the amber start warning. The returned channel is closed
+// the moment the toast is actually on screen (first paint) — or if it cannot be
+// shown — so the caller can guarantee the warning is visible before synthetic
+// input begins. Returns nil when a notice is already showing.
+func showControlNotice() <-chan struct{} {
+	return showNoticeOverlay(&startStyle, noticeDurationMS())
+}
+
+// showControlComplete shows the green "control complete" ack. It is fire-and-forget
+// (the MCP middleware calls it as `go showControlComplete()`), so it may block
+// internally to preempt a still-fading start toast without delaying the tool
+// response. It no-ops when notices are disabled or nobody is at the desk to see it.
+func showControlComplete() {
+	if controlNoticeOff {
+		return
+	}
+	// NB: unlike the start-notice lead delay, the completion ack is NOT skipped
+	// when the user appears "away". The start toast itself always shows regardless
+	// of presence (only its lead *delay* is skipped), and the completion must be
+	// just as reliably visible — the user explicitly asked to always see "완료".
+	// A user passively WATCHING automation can easily be input-idle past the away
+	// threshold, and suppressing the ack then would hide exactly the message they
+	// wanted. The worst case (a brief green flash at a truly empty desk) is
+	// harmless and matches how the start notice already behaves.
+	//
+	// Preempt any still-showing overlay (typically the start warning, whose 3.8s
+	// duration outlasts the ~1s lead) so the ack appears immediately rather than
+	// being dropped by the one-overlay guard. Semantically right too: once control
+	// is done, the stale "시작합니다" warning should yield to "완료".
+	if noticeShowing.Load() {
+		noticeCloseRequested.Store(true)
+		deadline := time.Now().Add(noticeCloseWaitMax)
+		for noticeShowing.Load() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	showNoticeOverlay(&completeStyle, completeDurationMS())
 }
 
 // noticeAlpha returns the layered-window alpha for a fade in → hold → fade out
@@ -388,7 +498,8 @@ const (
 // COLORREF is 0x00BBGGRR.
 const (
 	noticeBgColor     = 0x00F2F1EF // #EFF1F2 bright off-white
-	noticeAccentColor = 0x001C90E8 // #E8901C amber accent (border + status dot)
+	noticeAccentColor = 0x001C90E8 // #E8901C amber accent (start: border + status dot)
+	noticeGreenColor  = 0x005B9E2E // #2E9E5B green accent (completion: border + status dot)
 	noticeTextColor   = 0x00262220 // #202226 dark slate text
 )
 
@@ -436,12 +547,34 @@ var (
 	// GDI objects created once and reused for the process lifetime.
 	noticeFont        uintptr
 	noticeBgBrush     uintptr
-	noticeAccentBrush uintptr
-	noticeAccentPen   uintptr
+	noticeAccentBrush uintptr // amber (start)
+	noticeAccentPen   uintptr // amber (start)
+	noticeGreenBrush  uintptr // green (completion)
+	noticeGreenPen    uintptr // green (completion)
 
 	// Per-showing state (only one overlay at a time, guarded by noticeShowing).
 	noticeStartNano int64
 	noticeTotalMS   int
+)
+
+// noticeStyle is the per-showing appearance: the amber start warning vs the green
+// completion ack. activeStyle points at whichever overlay is currently on screen
+// and paintNotice reads it. The GDI handles are filled in by registerNoticeClass.
+type noticeStyle struct {
+	text        string
+	accentPen   uintptr
+	accentBrush uintptr
+}
+
+var (
+	startStyle    noticeStyle
+	completeStyle noticeStyle
+	activeStyle   = &startStyle
+
+	// pendingNoticeTotalMS is the total on-screen time for the next overlay; a
+	// show initiator sets it before the overlay goroutine starts and
+	// runNoticeWindow copies it into noticeTotalMS.
+	pendingNoticeTotalMS = noticeDefaultMS
 )
 
 // registerNoticeClass registers the overlay window class and its GDI resources
@@ -452,6 +585,8 @@ func registerNoticeClass() bool {
 		noticeBgBrush, _, _ = procCreateSolidBrushN.Call(uintptr(noticeBgColor))
 		noticeAccentBrush, _, _ = procCreateSolidBrushN.Call(uintptr(noticeAccentColor))
 		noticeAccentPen, _, _ = procCreatePenN.Call(psSolid, 2, uintptr(noticeAccentColor))
+		noticeGreenBrush, _, _ = procCreateSolidBrushN.Call(uintptr(noticeGreenColor))
+		noticeGreenPen, _, _ = procCreatePenN.Call(psSolid, 2, uintptr(noticeGreenColor))
 		// Malgun Gothic renders Latin + Hangul; -16 ≈ 12pt @96dpi, bold.
 		face := windows.StringToUTF16Ptr("Malgun Gothic")
 		noticeFont, _, _ = procCreateFontWN.Call(
@@ -470,6 +605,12 @@ func registerNoticeClass() bool {
 		}
 		atom, _, _ := procRegisterClassExN.Call(uintptr(unsafe.Pointer(&wc)))
 		noticeClassOK = atom != 0
+
+		// Fill the style structs now that the GDI handles exist. activeStyle
+		// already points at startStyle, so populating it here makes the default
+		// showing amber without any further wiring.
+		startStyle = noticeStyle{text: noticeText, accentPen: noticeAccentPen, accentBrush: noticeAccentBrush}
+		completeStyle = noticeStyle{text: completeText, accentPen: noticeGreenPen, accentBrush: noticeGreenBrush}
 	})
 	return noticeClassOK
 }
@@ -490,7 +631,11 @@ func noticeWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmTimer:
 		elapsed := int((time.Now().UnixNano() - noticeStartNano) / 1e6)
-		if elapsed >= noticeTotalMS {
+		// Self-destruct when the duration elapses OR when a preempt was requested
+		// (showControlComplete replacing a still-fading start toast). DestroyWindow
+		// must run on this owning thread, which is why the request is a flag polled
+		// here rather than a cross-thread DestroyWindow call.
+		if elapsed >= noticeTotalMS || noticeCloseRequested.Load() {
 			procKillTimerN.Call(hwnd, wParam)
 			procDestroyWindowN.Call(hwnd)
 			return 0
@@ -508,15 +653,19 @@ func noticeWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 // paintNotice draws the toast contents into hdc. The client DC starts at (0,0)
 // and the popup is a fixed noticeW x noticeH size, so client coords are known.
 func paintNotice(hdc uintptr) {
+	// The active style (amber start vs green completion) supplies the accent
+	// pen/brush and the text; everything else is shared.
+	style := activeStyle
+
 	// Rounded background + accent border (RoundRect uses the selected brush+pen).
 	oldBrush, _, _ := procSelectObjectN.Call(hdc, noticeBgBrush)
-	oldPen, _, _ := procSelectObjectN.Call(hdc, noticeAccentPen)
+	oldPen, _, _ := procSelectObjectN.Call(hdc, style.accentPen)
 	procRoundRectN.Call(hdc, 1, 1, noticeW-1, noticeH-1, noticeRadius, noticeRadius)
 
 	// Status dot (filled accent circle) on the left, vertically centered.
 	const dotR = 6
 	dotCx, dotCy := 24, noticeH/2
-	procSelectObjectN.Call(hdc, noticeAccentBrush)
+	procSelectObjectN.Call(hdc, style.accentBrush)
 	procEllipseN.Call(hdc, uintptr(dotCx-dotR), uintptr(dotCy-dotR), uintptr(dotCx+dotR), uintptr(dotCy+dotR))
 
 	// Text, left-aligned after the dot so the prefix always stays visible.
@@ -527,7 +676,7 @@ func paintNotice(hdc uintptr) {
 		oldFont, _, _ = procSelectObjectN.Call(hdc, noticeFont)
 	}
 	txtRc := rect{Left: 40, Top: 0, Right: noticeW - 16, Bottom: noticeH}
-	u := windows.StringToUTF16(noticeText)
+	u := windows.StringToUTF16(style.text)
 	procDrawTextWN.Call(hdc, uintptr(unsafe.Pointer(&u[0])), ^uintptr(0),
 		uintptr(unsafe.Pointer(&txtRc)), uintptr(dtLeft|dtVCenter|dtSingleLine|dtNoPrefix))
 
@@ -619,7 +768,7 @@ func runNoticeWindow() {
 	}
 	procSetLayeredWinAttrN.Call(hwnd, 0, 0, lwaAlpha)
 
-	noticeTotalMS = noticeDurationMS()
+	noticeTotalMS = pendingNoticeTotalMS
 	noticeStartNano = time.Now().UnixNano()
 
 	procShowWindowN.Call(hwnd, swShowNoActivate)

@@ -35,6 +35,9 @@ func screenSystemPrompt() string {
 		"8. list_windows에서 [other-desktop]로 표시된 창은 다른 가상 데스크톱에 있다. focus_window/capture_window/click_control로 " +
 		"조작하면 그 데스크톱으로 자동 전환된다(안 그러면 캡처·클릭이 엉뚱한 데스크톱을 대상으로 함). 작업이 끝나면 return_desktop을 " +
 		"호출해 사용자가 있던 원래 데스크톱으로 되돌려라.\n" +
+		"9. 화면 조작 도구가 'SCREEN_BUSY:'로 시작하는 에러를 반환하면 다른 대화가 지금 화면을 제어 중이라는 뜻이다. " +
+		"충돌하지 말고 몇 초 뒤 같은 동작을 다시 시도하라. 계속 SCREEN_BUSY면 사용자에게 '다른 대화가 화면을 사용 중이라 대기 중'이라고 " +
+		"알려라. 미리 확인하려면 control_status(읽기 전용)로 현재 제어권 상태를 볼 수 있다.\n" +
 		"Always prefer snapshot/invoke, then win_controls/click_control, then screenshot+click as the last resort."
 }
 

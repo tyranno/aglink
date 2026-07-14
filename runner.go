@@ -59,7 +59,7 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 	}
 
 	home, _ := os.UserHomeDir()
-	stdout, stderr, err := r.exec(ctx, home, args, prompt)
+	stdout, stderr, err := r.exec(ctx, home, args, prompt, "") // router never drives the screen — no owner label
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("manager 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
 	}
@@ -149,7 +149,7 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 			}
 			close(consumerDone)
 		}()
-		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, req.Prompt, func(line string) {
+		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, req.Prompt, req.OwnerLabel, func(line string) {
 			if req.OnProgress != nil {
 				if msg := formatProgressEvent(line); msg != "" {
 					select {
@@ -182,7 +182,7 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 		return parseStreamResult(stdout)
 	}
 
-	stdout, stderr, err := r.exec(ctx, req.WorkDir, args, req.Prompt)
+	stdout, stderr, err := r.exec(ctx, req.WorkDir, args, req.Prompt, req.OwnerLabel)
 	if err != nil {
 		if ctx.Err() != nil {
 			return RunResult{}, ctx.Err() // cancelled or timed out
@@ -196,8 +196,28 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 	return parseRunResult(stdout)
 }
 
+// workerCmdEnv builds the environment for a worker subprocess: the parent env
+// plus the claude OAuth token (when configured) and AGLINK_OWNER_LABEL (when a
+// conversation label was supplied, so the aglink-screen control lease can name
+// which channel holds the screen — see aglink-screen docs/control-ownership.md
+// §5). Returns nil when there is nothing to add, meaning "inherit the parent
+// environment unchanged".
+func workerCmdEnv(oauthToken, ownerLabel string) []string {
+	var extra []string
+	if oauthToken != "" {
+		extra = append(extra, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
+	}
+	if ownerLabel != "" {
+		extra = append(extra, "AGLINK_OWNER_LABEL="+ownerLabel)
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	return append(os.Environ(), extra...)
+}
+
 // exec runs the claude CLI with process-tree cancellation (Windows-aware).
-func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdin string) (stdout, stderr string, err error) {
+func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdin, ownerLabel string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
 	cmd.Dir = dir
 	if stdin != "" {
@@ -206,8 +226,12 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdi
 	// Inject the OAuth token so headless services (systemd, etc.) authenticate without
 	// any external env setup — `config.txt` is the single source of truth. Overrides a
 	// stale/expired ~/.claude/.credentials.json. Empty = use claude's own login.
-	if c := r.cfg(); c != nil && c.ClaudeOauthToken != "" {
-		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.ClaudeOauthToken)
+	oauth := ""
+	if c := r.cfg(); c != nil {
+		oauth = c.ClaudeOauthToken
+	}
+	if env := workerCmdEnv(oauth, ownerLabel); env != nil {
+		cmd.Env = env
 	}
 	// Kill the whole process tree on cancel (claude spawns node child processes on Windows).
 	cmd.Cancel = func() error { return killTree(cmd.Process.Pid) }
@@ -223,14 +247,18 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdi
 // stdout as it arrives (used for stream-json progress relay). Returns the full
 // stdout once the process exits, so the caller can still fall back to parsing it
 // (e.g. on non-zero exit).
-func (r *claudeRunner) execStream(ctx context.Context, dir string, args []string, stdin string, onLine func(line string)) (stdout, stderr string, err error) {
+func (r *claudeRunner) execStream(ctx context.Context, dir string, args []string, stdin, ownerLabel string, onLine func(line string)) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
 	cmd.Dir = dir
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	if c := r.cfg(); c != nil && c.ClaudeOauthToken != "" {
-		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.ClaudeOauthToken)
+	oauth := ""
+	if c := r.cfg(); c != nil {
+		oauth = c.ClaudeOauthToken
+	}
+	if env := workerCmdEnv(oauth, ownerLabel); env != nil {
+		cmd.Env = env
 	}
 	cmd.Cancel = func() error { return killTree(cmd.Process.Pid) }
 

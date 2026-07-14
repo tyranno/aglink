@@ -235,6 +235,13 @@ type RunRequest struct {
 	Resume    bool   // true → --resume, false → --session-id
 	Model     string
 
+	// OwnerLabel identifies the conversation driving this turn. It is exported to
+	// the worker subprocess as AGLINK_OWNER_LABEL so the aglink-screen control
+	// lease can name which channel currently holds the screen in its SCREEN_BUSY /
+	// control_status messages (see aglink-screen docs/control-ownership.md §5).
+	// Empty means "no label" — the lease then identifies the owner by PID only.
+	OwnerLabel string
+
 	// OnProgress, when non-nil, requests realtime NDJSON streaming from the
 	// backend and is called with a short human-readable line for each tool-use
 	// event as it happens (e.g. "🔧 Bash: go test ./..."). Optional — nil means

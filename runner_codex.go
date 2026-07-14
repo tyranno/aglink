@@ -61,7 +61,7 @@ func (r *codexRunner) supportsIgnoreUserConfig() bool {
 	r.ignoreUserConfigOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "")
+		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "", "")
 		r.ignoreUserConfigOK = helpMentionsIgnoreUserConfig(stdout, stderr)
 	})
 	return r.ignoreUserConfigOK
@@ -88,7 +88,7 @@ func (r *codexRunner) supportsEphemeral() bool {
 	r.ephemeralOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "")
+		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "", "")
 		r.ephemeralOK = helpMentionsEphemeral(stdout, stderr)
 	})
 	return r.ephemeralOK
@@ -113,7 +113,7 @@ func (r *codexRunner) supportsOutputLastMessage() bool {
 	r.outputLastMessageOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "")
+		stdout, stderr, _ := r.exec(ctx, "", []string{"exec", "--help"}, "", "")
 		r.outputLastMessageOK = helpMentionsOutputLastMessage(stdout, stderr)
 	})
 	return r.outputLastMessageOK
@@ -134,7 +134,7 @@ func (r *codexRunner) codexVersion() string {
 	r.versionOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		stdout, stderr, _ := r.exec(ctx, "", []string{"--version"}, "")
+		stdout, stderr, _ := r.exec(ctx, "", []string{"--version"}, "", "")
 		r.versionStr = parseCodexVersion(stdout + " " + stderr)
 	})
 	return r.versionStr
@@ -503,7 +503,7 @@ func logCodexEvent(line string) {
 // exec runs codex with real-time JSONL event logging and process-tree cancellation.
 // stdinData, if non-empty, is piped to the process stdin (used for single-turn prompts).
 // Passing prompt via stdin + EOF tells codex to process one turn then exit (avoids REPL loop).
-func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdinData string) (stdout, stderr string, err error) {
+func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdinData, ownerLabel string) (stdout, stderr string, err error) {
 	// On Windows, .cmd/.bat files need cmd.exe /C with special quoting.
 	// Go's automatic arg escaping conflicts with cmd.exe /C quoting rules:
 	//   cmd.exe /C "path with spaces" → strips first & last quote → unquoted path
@@ -535,6 +535,12 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 		cmd = exec.CommandContext(ctx, r.codexPath, args...)
 	}
 	cmd.Dir = dir
+	// Export AGLINK_OWNER_LABEL so the aglink-screen the worker spawns can name
+	// this conversation in its control-lease messages (docs/control-ownership.md
+	// §5). codex has no OAuth token, so oauth is empty here. nil = inherit env.
+	if env := workerCmdEnv("", ownerLabel); env != nil {
+		cmd.Env = env
+	}
 	cmd.Cancel = func() error {
 		log.Printf("[codex] ⚠ cancelling (PID %d) — killing process tree + all codex.exe", cmd.Process.Pid)
 		killErr := killTree(cmd.Process.Pid)
@@ -655,7 +661,7 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 
 	log.Printf("[codex] route: model=%q projects=%d", codexManagerModel(r.cfg()), len(req.Projects))
 	home, _ := os.UserHomeDir()
-	stdout, stderr, err := r.exec(routeCtx, home, args, "")
+	stdout, stderr, err := r.exec(routeCtx, home, args, "", "") // router never drives the screen — no owner label
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("codex manager 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
 	}
@@ -775,7 +781,7 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	log.Printf("[codex] run: model=%q session=%s resume=%v dir=%s prompt=%d chars",
 		model, req.SessionID, req.Resume, req.WorkDir, len(req.Prompt))
 
-	stdout, stderr, err := r.exec(ctx, req.WorkDir, args, "")
+	stdout, stderr, err := r.exec(ctx, req.WorkDir, args, "", req.OwnerLabel)
 
 	// Relay any tool images (screen MCP screenshot/capture_*) to the caller —
 	// codex exec is blocking, so we extract from the finished NDJSON stream (unlike

@@ -789,6 +789,18 @@ func recordCompletedTurn(history []ConversationTurn, pendingIdx int, prompt, res
 	return append(history, completed)
 }
 
+// screenOwnerLabel builds the AGLINK_OWNER_LABEL for a worker turn so the
+// aglink-screen control lease can name which conversation currently holds the
+// screen in its SCREEN_BUSY / control_status messages (see aglink-screen
+// docs/control-ownership.md §5). A nil/empty conversation falls back to the chat
+// id alone.
+func screenOwnerLabel(chatID int64, c *Conversation) string {
+	if c != nil && c.ID != "" {
+		return fmt.Sprintf("chat:%d/conv:%s", chatID, c.ID)
+	}
+	return fmt.Sprintf("chat:%d", chatID)
+}
+
 func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink convSink, workDir string, c *Conversation, s MessageSender, client ClaudeClient, backend string) {
 	// Signal turn completion on every exit path (success, error, timeout, or the
 	// early "project not found" return) so channels with a live "working"
@@ -961,12 +973,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	}
 
 	res, err := client.Run(ctx, RunRequest{
-		Prompt:    prompt,
-		WorkDir:   workDir,
-		SessionID: workConv.SessionID,
-		Resume:    workConv.Started,
-		Model:     workerModel,
-		OnImage:   onImage,
+		Prompt:     prompt,
+		WorkDir:    workDir,
+		SessionID:  workConv.SessionID,
+		Resume:     workConv.Started,
+		Model:      workerModel,
+		OnImage:    onImage,
+		OwnerLabel: screenOwnerLabel(chatID, workConv),
 	})
 	close(heartbeatDone)
 	elapsed := time.Since(startTime)
@@ -1000,12 +1013,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			recoverDone := make(chan struct{})
 			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
 			res, err = client.Run(ctx, RunRequest{
-				Prompt:    recoveryPrompt,
-				WorkDir:   workDir,
-				SessionID: workConv.SessionID,
-				Resume:    false,
-				Model:     workerModel,
-				OnImage:   onImage,
+				Prompt:     recoveryPrompt,
+				WorkDir:    workDir,
+				SessionID:  workConv.SessionID,
+				Resume:     false,
+				Model:      workerModel,
+				OnImage:    onImage,
+				OwnerLabel: screenOwnerLabel(chatID, workConv),
 			})
 			close(recoverDone)
 			elapsed = time.Since(startTime)
@@ -1059,12 +1073,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				}
 			}()
 			res, err = client.Run(ctx, RunRequest{
-				Prompt:    retryPrompt,
-				WorkDir:   workDir,
-				SessionID: workConv.SessionID,
-				Resume:    false,
-				Model:     workerModel,
-				OnImage:   onImage,
+				Prompt:     retryPrompt,
+				WorkDir:    workDir,
+				SessionID:  workConv.SessionID,
+				Resume:     false,
+				Model:      workerModel,
+				OnImage:    onImage,
+				OwnerLabel: screenOwnerLabel(chatID, workConv),
 			})
 			close(retryDone)
 			elapsed = time.Since(startTime)

@@ -9,7 +9,7 @@ import (
 
 func TestScreenSystemPrompt(t *testing.T) {
 	p := screenSystemPrompt()
-	for _, kw := range []string{"snapshot", "UIA", "screenshot", "preset"} {
+	for _, kw := range []string{"snapshot", "UIA", "screenshot", "preset", "SCREEN_BUSY", "control_status"} {
 		if !strings.Contains(p, kw) {
 			t.Errorf("screenSystemPrompt() missing keyword %q", kw)
 		}

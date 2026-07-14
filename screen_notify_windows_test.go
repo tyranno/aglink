@@ -242,3 +242,48 @@ func TestNoticeDurationMS(t *testing.T) {
 		}
 	}
 }
+
+func TestBeginSyntheticInputRenewsLeaseAfterNoticeWait(t *testing.T) {
+	t.Setenv("AGLINK_NOTICE_LEAD_MS", "0")
+
+	nowMS := int64(1_000_000)
+	path := withLeaseSeams(t, nowMS, func(int) bool { return true })
+	leaseNowMS = func() int64 { return nowMS }
+
+	origInstall := installUserInputWatcher
+	origOK := userWatcherOK.Load()
+	origProbe := msSinceRealUserInput
+	origRunner := noticeShow
+	origWaitMax := noticeShownWaitMax
+	t.Cleanup(func() {
+		installUserInputWatcher = origInstall
+		userWatcherOK.Store(origOK)
+		msSinceRealUserInput = origProbe
+		noticeShow = origRunner
+		noticeShownWaitMax = origWaitMax
+		noticeShowing.Store(false)
+		lastSyntheticInput.Store(0)
+	})
+
+	installUserInputWatcher = func() {}
+	userWatcherOK.Store(false)
+	msSinceRealUserInput = func() int64 { return 10_000 }
+	noticeShownWaitMax = time.Second
+	noticeShow = func() {
+		nowMS += leaseDefaultTTLMS + 1
+		signalNoticeShown()
+	}
+	lastSyntheticInput.Store(0)
+	noticeShowing.Store(false)
+
+	if err := beginSyntheticInput(); err != nil {
+		t.Fatalf("beginSyntheticInput returned error: %v", err)
+	}
+	rec, _ := readLeaseFrom(path)
+	if rec == nil {
+		t.Fatal("lease record was not written")
+	}
+	if rec.LastActivity != nowMS {
+		t.Fatalf("last_activity = %d, want renewed value %d after notice wait", rec.LastActivity, nowMS)
+	}
+}

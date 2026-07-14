@@ -302,7 +302,10 @@ func beginSyntheticInput() error {
 		lastSyntheticInput.Store(0) // forces noticeDue() true on the next call below
 	}
 	ensureControlNotice()
-	return nil
+	// The waits above can outlive the lease TTL. Renew immediately before the
+	// caller sends synthetic input; if another session reclaimed the screen while
+	// we were waiting, this returns SCREEN_BUSY and the input is not emitted.
+	return acquireControlLease()
 }
 
 // noticeDue reports whether a control-start notice should be shown: on the very

@@ -36,6 +36,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -57,6 +58,9 @@ type interactiveClaudeRunner struct {
 
 	mu       sync.Mutex
 	sessions map[string]*ptySession // keyed by RunRequest.SessionID
+
+	stopReap  chan struct{}
+	stopReapO sync.Once
 }
 
 // NewInteractiveClaudeRunner builds a ClaudeClient backed by persistent
@@ -65,11 +69,52 @@ type interactiveClaudeRunner struct {
 // main.go's call site compiles unchanged against runner_conpty_stub.go's
 // always-nil non-Windows stand-in.
 func NewInteractiveClaudeRunner(claudePath string, cfgh *ConfigHolder) ClaudeClient {
-	return &interactiveClaudeRunner{
+	r := &interactiveClaudeRunner{
 		claudePath: claudePath,
 		cfgh:       cfgh,
 		router:     NewClaudeRunner(claudePath, cfgh),
 		sessions:   make(map[string]*ptySession),
+		stopReap:   make(chan struct{}),
+	}
+	go r.reapLoop()
+	return r
+}
+
+// reapLoop periodically closes sessions that have had no PTY output (and no
+// turn in flight) for longer than sessionIdleTimeout, so a web conversation
+// left with "!interactive on" and then abandoned does not keep a claude.exe
+// TUI process resident forever. Stops when Close() is called.
+func (r *interactiveClaudeRunner) reapLoop() {
+	ticker := time.NewTicker(sessionIdleReapInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.stopReap:
+			return
+		case <-ticker.C:
+			r.reapIdleSessions()
+		}
+	}
+}
+
+func (r *interactiveClaudeRunner) reapIdleSessions() {
+	r.mu.Lock()
+	var stale []*ptySession
+	for id, sess := range r.sessions {
+		// A session with a turn currently in flight is never reaped, even if
+		// idleFor looks large (a long-running turn can itself go quiet for a
+		// while between output bursts) — only a session nobody has an
+		// outstanding Run() call against is a genuine abandonment candidate.
+		if sess.peekHead() == nil && sess.tail.idleFor() >= sessionIdleTimeout {
+			stale = append(stale, sess)
+			delete(r.sessions, id)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, s := range stale {
+		log.Printf("[interactive] reaping idle session (no activity for %v)", sessionIdleTimeout)
+		s.stop()
 	}
 }
 
@@ -120,9 +165,15 @@ func (r *interactiveClaudeRunner) Run(ctx context.Context, req RunRequest) (RunR
 	}
 }
 
-// Close terminates every live session. Best-effort; errors from individual
-// sessions are ignored since we're tearing everything down regardless.
+// Close stops the idle reaper and terminates every live session. Best-effort;
+// errors from individual sessions are ignored since we're tearing everything
+// down regardless. Safe to call multiple times. Called from main.go's normal
+// shutdown path and from bot.go's !update handoff (see the file doc comment
+// on process lifecycle) so a restart never leaves an orphaned claude.exe TUI
+// process behind.
 func (r *interactiveClaudeRunner) Close() {
+	r.stopReapO.Do(func() { close(r.stopReap) })
+
 	r.mu.Lock()
 	sessions := make([]*ptySession, 0, len(r.sessions))
 	for k, s := range r.sessions {
@@ -174,6 +225,15 @@ var (
 const (
 	bootIdleQuiet   = 1200 * time.Millisecond
 	bootIdleTimeout = 15 * time.Second
+)
+
+// sessionIdleReapInterval/sessionIdleTimeout control reapLoop: sessions are
+// checked every sessionIdleReapInterval and closed once idle (no PTY output,
+// no turn in flight) for at least sessionIdleTimeout. Vars, not consts, so
+// tests can shrink them instead of waiting out the real durations.
+var (
+	sessionIdleReapInterval = 5 * time.Minute
+	sessionIdleTimeout      = 30 * time.Minute
 )
 
 func (r *interactiveClaudeRunner) spawnSession(ctx context.Context, req RunRequest) (*ptySession, error) {

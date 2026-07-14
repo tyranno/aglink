@@ -316,6 +316,7 @@ func (b *Bot) Run() {
 				// terminate the other instance before we start polling again.
 				log.Printf("[bot] Conflict — 다른 인스턴스가 polling 중. 5초 후 재시작.")
 				time.Sleep(5 * time.Second)
+				b.manager.CloseInteractive()
 				os.Exit(1)
 			}
 			log.Printf("[bot] getUpdates 실패: %v — 3초 후 재시도", err)
@@ -1088,6 +1089,7 @@ func (b *Bot) handleUpdate(reply replySender, chatID int64) {
 			_ = os.Remove(readyFile)
 			_ = reply.Send(chatID, "🔄 새 버전 연결됨! 전환합니다...")
 			log.Println("[bot] handoff: new instance ready, exiting")
+			b.manager.CloseInteractive()
 			os.Exit(0)
 		}
 	}

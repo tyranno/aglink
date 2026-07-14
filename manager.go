@@ -74,6 +74,25 @@ func (m *Manager) SetScheduler(s *Scheduler) { m.scheduler = s }
 // normal headless client (see clientFor).
 func (m *Manager) SetInteractiveClient(c ClaudeClient) { m.interactiveClient = c }
 
+// interactiveCloser is the optional lifecycle hook a ClaudeClient may
+// implement to release resources held outside the request/response cycle —
+// only interactiveClaudeRunner does (its resident claude.exe TUI processes),
+// so this is a type assertion rather than an addition to ClaudeClient itself.
+type interactiveCloser interface{ Close() }
+
+// CloseInteractive terminates every resident interactive claude.exe session,
+// if an interactive client was installed. Must be called before any process
+// exit that bypasses normal deferred cleanup (os.Exit in bot.go's !update
+// handoff and Conflict-triggered restart) — otherwise ConPTY-spawned
+// claude.exe processes are reparented as orphans instead of exiting with
+// their parent. Safe to call when no interactive client exists, or more than
+// once.
+func (m *Manager) CloseInteractive() {
+	if c, ok := m.interactiveClient.(interactiveCloser); ok {
+		c.Close()
+	}
+}
+
 // clientFor returns the ClaudeClient a turn should run on: the interactive
 // session when the conversation opted in (interactive=true) and one is
 // actually available for this backend, otherwise the normal per-backend

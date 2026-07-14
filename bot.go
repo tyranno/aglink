@@ -434,10 +434,11 @@ func (b *Bot) dispatch(msg queuedMsg) {
 
 	if l.interactive && l.running {
 		// Steer into the live session: same lane, same global slot it already
-		// holds — no FIFO wait, no new slot consumed.
+		// holds — no FIFO wait, no new slot consumed. queued=false: this msg
+		// never touches l.queue, so finishTurn must not pop l.queue for it.
 		l.inFlight++
 		b.mu.Unlock()
-		go b.runTurn(key, msg)
+		go b.runTurn(key, msg, false)
 		return
 	}
 
@@ -464,7 +465,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 		b.runningLanes++
 		head := l.queue[0]
 		b.mu.Unlock()
-		go b.runTurn(key, head)
+		go b.runTurn(key, head, true)
 		return
 	}
 	// Lane is idle but every global slot is taken by another conversation.
@@ -521,7 +522,7 @@ func (b *Bot) scheduleLocked() {
 		l.running = true
 		l.inFlight = 1
 		b.runningLanes++
-		go b.runTurn(key, l.queue[0])
+		go b.runTurn(key, l.queue[0], true)
 	}
 }
 
@@ -529,13 +530,24 @@ func (b *Bot) scheduleLocked() {
 // conversation has more queued, that lane keeps its global slot and its next
 // turn runs (serialized). Otherwise the lane is freed and a waiting lane is
 // promoted into the slot. Returns the same lane's next message, if any.
+// queued must be true iff the completing turn came from l.queue[0] (started
+// via dispatch's immediate-start branch or scheduleLocked/chaining below) —
+// false for a steered interactive turn (dispatch's interactive-branch,
+// spawned directly without ever touching l.queue). Getting this wrong pops a
+// queue entry that hasn't run yet (queued=true for a steered turn) or leaves
+// a finished head stuck at the front of the queue forever (queued=false for
+// a real queue turn).
 //
-// Interactive lanes take a different path: steered turns never touch l.queue
-// (dispatch spawns them directly — see its interactive branch), so inFlight
-// alone tracks how many concurrent turns are still live, and the lane keeps
-// its slot until the last one resolves. Never returns a "next" turn to chain
-// for an interactive lane — there's nothing queued to chain.
-func (b *Bot) finishTurn(key string, wid int) (queuedMsg, bool) {
+// Interactive lanes can still accumulate a backlog in l.queue: any message
+// that arrives before the lane's first turn actually starts (e.g. still
+// waiting for a free global slot) goes through the ordinary append-to-queue
+// path in dispatch, same as a non-interactive lane — only messages arriving
+// after l.running is already true steer directly and skip l.queue entirely.
+// So finishTurn still has to drain l.queue (chaining l.queue[0] like the
+// non-interactive path) before it is safe to free the lane; it must not
+// unconditionally delete the lane the moment inFlight hits 0, or a queued
+// backlog message is silently dropped with no reply and no error.
+func (b *Bot) finishTurn(key string, wid int, queued bool) (queuedMsg, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.cancels, wid)
@@ -545,8 +557,15 @@ func (b *Bot) finishTurn(key string, wid int) (queuedMsg, bool) {
 	}
 	if l.interactive {
 		l.inFlight--
+		if queued && len(l.queue) > 0 {
+			l.queue = l.queue[1:] // pop the completed FIFO head
+		}
 		if l.inFlight > 0 {
 			return queuedMsg{}, false // other steered turns still in flight
+		}
+		if len(l.queue) > 0 {
+			l.inFlight = 1
+			return l.queue[0], true // same lane, same slot — chain the backlog
 		}
 		l.running = false
 		delete(b.lanes, key)
@@ -569,8 +588,9 @@ func (b *Bot) finishTurn(key string, wid int) (queuedMsg, bool) {
 }
 
 // runTurn runs one turn of a lane, then either continues that lane or lets its
-// slot pass to a waiting conversation.
-func (b *Bot) runTurn(key string, msg queuedMsg) {
+// slot pass to a waiting conversation. queued must match how msg was
+// dispatched — see finishTurn's doc comment.
+func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 	b.mu.Lock()
 	b.workerSeq++
 	wid := b.workerSeq
@@ -587,12 +607,12 @@ func (b *Bot) runTurn(key string, msg queuedMsg) {
 			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
 		}
 		cancel()
-		next, ok := b.finishTurn(key, wid)
+		next, ok := b.finishTurn(key, wid, queued)
 		if ok {
 			if !next.isTask {
 				_ = b.ReplyTo(next.conversation()).Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
 			}
-			go b.runTurn(key, next)
+			go b.runTurn(key, next, true)
 		}
 	}()
 

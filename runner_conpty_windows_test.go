@@ -290,7 +290,7 @@ func TestInteractiveSessionArgsIncludesIsolationAndModel(t *testing.T) {
 }
 
 func TestSessionEnvAddsOwnerLabelOnlyWhenSet(t *testing.T) {
-	withLabel := sessionEnv("web:42")
+	withLabel := sessionEnv("", "web:42")
 	found := false
 	for _, e := range withLabel {
 		if e == "AGLINK_OWNER_LABEL=web:42" {
@@ -301,10 +301,30 @@ func TestSessionEnvAddsOwnerLabelOnlyWhenSet(t *testing.T) {
 		t.Errorf("expected AGLINK_OWNER_LABEL=web:42 in env, got %v", withLabel)
 	}
 
-	withoutLabel := sessionEnv("")
+	withoutLabel := sessionEnv("", "")
 	for _, e := range withoutLabel {
 		if strings.HasPrefix(e, "AGLINK_OWNER_LABEL=") {
 			t.Errorf("did not expect AGLINK_OWNER_LABEL in env when ownerLabel is empty, got %v", withoutLabel)
+		}
+	}
+}
+
+func TestSessionEnvAddsOauthTokenOnlyWhenSet(t *testing.T) {
+	withToken := sessionEnv("secret-token", "")
+	found := false
+	for _, e := range withToken {
+		if e == "CLAUDE_CODE_OAUTH_TOKEN=secret-token" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected CLAUDE_CODE_OAUTH_TOKEN=secret-token in env, got %v", withToken)
+	}
+
+	withoutToken := sessionEnv("", "")
+	for _, e := range withoutToken {
+		if strings.HasPrefix(e, "CLAUDE_CODE_OAUTH_TOKEN=") {
+			t.Errorf("did not expect CLAUDE_CODE_OAUTH_TOKEN in env when oauthToken is empty, got %v", withoutToken)
 		}
 	}
 }

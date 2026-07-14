@@ -101,11 +101,12 @@ func (r *interactiveClaudeRunner) reapIdleSessions() {
 	r.mu.Lock()
 	var stale []*ptySession
 	for id, sess := range r.sessions {
-		// A session with a turn currently in flight is never reaped, even if
-		// idleFor looks large (a long-running turn can itself go quiet for a
-		// while between output bursts) — only a session nobody has an
-		// outstanding Run() call against is a genuine abandonment candidate.
-		if sess.peekHead() == nil && sess.tail.idleFor() >= sessionIdleTimeout {
+		// reapIfIdle makes the "no turn in flight and idle long enough"
+		// check plus the closing-flag mark a single atomic step under the
+		// session's own pendMu, so it can never race a submit() the way two
+		// separate peekHead()/idleFor() reads followed by a plain stop()
+		// could — see reapIfIdle's doc comment.
+		if sess.reapIfIdle(sessionIdleTimeout) {
 			stale = append(stale, sess)
 			delete(r.sessions, id)
 		}
@@ -201,12 +202,30 @@ func (r *interactiveClaudeRunner) sessionFor(ctx context.Context, req RunRequest
 	}
 
 	r.mu.Lock()
+	// Close() closes r.stopReap BEFORE it takes r.mu to snapshot+clear
+	// r.sessions (see Close). So checking stopReap here, inside the same
+	// critical section as the map insert below, is race-free: if it's still
+	// open, Close's snapshot (which also needs r.mu) cannot have run yet, so
+	// it is guaranteed to observe whatever we insert next. spawnSession does
+	// its up-to-bootIdleTimeout boot wait without holding r.mu, so without
+	// this check a spawn that straddles a Close() call could insert into a
+	// runner that already tore everything down — orphaned, since nothing
+	// stops it afterward and the process is about to os.Exit.
+	select {
+	case <-r.stopReap:
+		r.mu.Unlock()
+		sess.stop()
+		return nil, fmt.Errorf("interactive session: runner closed during spawn")
+	default:
+	}
 	// Re-check: two concurrent first-turns for the same never-before-seen
 	// SessionID would otherwise both spawn. Keep whichever won the race and
-	// close the loser's process.
+	// stop the loser's session — stop() (not just cpty.Close()) so its
+	// watch() goroutine and ticker actually exit instead of leaking for the
+	// rest of the process lifetime.
 	if existing, ok := r.sessions[req.SessionID]; ok {
 		r.mu.Unlock()
-		sess.cpty.Close()
+		sess.stop()
 		return existing, nil
 	}
 	r.sessions[req.SessionID] = sess
@@ -240,7 +259,7 @@ func (r *interactiveClaudeRunner) spawnSession(ctx context.Context, req RunReque
 	args := interactiveSessionArgs(r.cfg(), req)
 	cmdLine := buildWindowsCommandLine(r.claudePath, args)
 
-	env := sessionEnv(req.OwnerLabel)
+	env := sessionEnv(r.cfg().ClaudeOauthToken, req.OwnerLabel)
 	cpty, err := conpty.Start(
 		cmdLine,
 		conpty.ConPtyDimensions(120, 40),
@@ -265,10 +284,23 @@ func (r *interactiveClaudeRunner) spawnSession(ctx context.Context, req RunReque
 	// This mirrors the probe's finding that these are one-time-per-workdir.
 	// No turn is pending yet, so this uses the raw idle wait directly rather
 	// than going through the pending-turn queue watch() drives.
-	sess.blockUntilIdle(ctx, bootIdleQuiet, bootIdleTimeout)
+	//
+	// Known gap (not fixed here): onboardingMarkers is not exhaustive and is
+	// only checked once, right after this wait. A dialog it doesn't
+	// recognize, or one that appears after this point, leaves every
+	// subsequent submit() typing into a modal instead of the input box —
+	// each turn then fails only after the full turnIdleTimeout, with no
+	// automatic recovery. Logging the wait outcome at least makes a stuck
+	// boot visible instead of silent; a real fix needs a broader dialog
+	// catalog or a continuous (not boot-only) modal check.
+	if err := sess.blockUntilIdle(ctx, bootIdleQuiet, bootIdleTimeout); err != nil {
+		log.Printf("[interactive] session boot: idle wait: %v", err)
+	}
 	if looksLikeOnboardingPrompt(sess.buf.Since(0)) {
 		sess.cpty.Write([]byte("\r"))
-		sess.blockUntilIdle(ctx, bootIdleQuiet, bootIdleTimeout)
+		if err := sess.blockUntilIdle(ctx, bootIdleQuiet, bootIdleTimeout); err != nil {
+			log.Printf("[interactive] session boot: onboarding-dismiss idle wait: %v", err)
+		}
 	}
 
 	return sess, nil
@@ -292,14 +324,25 @@ func interactiveSessionArgs(cfg *Config, req RunRequest) []string {
 // be spawned with that variable set for the screen-control lease, and
 // blindly inheriting it via os.Environ() would leak the wrong owner label
 // into a freshly spawned interactive session.
-func sessionEnv(ownerLabel string) []string {
+//
+// oauthToken mirrors workerCmdEnv (runner.go), which the normal headless
+// claudeRunner uses: CLAUDE_CODE_OAUTH_TOKEN is how a deployment with no
+// interactive login state (a service account, a fresh machine with a stale
+// or absent ~/.claude/.credentials.json) authenticates. Without it here, an
+// interactive session on such a deployment would boot straight into claude's
+// own login prompt — which looksLikeOnboardingPrompt does not recognize —
+// and hang until turnIdleTimeout on every turn with no clear error.
+func sessionEnv(oauthToken, ownerLabel string) []string {
 	inherited := os.Environ()
-	env := make([]string, 0, len(inherited)+1)
+	env := make([]string, 0, len(inherited)+2)
 	for _, e := range inherited {
 		if strings.HasPrefix(e, "AGLINK_OWNER_LABEL=") {
 			continue
 		}
 		env = append(env, e)
+	}
+	if oauthToken != "" {
+		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
 	}
 	if ownerLabel != "" {
 		env = append(env, "AGLINK_OWNER_LABEL="+ownerLabel)
@@ -324,8 +367,9 @@ type ptySession struct {
 	buf  *safeBuffer // cumulative ANSI-stripped output since session start
 
 	submitMu sync.Mutex // serializes the two PTY writes per submit, so two concurrent submits can't interleave their keystrokes
-	pendMu   sync.Mutex // guards s.pending (append in submit, peek/pop in watch)
+	pendMu   sync.Mutex // guards s.pending and closing (append/read in submit and reapIfIdle, peek/pop in watch)
 	pending  []*pendingTurn
+	closing  bool // set by reapIfIdle under pendMu; submit() checks it under the same lock so the idle-reap decision and a racing submit can never both "win"
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -372,7 +416,34 @@ func (s *ptySession) submit(text string) (*pendingTurn, error) {
 
 	turn := &pendingTurn{startOffset: -1, done: make(chan turnOutcome, 1)}
 	s.pendMu.Lock()
+	if s.closing {
+		// Lost the race against reapIdleSessions (see reapIfIdle): the
+		// session is about to be stopped. Fail fast with a clear error
+		// instead of writing into a PTY that's being torn down — the caller
+		// (interactiveClaudeRunner.Run, via sessionFor on the next call)
+		// spawns a fresh session for this SessionID.
+		s.pendMu.Unlock()
+		return nil, fmt.Errorf("interactive session: closing, retry")
+	}
+	becomesHead := len(s.pending) == 0
 	s.pending = append(s.pending, turn)
+	if becomesHead {
+		// Arm synchronously, still holding pendMu, instead of leaving it for
+		// watch()'s next 50ms poll tick. tick() only arms lazily when it
+		// notices head.startOffset<0 — for the common case (a turn submitted
+		// while the queue is already empty), that lazy arm can land up to
+		// turnPollInterval after Enter was sent, so any output produced by
+		// the CLI within that window (echo, spinner, first tokens) would
+		// arrive before startOffset is set and be silently excluded from the
+		// reply — see the "leading output" finding from the interactive-CLI
+		// review. becomesHead means no earlier turn currently owns the
+		// buffer tail, so arming right now (before any byte of this turn's
+		// own output can possibly exist) is exactly the offset tick() would
+		// have chosen anyway, just without the latency gap. tick() itself is
+		// harmless if it also observes this turn as head afterward: it will
+		// see startOffset>=0 already and skip its own arm branch (see tick).
+		s.arm(turn)
+	}
 	s.pendMu.Unlock()
 
 	if _, err := s.cpty.Write([]byte(text)); err != nil {
@@ -385,6 +456,25 @@ func (s *ptySession) submit(text string) (*pendingTurn, error) {
 		return nil, err
 	}
 	return turn, nil
+}
+
+// reapIfIdle atomically (under pendMu, the same lock submit() checks) decides
+// whether this session has no turn in flight and has been idle for at least
+// timeout, and if so marks it closing so any submit() racing in after this
+// point fails fast instead of writing into a PTY about to be stopped. This
+// must be a single lock-protected decision+mark, not two separate reads
+// (peekHead() then idleFor()) with a plain stop() afterward — that older
+// shape left a window where a submit() landing between the check and stop()
+// would have its turn silently killed with the message already sent into a
+// dying PTY.
+func (s *ptySession) reapIfIdle(timeout time.Duration) bool {
+	s.pendMu.Lock()
+	defer s.pendMu.Unlock()
+	if len(s.pending) != 0 || s.tail.idleFor() < timeout {
+		return false
+	}
+	s.closing = true
+	return true
 }
 
 // watch is the single goroutine (one per session, started at spawn) that

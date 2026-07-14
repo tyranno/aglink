@@ -17,9 +17,14 @@ package main
 //
 // Scope of this file: session lifecycle (spawn/reuse one ConPTY per
 // RunRequest.SessionID, an idle-based turn-completion heuristic, ANSI
-// stripping) so ClaudeClient.Run can be exercised end-to-end. NOT yet wired
-// into manager.go/bot.go — see taskId 2/3 for mid-turn steering and process
-// lifecycle (restart/!update/idle reaping) follow-up work.
+// stripping) plus concurrent mid-turn steering (multiple Run() calls in
+// flight against the same session, each resolved independently in
+// submission order — see ptySession.watch) so ClaudeClient.Run can be
+// exercised end-to-end. NOT yet wired into manager.go/bot.go's dispatch
+// loop (steering only helps if a lane can start a second concurrent Run()
+// instead of queueing behind the first — see taskId 4) or into main.go's
+// backend selection, and process lifecycle (restart/!update/idle reaping)
+// is still open — see taskId 3 (renumbered Phase 3) follow-up work.
 //
 // Known gaps, deliberately left for later phases rather than guessed at
 // here: (a) multi-line prompt submission fidelity inside the TUI input box
@@ -73,7 +78,13 @@ func (r *interactiveClaudeRunner) Route(ctx context.Context, req RouteRequest) (
 
 // Run sends req.Prompt into the persistent session for req.SessionID
 // (spawning it on first use) and returns the cleaned output produced up to
-// the next idle boundary.
+// that message's own idle boundary.
+//
+// Run does not serialize on the session: a second Run() call for the same
+// SessionID while a first is still in flight (steering a message into a
+// live turn) registers as its own pendingTurn and blocks only on that
+// turn's own completion, delivered by sess.watch() in submission order. See
+// pendingTurn / ptySession.watch for the boundary-detection model.
 func (r *interactiveClaudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if req.SessionID == "" {
 		return RunResult{}, fmt.Errorf("interactiveClaudeRunner.Run: empty SessionID")
@@ -84,27 +95,26 @@ func (r *interactiveClaudeRunner) Run(ctx context.Context, req RunRequest) (RunR
 		return RunResult{}, err
 	}
 
-	// Serialize turns within a single session — the TUI is a single input
-	// stream and only one Run() at a time may drive it. Cross-session Run
-	// calls (different lanes) proceed fully in parallel since each has its
-	// own ConPty/goroutine/buffer.
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-
-	startOffset := sess.buf.Len()
-	if err := sess.send(req.Prompt); err != nil {
+	turn, err := sess.submit(req.Prompt)
+	if err != nil {
 		return RunResult{}, fmt.Errorf("conpty write failed: %w", err)
 	}
 	if req.OnProgress != nil {
 		req.OnProgress("💬 sent to interactive session")
 	}
 
-	if err := sess.waitForIdle(ctx, turnIdleQuiet, turnIdleTimeout); err != nil {
-		return RunResult{}, err
+	select {
+	case out := <-turn.done:
+		if out.err != nil {
+			return RunResult{}, out.err
+		}
+		return RunResult{Text: out.text, SessionID: req.SessionID}, nil
+	case <-ctx.Done():
+		// The turn stays in the pending queue and is still resolved (and
+		// discarded) by watch() in order, so turns behind it in the same
+		// session keep correct offsets. Only this caller gives up early.
+		return RunResult{}, ctx.Err()
 	}
-
-	text := cleanTurnOutput(sess.buf.Since(startOffset))
-	return RunResult{Text: text, SessionID: req.SessionID}, nil
 }
 
 // Close terminates every live session. Best-effort; errors from individual
@@ -119,7 +129,7 @@ func (r *interactiveClaudeRunner) Close() {
 	r.mu.Unlock()
 
 	for _, s := range sessions {
-		s.cpty.Close()
+		s.stop()
 	}
 }
 
@@ -150,9 +160,15 @@ func (r *interactiveClaudeRunner) sessionFor(ctx context.Context, req RunRequest
 	return sess, nil
 }
 
-const (
+// turnIdleQuiet/turnIdleTimeout are vars, not consts, so tests can shrink
+// them to keep the watch()-loop tests fast instead of waiting out the real
+// production durations.
+var (
 	turnIdleQuiet   = 1500 * time.Millisecond
 	turnIdleTimeout = 10 * time.Minute
+)
+
+const (
 	bootIdleQuiet   = 1200 * time.Millisecond
 	bootIdleTimeout = 15 * time.Second
 )
@@ -173,19 +189,23 @@ func (r *interactiveClaudeRunner) spawnSession(ctx context.Context, req RunReque
 	}
 
 	sess := &ptySession{
-		cpty: cpty,
-		tail: newIdleTracker(),
-		buf:  &safeBuffer{},
+		cpty:   cpty,
+		tail:   newIdleTracker(),
+		buf:    &safeBuffer{},
+		stopCh: make(chan struct{}),
 	}
 	go sess.readLoop()
+	go sess.watch()
 
 	// First boot: wait for the process to settle, then blind-Enter through a
 	// known onboarding dialog (trust-folder / theme picker) if one appears.
 	// This mirrors the probe's finding that these are one-time-per-workdir.
-	sess.waitForIdle(ctx, bootIdleQuiet, bootIdleTimeout)
+	// No turn is pending yet, so this uses the raw idle wait directly rather
+	// than going through the pending-turn queue watch() drives.
+	sess.blockUntilIdle(ctx, bootIdleQuiet, bootIdleTimeout)
 	if looksLikeOnboardingPrompt(sess.buf.Since(0)) {
 		sess.cpty.Write([]byte("\r"))
-		sess.waitForIdle(ctx, bootIdleQuiet, bootIdleTimeout)
+		sess.blockUntilIdle(ctx, bootIdleQuiet, bootIdleTimeout)
 	}
 
 	return sess, nil
@@ -194,7 +214,7 @@ func (r *interactiveClaudeRunner) spawnSession(ctx context.Context, req RunReque
 // interactiveSessionArgs builds the claude CLI flags for spawning a
 // persistent interactive session. Unlike workerBaseArgs (runner.go), no -p /
 // --output-format / prompt-via-stdin: this is the real TUI, and the prompt is
-// typed into it after spawn via ptySession.send.
+// typed into it after spawn via ptySession.submit.
 func interactiveSessionArgs(cfg *Config, req RunRequest) []string {
 	args := []string{"--dangerously-skip-permissions"}
 	args = append(args, isolationArgs...)
@@ -228,11 +248,40 @@ func sessionEnv(ownerLabel string) []string {
 // serving every turn for one SessionID until the owning
 // interactiveClaudeRunner is closed (process lifecycle beyond that — restart
 // recovery, idle reaping — is Phase 3, not handled here).
+//
+// Multiple Run() calls may be in flight concurrently against the same
+// session (a steered message sent while an earlier one is still being
+// answered): each becomes a pendingTurn appended to the FIFO queue, and
+// watch() is the only goroutine that ever pops it or mutates a turn's own
+// fields — pendMu guards just the slice (append vs. pop/peek), not the
+// turns' contents.
 type ptySession struct {
-	mu   sync.Mutex // serializes Run() turns for this session
 	cpty *conpty.ConPty
 	tail *idleTracker
 	buf  *safeBuffer // cumulative ANSI-stripped output since session start
+
+	submitMu sync.Mutex // serializes the two PTY writes per submit, so two concurrent submits can't interleave their keystrokes
+	pendMu   sync.Mutex // guards s.pending (append in submit, peek/pop in watch)
+	pending  []*pendingTurn
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+}
+
+// pendingTurn is one submitted-but-not-yet-resolved message. startOffset is
+// assigned lazily by watch() the instant the turn becomes the head of the
+// queue (not at submission time) — see watch's doc comment for why that
+// timing, not submission time, is what makes concurrent submits resolve to
+// non-overlapping output.
+type pendingTurn struct {
+	startOffset int // -1 until armed by watch()
+	armedAt     time.Time
+	done        chan turnOutcome // buffered(1): watch() never blocks on a caller that gave up
+}
+
+type turnOutcome struct {
+	text string
+	err  error
 }
 
 func (s *ptySession) readLoop() {
@@ -249,24 +298,156 @@ func (s *ptySession) readLoop() {
 	}
 }
 
-// send types text into the session's input box and submits it with Enter.
-// The brief pause mirrors the probe script and gives the TUI's paste
-// detection time to settle before Enter is sent.
-func (s *ptySession) send(text string) error {
+// submit appends a new pendingTurn to the queue and writes text into the
+// session's input box (submitted with Enter), returning the turn so the
+// caller can await its own resolution independently of any other pending
+// turn. Safe to call concurrently: submitMu only guards the brief
+// append+write, not the wait.
+func (s *ptySession) submit(text string) (*pendingTurn, error) {
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+
+	turn := &pendingTurn{startOffset: -1, done: make(chan turnOutcome, 1)}
+	s.pendMu.Lock()
+	s.pending = append(s.pending, turn)
+	s.pendMu.Unlock()
+
 	if _, err := s.cpty.Write([]byte(text)); err != nil {
-		return err
+		return nil, err
 	}
+	// Brief pause mirrors the probe script and gives the TUI's paste
+	// detection time to settle before Enter is sent.
 	time.Sleep(80 * time.Millisecond)
-	_, err := s.cpty.Write([]byte("\r"))
-	return err
+	if _, err := s.cpty.Write([]byte("\r")); err != nil {
+		return nil, err
+	}
+	return turn, nil
 }
 
-// waitForIdle blocks until no output has arrived for `quiet`, ctx is done, or
-// `timeout` elapses — whichever first. This is the turn-completion heuristic
-// validated by the probe (no full VT100 screen-state parsing needed to
-// detect "done", only to detect known status phrases — see
-// looksLikeOnboardingPrompt).
-func (s *ptySession) waitForIdle(ctx context.Context, quiet, timeout time.Duration) error {
+// watch is the single goroutine (one per session, started at spawn) that
+// resolves pendingTurns in FIFO submission order and is the only place that
+// ever reads or mutates s.pending, so no lock is needed around the queue
+// itself.
+//
+// The Claude Code CLI processes queued messages strictly one at a time with
+// no interleaving, but it is unverified whether it leaves an observable idle
+// gap between finishing one queued message and starting the next (see the
+// "steering reply delivery" design note in project memory) — the CLI could
+// plausibly dequeue the next message the instant the previous one settles,
+// with zero idle in between. armed-at-handoff-time, not
+// armed-at-submission-time, is what makes this safe either way: a turn's
+// startOffset is only set the moment it becomes head (i.e. right as the
+// turn ahead of it resolves), and it is only resolved once *new* output has
+// arrived past that offset and then gone idle again. So a zero-gap dequeue
+// still requires the next turn's own output to actually start flowing
+// before it can be mistaken for "done" with an empty/stolen slice — the
+// risky case (offsets assigned at submission time, while an earlier turn is
+// still mid-response) is what this deliberately avoids.
+func (s *ptySession) watch() {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			s.drainPending(fmt.Errorf("interactive session: closed"))
+			return
+		case <-ticker.C:
+		}
+		s.tick()
+	}
+}
+
+// tick is one watch iteration: arm the head turn if it isn't yet, or check
+// whether it can now be resolved (new output has arrived since it was armed
+// and the session has since gone idle) or has timed out waiting.
+//
+// Resolving immediately arms the next pending turn (if any) in the same
+// call, using the buffer offset at that same instant, instead of waiting
+// for the next 50ms poll tick to notice the head changed. That keeps the
+// "could output land in the gap and be lost" window a function call wide
+// rather than one full poll interval — the case that actually matters if
+// the CLI ever dequeues the next queued message with no observable idle of
+// its own between turns (see watch's doc comment above).
+func (s *ptySession) tick() {
+	head := s.peekHead()
+	if head == nil {
+		return
+	}
+	if head.startOffset < 0 {
+		s.arm(head)
+		return
+	}
+
+	hasNewOutput := s.buf.Len() > head.startOffset
+	idle := s.tail.idleFor() >= turnIdleQuiet
+	switch {
+	case hasNewOutput && idle:
+		text := cleanTurnOutput(s.buf.Since(head.startOffset))
+		s.popHead(turnOutcome{text: text})
+		if next := s.peekHead(); next != nil {
+			s.arm(next)
+		}
+	case time.Since(head.armedAt) > turnIdleTimeout:
+		s.popHead(turnOutcome{err: fmt.Errorf("interactive session: timed out waiting for idle after %v", turnIdleTimeout)})
+	}
+}
+
+func (s *ptySession) arm(turn *pendingTurn) {
+	turn.startOffset = s.buf.Len()
+	turn.armedAt = time.Now()
+}
+
+// peekHead returns the current queue head without removing it, or nil if
+// the queue is empty.
+func (s *ptySession) peekHead() *pendingTurn {
+	s.pendMu.Lock()
+	defer s.pendMu.Unlock()
+	if len(s.pending) == 0 {
+		return nil
+	}
+	return s.pending[0]
+}
+
+// popHead removes the current head and delivers its outcome. Only watch
+// calls this, so the head it pops is always the same turn peekHead just
+// returned.
+func (s *ptySession) popHead(out turnOutcome) {
+	s.pendMu.Lock()
+	if len(s.pending) == 0 {
+		s.pendMu.Unlock()
+		return
+	}
+	head := s.pending[0]
+	s.pending = s.pending[1:]
+	s.pendMu.Unlock()
+	head.done <- out
+}
+
+// drainPending resolves every still-queued turn with err, so no Run() call
+// blocked on turn.done hangs forever past session close (ctx.Done() would
+// eventually save it regardless, but this is immediate).
+func (s *ptySession) drainPending(err error) {
+	s.pendMu.Lock()
+	pending := s.pending
+	s.pending = nil
+	s.pendMu.Unlock()
+	for _, t := range pending {
+		t.done <- turnOutcome{err: err}
+	}
+}
+
+// stop terminates the session: closes the ConPTY (ending readLoop) and
+// signals watch() to drain any still-pending turns and exit.
+func (s *ptySession) stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.cpty.Close()
+}
+
+// blockUntilIdle blocks until no output has arrived for `quiet`, ctx is
+// done, or `timeout` elapses — whichever first. Used only during session
+// boot (see spawnSession), before any pendingTurn exists to hand this
+// detection off to watch().
+func (s *ptySession) blockUntilIdle(ctx context.Context, quiet, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()

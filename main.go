@@ -283,7 +283,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 
 	// Wire scheduler send/dispatch after bot is created
 	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })
-	sched.SetDispatch(func(chatID int64, text string) { bot.dispatchScheduledTask(chatID, text) })
+	sched.SetDispatch(func(chatID int64, text, project string) { bot.dispatchScheduledTask(chatID, text, project) })
 	manager.SetScheduler(sched)
 	go sched.Run()
 

@@ -27,7 +27,7 @@ type Scheduler struct {
 	stopChs     map[string]chan struct{} // Task.ID → cancel channel (one-shot)
 	done        chan struct{}            // closed by Stop() to unblock Run()
 	send        func(chatID int64, text string)
-	dispatch    func(chatID int64, text string)
+	dispatch    func(chatID int64, text, project string)
 }
 
 func NewScheduler(tasksPath string) *Scheduler {
@@ -47,7 +47,7 @@ func (s *Scheduler) SetSend(f func(int64, string)) {
 	s.mu.Unlock()
 }
 
-func (s *Scheduler) SetDispatch(f func(int64, string)) {
+func (s *Scheduler) SetDispatch(f func(int64, string, string)) {
 	s.mu.Lock()
 	s.dispatch = f
 	s.mu.Unlock()
@@ -199,7 +199,7 @@ func (s *Scheduler) fire(taskID string) bool {
 		return false
 	}
 	t.LastFired = time.Now()
-	chatID, prompt, script, isTask := t.ChatID, t.Prompt, t.Script, t.IsTask
+	chatID, project, prompt, script, isTask := t.ChatID, t.Project, t.Prompt, t.Script, t.IsTask
 	_ = s.save()
 	sendFn, dispatchFn := s.send, s.dispatch
 	s.mu.Unlock()
@@ -218,7 +218,7 @@ func (s *Scheduler) fire(taskID string) bool {
 	}
 
 	if isTask && dispatchFn != nil {
-		go dispatchFn(chatID, prompt)
+		go dispatchFn(chatID, prompt, project)
 	} else if sendFn != nil {
 		go sendFn(chatID, "🔔 "+prompt)
 	}
@@ -364,12 +364,14 @@ func (s *Scheduler) Remove(id string) bool {
 	return err == nil
 }
 
-// AddReminder creates a one-shot notification Task.
+// AddReminder creates a one-shot notification Task, pinned to project (the
+// caller's active project at creation time — see Task.Project).
 // Kept for backward compatibility with !remind.
-func (s *Scheduler) AddReminder(chatID int64, msg string, fireAt time.Time) (*Task, error) {
+func (s *Scheduler) AddReminder(chatID int64, project, msg string, fireAt time.Time) (*Task, error) {
 	t := &Task{
 		ID:        newTaskID(),
 		ChatID:    chatID,
+		Project:   project,
 		Prompt:    msg,
 		FireAt:    fireAt,
 		Status:    "pending",
@@ -380,12 +382,14 @@ func (s *Scheduler) AddReminder(chatID int64, msg string, fireAt time.Time) (*Ta
 	return t, s.AddTask(t)
 }
 
-// AddCron creates a recurring Task from a duration.
+// AddCron creates a recurring Task from a duration, pinned to project (the
+// caller's active project at creation time — see Task.Project).
 // Kept for backward compatibility with !cron.
-func (s *Scheduler) AddCron(chatID int64, label string, interval time.Duration, task string, isTask bool) (*Task, error) {
+func (s *Scheduler) AddCron(chatID int64, project, label string, interval time.Duration, task string, isTask bool) (*Task, error) {
 	t := &Task{
 		ID:        newTaskID(),
 		ChatID:    chatID,
+		Project:   project,
 		Prompt:    task,
 		CronExpr:  durationToCron(interval),
 		Status:    "pending",

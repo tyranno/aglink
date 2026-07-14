@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +46,7 @@ func TestIngestAttachment_RefusesPathOutsideAttachmentsDir(t *testing.T) {
 	dispatched := false
 	b := &Bot{
 		cfgh:         NewConfigHolder(&Config{MaxWorkers: 1, TimeoutMinutes: 1}),
-		cancels:      map[int]context.CancelFunc{},
+		cancels:      map[int]cancelEntry{},
 		dispatchHook: func(int64, string) { dispatched = true },
 	}
 	b.out = NewHub()
@@ -83,7 +82,7 @@ func TestIngestAttachment_AcceptsPathInsideAttachmentsDir(t *testing.T) {
 	var gotPrompt string
 	b := &Bot{
 		cfgh:         NewConfigHolder(&Config{MaxWorkers: 1, TimeoutMinutes: 1}),
-		cancels:      map[int]context.CancelFunc{},
+		cancels:      map[int]cancelEntry{},
 		dispatchHook: func(_ int64, text string) { gotPrompt = text },
 	}
 	b.out = NewHub()
@@ -121,7 +120,7 @@ func TestIngestAttachmentTargeted_WebTargetQueuesInWebLane(t *testing.T) {
 
 	b := &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: 0, TimeoutMinutes: 1}),
-		cancels: map[int]context.CancelFunc{},
+		cancels: map[int]cancelEntry{},
 		out:     NewHub(),
 	}
 	tgt := WebTarget("conv-7")

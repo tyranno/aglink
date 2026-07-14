@@ -327,20 +327,47 @@ func TestHandleScheduledTask_UsesActiveProject(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "done"}}
 	m, st, dir := mgrFixture(t, fc)
 
-	// Create conversation and mark active in "myapp".
+	// Create conversation in "myapp" (no store.SetActive — the task carries its
+	// own project, pinned at creation time, independent of the shared pointer).
 	c, _ := st.NewConversation("myapp", "main chat", "")
 	c.Started = true
 	_ = st.UpdateConversation("myapp", c)
-	_ = st.SetActive("myapp", c.ID)
 
 	f := &fakeSender{}
-	m.HandleScheduledTask(context.Background(), 1, "daily check", f)
+	m.HandleScheduledTask(context.Background(), 1, "daily check", "myapp", f)
 
 	if fc.runCalls != 1 {
 		t.Fatalf("Run called %d times, want 1", fc.runCalls)
 	}
 	if fc.lastRun.WorkDir != dir {
-		t.Errorf("WorkDir = %q, want %q (active project dir)", fc.lastRun.WorkDir, dir)
+		t.Errorf("WorkDir = %q, want %q (pinned project dir)", fc.lastRun.WorkDir, dir)
+	}
+}
+
+// TestHandleScheduledTask_IgnoresConcurrentSharedActive guards the fix: a
+// scheduled task must run in the project it was created for even if another
+// channel (e.g. a concurrent web conversation) has since overwritten the
+// shared store.Active pointer to point somewhere else.
+func TestHandleScheduledTask_IgnoresConcurrentSharedActive(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "done"}}
+	m, st, dir := mgrFixture(t, fc)
+
+	c, _ := st.NewConversation("myapp", "main chat", "")
+	c.Started = true
+	_ = st.UpdateConversation("myapp", c)
+
+	// Simulate a concurrent, unrelated web conversation stomping the shared
+	// Active pointer onto a different (nonexistent) project.
+	_ = st.SetActive("other-project", "some-web-conv-id")
+
+	f := &fakeSender{}
+	m.HandleScheduledTask(context.Background(), 1, "daily check", "myapp", f)
+
+	if fc.runCalls != 1 {
+		t.Fatalf("Run called %d times, want 1", fc.runCalls)
+	}
+	if fc.lastRun.WorkDir != dir {
+		t.Errorf("WorkDir = %q, want %q (task's own pinned project, not the clobbered shared Active)", fc.lastRun.WorkDir, dir)
 	}
 }
 
@@ -360,12 +387,12 @@ func TestHandleScheduledTask_AlphabeticalFallback(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// No active project set — Active.Project is "".
+	// No project pinned on the task (project == "").
 
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	m := NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
 	f := &fakeSender{}
-	m.HandleScheduledTask(context.Background(), 1, "morning summary", f)
+	m.HandleScheduledTask(context.Background(), 1, "morning summary", "", f)
 
 	if fc.runCalls != 1 {
 		t.Fatalf("Run called %d times, want 1", fc.runCalls)
@@ -382,7 +409,7 @@ func TestHandleScheduledTask_NoProjects(t *testing.T) {
 	_ = st.Load()
 	m := NewManager(fc, nil, st, NewConfigHolder(&Config{}))
 	f := &fakeSender{}
-	m.HandleScheduledTask(context.Background(), 1, "hello", f)
+	m.HandleScheduledTask(context.Background(), 1, "hello", "", f)
 
 	if fc.runCalls != 0 {
 		t.Errorf("Run should not be called when no projects registered")

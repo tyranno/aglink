@@ -488,7 +488,15 @@ func (m *Manager) buildRouteRequest(text string) RouteRequest {
 		}
 		summaries = append(summaries, ProjectSummary{Name: name, Conversations: convs})
 	}
-	return RouteRequest{Message: text, Projects: summaries, Active: m.store.GetActive()}
+	// Active is a routing hint for the telegram stream only, so it must reflect
+	// telegram's own active project (TelegramActiveProject) — not the shared
+	// store.Active pointer, which a concurrent web conversation can overwrite,
+	// bleeding an unrelated channel's project into telegram's routing decision.
+	active := ActiveRef{Project: m.store.TelegramActiveProject()}
+	if tc := m.store.TelegramConversation(); tc != nil {
+		active.ConversationID = tc.ID
+	}
+	return RouteRequest{Message: text, Projects: summaries, Active: active}
 }
 
 // chainInfo walks to the chain root and returns the base title and next series number.
@@ -1357,6 +1365,11 @@ func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSende
 		return
 	}
 
+	// Pin the task to telegram's own active project now, at creation time — not
+	// the shared store.Active pointer, which a concurrent web conversation can
+	// overwrite before this task ever fires (see HandleScheduledTask).
+	project := m.store.TelegramActiveProject()
+
 	// If LLM returned a 5-field cron expression (or @-shorthand), use AddTask directly.
 	if isCronExpr(dec.ScheduleInterval) {
 		kind := "알림"
@@ -1366,6 +1379,7 @@ func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSende
 		t := &Task{
 			ID:        newTaskID(),
 			ChatID:    chatID,
+			Project:   project,
 			Prompt:    dec.ScheduleTask,
 			CronExpr:  dec.ScheduleInterval,
 			Status:    "pending",
@@ -1389,7 +1403,7 @@ func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSende
 
 	switch dec.ScheduleType {
 	case "remind":
-		r, err := m.scheduler.AddReminder(chatID, dec.ScheduleTask, timeNow().Add(dur))
+		r, err := m.scheduler.AddReminder(chatID, project, dec.ScheduleTask, timeNow().Add(dur))
 		if err != nil {
 			_ = s.Send(chatID, "⚠️ 알림 등록 실패: "+err.Error())
 			return
@@ -1397,7 +1411,7 @@ func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSende
 		// label describes a recurrence ("45분마다"); a reminder fires once.
 		_ = s.Send(chatID, fmt.Sprintf("✅ 알림 등록 [%s] — %s 후\n  %s", r.ID, humanDelay(dur), dec.ScheduleTask))
 	case "cron":
-		c, err := m.scheduler.AddCron(chatID, label, dur, dec.ScheduleTask, dec.ScheduleIsTask)
+		c, err := m.scheduler.AddCron(chatID, project, label, dur, dec.ScheduleTask, dec.ScheduleIsTask)
 		if err != nil {
 			_ = s.Send(chatID, "⚠️ 크론 등록 실패: "+err.Error())
 			return
@@ -1423,7 +1437,10 @@ func isCronExpr(s string) bool {
 // HandleScheduledTask executes a pre-scheduled task in a fresh conversation,
 // bypassing the Manager LLM routing so the task prompt is not misinterpreted
 // as a routing request and never leaks into a prior conversation's context.
-func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text string, s MessageSender) {
+// project is the project pinned on the Task at creation time (see
+// handleSchedule) — not re-resolved from the shared store.Active pointer,
+// which a concurrent, unrelated channel could have overwritten by fire time.
+func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text, project string, s MessageSender) {
 	m.backendMu.RLock()
 	currentBackend := m.backendName
 	currentClient := m.client
@@ -1435,8 +1452,8 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text st
 		return
 	}
 
-	// Prefer the active project; fall back to alphabetically first to ensure determinism.
-	projectName := m.store.GetActive().Project
+	// Prefer the task's pinned project; fall back to alphabetically first to ensure determinism.
+	projectName := project
 	if _, ok := m.store.GetProject(projectName); !ok {
 		names := make([]string, 0, len(projects))
 		for name := range projects {

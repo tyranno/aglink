@@ -35,7 +35,7 @@ func newFireScheduler(t *testing.T) (*Scheduler, *sentBox) {
 func TestScheduler_OneShotFiresOnceAndIsRemoved(t *testing.T) {
 	s, box := newFireScheduler(t)
 
-	if _, err := s.AddReminder(7, "스트레칭", time.Now().Add(30*time.Millisecond)); err != nil {
+	if _, err := s.AddReminder(7, "", "스트레칭", time.Now().Add(30*time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return box.count() == 1 })
@@ -53,7 +53,7 @@ func TestScheduler_OneShotFiresOnceAndIsRemoved(t *testing.T) {
 func TestScheduler_CancelledOneShotNeverFires(t *testing.T) {
 	s, box := newFireScheduler(t)
 
-	task, err := s.AddReminder(7, "취소될 알림", time.Now().Add(60*time.Millisecond))
+	task, err := s.AddReminder(7, "", "취소될 알림", time.Now().Add(60*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestScheduler_CancelledOneShotNeverFires(t *testing.T) {
 func TestScheduler_DependencyNotMetDefers(t *testing.T) {
 	s, box := newFireScheduler(t)
 
-	dep, err := s.AddReminder(7, "선행", time.Now().Add(time.Hour)) // stays pending
+	dep, err := s.AddReminder(7, "", "선행", time.Now().Add(time.Hour)) // stays pending
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestScheduler_FiredOneShotReleasesTimerBookkeeping(t *testing.T) {
 	s, box := newFireScheduler(t)
 
 	for i := 0; i < 5; i++ {
-		if _, err := s.AddReminder(7, "알림", time.Now().Add(20*time.Millisecond)); err != nil {
+		if _, err := s.AddReminder(7, "", "알림", time.Now().Add(20*time.Millisecond)); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -25,6 +25,7 @@ type queuedMsg struct {
 	chatID  int64
 	text    string
 	isTask  bool    // true = scheduled task (bypass manager routing)
+	project string  // isTask only: project pinned on the Task at creation time
 	origin  string  // "telegram"|"web" — channel that sent it (tags new conversations)
 	target  *Target // non-nil for web sends with an explicit target (telegram stream vs web topic)
 	laneKey string
@@ -70,11 +71,11 @@ type Bot struct {
 	// concurrently — it no longer serializes unrelated conversations behind one
 	// global pool, which is what stopped them running in parallel.
 	mu           sync.Mutex
-	workerSeq    int                        // monotonic counter for worker IDs
-	cancels      map[int]context.CancelFunc // workerID → cancel (for !cancel)
-	lanes        map[string]*lane           // laneKey → its queue + running flag
-	readyLanes   []string                   // idle lanes with queued work, waiting for a global slot (FIFO)
-	runningLanes int                        // lanes currently executing a turn (== global concurrency)
+	workerSeq    int                 // monotonic counter for worker IDs
+	cancels      map[int]cancelEntry // workerID → (laneKey, cancel) for !cancel
+	lanes        map[string]*lane    // laneKey → its queue + running flag
+	readyLanes   []string            // idle lanes with queued work, waiting for a global slot (FIFO)
+	runningLanes int                 // lanes currently executing a turn (== global concurrency)
 
 	// cmdMu serializes handleCommand. Telegram's Run() loop already calls
 	// handleCommand from a single goroutine, so this is uncontended there.
@@ -102,7 +103,7 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 		scheduler:   scheduler,
 		rateLimiter: NewRateLimiter(cfgh.Get().RateLimitPerMin),
 		userStore:   userStore,
-		cancels:     make(map[int]context.CancelFunc),
+		cancels:     make(map[int]cancelEntry),
 		lanes:       make(map[string]*lane),
 		out:         hub,
 	}
@@ -113,6 +114,13 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 type lane struct {
 	queue   []queuedMsg
 	running bool
+}
+
+// cancelEntry ties a running worker's cancel func to the lane it belongs to, so
+// !cancel can target only the caller's own conversation instead of every lane.
+type cancelEntry struct {
+	key    string
+	cancel context.CancelFunc
 }
 
 // laneKeyOf maps a message's conversation to its lane key. All non-web targets
@@ -383,9 +391,9 @@ func (b *Bot) dispatchTargeted(chatID int64, text string, tgt *Target) {
 
 // dispatchScheduledTask runs a pre-scheduled task bypassing Manager LLM routing.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
-func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
+func (b *Bot) dispatchScheduledTask(chatID int64, text, project string) {
 	_ = b.Send(chatID, "⏰ 예약 작업 실행 중: "+truncate(text, 60))
-	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true, origin: OriginTelegram, laneKey: "task:" + newTaskID()})
+	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true, project: project, origin: OriginTelegram, laneKey: "task:" + newTaskID()})
 }
 
 // dispatch routes a message into its conversation's lane. A message whose lane
@@ -521,7 +529,7 @@ func (b *Bot) runTurn(key string, msg queuedMsg) {
 		context.Background(),
 		time.Duration(b.cfg().TimeoutMinutes)*time.Minute,
 	)
-	b.cancels[wid] = cancel
+	b.cancels[wid] = cancelEntry{key: key, cancel: cancel}
 	b.mu.Unlock()
 
 	defer func() {
@@ -540,7 +548,7 @@ func (b *Bot) runTurn(key string, msg queuedMsg) {
 	}()
 
 	if msg.isTask {
-		b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, b)
+		b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, msg.project, b)
 	} else if msg.target != nil {
 		b.manager.HandleWebTarget(ctx, msg.chatID, msg.text, *msg.target, b)
 	} else {
@@ -588,7 +596,7 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 	case "!start", "!help":
 		_ = reply.Send(chatID, helpText())
 	case "!cancel":
-		b.cancel(reply, chatID)
+		b.cancel(reply, chatID, laneKeyOf(tgt))
 	case "!status":
 		workers := b.manager.DescribeActiveWorkers()
 		var msg string
@@ -732,11 +740,17 @@ func (b *Bot) handleScreen(reply replySender, chatID int64, fields []string) {
 	_ = reply.Send(chatID, res.Text)
 }
 
-func (b *Bot) cancel(reply replySender, chatID int64) {
+// cancel stops only the running worker(s) in the caller's own lane (key),
+// leaving other conversations' workers untouched. A lane runs its turns
+// strictly one at a time, so at most one entry ever matches, but we scan
+// defensively rather than assume that invariant here.
+func (b *Bot) cancel(reply replySender, chatID int64, key string) {
 	b.mu.Lock()
-	fns := make([]context.CancelFunc, 0, len(b.cancels))
-	for _, fn := range b.cancels {
-		fns = append(fns, fn)
+	fns := make([]context.CancelFunc, 0, 1)
+	for _, e := range b.cancels {
+		if e.key == key {
+			fns = append(fns, e.cancel)
+		}
 	}
 	b.mu.Unlock()
 	if len(fns) == 0 {
@@ -1186,7 +1200,7 @@ func (b *Bot) handleCron(reply replySender, chatID int64, _ string, fields []str
 			return
 		}
 		task := strings.Join(fields[msgStart:], " ")
-		c, err := b.scheduler.AddCron(chatID, label, dur, task, isTask)
+		c, err := b.scheduler.AddCron(chatID, b.store.TelegramActiveProject(), label, dur, task, isTask)
 		if err != nil {
 			_ = reply.Send(chatID, "⚠️ 크론 등록 실패: "+err.Error())
 			return
@@ -1354,7 +1368,7 @@ func (b *Bot) handleTask(reply replySender, chatID int64, _ string, fields []str
 			_ = reply.Send(chatID, "⚠️ 메시지를 입력해주세요.")
 			return
 		}
-		t, err := b.scheduler.AddReminder(chatID, msg, fireAt)
+		t, err := b.scheduler.AddReminder(chatID, b.store.TelegramActiveProject(), msg, fireAt)
 		if err != nil {
 			_ = reply.Send(chatID, "⚠️ 등록 실패: "+err.Error())
 			return

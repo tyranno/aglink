@@ -157,6 +157,7 @@ type RouteDecision struct {
 type Task struct {
 	ID        string    `json:"id"`
 	ChatID    int64     `json:"chatId"`
+	Project   string    `json:"project,omitempty"` // project active at creation time; fixed at fire time, never re-resolved
 	Prompt    string    `json:"prompt"`
 	Script    string    `json:"script,omitempty"`   // bash pre-check; empty = skip
 	CronExpr  string    `json:"cronExpr,omitempty"` // standard 5-field cron

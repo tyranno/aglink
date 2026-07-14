@@ -98,7 +98,7 @@ func TestDispatch_QueuedMessageKeepsItsSlotAfterBeingAnnounced(t *testing.T) {
 	}
 	b := &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: 1, TimeoutMinutes: 1}),
-		cancels: make(map[int]context.CancelFunc),
+		cancels: make(map[int]cancelEntry),
 		lanes:   make(map[string]*lane),
 		store:   st,
 	}

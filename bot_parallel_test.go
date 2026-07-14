@@ -13,7 +13,7 @@ import (
 func newParallelTestBot(maxWorkers int) *Bot {
 	return &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: maxWorkers, TimeoutMinutes: 1}),
-		cancels: make(map[int]context.CancelFunc),
+		cancels: make(map[int]cancelEntry),
 		lanes:   make(map[string]*lane),
 	}
 }
@@ -33,31 +33,34 @@ func TestBot_InitialLaneState(t *testing.T) {
 	}
 }
 
-// TestBot_CancelClearsAll verifies that cancel() logic clears all tracked cancel funcs.
-func TestBot_CancelClearsAll(t *testing.T) {
+// noopReply is a replySender that discards everything; only used to satisfy
+// b.cancel's signature in tests that don't inspect the reply text.
+type noopReply struct{}
+
+func (noopReply) Send(int64, string) error              { return nil }
+func (noopReply) SendPhoto(int64, []byte, string) error { return nil }
+func (noopReply) Typing(int64)                          {}
+func (noopReply) Done(int64)                            {}
+
+// TestBot_CancelOnlyOwnLane verifies !cancel stops only the caller's own lane,
+// leaving other conversations' running workers untouched — regression test for
+// the bug where !cancel tore down every lane in the process.
+func TestBot_CancelOnlyOwnLane(t *testing.T) {
 	b := newParallelTestBot(3)
 
-	cancelled := 0
-	for i := range 3 {
-		b.mu.Lock()
-		b.cancels[i] = func() { cancelled++ }
-		b.mu.Unlock()
-	}
-
-	// Reproduce cancel() logic.
+	cancelledA, cancelledB := 0, 0
 	b.mu.Lock()
-	fns := make([]context.CancelFunc, 0, len(b.cancels))
-	for _, fn := range b.cancels {
-		fns = append(fns, fn)
-	}
+	b.cancels[1] = cancelEntry{key: "telegram", cancel: func() { cancelledA++ }}
+	b.cancels[2] = cancelEntry{key: "web:other-topic", cancel: func() { cancelledB++ }}
 	b.mu.Unlock()
 
-	for _, fn := range fns {
-		fn()
-	}
+	b.cancel(noopReply{}, 0, "telegram")
 
-	if cancelled != 3 {
-		t.Errorf("cancelled = %d, want 3", cancelled)
+	if cancelledA != 1 {
+		t.Errorf("cancelledA = %d, want 1 (own lane must be cancelled)", cancelledA)
+	}
+	if cancelledB != 0 {
+		t.Errorf("cancelledB = %d, want 0 (other lane must survive)", cancelledB)
 	}
 }
 
@@ -113,8 +116,8 @@ func TestDispatchScheduledTask_UsesIndependentLanes(t *testing.T) {
 	b := newParallelTestBot(0)
 	b.out = NewHub()
 
-	b.dispatchScheduledTask(7, "scheduled A")
-	b.dispatchScheduledTask(7, "scheduled B")
+	b.dispatchScheduledTask(7, "scheduled A", "myapp")
+	b.dispatchScheduledTask(7, "scheduled B", "myapp")
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -206,7 +209,7 @@ func TestDispatch_ChattyConversationDoesNotStarveOthers(t *testing.T) {
 
 	b := &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: 2, TimeoutMinutes: 1}),
-		cancels: make(map[int]context.CancelFunc),
+		cancels: make(map[int]cancelEntry),
 		lanes:   make(map[string]*lane),
 		store:   st,
 	}

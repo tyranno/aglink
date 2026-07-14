@@ -47,3 +47,18 @@ func TestHistorySnapshot_WebConv(t *testing.T) {
 		t.Errorf("web history snapshot wrong: %+v", turns)
 	}
 }
+
+func TestNewWebConv_DefaultBackendIsInherited(t *testing.T) {
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	_ = st.Load()
+	if err := st.SetStoredBackend("codex"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := st.NewWebConv("default backend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Backend != "" {
+		t.Fatalf("new web conversations should inherit the default backend with an empty override, got %q", c.Backend)
+	}
+}

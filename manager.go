@@ -309,7 +309,7 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	// conversation at creation time — otherwise a backend switch would report
 	// success but silently keep routing turns through the old backend forever
 	// (tc.Backend, once set, was never updated by SetBackend).
-	backend := m.Backend()
+	backend := m.effectiveBackend(tc.Backend)
 	client := m.clientForBackend(backend)
 	if client == nil {
 		_ = s.Send(chatID, fmt.Sprintf("⚠️ 텔레그램 대화는 %s로 생성됐는데 %s가 설치되어 있지 않습니다. `!backend`로 전환하거나 설치 후 다시 시도해 주세요.",
@@ -361,7 +361,7 @@ func (m *Manager) CompactTelegramConversation(ctx context.Context, chatID int64,
 	}
 	workDir = m.validWorkDirOrHome(workDir)
 
-	backend := m.Backend()
+	backend := m.effectiveBackend(tc.Backend)
 	client := m.clientForBackend(backend)
 	if client == nil {
 		_ = s.Send(chatID, "⚠️ 백엔드를 사용할 수 없습니다.")
@@ -440,7 +440,7 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		}
 		// See handleTelegram: the global stream follows the live active backend,
 		// not the conversation's creation-time stamp.
-		backend := m.Backend()
+		backend := m.effectiveBackend(tc.Backend)
 		client := m.clientForBackend(backend)
 		if client == nil {
 			_ = s.Send(chatID, fmt.Sprintf("⚠️ 텔레그램 대화는 %s로 생성됐는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
@@ -458,10 +458,7 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		_ = s.Send(chatID, "웹 대화를 찾을 수 없습니다. 새 대화를 만들어 주세요.")
 		return
 	}
-	backend := c.Backend
-	if backend == "" {
-		backend = "claude"
-	}
+	backend := m.effectiveBackend(c.Backend)
 	client := m.clientForBackend(backend)
 	if client == nil {
 		_ = s.Send(chatID, fmt.Sprintf("⚠️ 이 대화는 %s로 만들어졌는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))

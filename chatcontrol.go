@@ -33,7 +33,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | get_version | get_aux | get_config | set_config | get_settings | set_settings
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -43,6 +43,7 @@ type controlIn struct {
 	Target  *Target `json:"target,omitempty"`
 	ID      string  `json:"id,omitempty"`
 	Title   string  `json:"title,omitempty"`
+	Backend string  `json:"backend,omitempty"`
 	Body    string  `json:"body,omitempty"` // set_config: edited config.yaml text
 }
 
@@ -233,7 +234,7 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		}
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "upload_attachment":
-		go s.bot.ingestAttachment(chatID, m.Path, m.Caption, origin)
+		go s.bot.ingestAttachmentTargeted(chatID, m.Path, m.Caption, origin, m.Target)
 	// Web-conversation management is browser-only. Addressing the reply to a web
 	// target keeps these confirmations out of Telegram by construction (see
 	// Hub.targets), whatever the requester sent.
@@ -259,6 +260,14 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "web_delete":
 		go s.bot.webDelete(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID)
+	case "set_channel_backend":
+		out := map[string]any{"ok": true}
+		if err := s.bot.setChannelBackend(tgt, m.Backend); err != nil {
+			out["ok"] = false
+			out["error"] = err.Error()
+		}
+		data, _ := json.Marshal(out)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "get_version":
 		backend := ""
 		if s.bot != nil && s.bot.manager != nil {

@@ -109,6 +109,31 @@ func TestDispatchTargeted_DefaultsToTelegramLane(t *testing.T) {
 	}
 }
 
+func TestDispatchScheduledTask_UsesIndependentLanes(t *testing.T) {
+	b := newParallelTestBot(0)
+	b.out = NewHub()
+
+	b.dispatchScheduledTask(7, "scheduled A")
+	b.dispatchScheduledTask(7, "scheduled B")
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.lanes) != 2 {
+		t.Fatalf("scheduled task lanes = %d, want 2 independent lanes: %#v", len(b.lanes), b.lanes)
+	}
+	for key, l := range b.lanes {
+		if !strings.HasPrefix(key, "task:") {
+			t.Errorf("scheduled task lane key = %q, want task:*", key)
+		}
+		if l == nil || len(l.queue) != 1 {
+			t.Fatalf("lane %q queue = %#v, want exactly one queued task", key, l)
+		}
+		if !l.queue[0].isTask {
+			t.Errorf("lane %q queued message isTask = false, want true", key)
+		}
+	}
+}
+
 // TestBot_WorkerSeqMonotonic verifies workerSeq increases with each slot acquisition.
 func TestBot_WorkerSeqMonotonic(t *testing.T) {
 	b := newParallelTestBot(5)

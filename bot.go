@@ -22,11 +22,12 @@ import (
 // Presentation layer; implements MessageSender for relay.
 
 type queuedMsg struct {
-	chatID int64
-	text   string
-	isTask bool    // true = scheduled task (bypass manager routing)
-	origin string  // "telegram"|"web" — channel that sent it (tags new conversations)
-	target *Target // non-nil for web sends with an explicit target (telegram stream vs web topic)
+	chatID  int64
+	text    string
+	isTask  bool    // true = scheduled task (bypass manager routing)
+	origin  string  // "telegram"|"web" — channel that sent it (tags new conversations)
+	target  *Target // non-nil for web sends with an explicit target (telegram stream vs web topic)
+	laneKey string
 }
 
 // conversation is where this message's queue/timeout/cancel notices belong: the
@@ -37,6 +38,13 @@ func (m queuedMsg) conversation() Target {
 		return *m.target
 	}
 	return TelegramTarget()
+}
+
+func (m queuedMsg) queueKey() string {
+	if m.laneKey != "" {
+		return m.laneKey
+	}
+	return laneKeyOf(m.conversation())
 }
 
 // Bot dispatches Telegram messages to concurrent Workers.
@@ -377,7 +385,7 @@ func (b *Bot) dispatchTargeted(chatID int64, text string, tgt *Target) {
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
 	_ = b.Send(chatID, "⏰ 예약 작업 실행 중: "+truncate(text, 60))
-	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true, origin: OriginTelegram})
+	b.dispatch(queuedMsg{chatID: chatID, text: text, isTask: true, origin: OriginTelegram, laneKey: "task:" + newTaskID()})
 }
 
 // dispatch routes a message into its conversation's lane. A message whose lane
@@ -386,7 +394,7 @@ func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
 // the global cap waits for a slot to free. Turns in the same lane never overlap;
 // different lanes run in parallel up to cfg.MaxWorkers at once.
 func (b *Bot) dispatch(msg queuedMsg) {
-	key := laneKeyOf(msg.conversation())
+	key := msg.queueKey()
 	b.mu.Lock()
 	if b.lanes == nil {
 		b.lanes = make(map[string]*lane)
@@ -1692,6 +1700,10 @@ func insideDir(dir, path string) bool {
 // maxAttachments files. A path naming any other directory therefore deleted the
 // user's files there. It was also passed straight to a worker to read.
 func (b *Bot) ingestAttachment(chatID int64, savePath, caption, origin string) {
+	b.ingestAttachmentTargeted(chatID, savePath, caption, origin, nil)
+}
+
+func (b *Bot) ingestAttachmentTargeted(chatID int64, savePath, caption, origin string, tgt *Target) {
 	dir, err := attachmentsDir()
 	if err != nil {
 		log.Printf("[bot] attachment rejected: cannot resolve attachments dir: %v", err)
@@ -1711,6 +1723,10 @@ func (b *Bot) ingestAttachment(chatID int64, savePath, caption, origin string) {
 		prompt = "첨부파일을 분석해줘"
 	}
 	prompt = prompt + "\n\n[첨부파일: " + savePath + "]"
+	if tgt != nil {
+		b.dispatchTargeted(chatID, prompt, tgt)
+		return
+	}
 	b.dispatchText(chatID, prompt, origin)
 }
 
@@ -2202,4 +2218,30 @@ func (b *Bot) webDelete(reply replySender, chatID int64, id string) {
 		return
 	}
 	_ = reply.Send(chatID, "🗑️ 대화가 삭제되었습니다.")
+}
+
+func (b *Bot) setChannelBackend(tgt Target, backend string) error {
+	backend, ok := normalizeChannelBackendOverride(backend)
+	if !ok {
+		return fmt.Errorf("backend must be default, claude, or codex")
+	}
+	if b.manager != nil {
+		if err := b.manager.requireBackendAvailable(backend); err != nil {
+			return err
+		}
+	}
+	if tgt.IsWeb() {
+		if tgt.ID == "" {
+			return fmt.Errorf("web conversation id is required")
+		}
+		c, ok := b.store.GetWebConv(tgt.ID)
+		if !ok {
+			return fmt.Errorf("web conversation not found: %s", tgt.ID)
+		}
+		c.Backend = backend
+		return b.store.UpdateWebConv(c)
+	}
+	c := b.store.TelegramConversation()
+	c.Backend = backend
+	return b.store.UpdateTelegramConversation(c)
 }

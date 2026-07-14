@@ -1,10 +1,9 @@
 ---
 active: true
 iteration: 1
-session_id: b2d3c85f-144e-4188-9da7-a17af7f8dd58
-max_iterations: 15
-completion_promise: "PHASE0 COMPLETE"
-started_at: "2026-06-30T04:33:52Z"
+max_iterations: 1
+completion_promise: "TELECLAUDE_RENAME_RACE_FIXED"
+started_at: "2026-07-13T23:05:00Z"
 ---
 
-Implement Phase 0 plan at docs/superpowers/plans/2026-06-30-config-yaml-hotreload.md task by task with subagents, then run inspection build vet test 5 times
+Read .superpowers/sdd/ralph-fix-2026-07-13-rename-race.md and fix the web-conversation rename race it describes (a fast page reload right after renaming can show the old title, because the rename is fire-and-forget with no server acknowledgment). Follow the fix shape in that doc exactly — synchronous webRename + a real control-API reply in teleclaude/chatcontrol.go, a new awaited HTTP endpoint in aglink-chat/server.go using s.control.request (not send), and app.js awaiting that fetch before refreshing instead of a blind setTimeout. Do NOT touch web_new/web_setdir/web_delete in this pass. Run the green gate first in both repos. Fix, verify per the doc's Regression evidence section, commit in each repo touched. Never push either repo without being asked. Never restart teleclaude.exe's own live process. Never kill a running worker (aglink-screen.exe/aglink-web.exe may be serving a live MCP session elsewhere) — redeploying aglink-chat.exe locally via scripts/redeploy-plugin.ps1 to verify live is fine and expected. Fill in the doc's Result and Deferred sections, then output TELECLAUDE_RENAME_RACE_FIXED.

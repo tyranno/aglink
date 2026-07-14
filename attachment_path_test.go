@@ -105,6 +105,44 @@ func TestIngestAttachment_AcceptsPathInsideAttachmentsDir(t *testing.T) {
 	}
 }
 
+func TestIngestAttachmentTargeted_WebTargetQueuesInWebLane(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := filepath.Join(home, ".teleclaude", "attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "upload.txt")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &Bot{
+		cfgh:    NewConfigHolder(&Config{MaxWorkers: 0, TimeoutMinutes: 1}),
+		cancels: map[int]context.CancelFunc{},
+		out:     NewHub(),
+	}
+	tgt := WebTarget("conv-7")
+
+	b.ingestAttachmentTargeted(1, p, "설명", OriginWeb, &tgt)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	lane := b.lanes["web:conv-7"]
+	if lane == nil || len(lane.queue) != 1 {
+		t.Fatalf("web lane queue length = %v, want one queued upload", lane)
+	}
+	got := lane.queue[0].target
+	if got == nil || got.Kind != "web" || got.ID != "conv-7" {
+		t.Fatalf("queued target = %#v, want web conv-7", got)
+	}
+	if !contains(lane.queue[0].text, "[첨부파일: "+p+"]") {
+		t.Fatalf("queued prompt = %q, want attachment path", lane.queue[0].text)
+	}
+}
+
 // insideDir is the guard. It must reject an escape via "..", a sibling whose
 // name merely starts with the directory's, and the directory itself.
 func TestInsideDir(t *testing.T) {

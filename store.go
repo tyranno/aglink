@@ -384,17 +384,12 @@ func (s *fileStore) TelegramConversation() *Conversation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.data.TelegramConv == nil {
-		backend := s.data.ActiveBackend
-		if backend == "" {
-			backend = "claude"
-		}
 		s.data.TelegramConv = &Conversation{
 			ID:           "telegram",
 			Title:        "텔레그램 대화",
 			SessionID:    newUUID(),
 			Started:      false,
 			LastActivity: time.Now().UTC(),
-			Backend:      backend,
 			Origin:       OriginTelegram,
 		}
 		_ = s.saveLocked()
@@ -461,17 +456,12 @@ func (s *fileStore) NewWebConv(title string) (*Conversation, error) {
 	if title == "" {
 		title = "웹 대화 " + id
 	}
-	backend := s.data.ActiveBackend
-	if backend == "" {
-		backend = "claude"
-	}
 	c := &Conversation{
 		ID:           id,
 		Title:        title,
 		SessionID:    newUUID(),
 		Started:      false,
 		LastActivity: time.Now().UTC(),
-		Backend:      backend,
 		Origin:       OriginWeb,
 	}
 	s.data.WebConvs[id] = c

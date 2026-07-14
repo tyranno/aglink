@@ -94,3 +94,30 @@ func TestHandle_Telegram_RunsOnActiveBackend(t *testing.T) {
 		t.Errorf("active backend should now be codex, got %s", m.Backend())
 	}
 }
+
+func TestHandle_Telegram_ChannelBackendOverrideWinsOverDefault(t *testing.T) {
+	claudeFC := &fakeClaude{runRes: RunResult{Text: "claude ran"}}
+	codexFC := &fakeClaude{runRes: RunResult{Text: "codex ran"}}
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	_ = st.Load()
+	_ = st.AddProject("myapp", t.TempDir())
+	_ = st.SetTelegramActiveProject("myapp")
+	m := NewManager(claudeFC, codexFC, st, NewConfigHolder(&Config{ManagerAlways: true, WorkerModel: "sonnet", CodexModel: "gpt-5.5"}))
+
+	tc := st.TelegramConversation()
+	tc.Backend = "codex"
+	_ = st.UpdateTelegramConversation(tc)
+
+	f := &fakeSender{}
+	m.Handle(context.Background(), 1, "use channel override", OriginTelegram, f)
+
+	if codexFC.runCalls != 1 {
+		t.Fatalf("telegram override should run codex, codex runCalls=%d", codexFC.runCalls)
+	}
+	if claudeFC.runCalls != 0 {
+		t.Fatalf("telegram override should not run claude, claude runCalls=%d", claudeFC.runCalls)
+	}
+	if codexFC.lastRun.Model != "gpt-5.5" {
+		t.Errorf("model=%q, want codex model gpt-5.5", codexFC.lastRun.Model)
+	}
+}

@@ -37,12 +37,15 @@ func TestEnsureControlNoticeSkipsLeadWhenUserAbsent(t *testing.T) {
 
 	origOK := userWatcherOK.Load()
 	origProbe := msSinceRealUserInput
+	origObserved := hasObservedRealInput
 	t.Cleanup(func() {
 		userWatcherOK.Store(origOK)
 		msSinceRealUserInput = origProbe
+		hasObservedRealInput = origObserved
 		lastSyntheticInput.Store(0)
 	})
 	userWatcherOK.Store(true)
+	hasObservedRealInput = func() bool { return true }
 	msSinceRealUserInput = func() int64 { return fakeAbsentUserInputMS }
 	lastSyntheticInput.Store(0) // force noticeDue
 
@@ -150,6 +153,7 @@ func TestBeginSyntheticInputYieldsThenErrorsOnTimeout(t *testing.T) {
 	origInstall := installUserInputWatcher
 	origOK := userWatcherOK.Load()
 	origProbe := msSinceRealUserInput
+	origObserved := hasObservedRealInput
 	origActiveWindow := userActiveWindowMS
 	origPollEvery := userYieldPollEvery
 	origMaxWait := userYieldMaxWait
@@ -157,6 +161,7 @@ func TestBeginSyntheticInputYieldsThenErrorsOnTimeout(t *testing.T) {
 		installUserInputWatcher = origInstall
 		userWatcherOK.Store(origOK)
 		msSinceRealUserInput = origProbe
+		hasObservedRealInput = origObserved
 		userActiveWindowMS = origActiveWindow
 		userYieldPollEvery = origPollEvery
 		userYieldMaxWait = origMaxWait
@@ -164,6 +169,7 @@ func TestBeginSyntheticInputYieldsThenErrorsOnTimeout(t *testing.T) {
 
 	installUserInputWatcher = func() {} // no real hook in tests
 	userWatcherOK.Store(true)
+	hasObservedRealInput = func() bool { return true }
 	msSinceRealUserInput = func() int64 { return 0 } // "user is active" forever
 	userActiveWindowMS = 50
 	userYieldPollEvery = 10 * time.Millisecond
@@ -195,6 +201,7 @@ func TestBeginSyntheticInputResumesAfterUserGoesQuiet(t *testing.T) {
 	origInstall := installUserInputWatcher
 	origOK := userWatcherOK.Load()
 	origProbe := msSinceRealUserInput
+	origObserved := hasObservedRealInput
 	origActiveWindow := userActiveWindowMS
 	origPollEvery := userYieldPollEvery
 	origMaxWait := userYieldMaxWait
@@ -203,6 +210,7 @@ func TestBeginSyntheticInputResumesAfterUserGoesQuiet(t *testing.T) {
 		installUserInputWatcher = origInstall
 		userWatcherOK.Store(origOK)
 		msSinceRealUserInput = origProbe
+		hasObservedRealInput = origObserved
 		userActiveWindowMS = origActiveWindow
 		userYieldPollEvery = origPollEvery
 		userYieldMaxWait = origMaxWait
@@ -212,6 +220,7 @@ func TestBeginSyntheticInputResumesAfterUserGoesQuiet(t *testing.T) {
 
 	installUserInputWatcher = func() {}
 	userWatcherOK.Store(true)
+	hasObservedRealInput = func() bool { return true }
 	userActiveWindowMS = 50
 	userYieldPollEvery = 10 * time.Millisecond
 	userYieldMaxWait = 2 * time.Second
@@ -242,5 +251,83 @@ func TestBeginSyntheticInputResumesAfterUserGoesQuiet(t *testing.T) {
 	}
 	if got := lastSyntheticInput.Load(); got == 0 {
 		t.Error("expected lastSyntheticInput to be re-armed by the final ensureControlNotice call")
+	}
+}
+
+// TestEnsureControlNoticeKeepsLeadWhenInputNeverObserved is the regression
+// test for the live incident found 2026-07-15 ("제어하고 나서 알림이 뜬다" —
+// control happens, then the notice appears). aglink-screen.exe is respawned
+// fresh for every conversation turn, so lastRealUserInputNano is still 0 (no
+// genuine event observed yet) on essentially every session-start call in
+// practice — this must NOT be read as "confirmed nobody's home" and must NOT
+// skip the safety lead. Deliberately exercises the real hasObservedRealInput/
+// msSinceRealUserInput implementations (no stubbing) against a freshly-reset
+// lastRealUserInputNano, mirroring an actual fresh-process cold start.
+func TestEnsureControlNoticeKeepsLeadWhenInputNeverObserved(t *testing.T) {
+	t.Setenv("AGLINK_NOTICE_LEAD_MS", "150")
+	withFastNotice(t)
+
+	origOK := userWatcherOK.Load()
+	origLast := lastRealUserInputNano.Load()
+	t.Cleanup(func() {
+		userWatcherOK.Store(origOK)
+		lastRealUserInputNano.Store(origLast)
+		lastSyntheticInput.Store(0)
+	})
+	userWatcherOK.Store(true)
+	lastRealUserInputNano.Store(0) // never observed, as on a fresh process
+	lastSyntheticInput.Store(0)    // force noticeDue
+
+	start := time.Now()
+	ensureControlNotice()
+	elapsed := time.Since(start)
+
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("ensureControlNotice took only %v with no real input ever observed — the lead delay must apply (fail safe, not fail-unsafe)", elapsed)
+	}
+}
+
+// TestBeginSyntheticInputDoesNotYieldWhenInputNeverObserved covers the other
+// direction of the same incident: a first fix attempt (returning 0 instead of
+// a sentinel for "never observed") made beginSyntheticInput's active-user
+// yield loop read "0ms since last input" as "the user is active RIGHT NOW",
+// forever — since a never-observed timestamp never advances — so every
+// control call yielded for the full userYieldMaxWait and then errored out.
+// With no real input ever observed, there is no evidence of current activity,
+// so beginSyntheticInput must proceed without yielding or erroring.
+func TestBeginSyntheticInputDoesNotYieldWhenInputNeverObserved(t *testing.T) {
+	t.Setenv("AGLINK_NOTICE_LEAD_MS", "0")
+	withFastNotice(t)
+
+	origInstall := installUserInputWatcher
+	origOK := userWatcherOK.Load()
+	origLast := lastRealUserInputNano.Load()
+	origActiveWindow := userActiveWindowMS
+	origMaxWait := userYieldMaxWait
+	t.Cleanup(func() {
+		installUserInputWatcher = origInstall
+		userWatcherOK.Store(origOK)
+		lastRealUserInputNano.Store(origLast)
+		userActiveWindowMS = origActiveWindow
+		userYieldMaxWait = origMaxWait
+		lastSyntheticInput.Store(0)
+	})
+
+	installUserInputWatcher = func() {}
+	userWatcherOK.Store(true)
+	lastRealUserInputNano.Store(0) // never observed
+	userActiveWindowMS = 50
+	userYieldMaxWait = 2 * time.Second
+	lastSyntheticInput.Store(0)
+
+	start := time.Now()
+	err := beginSyntheticInput()
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("expected beginSyntheticInput to proceed without yielding, got error: %v", err)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("beginSyntheticInput took %v — looks like it yielded/blocked on a never-observed timestamp instead of proceeding", elapsed)
 	}
 }

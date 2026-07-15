@@ -170,18 +170,47 @@ func lowLevelKeyboardProc(nCode, wParam uintptr, lParam unsafe.Pointer) uintptr 
 	return r
 }
 
-// neverObservedSentinelMS is returned by msSinceRealUserInput when no genuine
-// user input has ever been observed — effectively "infinitely long ago".
-const neverObservedSentinelMS = int64(1) << 40
+// hasObservedRealInput reports whether the hook has ever seen a genuine
+// (non-synthetic) mouse/keyboard event since this process started. Callers
+// must check this BEFORE trusting msSinceRealUserInput's magnitude — "no data
+// yet" is a distinct state from both "just active" and "long idle", and each
+// caller needs its own fail-safe default for it (see msSinceRealUserInput).
+var hasObservedRealInput = func() bool {
+	return lastRealUserInputNano.Load() != 0
+}
 
 // msSinceRealUserInput returns milliseconds since the last genuine
-// (non-synthetic) mouse/keyboard event, or neverObservedSentinelMS if none
-// has ever been observed. A package var (rather than calling it directly) so
-// tests can fake user presence/absence without a real Win32 hook.
+// (non-synthetic) mouse/keyboard event. Only meaningful when
+// hasObservedRealInput() is true — callers must check that first, since "no
+// data yet" needs a different fail-safe default depending on what the caller
+// is deciding:
+//   - ensureControlNotice's skipLead check wants "no data" to mean "assume
+//     present, don't skip the safety lead" (fail safe = keep the warning).
+//   - beginSyntheticInput's active-user yield loop wants "no data" to mean
+//     "no evidence of current activity, don't block" (fail safe = stay
+//     responsive) — the opposite direction.
+//
+// A single numeric sentinel can't satisfy both: this used to return a huge
+// "infinitely long ago" sentinel for "never observed", which fed straight
+// into the skipLead check (msSinceRealUserInput() >= userAwayThresholdMS) and
+// made it treat "no data yet" as "confirmed nobody's home", skipping the lead
+// delay outright. Since aglink-screen.exe is respawned fresh for every
+// conversation turn (lastRealUserInputNano always starts at 0, and the hook
+// has had no time to observe a real event yet), this meant skipLead was true
+// on essentially every session-start call in practice, not just after
+// genuine 3-minute idles — collapsing the 1s safety lead to a few
+// milliseconds and making the warning toast functionally simultaneous with
+// control. Found live: 2026-07-15, "제어하고 나서 알림이 뜬다" (control
+// happens, then the notice appears) — instrumented timing showed
+// skipLead=true with msSinceReal=1099511627776 (the old sentinel) on a fresh
+// process's very first control call, 4ms after the toast finished fading in.
+// A first attempt at fixing this by returning 0 instead of the sentinel
+// regressed the OTHER caller (the active-user yield loop): "0 < 350ms" reads
+// as "user is active right now" forever (since a never-observed
+// lastRealUserInputNano never updates), so every control call yielded for the
+// full 5s and then errored "user is actively using the mouse/keyboard" — see
+// hasObservedRealInput, which lets each caller pick its own default instead.
 var msSinceRealUserInput = func() int64 {
 	last := lastRealUserInputNano.Load()
-	if last == 0 {
-		return neverObservedSentinelMS
-	}
 	return (time.Now().UnixNano() - last) / int64(time.Millisecond)
 }

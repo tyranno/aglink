@@ -56,9 +56,11 @@ import (
 // briefly BLOCKS before returning, so synthetic input begins only after the user
 // has had a moment to see the warning and pause their own typing/clicking. The
 // overlay is drawn on its own goroutine, so ensureControlNotice first waits for a
-// "shown" handshake (the toast's first paint, bounded by noticeShownWaitMax) and
-// only THEN sleeps noticeLeadMS — otherwise the lead sleep and the ShowWindow/paint
-// would race and input could precede the visible warning. This lead applies ONLY
+// "shown" handshake (the toast's fade-in finishing and becoming fully opaque —
+// NOT merely its first WM_PAINT, which fires while the layered window is still
+// alpha=0/invisible — bounded by noticeShownWaitMax) and only THEN sleeps
+// noticeLeadMS — otherwise the lead sleep and the ShowWindow/paint would race and
+// input could precede the visible warning. This lead applies ONLY
 // on session start (the first input, or after an idle gap) — continuous control
 // within a session proceeds with no delay, so it stays responsive.
 //
@@ -93,7 +95,16 @@ const (
 	// noticeDefaultLeadMS is how long, at session start, we hold off synthetic
 	// input after showing the notice so the user can notice it and pause. Only
 	// applied on session start, never mid-session.
-	noticeDefaultLeadMS = 1000
+	//
+	// Was 1000ms; bumped +500ms per live feedback (2026-07-15) after the
+	// never-observed-sentinel fix made the lead actually apply reliably —
+	// 1000ms of hold-off still read as "control starts right as the notice
+	// appears" to a user watching it live. The full pipeline before this sleep
+	// even starts already spends ~150-250ms getting the toast on screen and
+	// fully faded in (window creation + the 170ms fade envelope, see
+	// noticeFadeInMS), which eats into how much of the 1s felt like a genuine
+	// pause; 1500ms leaves a clearer gap.
+	noticeDefaultLeadMS = 1500
 	noticeMaxLeadMS     = 5000
 
 	// userAwayThresholdMS: only when real (non-synthetic) input is older than
@@ -249,11 +260,15 @@ func ensureControlNotice() {
 		// tool call in a multi-step flow (turns are almost always spaced further
 		// apart than controlNoticeGap) paid the full tax even when nobody was at
 		// the keyboard. Now that the low-level input watcher gives ground truth,
-		// skip it when the watcher is active AND has not seen real input within
-		// userAwayThresholdMS — there is no one to warn. If the watcher failed to
-		// install, userWatcherOK is false and we keep the old unconditional delay
-		// so the safety warning never silently disappears.
-		skipLead := userWatcherOK.Load() && msSinceRealUserInput() >= userAwayThresholdMS
+		// skip it when the watcher is active AND has seen real input, but not
+		// within userAwayThresholdMS — there is no one to warn. Requiring
+		// hasObservedRealInput() is deliberate: with no observation yet (every
+		// fresh per-turn process starts this way), we do not know whether the
+		// user is present, so we fail safe and keep the lead — see
+		// hasObservedRealInput's doc comment for the incident this fixed. If the
+		// watcher failed to install, userWatcherOK is false and we also keep the
+		// old unconditional delay so the safety warning never silently disappears.
+		skipLead := userWatcherOK.Load() && hasObservedRealInput() && msSinceRealUserInput() >= userAwayThresholdMS
 		if lead := noticeLeadMS(); lead > 0 && !skipLead {
 			time.Sleep(time.Duration(lead) * time.Millisecond)
 		}
@@ -286,7 +301,11 @@ func beginSyntheticInput() error {
 
 	yielded := false
 	deadline := time.Now().Add(userYieldMaxWait)
-	for userWatcherOK.Load() && msSinceRealUserInput() < userActiveWindowMS {
+	// hasObservedRealInput() gates both loops below: with no genuine event
+	// observed yet, msSinceRealUserInput() has nothing to measure from, and
+	// must NOT be read as "just active" (see its doc comment) — there is no
+	// evidence of current activity, so don't yield/block on it.
+	for userWatcherOK.Load() && hasObservedRealInput() && msSinceRealUserInput() < userActiveWindowMS {
 		yielded = true
 		if time.Now().After(deadline) {
 			return fmt.Errorf("user is actively using the mouse/keyboard — pausing automation instead of colliding with their input; wait a moment and retry")
@@ -296,7 +315,7 @@ func beginSyntheticInput() error {
 	if yielded {
 		// The user just released control. Wait for a real quiet gap (not just
 		// the instant activity crossed userActiveWindowMS) before resuming.
-		for msSinceRealUserInput() < userResumeQuietMS {
+		for hasObservedRealInput() && msSinceRealUserInput() < userResumeQuietMS {
 			time.Sleep(userYieldPollEvery)
 		}
 		lastSyntheticInput.Store(0) // forces noticeDue() true on the next call below
@@ -331,9 +350,11 @@ var (
 )
 
 // signalNoticeShown closes the current showing's shown-channel exactly once,
-// unblocking ensureControlNotice. Called from the paint handler on the toast's
-// first paint, and as a fallback when the overlay goroutine exits without ever
-// painting (e.g. window creation failed) so the caller is never left blocked.
+// unblocking ensureControlNotice. Called from the timer handler once the toast's
+// fade-in envelope reaches full opacity (NOT its first paint — a layered window
+// created at alpha=0 is invisible at that point), and as a fallback when the
+// overlay goroutine exits without ever painting (e.g. window creation failed) so
+// the caller is never left blocked.
 func signalNoticeShown() {
 	noticeShownOnce.Do(func() {
 		if noticeShownCh != nil {
@@ -349,8 +370,9 @@ var noticeCloseWaitMax = 400 * time.Millisecond
 
 // showNoticeOverlay spawns the overlay on a dedicated goroutine using the given
 // style and total on-screen time. The fade runs asynchronously, but the returned
-// channel is closed the moment the toast is on screen (first paint) — or if it
-// cannot be shown. Returns nil when a notice is already showing (nothing new to
+// channel is closed once the toast has actually faded in to full opacity — not
+// merely painted, which happens while it is still invisible — or if it cannot be
+// shown. Returns nil when a notice is already showing (nothing new to
 // wait on). Shared by the start-warning and completion-ack paths.
 func showNoticeOverlay(style *noticeStyle, totalMS int) <-chan struct{} {
 	if !noticeShowing.CompareAndSwap(false, true) {
@@ -372,7 +394,7 @@ func showNoticeOverlay(style *noticeStyle, totalMS int) <-chan struct{} {
 }
 
 // showControlNotice shows the amber start warning. The returned channel is closed
-// the moment the toast is actually on screen (first paint) — or if it cannot be
+// once the toast has actually faded in and is fully visible — or if it cannot be
 // shown — so the caller can guarantee the warning is visible before synthetic
 // input begins. Returns nil when a notice is already showing.
 func showControlNotice() <-chan struct{} {
@@ -637,8 +659,13 @@ func noticeWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			paintNotice(hdc)
 			procEndPaintN.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		}
-		// The toast is now on screen; release any caller waiting to begin input.
-		signalNoticeShown()
+		// NB: do NOT signalNoticeShown() here. The window is created with alpha=0
+		// (see runNoticeWindow) so the fade-in has something to ramp from — WM_PAINT
+		// fires as soon as ShowWindow maps the window, while it is still fully
+		// transparent. Signaling here told ensureControlNotice the toast was
+		// "shown" before a single visible pixel existed; when the caller's lead
+		// delay was 0 (skipLead, idle-user case) synthetic input then ran while the
+		// toast was still invisible, i.e. no perceptible gap at all. See wmTimer.
 		return 0
 	case wmTimer:
 		elapsed := int((time.Now().UnixNano() - noticeStartNano) / 1e6)
@@ -652,6 +679,12 @@ func noticeWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			return 0
 		}
 		procSetLayeredWinAttrN.Call(hwnd, 0, uintptr(noticeAlpha(elapsed, noticeTotalMS)), lwaAlpha)
+		if elapsed >= noticeFadeInMS {
+			// The toast has finished fading in and is now fully opaque — only now
+			// is it actually visible to the user, so only now do we release any
+			// caller waiting to begin synthetic input.
+			signalNoticeShown()
+		}
 		return 0
 	case wmDestroy:
 		procPostQuitMessageN.Call(0)

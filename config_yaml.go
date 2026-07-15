@@ -70,6 +70,9 @@ type yamlConfig struct {
 		BinaryPath string `yaml:"binary_path"`
 		Token      string `yaml:"token"`
 	} `yaml:"aglink_chat"`
+	InteractiveClaude struct {
+		Enabled bool `yaml:"enabled"`
+	} `yaml:"interactive_claude"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -157,6 +160,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	if c.AglinkChat {
 		c.ChatControl = true
 	}
+	c.InteractiveClaude = y.InteractiveClaude.Enabled
 	return c
 }
 
@@ -202,6 +206,7 @@ func configToYAML(c *Config) *yamlConfig {
 	y.AglinkChat.Addr = c.AglinkChatAddr
 	y.AglinkChat.BinaryPath = c.AglinkChatBinaryPath
 	y.AglinkChat.Token = c.AglinkChatToken
+	y.InteractiveClaude.Enabled = c.InteractiveClaude
 	return y
 }
 

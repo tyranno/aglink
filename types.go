@@ -54,6 +54,13 @@ type Config struct {
 	AglinkChatAddr       string // aglink-chat browser bind address, default 127.0.0.1:1718
 	AglinkChatBinaryPath string // aglink-chat.exe path; empty → srcDir then ../aglink-chat
 	AglinkChatToken      string // aglink-chat browser auth token; empty → auto-generated + persisted
+
+	// InteractiveClaude gates whether a persistent ConPTY-backed claude session
+	// (interactiveClaudeRunner) is constructed at all. Off by default: this is
+	// experimental (B안) and only conversations that opt in via "!interactive on"
+	// ever use it, but the runner itself is only built/spawned when this is true,
+	// so an unset config leaves behavior byte-for-byte identical to before.
+	InteractiveClaude bool
 }
 
 // ConversationTurn represents one exchange in a conversation.
@@ -87,6 +94,7 @@ type Conversation struct {
 	Backend        string             `json:"backend,omitempty"`        // "claude"|"codex"|"" (""=claude)
 	Origin         string             `json:"origin,omitempty"`         // "telegram"|"web"|"" (""=telegram, back-compat)
 	WorkDir        string             `json:"workDir,omitempty"`        // per-conversation working directory; "" → service home
+	Interactive    bool               `json:"interactive,omitempty"`    // true → runs on the persistent ConPTY session (interactiveClaudeRunner) instead of a per-turn headless claude -p; claude backend only, toggled by "!interactive on|off"
 }
 
 // Project is a registered directory holding multiple conversations.

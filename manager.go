@@ -22,6 +22,13 @@ type Manager struct {
 	claudeClient ClaudeClient // preserved for switching back to claude
 	codexClient  ClaudeClient // nil if codex not available
 
+	// interactiveClient is a second ClaudeClient for the "claude" backend backed
+	// by a persistent ConPTY session (interactiveClaudeRunner) instead of a
+	// per-turn headless process. nil unless cfg.InteractiveClaude is on and
+	// claude is installed (see main.go). Only conversations with
+	// Conversation.Interactive=true ever use it — see clientFor/IsInteractive.
+	interactiveClient ClaudeClient
+
 	store        StoreRepo
 	workerStatus WorkerStatusStore
 	scheduler    *Scheduler
@@ -59,6 +66,81 @@ func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *
 func (m *Manager) cfg() *Config { return m.cfgh.Get() }
 
 func (m *Manager) SetScheduler(s *Scheduler) { m.scheduler = s }
+
+// SetInteractiveClient installs the ConPTY-backed interactive runner (see
+// runner_conpty_windows.go). Called once at startup, only when
+// cfg.InteractiveClaude is on and claude is installed; nil otherwise, in
+// which case clientFor/IsInteractive-gated turns silently fall back to the
+// normal headless client (see clientFor).
+func (m *Manager) SetInteractiveClient(c ClaudeClient) { m.interactiveClient = c }
+
+// interactiveCloser is the optional lifecycle hook a ClaudeClient may
+// implement to release resources held outside the request/response cycle —
+// only interactiveClaudeRunner does (its resident claude.exe TUI processes),
+// so this is a type assertion rather than an addition to ClaudeClient itself.
+type interactiveCloser interface{ Close() }
+
+// CloseInteractive terminates every resident interactive claude.exe session,
+// if an interactive client was installed. Must be called before any process
+// exit that bypasses normal deferred cleanup (os.Exit in bot.go's !update
+// handoff and Conflict-triggered restart) — otherwise ConPTY-spawned
+// claude.exe processes are reparented as orphans instead of exiting with
+// their parent. Safe to call when no interactive client exists, or more than
+// once.
+func (m *Manager) CloseInteractive() {
+	if c, ok := m.interactiveClient.(interactiveCloser); ok {
+		c.Close()
+	}
+}
+
+// clientFor returns the ClaudeClient a turn should run on: the interactive
+// session when the conversation opted in (interactive=true) and one is
+// actually available for this backend, otherwise the normal per-backend
+// client. Interactive mode only exists for "claude" — codex has no ConPTY
+// runner.
+func (m *Manager) clientFor(backend string, interactive bool) ClaudeClient {
+	client := m.clientForBackend(backend)
+	if client != nil && interactive && backend == "claude" && m.interactiveClient != nil {
+		return m.interactiveClient
+	}
+	return client
+}
+
+// IsInteractive reports whether tgt's conversation is opted into interactive
+// mode. Bot.dispatch calls this (before a turn starts) to decide whether a
+// message arriving while the lane is already running should steer into the
+// live session concurrently instead of FIFO-queueing behind it — see
+// runTurn/finishTurn in bot.go and pendingTurn in runner_conpty_windows.go.
+// Always false for the telegram stream — see SetInteractive.
+func (m *Manager) IsInteractive(tgt Target) bool {
+	if !tgt.IsWeb() {
+		return false
+	}
+	c, ok := m.store.GetWebConv(tgt.ID)
+	return ok && c.Interactive
+}
+
+// SetInteractive toggles tgt's web conversation into or out of interactive
+// mode ("!interactive on|off"). Refused for the telegram stream: that lane is
+// serialized end-to-end by telegramMu (see handleTelegram/HandleWebTarget), so
+// a steered second message would just queue behind the mutex instead of
+// reaching the live session concurrently — silently defeating the point of
+// steering. Also errors if no interactive runner was constructed
+// (cfg.InteractiveClaude off or claude not installed).
+func (m *Manager) SetInteractive(tgt Target, on bool) error {
+	if !tgt.IsWeb() {
+		return fmt.Errorf("텔레그램 대화에는 interactive 모드를 켤 수 없습니다 — 웹 대화(topic)에서만 지원됩니다")
+	}
+	if on && m.interactiveClient == nil {
+		return fmt.Errorf("interactive 백엔드가 비활성화되어 있습니다 (config.yaml의 interactive_claude.enabled 확인)")
+	}
+	c, ok := m.store.GetWebConv(tgt.ID)
+	if !ok {
+		return fmt.Errorf("대화를 찾을 수 없습니다")
+	}
+	c.Interactive = on
+	return m.store.UpdateWebConv(c)
+}
 
 // SetBackend switches the active AI backend and persists the choice. Returns an
 // error if the requested backend is unavailable.
@@ -309,6 +391,11 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	// conversation at creation time — otherwise a backend switch would report
 	// success but silently keep routing turns through the old backend forever
 	// (tc.Backend, once set, was never updated by SetBackend).
+	// Interactive mode is deliberately not offered on the telegram stream: it is
+	// one lane shared by construction (telegramMu below serializes every turn on
+	// it end-to-end), so a steered second message would just queue behind
+	// telegramMu.Lock() instead of reaching the live session concurrently —
+	// silently defeating the point of steering. See IsInteractive/SetInteractive.
 	backend := m.effectiveBackend(tc.Backend)
 	client := m.clientForBackend(backend)
 	if client == nil {
@@ -459,7 +546,7 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		return
 	}
 	backend := m.effectiveBackend(c.Backend)
-	client := m.clientForBackend(backend)
+	client := m.clientFor(backend, c.Interactive)
 	if client == nil {
 		_ = s.Send(chatID, fmt.Sprintf("⚠️ 이 대화는 %s로 만들어졌는데 %s가 설치되어 있지 않습니다.", strings.ToUpper(backend), strings.ToUpper(backend)))
 		return

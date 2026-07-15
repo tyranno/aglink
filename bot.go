@@ -201,6 +201,9 @@ func (t *telegramChannel) Typing(_ Target, chatID int64) {
 // Done is a no-op for Telegram — it has no persistent "working" indicator to clear.
 func (t *telegramChannel) Done(Target, int64) {}
 
+// Progress is a no-op for Telegram — it has no live progress view to update.
+func (t *telegramChannel) Progress(Target, int64, string) {}
+
 // EchoUser relays user input that originated from the web to Telegram. A Telegram
 // user's own message is already visible in their client, so telegram-origin is a
 // no-op. Bots can't post as the user, so web input arrives as a bot-authored line.
@@ -244,7 +247,8 @@ func (b *Bot) Done(chatID int64) {
 func (b *Bot) For(tgt Target) MessageSender { return boundSender{hub: b.out, tgt: tgt} }
 
 // boundSender is a Target-bound view of the Hub. It satisfies MessageSender and
-// also SendPhoto, which runWorker type-asserts for screen-capture images.
+// also SendPhoto and Progress, which runWorker type-asserts for screen-capture
+// images and live tool-use progress lines respectively.
 type boundSender struct {
 	hub *Hub
 	tgt Target
@@ -256,6 +260,9 @@ func (s boundSender) SendPhoto(chatID int64, png []byte, caption string) error {
 }
 func (s boundSender) Typing(chatID int64) { s.hub.Typing(s.tgt, chatID) }
 func (s boundSender) Done(chatID int64)   { s.hub.Done(s.tgt, chatID) }
+func (s boundSender) Progress(chatID int64, text string) {
+	s.hub.Progress(s.tgt, chatID, text)
+}
 
 // replySender is the output surface a command handler needs to answer the
 // conversation it was invoked from: text, images (!screen), and indicators.

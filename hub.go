@@ -17,6 +17,10 @@ type ChannelSender interface {
 	SendPhoto(tgt Target, chatID int64, png []byte, caption string) error
 	Typing(tgt Target, chatID int64)
 	Done(tgt Target, chatID int64)
+	// Progress delivers a short incremental status line for the turn currently
+	// running on tgt (e.g. "🔧 Bash: go test ./..."), zero or more times between
+	// Typing and Done. Channels with no live progress view (Telegram) no-op.
+	Progress(tgt Target, chatID int64, text string)
 	// EchoUser mirrors a user's *input* text to the OTHER channel so both sides
 	// see what was typed. origin is the channel the text came from; each channel
 	// acts only when it is NOT that origin (Telegram relays web input as a bot
@@ -116,6 +120,12 @@ func (h *Hub) Typing(tgt Target, chatID int64) {
 func (h *Hub) Done(tgt Target, chatID int64) {
 	for _, ch := range h.targets(tgt, chatID) {
 		ch.Done(tgt, chatID)
+	}
+}
+
+func (h *Hub) Progress(tgt Target, chatID int64, text string) {
+	for _, ch := range h.targets(tgt, chatID) {
+		ch.Progress(tgt, chatID, text)
 	}
 }
 

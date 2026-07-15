@@ -15,6 +15,7 @@ func (d *doneCh) Send(Target, int64, string) error              { return nil }
 func (d *doneCh) SendPhoto(Target, int64, []byte, string) error { return nil }
 func (d *doneCh) Typing(Target, int64)                          {}
 func (d *doneCh) Done(tgt Target, _ int64)                      { d.dones = append(d.dones, tgt) }
+func (d *doneCh) Progress(Target, int64, string)                {}
 func (d *doneCh) EchoUser(Target, int64, string, string)        {}
 
 // The web client shows its working indicator the moment it sends anything, and

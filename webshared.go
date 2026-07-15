@@ -88,7 +88,7 @@ func originOK(r *http.Request) bool {
 // but the control-API channel (remoteChatChannel) still serializes these to
 // aglink-chat, which forwards them to real browsers.
 type wsFrame struct {
-	Type    string `json:"type"` // "text" | "image" | "typing" | "done" | "user"
+	Type    string `json:"type"` // "text" | "image" | "typing" | "done" | "user" | "progress"
 	Text    string `json:"text,omitempty"`
 	Caption string `json:"caption,omitempty"`
 	Data    string `json:"data,omitempty"` // base64 PNG for images

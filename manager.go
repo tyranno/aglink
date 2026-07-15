@@ -933,6 +933,18 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		}
 	}
 
+	// Forward live tool-use progress lines (e.g. "🔧 Bash: go test ./...") to
+	// channels with a progress view (aglink-desktop/aglink-chat control API;
+	// Telegram no-ops). Setting OnProgress makes the worker stream NDJSON, same
+	// as OnImage above — both flags share the one streaming code path in
+	// runner.go, so turning this on doesn't cost a second CLI invocation.
+	var onProgress func(msg string)
+	if ps, ok := s.(interface {
+		Progress(int64, string)
+	}); ok {
+		onProgress = func(msg string) { ps.Progress(chatID, msg) }
+	}
+
 	// Check if context is growing too large; auto-create continuation if needed.
 	// Threshold: ~40k tokens (conservative estimate for claude-haiku).
 	const contextThreshold = 40000
@@ -1071,6 +1083,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		Resume:     workConv.Started,
 		Model:      workerModel,
 		OnImage:    onImage,
+		OnProgress: onProgress,
 		OwnerLabel: screenOwnerLabel(chatID, workConv),
 	})
 	close(heartbeatDone)
@@ -1111,6 +1124,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				Resume:     false,
 				Model:      workerModel,
 				OnImage:    onImage,
+				OnProgress: onProgress,
 				OwnerLabel: screenOwnerLabel(chatID, workConv),
 			})
 			close(recoverDone)
@@ -1171,6 +1185,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				Resume:     false,
 				Model:      workerModel,
 				OnImage:    onImage,
+				OnProgress: onProgress,
 				OwnerLabel: screenOwnerLabel(chatID, workConv),
 			})
 			close(retryDone)

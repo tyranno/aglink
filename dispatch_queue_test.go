@@ -29,6 +29,7 @@ func (h *hookCh) Send(_ Target, _ int64, text string) error {
 func (h *hookCh) SendPhoto(Target, int64, []byte, string) error { return nil }
 func (h *hookCh) Typing(Target, int64)                          {}
 func (h *hookCh) Done(Target, int64)                            {}
+func (h *hookCh) Progress(Target, int64, string)                {}
 func (h *hookCh) EchoUser(Target, int64, string, string)        {}
 
 // orderClient records the order turns reach the worker and parks the first one

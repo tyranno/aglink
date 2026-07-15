@@ -36,6 +36,7 @@ func (r *recCh) Typing(_ Target, _ int64) {
 	r.typings++
 }
 func (r *recCh) Done(Target, int64) {}
+func (r *recCh) Progress(Target, int64, string) {}
 func (r *recCh) EchoUser(_ Target, _ int64, text, origin string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

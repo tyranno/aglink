@@ -98,6 +98,9 @@ func (r *remoteChatChannel) Typing(tgt Target, _ int64) {
 func (r *remoteChatChannel) Done(tgt Target, _ int64) {
 	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "done", Target: &tgt}})
 }
+func (r *remoteChatChannel) Progress(tgt Target, _ int64, text string) {
+	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "progress", Text: text, Target: &tgt}})
+}
 func (r *remoteChatChannel) EchoUser(tgt Target, _ int64, text, origin string) {
 	// Same rule as webChannel: mirror Telegram input as a user bubble; web-origin
 	// was already rendered locally by the sending browser.

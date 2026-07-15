@@ -29,9 +29,25 @@
     handlePaneDragOver,
     handlePaneDragLeave,
     handlePaneDrop,
+    progressForTarget,
+    toggleProgressPopup,
   } from "./paneStore.svelte.js";
+  import { renderMarkdown } from "./markdown.js";
 
   let { node } = $props();
+
+  // User bubbles stay verbatim (typed text shown as typed); assistant/system
+  // output is Markdown and gets rendered, matching aglink-chat's web/app.js
+  // add(). Only ever touches textContent inside renderMarkdown — never
+  // innerHTML — so model output can't inject markup into the page.
+  function renderMarkdownInto(el, text) {
+    function update(value) {
+      el.replaceChildren(renderMarkdown(value || ""));
+    }
+    update(text);
+    return { update };
+  }
+  let progressLogEl = $state(null);
 
   function dockOverlayStyle(zone) {
     if (zone === "left") return "top:0; right:50%; bottom:0; left:0;";
@@ -40,6 +56,17 @@
     if (zone === "bottom") return "top:50%; right:0; bottom:0; left:0;";
     return "top:12%; right:12%; bottom:12%; left:12%;";
   }
+
+  $effect(() => {
+    if (node.type !== "leaf" || chat.progressPopupPaneId !== node.paneId || !progressLogEl) return;
+    const p = pane(node.paneId);
+    if (!p) return;
+    void progressForTarget(p.target).length;
+    const el = progressLogEl;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  });
 </script>
 
 {#if node.type === "split"}
@@ -128,18 +155,22 @@
             <div class={`flex w-full ${message.role === "user" ? "justify-end" : message.role === "system" ? "justify-center" : "justify-start"}`}>
               <div class={`min-w-0 max-w-[92%] overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
                 message.role === "user"
-                  ? "bg-blue-600 text-white ring-blue-500/40"
+                  ? "bg-blue-50 text-blue-950 ring-blue-200"
                   : message.role === "system"
                     ? "bg-amber-50 text-amber-900 ring-amber-200"
                     : "bg-white/95 text-slate-900 ring-slate-200"
               }`}>
                 {#if message.text}
-                  <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{message.text}</div>
+                  {#if message.role === "user"}
+                    <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{message.text}</div>
+                  {:else}
+                    <div class="markdown-body text-[13px] leading-4" use:renderMarkdownInto={message.text}></div>
+                  {/if}
                 {/if}
                 {#if message.image}
                   <img
                     alt=""
-                    class={`mt-2 max-h-[420px] w-auto max-w-full rounded-lg border ${message.role === "user" ? "border-white/30" : "border-slate-200"}`}
+                    class="mt-2 max-h-[420px] w-auto max-w-full rounded-lg border border-slate-200"
                     src={`data:image/png;base64,${message.image}`}
                   />
                 {/if}
@@ -150,13 +181,39 @@
       </div>
 
       {#if paneWorking(p.target)}
-        <div class="flex shrink-0 items-center gap-3 border-t border-slate-200/80 bg-white/80 px-4 py-2 text-xs text-slate-600 backdrop-blur">
-          <div class="flex items-center gap-1.5">
-            <span class="h-2 w-2 animate-pulse rounded-full bg-blue-500"></span>
-            <span class="h-2 w-2 animate-pulse rounded-full bg-blue-400 [animation-delay:150ms]"></span>
-            <span class="h-2 w-2 animate-pulse rounded-full bg-blue-300 [animation-delay:300ms]"></span>
+        <div class="relative shrink-0" data-progress-popup>
+          {#if chat.progressPopupPaneId === p.id}
+            <div
+              bind:this={progressLogEl}
+              class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-[12px] leading-5 text-slate-100 shadow-lg"
+            >
+              {#each progressForTarget(p.target) as line, index (index)}
+                <div class="whitespace-pre-wrap break-words">{line}</div>
+              {/each}
+              {#if progressForTarget(p.target).length === 0}
+                <div class="text-slate-400">아직 진행 메시지가 없습니다.</div>
+              {/if}
+            </div>
+          {/if}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="flex cursor-pointer items-center gap-3 border-t border-slate-200/80 bg-white/80 px-4 py-2 text-xs text-slate-600 backdrop-blur hover:bg-slate-100"
+            onclick={() => toggleProgressPopup(p.id)}
+            title="클릭하면 진행 메시지 보기"
+          >
+            <div class="flex items-center gap-1.5">
+              <span class="h-2 w-2 animate-pulse rounded-full bg-blue-500"></span>
+              <span class="h-2 w-2 animate-pulse rounded-full bg-blue-400 [animation-delay:150ms]"></span>
+              <span class="h-2 w-2 animate-pulse rounded-full bg-blue-300 [animation-delay:300ms]"></span>
+            </div>
+            <span>{paneWorkingText(p.target)}</span>
+            {#if progressForTarget(p.target).length > 0}
+              <span class="ml-auto shrink-0 text-[11px] font-semibold text-blue-600">
+                진행 메시지 {progressForTarget(p.target).length}건 {chat.progressPopupPaneId === p.id ? "▾" : "▸"}
+              </span>
+            {/if}
           </div>
-          <span>{paneWorkingText(p.target)}</span>
         </div>
       {/if}
 
@@ -244,3 +301,84 @@
     </main>
   {/if}
 {/if}
+
+<style>
+  :global(.markdown-body) {
+    white-space: normal;
+  }
+  :global(.markdown-body > :first-child) {
+    margin-top: 0;
+  }
+  :global(.markdown-body > :last-child) {
+    margin-bottom: 0;
+  }
+  :global(.markdown-body p) {
+    margin: 0 0 6px;
+  }
+  :global(.markdown-body h1),
+  :global(.markdown-body h2),
+  :global(.markdown-body h3),
+  :global(.markdown-body h4),
+  :global(.markdown-body h5),
+  :global(.markdown-body h6) {
+    margin: 8px 0 4px;
+    line-height: 1.3;
+    font-weight: 600;
+  }
+  :global(.markdown-body h1) {
+    font-size: 15px;
+  }
+  :global(.markdown-body h2) {
+    font-size: 14px;
+  }
+  :global(.markdown-body h3),
+  :global(.markdown-body h4),
+  :global(.markdown-body h5),
+  :global(.markdown-body h6) {
+    font-size: 13px;
+  }
+  :global(.markdown-body ul),
+  :global(.markdown-body ol) {
+    margin: 0 0 6px;
+    padding-left: 20px;
+  }
+  :global(.markdown-body li) {
+    margin: 1px 0;
+  }
+  :global(.markdown-body blockquote) {
+    margin: 0 0 6px;
+    padding: 2px 0 2px 10px;
+    border-left: 3px solid #cbd5e1;
+    color: #475569;
+  }
+  :global(.markdown-body hr) {
+    margin: 8px 0;
+    border: 0;
+    border-top: 1px solid #e2e8f0;
+  }
+  :global(.markdown-body a) {
+    color: #1d4ed8;
+    text-decoration: underline;
+  }
+  :global(.markdown-body code) {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: #f1f5f9;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 12px;
+  }
+  :global(.markdown-body pre) {
+    margin: 0 0 6px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #0f172a;
+    overflow-x: auto;
+  }
+  :global(.markdown-body pre code) {
+    display: block;
+    padding: 0;
+    background: transparent;
+    color: #e2e8f0;
+    white-space: pre;
+  }
+</style>

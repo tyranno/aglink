@@ -35,8 +35,8 @@ export const chat = $state({
   focusedPaneId: "pane-0",
   messagesByKey: new Map(),
   drafts: new Map(),
-  sentHistory: [],
-  historyIndex: 0,
+  sentHistoryByKey: new Map(),
+  historyIndexByKey: new Map(),
   working: new Map(),
   unread: new Set(),
   loadingBuffers: new Map(),
@@ -46,13 +46,158 @@ export const chat = $state({
   draggingConversation: null,
   overPaneId: null,
   overZone: null,
+  webGroups: [],
+  webGroupOf: new Map(),
+  dragOverGroupId: "",
+  progressByKey: new Map(),
+  progressPopupPaneId: null,
 });
+
+export const UNGROUPED_DROP_ZONE = "none";
+const MAX_PROGRESS_LINES = 500;
 
 let attachmentSeq = 0;
 let paneSeq = 1;
 let layoutSeq = 0;
+let webGroupSeq = 1;
 export const paneTextareas = new Map();
 export const paneLogs = new Map();
+
+// ---- web channel groups (client-side only display grouping; teleclaude's
+// own conversation management is untouched) ----
+
+const WEB_GROUPS_STORAGE_KEY = "aglink-desktop:webGroups";
+
+function loadWebGroupsFromStorage() {
+  try {
+    const raw = localStorage.getItem(WEB_GROUPS_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.groups)) chat.webGroups = data.groups;
+    if (Array.isArray(data.assignments)) chat.webGroupOf = new Map(data.assignments);
+    if (typeof data.seq === "number") webGroupSeq = data.seq;
+  } catch {
+    // Corrupt or missing local storage just starts ungrouped.
+  }
+}
+
+function persistWebGroups() {
+  try {
+    localStorage.setItem(
+      WEB_GROUPS_STORAGE_KEY,
+      JSON.stringify({ groups: chat.webGroups, assignments: [...chat.webGroupOf.entries()], seq: webGroupSeq }),
+    );
+  } catch {
+    // Ignore quota/serialization errors; grouping just won't persist.
+  }
+}
+
+loadWebGroupsFromStorage();
+
+export function createWebGroup(name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return null;
+  const id = `wgroup-${webGroupSeq++}`;
+  chat.webGroups = [...chat.webGroups, { id, name: trimmed, collapsed: false }];
+  persistWebGroups();
+  return id;
+}
+
+export function renameWebGroup(groupId, name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return;
+  chat.webGroups = chat.webGroups.map((group) => (group.id === groupId ? { ...group, name: trimmed } : group));
+  persistWebGroups();
+}
+
+export function deleteWebGroup(groupId) {
+  chat.webGroups = chat.webGroups.filter((group) => group.id !== groupId);
+  const next = new Map(chat.webGroupOf);
+  for (const [convId, groupIdOfConv] of next) {
+    if (groupIdOfConv === groupId) next.delete(convId);
+  }
+  chat.webGroupOf = next;
+  persistWebGroups();
+}
+
+export function toggleWebGroupCollapsed(groupId) {
+  chat.webGroups = chat.webGroups.map((group) => (group.id === groupId ? { ...group, collapsed: !group.collapsed } : group));
+  persistWebGroups();
+}
+
+export function setConversationGroup(convId, groupId) {
+  const next = new Map(chat.webGroupOf);
+  if (groupId) next.set(convId, groupId);
+  else next.delete(convId);
+  chat.webGroupOf = next;
+  persistWebGroups();
+}
+
+export function webConvsInGroup(groupId) {
+  return chat.webConvs.filter((conv) => chat.webGroupOf.get(conv.id) === groupId);
+}
+
+export function ungroupedWebConvs() {
+  return chat.webConvs.filter((conv) => !chat.webGroupOf.has(conv.id));
+}
+
+// ---- pane/split layout persistence (which conversations are open, how the
+// panes are arranged and sized) so relaunching the desktop restores it ----
+
+const LAYOUT_STORAGE_KEY = "aglink-desktop:paneLayout";
+
+function serializeLayoutTarget(target) {
+  if (!target) return null;
+  return { kind: target.kind || "telegram", id: target.id || "", project: target.project || "" };
+}
+
+export function persistLayout() {
+  try {
+    localStorage.setItem(
+      LAYOUT_STORAGE_KEY,
+      JSON.stringify({
+        layout: chat.layout,
+        panes: chat.panes.map((p) => ({ id: p.id, target: serializeLayoutTarget(p.target) })),
+        focusedPaneId: chat.focusedPaneId,
+        paneSeq,
+        layoutSeq,
+      }),
+    );
+  } catch {
+    // Ignore quota/serialization errors; layout just won't persist.
+  }
+}
+
+function loadLayoutFromStorage() {
+  try {
+    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (!data || !data.layout || !Array.isArray(data.panes) || data.panes.length === 0) return;
+
+    const restoredPanes = data.panes.map((p) => ({
+      id: p.id,
+      target: p.target ? serializeLayoutTarget(p.target) : null,
+      attachments: [],
+      composerText: "",
+      commandMenuHidden: false,
+      highlightedCommandIndex: 0,
+    }));
+    const leafIds = [...collectLeafIds(data.layout)].sort();
+    const paneIds = restoredPanes.map((p) => p.id).sort();
+    if (JSON.stringify(leafIds) !== JSON.stringify(paneIds)) return;
+
+    chat.panes = restoredPanes;
+    chat.layout = data.layout;
+    chat.focusedPaneId = paneIds.includes(data.focusedPaneId) ? data.focusedPaneId : restoredPanes[0].id;
+    if (typeof data.paneSeq === "number") paneSeq = Math.max(paneSeq, data.paneSeq);
+    if (typeof data.layoutSeq === "number") layoutSeq = Math.max(layoutSeq, data.layoutSeq);
+  } catch {
+    // Corrupt or missing local storage just keeps the default single pane.
+  }
+}
+
+loadLayoutFromStorage();
 
 export function registerPaneTextarea(node, paneId) {
   paneTextareas.set(paneId, node);
@@ -237,6 +382,7 @@ export function addPane() {
   const targetId = chat.focusedPaneId || chat.panes[0]?.id;
   chat.layout = insertAtEdge(chat.layout, targetId, id, "right");
   chat.focusedPaneId = id;
+  persistLayout();
 }
 
 export function closePane(paneId) {
@@ -252,6 +398,7 @@ export function closePane(paneId) {
     const remainingIds = collectLeafIds(chat.layout);
     chat.focusedPaneId = remainingIds[0] || chat.panes[0]?.id || "";
   }
+  persistLayout();
 }
 
 export function startSplitResize(event, splitId, direction, childIndex) {
@@ -294,6 +441,7 @@ export function startSplitResize(event, splitId, direction, childIndex) {
     window.removeEventListener("mouseup", onUp);
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    persistLayout();
   }
 
   window.addEventListener("mousemove", onMove);
@@ -316,7 +464,7 @@ export function handlePaneDragEnd() {
 
 export function handleConversationDragStart(event, target) {
   chat.draggingConversation = normalizeTarget(target);
-  event.dataTransfer.effectAllowed = "copy";
+  event.dataTransfer.effectAllowed = "copyMove";
   event.dataTransfer.setData("text/plain", JSON.stringify(target));
 }
 
@@ -324,6 +472,28 @@ export function handleConversationDragEnd() {
   chat.draggingConversation = null;
   chat.overPaneId = null;
   chat.overZone = null;
+  chat.dragOverGroupId = "";
+}
+
+export function handleGroupDragOver(event, groupId) {
+  if (chat.draggingConversation?.kind !== "web") return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  chat.dragOverGroupId = groupId;
+}
+
+export function handleGroupDragLeave(groupId) {
+  if (chat.dragOverGroupId === groupId) chat.dragOverGroupId = "";
+}
+
+export function handleGroupDrop(event, groupId) {
+  event.preventDefault();
+  event.stopPropagation();
+  const target = chat.draggingConversation;
+  chat.dragOverGroupId = "";
+  chat.draggingConversation = null;
+  if (target?.kind !== "web") return;
+  setConversationGroup(target.id, groupId === UNGROUPED_DROP_ZONE ? null : groupId);
 }
 
 function zoneFromEvent(event, rect) {
@@ -356,12 +526,14 @@ export function dockPane(draggedId, targetId, zone) {
   if (zone === "center") {
     chat.layout = swapLeaves(chat.layout, draggedId, targetId);
     chat.focusedPaneId = draggedId;
+    persistLayout();
     return;
   }
   const afterRemoval = removeLeaf(chat.layout, draggedId);
   if (!afterRemoval.node) return;
   chat.layout = insertAtEdge(afterRemoval.node, targetId, draggedId, zone);
   chat.focusedPaneId = draggedId;
+  persistLayout();
 }
 
 export function dockConversation(target, targetPaneId, zone) {
@@ -454,25 +626,33 @@ export function clearDraft(key) {
   chat.drafts = next;
 }
 
-export function rememberSentHistory(text) {
+export function rememberSentHistory(key, text) {
   const item = String(text || "").trim();
   if (!item) return;
-  const next = chat.sentHistory[chat.sentHistory.length - 1] === item ? [...chat.sentHistory] : [...chat.sentHistory, item];
-  chat.sentHistory = next.slice(-100);
-  chat.historyIndex = chat.sentHistory.length;
+  const current = chat.sentHistoryByKey.get(key) || [];
+  const next = current[current.length - 1] === item ? [...current] : [...current, item];
+  const trimmed = next.slice(-100);
+  chat.sentHistoryByKey = new Map(chat.sentHistoryByKey).set(key, trimmed);
+  chat.historyIndexByKey = new Map(chat.historyIndexByKey).set(key, trimmed.length);
 }
 
 export async function recallSentHistoryForPane(paneId, direction, event) {
+  const p = pane(paneId);
   const el = paneTextareas.get(paneId);
-  if (!el || chat.sentHistory.length === 0) return false;
+  if (!p?.target || !el) return false;
+  const key = targetKey(p.target);
+  const history = chat.sentHistoryByKey.get(key) || [];
+  if (history.length === 0) return false;
   const value = el.value || "";
   const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
   const atEnd = el.selectionStart === value.length && el.selectionEnd === value.length;
   if (direction < 0 && value && !atStart) return false;
   if (direction > 0 && value && !atEnd) return false;
   event.preventDefault();
-  chat.historyIndex = Math.max(0, Math.min(chat.sentHistory.length, chat.historyIndex + direction));
-  const nextValue = chat.historyIndex < chat.sentHistory.length ? chat.sentHistory[chat.historyIndex] : "";
+  const currentIndex = chat.historyIndexByKey.get(key) ?? history.length;
+  const nextIndex = Math.max(0, Math.min(history.length, currentIndex + direction));
+  chat.historyIndexByKey = new Map(chat.historyIndexByKey).set(key, nextIndex);
+  const nextValue = nextIndex < history.length ? history[nextIndex] : "";
   setPaneComposerValue(paneId, nextValue);
   await tick();
   el.setSelectionRange(nextValue.length, nextValue.length);
@@ -607,6 +787,7 @@ export async function selectTargetInPane(paneId, rawTarget) {
   setUnread(key, false);
   chat.statusNote = "";
   applyDraftToPane(paneId, key);
+  persistLayout();
 
   const nextBuffers = new Map(chat.loadingBuffers);
   nextBuffers.set(key, []);
@@ -688,7 +869,8 @@ export async function loadConversations(options = {}) {
         updatePane(item.id, { target: null });
         continue;
       }
-      if (options.forceReloadCurrent || targetKey(nextTarget) !== targetKey(item.target)) {
+      const nextKey = targetKey(nextTarget);
+      if (options.forceReloadCurrent || nextKey !== targetKey(item.target) || !chat.messagesByKey.has(nextKey)) {
         await selectTargetInPane(item.id, nextTarget);
       } else {
         updatePane(item.id, { target: { ...item.target, ...nextTarget } });
@@ -723,7 +905,7 @@ export function clearPaneComposer(paneId) {
 }
 
 export function canSendPane(p) {
-  return !!p.target && !!p.composerText.trim() && chat.connected && !paneWorking(p.target);
+  return !!p.target && !!p.composerText.trim() && chat.connected;
 }
 
 export function commandCandidatesForPane(p) {
@@ -768,7 +950,7 @@ export async function sendFromPane(paneId) {
   if (!canSendPane(p)) return;
   pushMessageToKey(key, { role: "user", text: caption, image: "" });
   startWorking(key);
-  rememberSentHistory(caption);
+  rememberSentHistory(key, caption);
   clearPaneComposer(paneId);
   try {
     await ControlService.SendText(caption, p.target.kind, p.target.id || "");
@@ -930,12 +1112,39 @@ export function handleComposerKeydown(paneId, event) {
   }
 }
 
+export function progressForTarget(target) {
+  if (!target) return [];
+  return chat.progressByKey.get(targetKey(target)) || [];
+}
+
+export function toggleProgressPopup(paneId) {
+  chat.progressPopupPaneId = chat.progressPopupPaneId === paneId ? null : paneId;
+}
+
+export function closeProgressPopup() {
+  chat.progressPopupPaneId = null;
+}
+
+function appendProgress(key, text) {
+  if (!text) return;
+  const current = chat.progressByKey.get(key) || [];
+  const trimmed = current.length >= MAX_PROGRESS_LINES ? current.slice(current.length - MAX_PROGRESS_LINES + 1) : current;
+  chat.progressByKey = new Map(chat.progressByKey).set(key, [...trimmed, text]);
+}
+
 export function handleFrame(frame) {
   const target = frameTarget(frame);
   const key = targetKey(target);
 
-  if (frame.type === "typing") startWorking(key);
+  if (frame.type === "typing") {
+    startWorking(key);
+    chat.progressByKey = new Map(chat.progressByKey).set(key, []);
+  }
   if (frame.type === "done") stopWorking(key);
+  if (frame.type === "progress") {
+    appendProgress(key, frame.text || "");
+    return;
+  }
 
   if (!isTargetVisibleAnywhere(key)) {
     if (frame.type === "text" || frame.type === "image" || frame.type === "user") {

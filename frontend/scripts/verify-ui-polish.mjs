@@ -29,7 +29,9 @@ assert(!header.match(/>\s*설정\s*</), "header settings action must be an icon 
 assert(!header.match(/>\s*연결 \/ aglink\s*</), "header connection action must be an icon button");
 assert(!all.match(/>\s*관리\s*</), "conversation menu trigger must be an icon button");
 assert(!all.match(/>\s*파일 첨부\s*</), "attachment trigger must be an icon button");
-assert(store.includes("sentHistory"), "composer must keep sent message history");
+assert(store.includes("sentHistoryByKey: new Map()") && store.includes("historyIndexByKey: new Map()"), "sent-message recall history must be keyed per conversation, not one shared global list");
+assert(store.includes("export function rememberSentHistory(key, text)"), "remembering a sent message must record it under that conversation's own key");
+assert(!store.includes("let sentHistory") && !store.includes("let historyIndex"), "there must be no single global sentHistory/historyIndex shared across every conversation");
 assert(store.includes('event.key === "ArrowUp"'), "composer must recall sent history on ArrowUp");
 assert(store.includes("function handleComposerPaste"), "composer must handle pasted clipboard images");
 assert(pane.includes("onpaste={(event) => handleComposerPaste(p.id, event)}"), "composer textarea must wire the clipboard paste handler");
@@ -98,6 +100,83 @@ assert(store.includes("export function dockConversation"), "dropping a dragged c
 assert(app.includes("ondragstart={(event) => handleConversationDragStart(event, { kind: \"telegram\" })}"), "the telegram sidebar row must be draggable");
 assert(app.includes("ondragstart={(event) => handleConversationDragStart(event, { kind: \"web\", id: conv.id })}"), "each web conversation sidebar row must be draggable");
 assert(store.includes("chat.draggingConversation") && store.includes("if (draggedConversation)"), "pane drop handling must branch between redocking an existing pane and opening a dragged conversation");
+
+// Sending must not wait for the previous turn on that conversation to finish.
+assert(
+  store.includes("export function canSendPane(p) {\n  return !!p.target && !!p.composerText.trim() && chat.connected;\n}"),
+  "composer must allow sending a follow-up message while the conversation is still working, not gate on paneWorking",
+);
+
+// Web channel groups: client-side organization layer, teleclaude's own
+// conversation management (create/rename/move/delete) is untouched.
+assert(store.includes("webGroups: []") && store.includes("webGroupOf: new Map()"), "chat state must track web channel groups and per-conversation group assignment");
+assert(store.includes("export function createWebGroup"), "must support creating a new web channel group");
+assert(store.includes("export function renameWebGroup"), "must support renaming a web channel group");
+assert(store.includes("export function deleteWebGroup"), "deleting a group must not delete its conversations, only ungroup them");
+assert(store.includes("export function toggleWebGroupCollapsed"), "groups must support expand/collapse");
+assert(store.includes("export function setConversationGroup"), "a conversation must be assignable to a group (or ungrouped)");
+assert(store.includes("localStorage.setItem(\n      WEB_GROUPS_STORAGE_KEY"), "group assignments must persist locally across restarts");
+{
+  const groupFns = store.match(/export function (?:createWebGroup|renameWebGroup|deleteWebGroup|setConversationGroup|toggleWebGroupCollapsed)\([^)]*\) \{[\s\S]*?\n\}/g) || [];
+  assert(groupFns.length === 5, "expected to find all 5 web-group management functions");
+  assert(groupFns.every((fn) => !fn.includes("ControlService")), "web grouping must stay client-side and not call teleclaude's own channel management API");
+}
+assert(app.includes("{#snippet webConvRow(conv)}") && app.includes("{@render webConvRow(conv)}"), "sidebar must render conversation rows through a shared snippet so grouped and ungrouped lists stay in sync");
+assert(app.includes("toggleWebGroupCollapsed(group.id)"), "each group row must be collapsible");
+assert(app.includes("onclick={newWebGroup}"), "sidebar must expose a way to create a new web channel group");
+assert(app.includes("moveConversationToNewGroup") && app.includes("setConversationGroup(conv.id, group.id)"), "a conversation's management menu must support moving it into a group");
+
+// Dragging a conversation into/out of a web channel group directly, not just via the menu.
+assert(store.includes("export function handleGroupDragOver"), "group headers must accept a dragover from a conversation being dragged");
+assert(store.includes("export function handleGroupDrop"), "dropping a conversation on a group must assign it there");
+assert(store.includes("export const UNGROUPED_DROP_ZONE"), "there must be a sentinel drop zone for removing a conversation from its group");
+assert(app.includes("ondrop={(event) => handleGroupDrop(event, group.id)}"), "each group row must be a drop target for conversations");
+assert(app.includes("ondrop={(event) => handleGroupDrop(event, UNGROUPED_DROP_ZONE)}"), "the web channel header must be a drop target for removing a conversation from its group");
+assert(store.includes("if (target?.kind !== \"web\") return"), "only web conversations (not telegram) should be droppable into a group");
+
+// Pane/split layout (which conversations are open, arrangement, sizes) must
+// persist locally so relaunching the desktop restores the same layout.
+assert(store.includes("const LAYOUT_STORAGE_KEY"), "pane layout must have a dedicated local storage key");
+assert(store.includes("export function persistLayout"), "must be able to persist the current pane/layout state");
+assert(store.includes("function loadLayoutFromStorage"), "must be able to restore pane/layout state on startup");
+assert(store.includes("loadLayoutFromStorage();"), "layout must actually be restored at module init, not just definable");
+{
+  const mutators = ["addPane", "closePane", "dockPane", "selectTargetInPane"].map((name) => {
+    const match = store.match(new RegExp(`export (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    return { name, body: match?.[0] || "" };
+  });
+  for (const { name, body } of mutators) {
+    assert(body.includes("persistLayout()"), `${name} must persist the layout after changing it`);
+  }
+}
+assert(store.includes("persistLayout();\n  }\n\n  window.addEventListener"), "finishing a pane resize drag must persist the new sizes");
+assert(store.includes('!chat.messagesByKey.has(nextKey)'), "restored panes must fetch history on first load, not just on target changes");
+
+// Clicking the "작업 진행 중" indicator must open a small anchored popover (not a
+// full-screen modal) with live CLI progress lines, fed by a new "progress"
+// control-API frame type (teleclaude backend).
+assert(store.includes("progressByKey: new Map()") && store.includes("progressPopupPaneId: null"), "chat state must track progress lines per conversation and which pane's popover is open");
+assert(store.includes('if (frame.type === "progress")'), "handleFrame must recognize the new progress frame type");
+assert(store.includes("export function toggleProgressPopup") && store.includes("export function closeProgressPopup"), "must be able to open/close the progress popover");
+assert(store.includes("const MAX_PROGRESS_LINES"), "progress buffer must be capped so a long turn cannot grow it unbounded");
+assert(pane.includes("onclick={() => toggleProgressPopup(p.id)}"), "the working indicator must be clickable to toggle the progress popover");
+assert(pane.includes("data-progress-popup") && pane.includes("absolute bottom-full left-4 right-4 mb-2"), "the progress popover must be anchored just above the working indicator, not a full-screen modal");
+assert(!app.includes("진행 메시지"), "the progress popover must live in PaneNode (anchored per-pane), not as a centered App-level modal");
+assert(app.includes('if (!target.closest("[data-progress-popup]")) closeProgressPopup();'), "clicking outside the popover must close it");
+assert(app.includes("if (chat.progressPopupPaneId) closeProgressPopup();"), "Escape must close the progress popover like the other modals");
+
+// Saving structured settings (e.g. changing the default backend) must refresh
+// the header badge instead of leaving it stuck at whatever backend was active
+// when the app launched.
+assert(app.includes("void loadVersionInfo();\n        }, 500);"), "saving settings must refetch version/backend info shortly after so the header badge updates without a restart");
+
+// Assistant/system replies are Markdown (headings, **bold**, lists, code
+// fences, links) and must render as such instead of showing literal syntax;
+// user bubbles stay verbatim.
+assert(pane.includes('import { renderMarkdown } from "./markdown.js"'), "PaneNode must use the shared markdown renderer for message bubbles");
+assert(pane.includes("function renderMarkdownInto(") && pane.includes("use:renderMarkdownInto={message.text}"), "non-user message bubbles must be rendered through the markdown action");
+assert(pane.match(/\{#if message\.role === "user"\}[\s\S]{0,200}whitespace-pre-wrap break-words text-\[13px\] leading-4[\s\S]{0,200}\{:else\}[\s\S]{0,200}markdown-body/), "user messages must stay plain text while other roles get markdown");
+assert(pane.includes(":global(.markdown-body pre)") && pane.includes(":global(.markdown-body code)"), "markdown code blocks/inline code must have their own styling, not fall back to plain paragraph text");
 
 if (process.exitCode) {
   process.exit(process.exitCode);

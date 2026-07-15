@@ -24,6 +24,18 @@
     updatePane,
     handleConversationDragStart,
     handleConversationDragEnd,
+    createWebGroup,
+    renameWebGroup,
+    deleteWebGroup,
+    toggleWebGroupCollapsed,
+    setConversationGroup,
+    webConvsInGroup,
+    ungroupedWebConvs,
+    handleGroupDragOver,
+    handleGroupDragLeave,
+    handleGroupDrop,
+    UNGROUPED_DROP_ZONE,
+    closeProgressPopup,
   } from "./paneStore.svelte.js";
 
   let view = $state("chat");
@@ -154,6 +166,12 @@
       if (reply.ok) {
         settingsMsg = "저장했습니다. 필요한 경우 서비스 재시작이 필요할 수 있습니다.";
         await loadSettingsSchema();
+        // teleclaude's config hot-reload is debounced (~300ms) before it takes
+        // effect, so refetch the version/backend info shortly after saving —
+        // otherwise the header badge keeps showing the backend from launch.
+        window.setTimeout(() => {
+          void loadVersionInfo();
+        }, 500);
       } else {
         settingsMsg = `저장 실패: ${reply.error || "알 수 없는 오류"}`;
       }
@@ -259,6 +277,7 @@
       setUnread(key, false);
       stopWorking(key);
       clearDraft(key);
+      setConversationGroup(conv.id, null);
       for (const item of chat.panes) {
         if (item.target?.kind === "web" && item.target.id === conv.id) {
           clearPaneAttachments(item.id);
@@ -269,6 +288,35 @@
     } catch (error) {
       chat.statusNote = `대화 삭제 실패: ${error}`;
     }
+  }
+
+  async function newWebGroup() {
+    const name = await askText("새 그룹", "그룹 이름", "");
+    if (name === null) return;
+    createWebGroup(name);
+  }
+
+  async function moveConversationToNewGroup(conv) {
+    const name = await askText("새 그룹", "그룹 이름", "");
+    if (name === null) return;
+    const id = createWebGroup(name);
+    if (id) setConversationGroup(conv.id, id);
+  }
+
+  async function renameWebGroupPrompt(group) {
+    const name = await askText("그룹 이름 변경", "새 그룹 이름", group.name);
+    if (name === null) return;
+    renameWebGroup(group.id, name);
+  }
+
+  async function deleteWebGroupConfirm(group) {
+    const confirmed = await askConfirm(
+      "그룹 삭제",
+      `"${group.name}" 그룹을 삭제하시겠습니까? 안의 대화는 삭제되지 않고 "그룹 없음"으로 이동합니다.`,
+      "삭제",
+    );
+    if (!confirmed) return;
+    deleteWebGroup(group.id);
   }
 
   function askText(title, label, initialValue) {
@@ -348,12 +396,14 @@
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
       if (!target.closest("[data-conv-menu]")) openMenuId = "";
+      if (!target.closest("[data-progress-popup]")) closeProgressPopup();
     };
 
     const onEscape = (event) => {
       if (event.key !== "Escape") return;
       if (promptState) resolvePrompt(null);
       if (confirmState) resolveConfirm(false);
+      if (chat.progressPopupPaneId) closeProgressPopup();
       openMenuId = "";
     };
 
@@ -502,7 +552,96 @@
               </div>
 
               <div>
-                <div class="mb-2 px-1 text-[11px] font-bold tracking-[0.04em] text-slate-500">웹 채널</div>
+                {#snippet webConvRow(conv)}
+                  <div
+                    class={`relative flex h-10 items-center gap-1 rounded-md border px-1.5 shadow-sm ${isFocusedTarget({ kind: "web", id: conv.id }) ? "border-blue-200 bg-blue-50 text-blue-950" : "border-slate-200 bg-white/85 text-slate-900"}`}
+                    data-conv-menu
+                    title={conv.workDir ? `${conversationLabel(conv)} · ${conv.workDir}` : conversationLabel(conv)}
+                  >
+                      <button
+                        class="min-w-0 flex flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition hover:bg-slate-100/70"
+                        draggable="true"
+                        ondragstart={(event) => handleConversationDragStart(event, { kind: "web", id: conv.id })}
+                        ondragend={handleConversationDragEnd}
+                        onclick={() => selectTargetFromSidebar({ kind: "web", id: conv.id })}
+                      >
+                        <span class="min-w-0 flex-1 truncate text-sm font-semibold">{conversationLabel(conv)}</span>
+                        <span class="shrink-0 font-mono text-[11px] text-slate-400">#{conv.id}</span>
+                        <span class="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">{backendLabel(conv.backend)}</span>
+                        {#if isFocusedTarget({ kind: "web", id: conv.id })}
+                          <span class="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">현재</span>
+                        {/if}
+                        {#if chat.unread.has(`web:${conv.id}`)}
+                          <span class="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">NEW</span>
+                        {/if}
+                      </button>
+
+                      <button
+                        class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 bg-white/80 text-base leading-none text-slate-600 hover:bg-slate-100"
+                        onclick={() => (openMenuId = openMenuId === conv.id ? "" : conv.id)}
+                        title="대화 관리"
+                        aria-label="대화 관리"
+                      >
+                        ⋯
+                      </button>
+
+                      {#if openMenuId === conv.id}
+                        <div class="absolute right-0 top-9 z-20 w-48 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
+                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">AI backend</div>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "default")}>Default</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "claude")}>Claude</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "codex")}>Codex</button>
+                          <div class="my-1 h-px bg-slate-100"></div>
+                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">그룹</div>
+                          {#if chat.webGroupOf.get(conv.id)}
+                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; setConversationGroup(conv.id, null); }}>
+                              그룹에서 빼기
+                            </button>
+                          {/if}
+                          {#each chat.webGroups as group (group.id)}
+                            {#if chat.webGroupOf.get(conv.id) !== group.id}
+                              <button class="block w-full truncate rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; setConversationGroup(conv.id, group.id); }}>
+                                {group.name}로 이동
+                              </button>
+                            {/if}
+                          {/each}
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; moveConversationToNewGroup(conv); }}>
+                            새 그룹으로 이동...
+                          </button>
+                          <div class="my-1 h-px bg-slate-100"></div>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; renameWebConversation(conv); }}>
+                            이름 변경
+                          </button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; changeWebDirectory(conv); }}>
+                            작업 폴더 변경
+                          </button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50" onclick={() => { openMenuId = ""; deleteWebConversation(conv); }}>
+                            삭제
+                          </button>
+                        </div>
+                      {/if}
+                  </div>
+                {/snippet}
+
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class={`mb-2 flex items-center gap-1 rounded-md px-1 ${chat.dragOverGroupId === UNGROUPED_DROP_ZONE ? "ring-2 ring-blue-400 bg-blue-50" : ""}`}
+                  ondragenter={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
+                  ondragover={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
+                  ondragleave={() => handleGroupDragLeave(UNGROUPED_DROP_ZONE)}
+                  ondrop={(event) => handleGroupDrop(event, UNGROUPED_DROP_ZONE)}
+                  title="대화를 여기로 드래그하면 그룹에서 빠집니다"
+                >
+                  <div class="flex-1 text-[11px] font-bold tracking-[0.04em] text-slate-500">웹 채널</div>
+                  <button
+                    class="grid h-5 w-5 shrink-0 place-items-center rounded text-[13px] font-bold leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                    onclick={newWebGroup}
+                    title="새 그룹"
+                    aria-label="새 그룹"
+                  >
+                    ⊕
+                  </button>
+                </div>
                 <div class="space-y-1 border-l-2 border-slate-200 pl-2">
                   {#if chat.webConvs.length === 0}
                     <div class="rounded-md border border-dashed border-slate-300 bg-white/70 px-3 py-4 text-sm text-slate-500">
@@ -510,59 +649,71 @@
                     </div>
                   {/if}
 
-                  {#each chat.webConvs as conv (conv.id)}
+                  {#each chat.webGroups as group (group.id)}
+                    {@const groupConvs = webConvsInGroup(group.id)}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
-                      class={`relative flex h-10 items-center gap-1 rounded-md border px-1.5 shadow-sm ${isFocusedTarget({ kind: "web", id: conv.id }) ? "border-blue-200 bg-blue-50 text-blue-950" : "border-slate-200 bg-white/85 text-slate-900"}`}
-                      data-conv-menu
-                      title={conv.workDir ? `${conversationLabel(conv)} · ${conv.workDir}` : conversationLabel(conv)}
+                      class={`rounded-md ${chat.dragOverGroupId === group.id ? "ring-2 ring-blue-400 bg-blue-50" : ""}`}
+                      ondragenter={(event) => handleGroupDragOver(event, group.id)}
+                      ondragover={(event) => handleGroupDragOver(event, group.id)}
+                      ondragleave={() => handleGroupDragLeave(group.id)}
+                      ondrop={(event) => handleGroupDrop(event, group.id)}
                     >
+                      <div class="relative flex h-8 items-center gap-1 rounded-md px-1 hover:bg-slate-100" data-conv-menu>
                         <button
-                          class="min-w-0 flex flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition hover:bg-slate-100/70"
-                          draggable="true"
-                          ondragstart={(event) => handleConversationDragStart(event, { kind: "web", id: conv.id })}
-                          ondragend={handleConversationDragEnd}
-                          onclick={() => selectTargetFromSidebar({ kind: "web", id: conv.id })}
+                          class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 hover:bg-slate-200"
+                          onclick={() => toggleWebGroupCollapsed(group.id)}
+                          title={group.collapsed ? "그룹 펼치기" : "그룹 접기"}
+                          aria-label={group.collapsed ? "그룹 펼치기" : "그룹 접기"}
                         >
-                          <span class="min-w-0 flex-1 truncate text-sm font-semibold">{conversationLabel(conv)}</span>
-                          <span class="shrink-0 font-mono text-[11px] text-slate-400">#{conv.id}</span>
-                          <span class="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">{backendLabel(conv.backend)}</span>
-                          {#if isFocusedTarget({ kind: "web", id: conv.id })}
-                            <span class="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">현재</span>
-                          {/if}
-                          {#if chat.unread.has(`web:${conv.id}`)}
-                            <span class="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">NEW</span>
-                          {/if}
+                          {group.collapsed ? "▸" : "▾"}
                         </button>
-
+                        <div class="min-w-0 flex-1 truncate text-[12px] font-semibold text-slate-600">{group.name}</div>
+                        <span class="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">{groupConvs.length}</span>
                         <button
-                          class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 bg-white/80 text-base leading-none text-slate-600 hover:bg-slate-100"
-                          onclick={() => (openMenuId = openMenuId === conv.id ? "" : conv.id)}
-                          title="대화 관리"
-                          aria-label="대화 관리"
+                          class="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-500 hover:bg-slate-200"
+                          onclick={() => (openMenuId = openMenuId === group.id ? "" : group.id)}
+                          title="그룹 관리"
+                          aria-label="그룹 관리"
                         >
                           ⋯
                         </button>
-
-                        {#if openMenuId === conv.id}
-                          <div class="absolute right-0 top-9 z-20 w-48 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
-                            <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">AI backend</div>
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "default")}>Default</button>
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "claude")}>Claude</button>
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "codex")}>Codex</button>
-                            <div class="my-1 h-px bg-slate-100"></div>
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; renameWebConversation(conv); }}>
+                        {#if openMenuId === group.id}
+                          <div class="absolute right-0 top-8 z-20 w-40 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
+                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; renameWebGroupPrompt(group); }}>
                               이름 변경
                             </button>
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; changeWebDirectory(conv); }}>
-                              작업 폴더 변경
-                            </button>
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50" onclick={() => { openMenuId = ""; deleteWebConversation(conv); }}>
-                              삭제
+                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50" onclick={() => { openMenuId = ""; deleteWebGroupConfirm(group); }}>
+                              그룹 삭제
                             </button>
                           </div>
                         {/if}
+                      </div>
+                      {#if !group.collapsed}
+                        <div class="ml-2 space-y-1 border-l border-slate-200 pl-2">
+                          {#if groupConvs.length === 0}
+                            <div class="px-2 py-1.5 text-[11px] text-slate-400">비어 있음</div>
+                          {/if}
+                          {#each groupConvs as conv (conv.id)}
+                            {@render webConvRow(conv)}
+                          {/each}
+                        </div>
+                      {/if}
                     </div>
                   {/each}
+
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div
+                    class={`space-y-1 rounded-md ${chat.dragOverGroupId === UNGROUPED_DROP_ZONE ? "ring-2 ring-blue-400 bg-blue-50" : ""}`}
+                    ondragenter={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
+                    ondragover={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
+                    ondragleave={() => handleGroupDragLeave(UNGROUPED_DROP_ZONE)}
+                    ondrop={(event) => handleGroupDrop(event, UNGROUPED_DROP_ZONE)}
+                  >
+                    {#each ungroupedWebConvs() as conv (conv.id)}
+                      {@render webConvRow(conv)}
+                    {/each}
+                  </div>
                 </div>
               </div>
             </div>
@@ -860,3 +1011,4 @@
     </div>
   </div>
 {/if}
+

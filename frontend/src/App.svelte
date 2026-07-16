@@ -3,6 +3,7 @@
   import { Events } from "@wailsio/runtime";
   import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
   import PaneNode from "./PaneNode.svelte";
+  import GroupNode from "./GroupNode.svelte";
   import {
     chat,
     MAX_PANES,
@@ -27,15 +28,13 @@
     createWebGroup,
     renameWebGroup,
     deleteWebGroup,
-    toggleWebGroupCollapsed,
     setConversationGroup,
-    webConvsInGroup,
     ungroupedWebConvs,
+    rootWebGroups,
+    groupPathLabel,
     handleGroupDragOver,
     handleGroupDragLeave,
     handleGroupDrop,
-    handleGroupHeaderDragStart,
-    handleGroupHeaderDragEnd,
     UNGROUPED_DROP_ZONE,
     closeProgressPopup,
   } from "./paneStore.svelte.js";
@@ -314,7 +313,7 @@
   async function deleteWebGroupConfirm(group) {
     const confirmed = await askConfirm(
       "그룹 삭제",
-      `"${group.name}" 그룹을 삭제하시겠습니까? 안의 대화는 삭제되지 않고 "그룹 없음"으로 이동합니다.`,
+      `"${group.name}" 그룹을 삭제하시겠습니까? 안의 대화는 "그룹 없음"으로, 하위 그룹은 최상위로 이동합니다.`,
       "삭제",
     );
     if (!confirmed) return;
@@ -603,7 +602,7 @@
                           {#each chat.webGroups as group (group.id)}
                             {#if chat.webGroupOf.get(conv.id) !== group.id}
                               <button class="block w-full truncate rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; setConversationGroup(conv.id, group.id); }}>
-                                {group.name}로 이동
+                                {groupPathLabel(group.id)}로 이동
                               </button>
                             {/if}
                           {/each}
@@ -651,65 +650,8 @@
                     </div>
                   {/if}
 
-                  {#each chat.webGroups as group (group.id)}
-                    {@const groupConvs = webConvsInGroup(group.id)}
-                    <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <div
-                      class={`rounded-md ${chat.dragOverGroupId === group.id ? "ring-2 ring-blue-400 bg-blue-50" : ""} ${chat.dragOverGroupReorder === group.id ? "ring-2 ring-amber-400 bg-amber-50" : ""} ${chat.draggingGroupId === group.id ? "opacity-50" : ""}`}
-                      ondragenter={(event) => handleGroupDragOver(event, group.id)}
-                      ondragover={(event) => handleGroupDragOver(event, group.id)}
-                      ondragleave={() => handleGroupDragLeave(group.id)}
-                      ondrop={(event) => handleGroupDrop(event, group.id)}
-                    >
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <div
-                        class="relative flex h-9 cursor-grab items-center gap-1 rounded-md px-1 hover:bg-slate-100 active:cursor-grabbing"
-                        data-conv-menu
-                        draggable="true"
-                        ondragstart={(event) => handleGroupHeaderDragStart(event, group.id)}
-                        ondragend={handleGroupHeaderDragEnd}
-                        title="드래그해서 그룹 순서 변경"
-                      >
-                        <button
-                          class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 hover:bg-slate-200"
-                          onclick={() => toggleWebGroupCollapsed(group.id)}
-                          title={group.collapsed ? "그룹 펼치기" : "그룹 접기"}
-                          aria-label={group.collapsed ? "그룹 펼치기" : "그룹 접기"}
-                        >
-                          {group.collapsed ? "▸" : "▾"}
-                        </button>
-                        <div class="min-w-0 flex-1 truncate text-sm font-bold text-slate-800">{group.name}</div>
-                        <span class="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">{groupConvs.length}</span>
-                        <button
-                          class="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-500 hover:bg-slate-200"
-                          onclick={() => (openMenuId = openMenuId === group.id ? "" : group.id)}
-                          title="그룹 관리"
-                          aria-label="그룹 관리"
-                        >
-                          ⋯
-                        </button>
-                        {#if openMenuId === group.id}
-                          <div class="absolute right-0 top-8 z-20 w-40 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; renameWebGroupPrompt(group); }}>
-                              이름 변경
-                            </button>
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50" onclick={() => { openMenuId = ""; deleteWebGroupConfirm(group); }}>
-                              그룹 삭제
-                            </button>
-                          </div>
-                        {/if}
-                      </div>
-                      {#if !group.collapsed}
-                        <div class="ml-2 space-y-1 border-l border-slate-200 pl-2">
-                          {#if groupConvs.length === 0}
-                            <div class="px-2 py-1.5 text-[11px] text-slate-400">비어 있음</div>
-                          {/if}
-                          {#each groupConvs as conv (conv.id)}
-                            {@render webConvRow(conv)}
-                          {/each}
-                        </div>
-                      {/if}
-                    </div>
+                  {#each rootWebGroups() as group (group.id)}
+                    <GroupNode {group} bind:openMenuId {webConvRow} onRename={renameWebGroupPrompt} onDelete={deleteWebGroupConfirm} />
                   {/each}
 
                   <!-- svelte-ignore a11y_no_static_element_interactions -->

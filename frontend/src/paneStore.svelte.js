@@ -51,6 +51,7 @@ export const chat = $state({
   dragOverGroupId: "",
   draggingGroupId: null,
   dragOverGroupReorder: null,
+  dragOverGroupZone: null,
   progressByKey: new Map(),
   progressPopupPaneId: null,
 });
@@ -100,7 +101,7 @@ export function createWebGroup(name) {
   const trimmed = String(name || "").trim();
   if (!trimmed) return null;
   const id = `wgroup-${webGroupSeq++}`;
-  chat.webGroups = [...chat.webGroups, { id, name: trimmed, collapsed: false }];
+  chat.webGroups = [...chat.webGroups, { id, name: trimmed, collapsed: false, parentId: null }];
   persistWebGroups();
   return id;
 }
@@ -113,13 +114,52 @@ export function renameWebGroup(groupId, name) {
 }
 
 export function deleteWebGroup(groupId) {
-  chat.webGroups = chat.webGroups.filter((group) => group.id !== groupId);
+  // Subgroups of the deleted group are promoted to the top level rather than
+  // deleted, matching how their conversations fall back to "no group".
+  chat.webGroups = chat.webGroups
+    .filter((group) => group.id !== groupId)
+    .map((group) => (group.parentId === groupId ? { ...group, parentId: null } : group));
   const next = new Map(chat.webGroupOf);
   for (const [convId, groupIdOfConv] of next) {
     if (groupIdOfConv === groupId) next.delete(convId);
   }
   chat.webGroupOf = next;
   persistWebGroups();
+}
+
+export function rootWebGroups() {
+  return chat.webGroups.filter((group) => !group.parentId);
+}
+
+export function childWebGroups(parentId) {
+  return chat.webGroups.filter((group) => group.parentId === parentId);
+}
+
+export function groupPathLabel(groupId) {
+  const parts = [];
+  let current = chat.webGroups.find((group) => group.id === groupId);
+  while (current) {
+    parts.unshift(current.name);
+    current = current.parentId ? chat.webGroups.find((group) => group.id === current.parentId) : null;
+  }
+  return parts.join(" / ");
+}
+
+// True when candidateId names groupId itself or one of its descendants —
+// used to refuse drags/menu moves that would create a parent/child cycle.
+function isSameOrDescendantGroup(candidateId, groupId) {
+  let current = chat.webGroups.find((group) => group.id === candidateId);
+  while (current) {
+    if (current.id === groupId) return true;
+    current = current.parentId ? chat.webGroups.find((group) => group.id === current.parentId) : null;
+  }
+  return false;
+}
+
+function canReparentGroup(sourceGroupId, newParentId) {
+  if (!newParentId) return true;
+  if (newParentId === sourceGroupId) return false;
+  return !isSameOrDescendantGroup(newParentId, sourceGroupId);
 }
 
 export function toggleWebGroupCollapsed(groupId) {
@@ -135,16 +175,57 @@ export function setConversationGroup(convId, groupId) {
   persistWebGroups();
 }
 
-export function reorderWebGroups(sourceGroupId, targetGroupId) {
+// Reorders sourceGroupId as targetGroupId's sibling (adopting targetGroupId's
+// parent), inserted immediately before/after it depending on `position`.
+export function moveGroupRelativeTo(sourceGroupId, targetGroupId, position) {
   if (!sourceGroupId || !targetGroupId || sourceGroupId === targetGroupId) return;
+  const target = chat.webGroups.find((group) => group.id === targetGroupId);
+  if (!target) return;
+  const newParentId = target.parentId || null;
+  if (!canReparentGroup(sourceGroupId, newParentId)) return;
   const groups = [...chat.webGroups];
   const fromIndex = groups.findIndex((group) => group.id === sourceGroupId);
-  const toIndex = groups.findIndex((group) => group.id === targetGroupId);
-  if (fromIndex === -1 || toIndex === -1) return;
+  if (fromIndex === -1) return;
   const [moved] = groups.splice(fromIndex, 1);
+  moved.parentId = newParentId;
+  let toIndex = groups.findIndex((group) => group.id === targetGroupId);
+  if (position === "after") toIndex += 1;
   groups.splice(toIndex, 0, moved);
   chat.webGroups = groups;
   persistWebGroups();
+}
+
+// Makes sourceGroupId the last child of targetGroupId.
+export function nestGroupInto(sourceGroupId, targetGroupId) {
+  if (!sourceGroupId || !targetGroupId || sourceGroupId === targetGroupId) return;
+  if (!canReparentGroup(sourceGroupId, targetGroupId)) return;
+  const groups = [...chat.webGroups];
+  const fromIndex = groups.findIndex((group) => group.id === sourceGroupId);
+  if (fromIndex === -1) return;
+  const [moved] = groups.splice(fromIndex, 1);
+  moved.parentId = targetGroupId;
+  groups.push(moved);
+  chat.webGroups = groups;
+  persistWebGroups();
+}
+
+export function moveGroupToRoot(groupId) {
+  const groups = [...chat.webGroups];
+  const fromIndex = groups.findIndex((group) => group.id === groupId);
+  if (fromIndex === -1) return;
+  const [moved] = groups.splice(fromIndex, 1);
+  moved.parentId = null;
+  groups.push(moved);
+  chat.webGroups = groups;
+  persistWebGroups();
+}
+
+function groupDropZoneFromEvent(event) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const fraction = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
+  if (fraction < 0.3) return "before";
+  if (fraction > 0.7) return "after";
+  return "into";
 }
 
 export function handleGroupHeaderDragStart(event, groupId) {
@@ -158,6 +239,43 @@ export function handleGroupHeaderDragStart(event, groupId) {
 export function handleGroupHeaderDragEnd() {
   chat.draggingGroupId = null;
   chat.dragOverGroupReorder = null;
+  chat.dragOverGroupZone = null;
+  chat.dragOverGroupId = "";
+}
+
+// Header-level handlers give precise before/after/into zones while a group
+// is being dragged over another group's header; they stopPropagation so the
+// coarser container-level handlers below (conversation drop, into-fallback)
+// don't also run for the same event. When no group is being dragged (i.e. a
+// conversation drag), they no-op and let the event bubble to the container.
+export function handleGroupHeaderDragOver(event, groupId) {
+  if (!chat.draggingGroupId || chat.draggingGroupId === groupId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  chat.dragOverGroupReorder = groupId;
+  chat.dragOverGroupZone = groupDropZoneFromEvent(event);
+}
+
+export function handleGroupHeaderDragLeave(groupId) {
+  if (chat.dragOverGroupReorder === groupId) {
+    chat.dragOverGroupReorder = null;
+    chat.dragOverGroupZone = null;
+  }
+}
+
+export function handleGroupHeaderDrop(event, groupId) {
+  if (!chat.draggingGroupId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const sourceGroupId = chat.draggingGroupId;
+  const zone = chat.dragOverGroupZone || "into";
+  chat.draggingGroupId = null;
+  chat.dragOverGroupReorder = null;
+  chat.dragOverGroupZone = null;
+  if (sourceGroupId === groupId) return;
+  if (zone === "before" || zone === "after") moveGroupRelativeTo(sourceGroupId, groupId, zone);
+  else nestGroupInto(sourceGroupId, groupId);
 }
 
 export function webConvsInGroup(groupId) {
@@ -502,12 +620,22 @@ export function handleConversationDragEnd() {
   chat.dragOverGroupId = "";
 }
 
+// Container-level handlers cover the whole group card (header + body) and
+// the "no group" zones. They're the fallback for group drags that land
+// outside a header's precise before/after/into band (anywhere in the body
+// counts as "into"), and the only handler for conversation drags (a
+// conversation dropped anywhere in a group card joins that group).
 export function handleGroupDragOver(event, groupId) {
   if (chat.draggingGroupId) {
-    if (groupId === UNGROUPED_DROP_ZONE || chat.draggingGroupId === groupId) return;
+    if (chat.draggingGroupId === groupId) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    chat.dragOverGroupReorder = groupId;
+    if (groupId === UNGROUPED_DROP_ZONE) {
+      chat.dragOverGroupId = UNGROUPED_DROP_ZONE;
+    } else {
+      chat.dragOverGroupReorder = groupId;
+      chat.dragOverGroupZone = "into";
+    }
     return;
   }
   if (chat.draggingConversation?.kind !== "web") return;
@@ -518,7 +646,10 @@ export function handleGroupDragOver(event, groupId) {
 
 export function handleGroupDragLeave(groupId) {
   if (chat.dragOverGroupId === groupId) chat.dragOverGroupId = "";
-  if (chat.dragOverGroupReorder === groupId) chat.dragOverGroupReorder = null;
+  if (chat.dragOverGroupReorder === groupId) {
+    chat.dragOverGroupReorder = null;
+    chat.dragOverGroupZone = null;
+  }
 }
 
 export function handleGroupDrop(event, groupId) {
@@ -526,9 +657,18 @@ export function handleGroupDrop(event, groupId) {
   event.stopPropagation();
   if (chat.draggingGroupId) {
     const sourceGroupId = chat.draggingGroupId;
-    chat.dragOverGroupReorder = null;
+    const zone = chat.dragOverGroupZone;
     chat.draggingGroupId = null;
-    if (groupId !== UNGROUPED_DROP_ZONE) reorderWebGroups(sourceGroupId, groupId);
+    chat.dragOverGroupReorder = null;
+    chat.dragOverGroupZone = null;
+    chat.dragOverGroupId = "";
+    if (sourceGroupId === groupId) return;
+    if (groupId === UNGROUPED_DROP_ZONE) {
+      moveGroupToRoot(sourceGroupId);
+      return;
+    }
+    if (zone === "before" || zone === "after") moveGroupRelativeTo(sourceGroupId, groupId, zone);
+    else nestGroupInto(sourceGroupId, groupId);
     return;
   }
   const target = chat.draggingConversation;

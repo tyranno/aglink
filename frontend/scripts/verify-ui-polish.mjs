@@ -6,10 +6,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const app = readFileSync(join(root, "src", "App.svelte"), "utf8");
 const pane = readFileSync(join(root, "src", "PaneNode.svelte"), "utf8");
+const group = readFileSync(join(root, "src", "GroupNode.svelte"), "utf8");
 const store = readFileSync(join(root, "src", "paneStore.svelte.js"), "utf8");
 const css = readFileSync(join(root, "src", "app.css"), "utf8");
 const html = readFileSync(join(root, "index.html"), "utf8");
-const all = `${app}\n${pane}\n${store}`;
+const all = `${app}\n${pane}\n${group}\n${store}`;
 
 function assert(condition, message) {
   if (!condition) {
@@ -122,7 +123,7 @@ assert(store.includes("localStorage.setItem(\n      WEB_GROUPS_STORAGE_KEY"), "g
   assert(groupFns.every((fn) => !fn.includes("ControlService")), "web grouping must stay client-side and not call teleclaude's own channel management API");
 }
 assert(app.includes("{#snippet webConvRow(conv)}") && app.includes("{@render webConvRow(conv)}"), "sidebar must render conversation rows through a shared snippet so grouped and ungrouped lists stay in sync");
-assert(app.includes("toggleWebGroupCollapsed(group.id)"), "each group row must be collapsible");
+assert(group.includes("toggleWebGroupCollapsed(group.id)"), "each group row must be collapsible");
 assert(app.includes("onclick={newWebGroup}"), "sidebar must expose a way to create a new web channel group");
 assert(app.includes("moveConversationToNewGroup") && app.includes("setConversationGroup(conv.id, group.id)"), "a conversation's management menu must support moving it into a group");
 
@@ -130,7 +131,7 @@ assert(app.includes("moveConversationToNewGroup") && app.includes("setConversati
 assert(store.includes("export function handleGroupDragOver"), "group headers must accept a dragover from a conversation being dragged");
 assert(store.includes("export function handleGroupDrop"), "dropping a conversation on a group must assign it there");
 assert(store.includes("export const UNGROUPED_DROP_ZONE"), "there must be a sentinel drop zone for removing a conversation from its group");
-assert(app.includes("ondrop={(event) => handleGroupDrop(event, group.id)}"), "each group row must be a drop target for conversations");
+assert(group.includes("ondrop={(event) => handleGroupDrop(event, group.id)}"), "each group row must be a drop target for conversations");
 assert(app.includes("ondrop={(event) => handleGroupDrop(event, UNGROUPED_DROP_ZONE)}"), "the web channel header must be a drop target for removing a conversation from its group");
 assert(store.includes("if (target?.kind !== \"web\") return"), "only web conversations (not telegram) should be droppable into a group");
 
@@ -183,7 +184,19 @@ assert(pane.includes(":global(.markdown-body pre)") && pane.includes(":global(.m
 // smaller/muted, so groups and channels are easy to tell apart at a glance.
 assert(app.includes(">로컬 채널<"), "the local channel section label must use the new terminology");
 assert(!all.includes("웹 채널") && !all.includes("웹 대화"), "the old 웹 채널/웹 대화 terminology must not remain anywhere");
-assert(app.includes('text-sm font-bold text-slate-800">{group.name}'), "a group's name must be at least as visually prominent as a channel name (text-sm, not smaller/muted)");
+assert(group.includes('text-sm font-bold text-slate-800">{group.name}'), "a group's name must be at least as visually prominent as a channel name (text-sm, not smaller/muted)");
+
+// Groups can nest under other groups (folder-like tree), and both conversations
+// and whole groups can be dragged to become children of a group.
+assert(group.includes('import GroupNode from "./GroupNode.svelte"'), "GroupNode must recurse into itself to render nested subgroups");
+assert(store.includes("parentId: null") && store.includes("export function rootWebGroups"), "groups must track a parentId and expose a root-level accessor");
+assert(store.includes("export function childWebGroups"), "must be able to list a group's direct subgroups");
+assert(store.includes("export function nestGroupInto"), "must support making a group a child of another group");
+assert(store.includes("export function moveGroupRelativeTo"), "must support reordering a group as a sibling before/after another");
+assert(store.includes("export function moveGroupToRoot"), "must support dragging a nested group back out to the top level");
+assert(store.includes("function isSameOrDescendantGroup") && store.includes("function canReparentGroup"), "reparenting must refuse to create a group/subgroup cycle");
+assert(app.includes("rootWebGroups()") && app.includes("<GroupNode"), "the sidebar must render only root groups directly, delegating subgroups to GroupNode");
+assert(group.includes("childWebGroups(group.id)") && group.includes("<GroupNode group={child}"), "each group must render its own subgroups recursively");
 
 if (process.exitCode) {
   process.exit(process.exitCode);

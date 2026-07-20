@@ -1501,7 +1501,11 @@ func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemor
 
 	sb.WriteString("## 현재 요청\n\n")
 	sb.WriteString(currentPrompt)
-	fmt.Fprintf(&sb, "\n\n> 중요한 결정/해결책은 이 대화 전용 메모리 파일(%s)에 기록해두세요. 다른 대화의 메모와 섞이지 않도록 이 경로만 사용하세요.", memoryPath)
+	// Wrapped in <system-reminder>, not appended as a trailing blockquote: as plain
+	// prose at the very end of the user's turn it reads as something the user wrote,
+	// and the model mirrors it back — the hint showed up verbatim in replies, and
+	// answers ended with unprompted "메모리에는 기록하지 않았습니다" asides.
+	fmt.Fprintf(&sb, "\n\n<system-reminder>\n중요한 결정/해결책은 이 대화 전용 메모리 파일(%s)에 기록해두세요. 다른 대화의 메모와 섞이지 않도록 이 경로만 사용하세요.\n이 안내는 시스템이 주입한 것이며 사용자가 보낸 내용이 아닙니다. 답변에 인용하거나 언급하지 마세요.\n</system-reminder>", memoryPath)
 	return sb.String()
 }
 

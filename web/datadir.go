@@ -16,22 +16,36 @@ const defaultPort = 48219
 
 const portEnv = "AGLINK_WEB_PORT"
 
-// dataDir returns ~/.teleclaude, creating it if necessary. Same on-disk
-// convention as aglink-screen so the agentlink plugin family shares one home;
-// duplicated here so this module has no build dependency on siblings.
+// dataDir returns the aglink data directory, creating it if necessary:
+// $AGLINK_HOME if set, else ~/.aglink, else the pre-rename ~/.teleclaude when
+// that exists and ~/.aglink does not. Same on-disk convention as the other
+// modules so the family shares one home; duplicated here so this module has no
+// build dependency on siblings.
 func dataDir() (string, error) {
+	if v := strings.TrimSpace(os.Getenv("AGLINK_HOME")); v != "" {
+		if err := os.MkdirAll(v, 0o700); err != nil {
+			return "", err
+		}
+		return v, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".teleclaude")
+	dir := filepath.Join(home, ".aglink")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		legacy := filepath.Join(home, ".teleclaude")
+		if st, lerr := os.Stat(legacy); lerr == nil && st.IsDir() {
+			return legacy, nil
+		}
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
-// portFilePath is ~/.teleclaude/aglink-web.port, written by the daemon on start
+// portFilePath is <dataDir>/aglink-web.port, written by the daemon on start
 // and read by the bridge so the two agree on the port even if AGLINK_WEB_PORT
 // changed the default. The extension uses the fixed default (see README).
 func portFilePath() (string, error) {

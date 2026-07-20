@@ -36,22 +36,22 @@ type Config struct {
 	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 	WebChat               bool     // local web chat transport enabled
-	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:1717
+	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:27271
 	WebChatToken          string   // web chat auth token; empty → auto-generated + persisted
 	WebChatOwnerChatID    int64    // chatID web actions run as; 0 → first AllowedUserIDs
 
 	// chat_control: loopback control API a separate aglink-chat process connects to.
 	// Off by default — enabling it never affects the embedded web_chat above.
 	ChatControl            bool   // loopback control-API server for aglink-chat enabled
-	ChatControlAddr        string // control-API bind address (loopback only), default 127.0.0.1:17170
+	ChatControlAddr        string // control-API bind address (loopback only), default 127.0.0.1:27270
 	ChatControlToken       string // control-API auth token; empty → auto-generated + persisted
 	ChatControlOwnerChatID int64  // chatID aglink-chat actions run as; 0 → first AllowedUserIDs
 
 	// aglink_chat: aglink spawns aglink-chat.exe serve as a managed child so
-	// it runs as the primary frontend. Phase 1 runs it on a parallel port (1718)
+	// it runs as the primary frontend. Phase 1 runs it on a parallel port (27272)
 	// alongside the embedded web_chat server; requires ChatControl enabled.
 	AglinkChat           bool   // spawn+supervise aglink-chat.exe serve
-	AglinkChatAddr       string // aglink-chat browser bind address, default 127.0.0.1:1718
+	AglinkChatAddr       string // aglink-chat browser bind address, default 127.0.0.1:27272
 	AglinkChatBinaryPath string // aglink-chat.exe path; empty → srcDir then ../aglink-chat
 	AglinkChatToken      string // aglink-chat browser auth token; empty → auto-generated + persisted
 

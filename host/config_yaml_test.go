@@ -28,7 +28,7 @@ func TestYAMLRoundTrip(t *testing.T) {
 		WebBinaryPath:       "C:\\tools\\aglink-web.exe",
 		ConversationTTLDays: 45,
 		WebChat:             true,
-		WebChatAddr:         "127.0.0.1:1717",
+		WebChatAddr:         "127.0.0.1:27271",
 		WebChatToken:        "tok-abc",
 		WebChatOwnerChatID:  6723802240,
 	}
@@ -50,7 +50,7 @@ func TestYAMLRoundTrip(t *testing.T) {
 		got.ScreenBinaryPath != "C:\\tools\\aglink-screen.exe" ||
 		got.WebControl != true || got.WebBinaryPath != "C:\\tools\\aglink-web.exe" ||
 		got.ConversationTTLDays != 45 ||
-		got.WebChat != true || got.WebChatAddr != "127.0.0.1:1717" ||
+		got.WebChat != true || got.WebChatAddr != "127.0.0.1:27271" ||
 		got.WebChatToken != "tok-abc" || got.WebChatOwnerChatID != 6723802240 {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
@@ -70,7 +70,7 @@ func TestYAMLDefaults(t *testing.T) {
 }
 
 // TestConfigDefaultWebChatAddr verifies that omitting web_chat.addr falls back to the
-// documented default 127.0.0.1:1717, while an explicitly-set addr is preserved as-is.
+// documented default 127.0.0.1:27271, while an explicitly-set addr is preserved as-is.
 func TestConfigDefaultWebChatAddr(t *testing.T) {
 	y := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\nweb_chat:\n  enabled: true\n")
 	got, err := unmarshalConfigYAML(y)
@@ -80,8 +80,8 @@ func TestConfigDefaultWebChatAddr(t *testing.T) {
 	if !got.WebChat {
 		t.Errorf("expected WebChat enabled, got %+v", got)
 	}
-	if got.WebChatAddr != "127.0.0.1:1717" {
-		t.Errorf("expected default addr 127.0.0.1:1717, got %q", got.WebChatAddr)
+	if got.WebChatAddr != "127.0.0.1:27271" {
+		t.Errorf("expected default addr 127.0.0.1:27271, got %q", got.WebChatAddr)
 	}
 
 	y2 := []byte("telegram:\n  bot_token: t\n  allowed_user_ids: [1]\nweb_chat:\n  enabled: true\n  addr: 0.0.0.0:9999\n")

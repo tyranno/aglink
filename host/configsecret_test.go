@@ -53,7 +53,7 @@ func TestRestore_UserChangedValueKept(t *testing.T) {
 func TestReadMaskedAndWriteValidatedConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
-	cfg := &Config{TelegramBotToken: "S3CRET", AllowedUserIDs: []int64{123}, WebChatAddr: "127.0.0.1:1717", ChatControlAddr: "127.0.0.1:17170"}
+	cfg := &Config{TelegramBotToken: "S3CRET", AllowedUserIDs: []int64{123}, WebChatAddr: "127.0.0.1:27271", ChatControlAddr: "127.0.0.1:27270"}
 	raw, err := marshalConfigYAML(cfg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

@@ -19,6 +19,19 @@ import (
 // store.json, tasks.json, history/ — under this name.
 const legacyDataDirName = ".teleclaude"
 
+// dataDirEnv overrides the data directory outright. Set it to run a second
+// instance (different config, ports, store) alongside an existing install
+// without the two fighting over one directory.
+const dataDirEnv = "AGLINK_HOME"
+
+// isolatedDataDir reports whether this process was pointed at an explicit data
+// directory, i.e. it is a deliberate parallel instance rather than the machine's
+// main install. Startup cleanup that reaches other processes is suppressed for
+// these (see killPreviousInstance).
+func isolatedDataDir() bool {
+	return strings.TrimSpace(os.Getenv(dataDirEnv)) != ""
+}
+
 // dataDir returns %USERPROFILE%\.aglink (created if missing).
 //
 // For backward compatibility it does NOT migrate an existing pre-rename
@@ -28,6 +41,12 @@ const legacyDataDirName = ".teleclaude"
 // outright on Windows), so the safe move is to keep reading where the state
 // already is. Delete or rename ~/.teleclaude by hand to opt into the new path.
 func dataDir() (string, error) {
+	if v := strings.TrimSpace(os.Getenv(dataDirEnv)); v != "" {
+		if err := os.MkdirAll(v, 0o700); err != nil {
+			return "", err
+		}
+		return v, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

@@ -75,11 +75,11 @@ func TestOriginOK(t *testing.T) {
 		want   bool
 	}{
 		{"", true},
-		{"http://127.0.0.1:1717", true},
-		{"http://localhost:1717", true},
+		{"http://127.0.0.1:27271", true},
+		{"http://localhost:27271", true},
 		{"http://localhost", true},
 		{"http://evil.com", false},
-		{"https://example.org:1717", false},
+		{"https://example.org:27271", false},
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest(http.MethodGet, "/ws", nil)
@@ -103,8 +103,8 @@ func TestOriginOK_Rejects(t *testing.T) {
 		{"http://127.0.0.1.evil.com", false},
 		{"http://localhost.evil.com", false},
 		{"http://evil.com", false},
-		{"http://127.0.0.1:1717", true},
-		{"http://localhost:1717", true},
+		{"http://127.0.0.1:27271", true},
+		{"http://localhost:27271", true},
 		{"", true},
 	}
 	for _, c := range cases {

@@ -135,21 +135,21 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.WebChat = y.WebChat.Enabled
 	c.WebChatAddr = y.WebChat.Addr
 	if c.WebChatAddr == "" {
-		c.WebChatAddr = "127.0.0.1:1717"
+		c.WebChatAddr = "127.0.0.1:27271"
 	}
 	c.WebChatToken = y.WebChat.Token
 	c.WebChatOwnerChatID = y.WebChat.OwnerChatID
 	c.ChatControl = y.ChatControl.Enabled
 	c.ChatControlAddr = y.ChatControl.Addr
 	if c.ChatControlAddr == "" {
-		c.ChatControlAddr = "127.0.0.1:17170"
+		c.ChatControlAddr = "127.0.0.1:27270"
 	}
 	c.ChatControlToken = y.ChatControl.Token
 	c.ChatControlOwnerChatID = y.ChatControl.OwnerChatID
 	c.AglinkChat = y.AglinkChat.Enabled
 	c.AglinkChatAddr = y.AglinkChat.Addr
 	if c.AglinkChatAddr == "" {
-		c.AglinkChatAddr = "127.0.0.1:1717" // Phase 2: aglink-chat is the primary frontend on 1717
+		c.AglinkChatAddr = "127.0.0.1:27271" // Phase 2: aglink-chat is the primary frontend on 27271
 	}
 	c.AglinkChatBinaryPath = y.AglinkChat.BinaryPath
 	c.AglinkChatToken = y.AglinkChat.Token

@@ -26,6 +26,16 @@ func killTree(pid int) error {
 	return syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
+// processImageName returns the executable name of a running PID, or "" if it is
+// not running. See the Windows implementation for why callers need it.
+func processImageName(pid int) string {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // killByImageName sends SIGKILL to all processes matching the given name.
 func killByImageName(name string) {
 	exec.Command("pkill", "-f", name).Run()
@@ -64,7 +74,9 @@ func killPreviousInstance() {
 		}
 	}
 
-	if !killed {
+	// See platform_windows.go: AGLINK_HOME means "parallel instance", so the
+	// by-name sweep that would reach the main install is skipped.
+	if !killed && !isolatedDataDir() {
 		// Use pgrep to enumerate PIDs and skip self — pkill without exclusion would kill us.
 		// Pre-rename names kept so a fresh aglink still kills a leftover
 		// teleclaude from before the rename (see platform_windows.go).

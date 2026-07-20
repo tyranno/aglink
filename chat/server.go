@@ -526,12 +526,12 @@ func (s *browserServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	home, err := os.UserHomeDir()
+	base, err := dataDir()
 	if err != nil {
 		http.Error(w, "no home", http.StatusInternalServerError)
 		return
 	}
-	dir := filepath.Join(home, ".teleclaude", "attachments")
+	dir := filepath.Join(base, "attachments")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		http.Error(w, "mkdir failed", http.StatusInternalServerError)
 		return

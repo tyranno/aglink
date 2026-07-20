@@ -5,7 +5,7 @@ import "testing"
 func TestBuildAuxFeatures_UnifiedStates(t *testing.T) {
 	// relayClients=1 → aglink-chat running; chat_control disabled here just sets
 	// the relay detail, not the state.
-	feats := buildAuxFeatures(1, false, "127.0.0.1:17170")
+	feats := buildAuxFeatures(1, false, "127.0.0.1:27270")
 
 	// Expected: aglink-chat relay + each non-aglink-chat plugin (aglink-chat is in
 	// pluginNames for !update builds but shown once, as the relay entry).

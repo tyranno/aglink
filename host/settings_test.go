@@ -160,7 +160,7 @@ func TestApplySettings_WhitelistAndTypes(t *testing.T) {
 		"models.manager":        "haiku",
 		"runtime.max_workers":   float64(7),
 		"models.manager_always": true,
-		"aglink_chat.addr":      "127.0.0.1:1717",
+		"aglink_chat.addr":      "127.0.0.1:27271",
 		"telegram.bot_token":    "HACK", // not whitelisted → ignored
 		"unknown.key":           "x",    // ignored
 	})
@@ -176,7 +176,7 @@ func TestApplySettings_WhitelistAndTypes(t *testing.T) {
 	if !cfg.ManagerAlways {
 		t.Errorf("ManagerAlways = false, want true")
 	}
-	if cfg.AglinkChatAddr != "127.0.0.1:1717" {
+	if cfg.AglinkChatAddr != "127.0.0.1:27271" {
 		t.Errorf("AglinkChatAddr = %q", cfg.AglinkChatAddr)
 	}
 	if cfg.TelegramBotToken == "HACK" {

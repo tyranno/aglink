@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -39,7 +43,14 @@ func resolveAglinkChatBinary(cfg *Config, selfExe string) string {
 // aglink (a handoff's os.Exit does not reap children on Windows). Blocks
 // until ctx is cancelled; the child is killed via CommandContext on cancel.
 func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlToken, browserToken string) {
-	killByImageName("aglink-chat" + exeSuffix) // clear an orphan from a prior instance
+	// Clear an orphan from a prior aglink. The by-image sweep is skipped for an
+	// explicit parallel instance (AGLINK_HOME) — it would also reap the main
+	// install's healthy aglink-chat, which is not ours to touch — so that case
+	// relies on the recorded PID, which names only *our* child.
+	killPreviousAglinkChat()
+	if !isolatedDataDir() {
+		killByImageName("aglink-chat" + exeSuffix)
+	}
 	backoff := time.Second
 	fastExits := 0
 	for ctx.Err() == nil {
@@ -52,7 +63,11 @@ func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlTok
 		cmd.Stderr = childLogWriter
 		log.Printf("[aglinkchat] starting %s serve on %s", binPath, addr)
 		start := time.Now()
-		err := cmd.Run()
+		var err error
+		if err = cmd.Start(); err == nil {
+			writeAglinkChatPID(cmd.Process.Pid)
+			err = cmd.Wait()
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -72,7 +87,8 @@ func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlTok
 		// A child that never stays up is failing on something a restart cannot
 		// fix (a port it may not bind, a missing dependency). Say so once, loudly,
 		// instead of looping quietly forever — that silence hid an unbindable
-		// 1717 (reserved by WinNAT) behind a 15s backoff.
+		// 2727 (a WinNAT-reserved range, which is why the default is 27271
+		// now) behind a 15s backoff.
 		if ran < 5*time.Second {
 			fastExits++
 			if fastExits == fastExitWarnThreshold {
@@ -92,6 +108,52 @@ func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlTok
 		}
 		backoff = nextBackoff(ran, backoff)
 	}
+}
+
+// aglinkChatPIDPath is where the running aglink-chat child's PID is recorded, so
+// the next aglink can reap it by PID. It sits in the data dir, which means a
+// parallel AGLINK_HOME instance records only its own child.
+func aglinkChatPIDPath() string {
+	dir, err := dataDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "aglink-chat.pid")
+}
+
+func writeAglinkChatPID(pid int) {
+	if p := aglinkChatPIDPath(); p != "" {
+		_ = os.WriteFile(p, []byte(strconv.Itoa(pid)+"\n"), 0o600)
+	}
+}
+
+// killPreviousAglinkChat reaps the aglink-chat left behind by a previous aglink
+// that died without taking its child down (a /F kill of the parent, a crash).
+// Such an orphan keeps holding the chat port, and the supervisor below would
+// otherwise respawn-loop against it forever.
+func killPreviousAglinkChat() {
+	p := aglinkChatPIDPath()
+	if p == "" {
+		return
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		return
+	}
+	// The PID may have been reused since we wrote it (across a reboot, say), so
+	// only kill it if it is still an aglink-chat.
+	if !strings.EqualFold(processImageName(pid), "aglink-chat"+exeSuffix) {
+		_ = os.Remove(p)
+		return
+	}
+	if killTree(pid) == nil {
+		log.Printf("[aglinkchat] reaped orphan child from previous run (PID %d)", pid)
+	}
+	_ = os.Remove(p)
 }
 
 // nextBackoff decides how long to wait before the next respawn. A child that

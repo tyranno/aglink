@@ -20,6 +20,26 @@ func killTree(pid int) error {
 	return exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(pid)).Run()
 }
 
+// processImageName returns the image name of a running PID ("aglink-chat.exe"),
+// or "" if it is not running. Used to confirm a recorded PID still belongs to
+// the process we recorded it for before killing it — PIDs are reused.
+func processImageName(pid int) string {
+	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(strings.ToLower(line), "info:") {
+			continue
+		}
+		if parts := strings.Split(line, ","); len(parts) > 0 {
+			return strings.Trim(parts[0], `"`)
+		}
+	}
+	return ""
+}
+
 // killByImageName force-kills all processes matching the given image name.
 func killByImageName(name string) {
 	exec.Command("taskkill", "/F", "/IM", name).Run()
@@ -91,11 +111,27 @@ func killPreviousInstance() {
 
 	if b, err := os.ReadFile(pidFilePath()); err == nil {
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && pid != myPID {
-			if exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run() == nil {
-				log.Printf("[main] killed previous instance via PID file (PID %d)", pid)
+			// Tree kill, not a bare /F: Windows has no SIGTERM, so a plain kill of
+			// the parent leaves its supervised children (aglink-chat) running and
+			// still holding their port. The next instance would then respawn-loop
+			// forever against an address it can never bind.
+			if killTree(pid) == nil {
+				log.Printf("[main] killed previous instance tree via PID file (PID %d)", pid)
 				killed = true
 			}
 		}
+	}
+
+	// A run with AGLINK_HOME set is an explicit parallel instance: its own data
+	// dir, config, ports and PID file. The PID-file kill above already covers
+	// "a previous instance of *this* install"; sweeping by image name would
+	// additionally kill the user's main install, which is exactly what the env
+	// var asked us not to touch.
+	if isolatedDataDir() {
+		if killed {
+			time.Sleep(3 * time.Second)
+		}
+		return
 	}
 
 	// The pre-rename names stay in this list on purpose: the first aglink.exe to

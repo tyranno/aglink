@@ -77,7 +77,7 @@ cd aglink
 
 완료되면 `~/.aglink/config.yaml`이 생성되고 바로 동작합니다 — 텔레그램을 연결했다면
 봇에게 말을 걸면 되고, 웹 채팅만 골랐다면 실행 후 콘솔 로그에 뜨는
-`http://127.0.0.1:1717/?token=...` 주소로 접속하면 됩니다.
+`http://127.0.0.1:27271/?token=...` 주소로 접속하면 됩니다.
 
 ## 4. 나중에 텔레그램 추가하기
 
@@ -267,7 +267,7 @@ aglink, aglink-chat, aglink-screen, aglink-web을 전부 형제 디렉터리로 
 
 - **로그**: Windows는 콘솔 출력 그대로, Linux(systemd)는 `~/.aglink/logs/aglink.error.log`
 - **포트 충돌**: `config.yaml`의 `aglink_chat.addr` / `chat_control.addr` 값을 바꾸면 됨
-- **1717/17170 포트가 이미 사용 중**이거나 `aglink-chat` 바이너리가 안 잡히면, 재시작 로그에
+- **27271/27270 포트가 이미 사용 중**이거나 `aglink-chat` 바이너리가 안 잡히면, 재시작 로그에
   `[aglinkchat] binary not found` / `listen ... failed` 메시지로 원인이 찍힘
 - **aglink-web 확장이 안 붙음**: `chrome://extensions`에서 확장이 활성 상태인지, 데몬 포트
   (`48219`)를 바꿨다면 확장 옵션 페이지에도 같은 포트를 입력했는지 확인

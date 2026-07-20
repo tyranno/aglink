@@ -27,9 +27,9 @@ func main() {
 
 func serveCmd(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", "127.0.0.1:1717", "browser-facing HTTP/WS address")
-	controlAddr := fs.String("control-addr", "127.0.0.1:17170", "teleclaude control-API address to connect to")
-	controlToken := fs.String("control-token", "", "teleclaude control token (default: read ~/.teleclaude/chat_control.token)")
+	addr := fs.String("addr", "127.0.0.1:27271", "browser-facing HTTP/WS address")
+	controlAddr := fs.String("control-addr", "127.0.0.1:27270", "teleclaude control-API address to connect to")
+	controlToken := fs.String("control-token", "", "teleclaude control token (default: read ~/.aglink/chat_control.token)")
 	token := fs.String("token", "", "browser auth token (default: generated + printed)")
 	_ = fs.Parse(args)
 
@@ -40,7 +40,7 @@ func serveCmd(args []string) {
 		}
 	}
 	if ctok == "" {
-		fmt.Fprintln(os.Stderr, "no control token: pass --control-token or ensure ~/.teleclaude/chat_control.token exists (start teleclaude with chat_control.enabled: true first)")
+		fmt.Fprintln(os.Stderr, "no control token: pass --control-token or ensure ~/.aglink/chat_control.token exists (start teleclaude with chat_control.enabled: true first)")
 		os.Exit(1)
 	}
 
@@ -68,6 +68,9 @@ func serveCmd(args []string) {
 }
 
 func defaultControlTokenPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".teleclaude", "chat_control.token")
+	dir, err := dataDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "chat_control.token")
 }

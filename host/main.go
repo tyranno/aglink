@@ -453,7 +453,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	// instance is gone (killPreviousInstance for a normal start, or the handoff
 	// wait above for --handoff-ready) — so it can actually bind the port. If it
 	// started earlier (right after NewBot), a still-running old instance would
-	// hold 127.0.0.1:1717 and bind would fail, silently disabling web chat on the
+	// hold 127.0.0.1:27271 and bind would fail, silently disabling web chat on the
 	// new process. Both channels share state via the same Hub + owner chatID.
 	// Chat control API (loopback only) — lets a separate aglink-chat process serve
 	// the browser UI. Off by default; enabling it does not affect the embedded
@@ -465,7 +465,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		owner, ownerOK := resolveWebOwner(cfg.ChatControlOwnerChatID, cfg.AllowedUserIDs)
 		addr := cfg.ChatControlAddr
 		if addr == "" {
-			addr = "127.0.0.1:17170"
+			addr = "127.0.0.1:27270"
 		}
 		if tok, terr := loadOrCreateToken(cfg.ChatControlToken, "chat_control.token"); terr != nil {
 			log.Printf("[chatcontrol] token init failed: %v — chat control disabled", terr)
@@ -490,7 +490,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		binPath := resolveAglinkChatBinary(cfg, selfExe)
 		addr := cfg.AglinkChatAddr
 		if addr == "" {
-			addr = "127.0.0.1:1717"
+			addr = "127.0.0.1:27271"
 		}
 		btok, terr := loadOrCreateToken(cfg.AglinkChatToken, "web_chat.token")
 		switch {

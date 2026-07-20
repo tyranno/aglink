@@ -57,20 +57,69 @@ type settingSection struct {
 	Fields []settingField `json:"fields"`
 }
 
+// codexModelOptionsFor returns the live-detected codex model catalog for the
+// manager's active codex client, or nil if codex isn't configured/installed
+// or the installed codex-cli is too old to support `debug models`. Uses a
+// small optional interface (rather than depending on the concrete
+// *codexRunner type) matching how the manager already treats codex-specific
+// capabilities as optional, e.g. backendReadiness.
+func codexModelOptionsFor(m *Manager) []string {
+	if m == nil || m.codexClient == nil {
+		return nil
+	}
+	type modelCataloger interface{ modelCatalog() []string }
+	if mc, ok := m.codexClient.(modelCataloger); ok {
+		return mc.modelCatalog()
+	}
+	return nil
+}
+
+// claudeModelAliases are Claude Code's own documented `--model` aliases
+// (`claude --help`: "Provide an alias for the latest model (e.g. 'fable',
+// 'opus', or 'sonnet')"), plus "haiku" which the CLI resolves the same way
+// and which this project already uses as the default manager model. Claude
+// Code has no subcommand that dumps a live model catalog (unlike codex's
+// `debug models`), so this is a static-but-authoritative list: each alias
+// always resolves to that tier's current model, so it doesn't go stale the
+// way a hardcoded full model ID would.
+var claudeModelAliases = []string{"haiku", "sonnet", "opus", "fable"}
+
+// selectOptionsWithBlank prefixes an options list with "" (rendered as
+// "기본값" by the UI) so a field can be cleared back to "use the backend's
+// default" without leaving the select stuck on an unrelated first option.
+func selectOptionsWithBlank(options []string) []string {
+	return append([]string{""}, options...)
+}
+
+// modelField builds a models.* / backend.codex_*_model setting field. When
+// detectedOptions is non-empty it renders as a "select" populated with those
+// options (plus a blank "기본값" entry); otherwise it falls back to a plain
+// "string" field so a codex install too old for `debug models` (or simply
+// not installed) still lets the user type a model name by hand instead of
+// showing a broken, optionless dropdown.
+func modelField(key, label, desc string, value string, detectedOptions []string) settingField {
+	if len(detectedOptions) == 0 {
+		return settingField{Key: key, Label: label, Desc: desc, Type: "string", Value: value}
+	}
+	return settingField{Key: key, Label: label, Desc: desc, Type: "select", Value: value, Options: selectOptionsWithBlank(detectedOptions)}
+}
+
 // buildSettings returns the curated, safe subset of config fields (with their
 // current values) that the structured settings form can edit. The keys here MUST
-// match applySettings' whitelist.
-func buildSettings(cfg *Config) []settingSection {
+// match applySettings' whitelist. codexModels is the live-detected codex model
+// catalog (nil if codex isn't installed or detection failed) — see
+// codexRunner.modelCatalog.
+func buildSettings(cfg *Config, codexModels []string) []settingSection {
 	return []settingSection{
 		{Title: "모델", Fields: []settingField{
-			{Key: "models.manager", Label: "매니저 모델", Desc: "메시지 라우팅·스케줄 판단에 쓰는 가벼운 모델 (예: haiku).", Type: "string", Value: cfg.ManagerModel},
-			{Key: "models.worker", Label: "워커 모델", Desc: "실제 작업을 수행하는 모델. 비우면 백엔드 기본값 사용 (예: sonnet).", Type: "string", Value: cfg.WorkerModel},
+			modelField("models.manager", "매니저 모델", "메시지 라우팅·스케줄 판단에 쓰는 가벼운 모델. 비우면 백엔드 기본값 사용.", cfg.ManagerModel, claudeModelAliases),
+			modelField("models.worker", "워커 모델", "실제 작업을 수행하는 모델. 비우면 백엔드 기본값 사용.", cfg.WorkerModel, claudeModelAliases),
 			{Key: "models.manager_always", Label: "항상 매니저 경유", Desc: "켜면 모든 메시지를 매니저 모델로 먼저 라우팅. 끄면 단순 메시지는 바로 워커로.", Type: "bool", Value: cfg.ManagerAlways},
 		}},
 		{Title: "백엔드", Fields: []settingField{
 			{Key: "backend.default", Label: "기본 백엔드", Desc: "부팅 시 사용할 AI 백엔드. 채팅 중 !backend로도 전환 가능.", Type: "select", Value: cfg.DefaultBackend, Options: []string{"claude", "codex"}},
-			{Key: "backend.codex_model", Label: "Codex 워커 모델", Desc: "Codex 백엔드일 때 워커 모델.", Type: "string", Value: cfg.CodexModel},
-			{Key: "backend.codex_manager_model", Label: "Codex 매니저 모델", Desc: "Codex 백엔드일 때 매니저 모델.", Type: "string", Value: cfg.CodexManagerModel},
+			modelField("backend.codex_model", "Codex 워커 모델", "Codex 백엔드일 때 워커 모델. 설치된 codex-cli에서 실제 검사한 목록입니다.", cfg.CodexModel, codexModels),
+			modelField("backend.codex_manager_model", "Codex 매니저 모델", "Codex 백엔드일 때 매니저 모델. 설치된 codex-cli에서 실제 검사한 목록입니다.", cfg.CodexManagerModel, codexModels),
 			{Key: "interactive_claude.enabled", Label: "Interactive Claude (실험적)", Desc: "상주 ConPTY 세션 백엔드 구성. 웹 대화별로 \"!interactive on\"으로 켜야 실제 사용됨. Windows 전용. (변경 시 재시작 필요)", Type: "bool", Value: cfg.InteractiveClaude},
 		}},
 		{Title: "런타임", Fields: []settingField{

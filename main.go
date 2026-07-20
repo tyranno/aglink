@@ -376,6 +376,16 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 			syncKeepAwake()
 		},
 		OnKeepAwake: func(bool) { syncKeepAwake() },
+		OnDefaultBackend: func(name string) {
+			if err := manager.SetBackend(name); err != nil {
+				log.Printf("[config] backend.default → %q 적용 실패: %v", name, err)
+				for _, id := range holder.Get().AllowedUserIDs {
+					_ = bot.Send(id, "⚠️ 기본 백엔드 변경 적용 실패: "+err.Error())
+				}
+				return
+			}
+			log.Printf("[config] backend.default → %q 적용됨 (즉시 전환)", name)
+		},
 		Notify: func(msg string) {
 			for _, id := range holder.Get().AllowedUserIDs {
 				_ = bot.Send(id, msg)

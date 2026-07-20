@@ -10,11 +10,12 @@ import (
 
 // ReloadHooks are invoked by applyReload when specific fields change.
 type ReloadHooks struct {
-	OnRateLimit     func(int)  // new rate limit
-	OnTokenChanged  func()     // bot token changed (needs restart)
-	OnScreenControl func(bool) // screen_control.enabled toggled
-	OnKeepAwake     func(bool) // screen_control.keep_awake toggled
-	Notify          func(string)
+	OnRateLimit      func(int)    // new rate limit
+	OnTokenChanged   func()       // bot token changed (needs restart)
+	OnScreenControl  func(bool)   // screen_control.enabled toggled
+	OnKeepAwake      func(bool)   // screen_control.keep_awake toggled
+	OnDefaultBackend func(string) // backend.default changed — switch the live active backend now
+	Notify           func(string)
 }
 
 // applyReload compares old vs new config and fires the relevant hooks.
@@ -30,6 +31,9 @@ func applyReload(old, nw *Config, h ReloadHooks) {
 	}
 	if old.ScreenKeepAwake != nw.ScreenKeepAwake && h.OnKeepAwake != nil {
 		h.OnKeepAwake(nw.ScreenKeepAwake)
+	}
+	if old.DefaultBackend != nw.DefaultBackend && h.OnDefaultBackend != nil {
+		h.OnDefaultBackend(nw.DefaultBackend)
 	}
 }
 

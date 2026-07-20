@@ -301,7 +301,11 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		data, _ := json.Marshal(out)
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "get_settings":
-		data, _ := json.Marshal(map[string]any{"sections": buildSettings(s.bot.cfg())})
+		var manager *Manager
+		if s.bot != nil {
+			manager = s.bot.manager
+		}
+		data, _ := json.Marshal(map[string]any{"sections": buildSettings(s.bot.cfg(), codexModelOptionsFor(manager))})
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "set_settings":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: applySettingsUpdate(s.cfgPath, s.bot.cfg(), []byte(m.Body))})

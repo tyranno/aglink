@@ -43,6 +43,12 @@ type codexRunner struct {
 	versionOnce sync.Once
 	versionStr  string
 
+	// modelCatalogOnce/Slugs cache the user-selectable codex model slugs,
+	// detected once via `codex debug models` for the settings UI's model
+	// dropdown (see modelCatalog).
+	modelCatalogOnce  sync.Once
+	modelCatalogSlugs []string
+
 	// readyNoticeOnce guards the one-time "codex backend ready" heads-up so it
 	// fires only on the first codex-backed worker turn of this runner's life.
 	readyNoticeOnce sync.Once
@@ -151,6 +157,49 @@ func parseCodexVersion(out string) string {
 		}
 	}
 	return ""
+}
+
+// modelCatalog detects the codex model slugs a user can actually pick, once
+// per runner lifetime via `codex debug models` (a hidden but stable command
+// that dumps the CLI's own model catalog as JSON — genuinely queried from the
+// installed CLI, not a guessed/hardcoded list). Only "list"-visibility models
+// are returned (internal ones like "codex-auto-review" are hidden). Returns
+// nil on any failure (old codex-cli without the subcommand, unparseable
+// output, etc.) so the settings UI can fall back to a free-text field instead
+// of showing a broken empty dropdown.
+func (r *codexRunner) modelCatalog() []string {
+	r.modelCatalogOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stdout, _, err := r.exec(ctx, "", []string{"debug", "models"}, "", "")
+		if err != nil {
+			return
+		}
+		r.modelCatalogSlugs = parseCodexModelCatalog(stdout)
+	})
+	return r.modelCatalogSlugs
+}
+
+// parseCodexModelCatalog pulls the user-selectable model slugs out of `codex
+// debug models`' JSON output, split out so it's testable without spawning a
+// real codex process.
+func parseCodexModelCatalog(stdout string) []string {
+	var parsed struct {
+		Models []struct {
+			Slug       string `json:"slug"`
+			Visibility string `json:"visibility"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		return nil
+	}
+	var slugs []string
+	for _, m := range parsed.Models {
+		if m.Visibility == "list" && m.Slug != "" {
+			slugs = append(slugs, m.Slug)
+		}
+	}
+	return slugs
 }
 
 // CheckReadiness gates a codex-backed worker turn on CLI capability and returns

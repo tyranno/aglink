@@ -200,14 +200,14 @@ func TestIsCronExpr(t *testing.T) {
 func TestBuildContextPrompt_NoContext(t *testing.T) {
 	// When no context available, returns the prompt as-is.
 	prompt := "코드 작성해줘"
-	got := buildContextPrompt(prompt, "", "", "", nil)
+	got := buildContextPrompt(prompt, "", "", "", "42", nil)
 	if got != prompt {
 		t.Errorf("got %q, want %q", got, prompt)
 	}
 }
 
 func TestBuildContextPrompt_WithGlobalMemory(t *testing.T) {
-	got := buildContextPrompt("현재 작업", "", "global mem content", "", nil)
+	got := buildContextPrompt("현재 작업", "", "global mem content", "", "42", nil)
 	if !strings.Contains(got, "global mem content") {
 		t.Errorf("global memory missing from prompt")
 	}
@@ -223,7 +223,7 @@ func TestBuildContextPrompt_WithHistory(t *testing.T) {
 	history := []ConversationTurn{
 		{Timestamp: time.Now(), Prompt: "이전 질문", Response: "이전 응답"},
 	}
-	got := buildContextPrompt("새 질문", "", "", "", history)
+	got := buildContextPrompt("새 질문", "", "", "", "42", history)
 	if !strings.Contains(got, "이전 질문") {
 		t.Errorf("history prompt missing")
 	}
@@ -233,7 +233,7 @@ func TestBuildContextPrompt_WithHistory(t *testing.T) {
 }
 
 func TestBuildContextPrompt_WithParentSummary(t *testing.T) {
-	got := buildContextPrompt("질문", "부모 요약 내용", "", "", nil)
+	got := buildContextPrompt("질문", "부모 요약 내용", "", "", "42", nil)
 	if !strings.Contains(got, "부모 요약 내용") {
 		t.Errorf("parent summary missing")
 	}
@@ -243,8 +243,8 @@ func TestBuildContextPrompt_WithParentSummary(t *testing.T) {
 }
 
 func TestBuildContextPrompt_MemoryNote(t *testing.T) {
-	got := buildContextPrompt("작업", "", "mem", "", nil)
-	if !strings.Contains(got, ".teleclaude/memory.md") {
+	got := buildContextPrompt("작업", "", "mem", "", "42", nil)
+	if !strings.Contains(got, ".teleclaude/memory/42.md") {
 		t.Errorf("memory reminder missing from prompt")
 	}
 }

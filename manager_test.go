@@ -130,8 +130,8 @@ func TestCompactTelegramConversation_SavesAndResetsSession(t *testing.T) {
 	if fc.runCalls != 1 {
 		t.Fatalf("expected one compaction worker run, got %d", fc.runCalls)
 	}
-	if !contains(fc.lastRun.Prompt, "memory.md") {
-		t.Errorf("compaction prompt should ask to save to memory.md, got: %q", fc.lastRun.Prompt)
+	if !contains(fc.lastRun.Prompt, "memory/"+c.ID+".md") {
+		t.Errorf("compaction prompt should ask to save to this conversation's own memory file, got: %q", fc.lastRun.Prompt)
 	}
 	if !fc.lastRun.Resume || fc.lastRun.SessionID != oldSession {
 		t.Errorf("compaction turn should resume the existing session %q to see full context, got resume=%v session=%q",

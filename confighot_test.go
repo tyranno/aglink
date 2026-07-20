@@ -39,3 +39,24 @@ func TestApplyReload_NoChange_NoHooks(t *testing.T) {
 		OnTokenChanged: func() { t.Error("token hook should not fire") },
 	})
 }
+
+// Saving "기본 백엔드" through the desktop/web settings form writes
+// backend.default to config.txt; the running Manager must switch its active
+// backend immediately, not just on the next cold start.
+func TestApplyReload_DefaultBackendChanged(t *testing.T) {
+	old := &Config{DefaultBackend: "claude"}
+	nw := &Config{DefaultBackend: "codex"}
+	got := ""
+	applyReload(old, nw, ReloadHooks{OnDefaultBackend: func(name string) { got = name }})
+	if got != "codex" {
+		t.Errorf("OnDefaultBackend got %q, want %q", got, "codex")
+	}
+}
+
+func TestApplyReload_DefaultBackendUnchanged_NoHook(t *testing.T) {
+	old := &Config{DefaultBackend: "claude"}
+	nw := &Config{DefaultBackend: "claude"}
+	applyReload(old, nw, ReloadHooks{
+		OnDefaultBackend: func(string) { t.Error("backend hook should not fire when unchanged") },
+	})
+}

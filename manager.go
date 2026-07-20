@@ -408,19 +408,36 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	m.runWorker(ctx, chatID, text, m.telegramSink(project), workDir, tc, s, client, backend)
 }
 
-// compactPrompt asks the Worker to externalize the conversation's durable
-// facts into .teleclaude/memory.md instead of relying on the CLI session's
-// ever-growing --resume context to carry them. Mirrors the manual /compact
-// command in devladpopov/teleclaude, which the project journal names as a
-// gap worth closing (see .teleclaude/memory.md, 2026-07-09).
-const compactPrompt = "지금까지의 대화에서 앞으로도 참고해야 할 핵심 결정사항/사실을 이 프로젝트의 .teleclaude/memory.md에 정리해서 저장해줘(파일이 없으면 새로 만들고, 이미 있는 내용과 중복되면 병합·정리). 저장한 뒤에는 무엇을 저장했는지 3~5줄로 요약해서 답해줘."
+// conversationMemoryPath returns the relative, conversation-scoped memory file
+// path a Worker should read/write. Each conversation gets its own file under
+// .teleclaude/memory/ instead of every conversation sharing one growing
+// .teleclaude/memory.md — mixing unrelated topics into one file made it
+// unreadable and caused conversations to leak context into each other
+// (2026-07-16 decision). Pre-existing .teleclaude/memory.md files are left on
+// disk untouched as an archive; they are no longer read or written.
+func conversationMemoryPath(convID string) string {
+	if convID == "" {
+		return ".teleclaude/memory.md"
+	}
+	return ".teleclaude/memory/" + convID + ".md"
+}
+
+// compactPromptFor asks the Worker to externalize this conversation's durable
+// facts into its own conversation-scoped memory file instead of relying on the
+// CLI session's ever-growing --resume context to carry them. Mirrors the
+// manual /compact command in devladpopov/teleclaude, which the project journal
+// names as a gap worth closing (see .teleclaude/memory.md, 2026-07-09).
+func compactPromptFor(convID string) string {
+	return fmt.Sprintf("지금까지의 대화에서 앞으로도 참고해야 할 핵심 결정사항/사실을 이 대화 전용 메모리 파일(%s)에 정리해서 저장해줘(파일이 없으면 새로 만들고, 이미 있는 내용과 중복되면 병합·정리). 다른 대화의 메모와 섞이지 않도록 이 경로만 사용해줘. 저장한 뒤에는 무엇을 저장했는지 3~5줄로 요약해서 답해줘.", conversationMemoryPath(convID))
+}
 
 // CompactTelegramConversation runs one Worker turn asking Claude to persist the
-// telegram stream's key decisions to .teleclaude/memory.md, then drops the
-// local history mirror and the CLI SessionID so the next turn starts a fresh,
-// cheap session instead of resuming an ever-growing one. The externalized
-// memory.md is already read into every Worker prompt (buildContextPrompt), so
-// nothing is actually lost — just moved out of the expensive live session.
+// telegram stream's key decisions to its conversation-scoped memory file, then
+// drops the local history mirror and the CLI SessionID so the next turn starts
+// a fresh, cheap session instead of resuming an ever-growing one. The
+// externalized memory file is already read into every Worker prompt
+// (buildContextPrompt), so nothing is actually lost — just moved out of the
+// expensive live session.
 // State is left untouched if the compaction turn itself fails, so a failure
 // never discards history that wasn't actually saved anywhere durable.
 func (m *Manager) CompactTelegramConversation(ctx context.Context, chatID int64, s MessageSender) {
@@ -459,7 +476,7 @@ func (m *Manager) CompactTelegramConversation(ctx context.Context, chatID int64,
 	_ = s.Send(chatID, "🗜 대화 압축 중...")
 
 	res, err := client.Run(ctx, RunRequest{
-		Prompt:    compactPrompt,
+		Prompt:    compactPromptFor(tc.ID),
 		WorkDir:   workDir,
 		SessionID: tc.SessionID,
 		Resume:    tc.Started,
@@ -1045,9 +1062,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	globalMemory := readGlobalMemory()
 	projectMemory := ""
 	if pPath != "" {
-		projectMemory = readProjectMemory(pPath)
+		projectMemory = readProjectMemory(pPath, workConv.ID)
 	}
-	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)
+	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, workConv.ID, historyForPrompt)
 
 	workerModel := m.workerModelForBackendName(backend)
 	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
@@ -1112,7 +1129,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			log.Printf("[worker] session lost (%v) — retrying once without --resume, with fuller history", err)
 			sessionRecovered = true
 			recoveryHistory := historyForContext(workConv.History[:pendingIdx], false)
-			recoveryPrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, recoveryHistory)
+			recoveryPrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, workConv.ID, recoveryHistory)
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
@@ -1158,9 +1175,14 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		if newC, cerr := sink.makeContinuation(workConv); cerr == nil {
 			newC.Backend = backend
 			workConv = newC
+			// The continuation is a new conversation with its own memory file — the
+			// old conv's projectMemory doesn't belong under the new conv's ID.
+			if pPath != "" {
+				projectMemory = readProjectMemory(pPath, workConv.ID)
+			}
 			// Reactive context-overflow split: continue seamlessly in a new series
 			// (summary carried); keep it internal — logged below, not sent to the user.
-			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, nil)
+			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, workConv.ID, nil)
 			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
 
 			// Restart heartbeat for the retry turn — it may take another full TimeoutMinutes.
@@ -1337,10 +1359,16 @@ func formatCompletion(elapsed time.Duration) string {
 	return fmt.Sprintf("✅ 작업 완료 (%s)", duration)
 }
 
-// readProjectMemory reads .teleclaude/memory.md from the project directory.
-// Worker Claude can freely update this file to persist project-level knowledge.
-func readProjectMemory(projectPath string) string {
-	b, err := os.ReadFile(filepath.Join(projectPath, ".teleclaude", "memory.md"))
+// readProjectMemory reads this conversation's own memory file
+// (.teleclaude/memory/<convID>.md) from the project directory. Worker Claude
+// can freely update this file to persist decisions specific to this
+// conversation — it is not shared with other conversations in the same
+// project (see conversationMemoryPath).
+func readProjectMemory(projectPath, convID string) string {
+	if convID == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(projectPath, ".teleclaude", "memory", convID+".md"))
 	if err != nil {
 		return ""
 	}
@@ -1412,8 +1440,9 @@ func tailTurns(history []ConversationTurn, maxTurns, maxChars int) []Conversatio
 
 // buildContextPrompt assembles the Worker prompt from available context layers.
 // Layer order: global memory → project memory → parent summary → recent history → current request.
-// Only adds sections when content exists — no empty headers.
-func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemory string, history []ConversationTurn) string {
+// Only adds sections when content exists — no empty headers. convID scopes the
+// trailing memory-save reminder to this conversation's own memory file.
+func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemory, convID string, history []ConversationTurn) string {
 	hasContext := globalMemory != "" || projectMemory != "" || parentSummary != "" || len(history) > 0
 	if !hasContext {
 		return currentPrompt
@@ -1428,7 +1457,7 @@ func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemor
 	}
 
 	if projectMemory != "" {
-		sb.WriteString("## 프로젝트 메모리\n\n")
+		sb.WriteString("## 이 대화의 메모리\n\n")
 		sb.WriteString(projectMemory)
 		sb.WriteString("\n\n---\n\n")
 	}
@@ -1452,7 +1481,7 @@ func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemor
 
 	sb.WriteString("## 현재 요청\n\n")
 	sb.WriteString(currentPrompt)
-	sb.WriteString("\n\n> 중요한 결정/해결책은 .teleclaude/memory.md에 기록해두세요.")
+	fmt.Fprintf(&sb, "\n\n> 중요한 결정/해결책은 이 대화 전용 메모리 파일(%s)에 기록해두세요. 다른 대화의 메모와 섞이지 않도록 이 경로만 사용하세요.", conversationMemoryPath(convID))
 	return sb.String()
 }
 

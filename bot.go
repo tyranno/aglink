@@ -2239,7 +2239,7 @@ func helpText() string {
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
 !history list [프로젝트|all]          날짜 목록 (all = 전체 프로젝트)
 
-!compact   지금까지의 텔레그램 대화 핵심을 .teleclaude/memory.md에 저장하고
+!compact   지금까지의 텔레그램 대화 핵심을 이 대화 전용 메모리 파일(.teleclaude/memory/telegram.md)에 저장하고
            세션을 새로 시작 (컨텍스트가 길어져 느려졌을 때 사용)
 
 사용자 관리:

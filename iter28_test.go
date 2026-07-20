@@ -9,7 +9,7 @@ import (
 // ---- buildContextPrompt (novel cases not in bot_test.go) ----
 
 func TestBuildContextPrompt_NoContext_ReturnsPromptOnly(t *testing.T) {
-	got := buildContextPrompt("hello", "", "", "", nil)
+	got := buildContextPrompt("hello", "", "", "", "42", nil)
 	if got != "hello" {
 		t.Errorf("no-context prompt = %q, want %q", got, "hello")
 	}
@@ -18,7 +18,7 @@ func TestBuildContextPrompt_NoContext_ReturnsPromptOnly(t *testing.T) {
 func TestBuildContextPrompt_LongResponseTruncated(t *testing.T) {
 	longResp := strings.Repeat("x", 400)
 	hist := []ConversationTurn{{Prompt: "q", Response: longResp}}
-	got := buildContextPrompt("req", "", "", "", hist)
+	got := buildContextPrompt("req", "", "", "", "42", hist)
 	// History responses are truncated to 300 chars; full 400-char response must not appear.
 	if strings.Contains(got, longResp) {
 		t.Error("long response should be truncated in context prompt")

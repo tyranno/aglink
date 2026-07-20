@@ -203,6 +203,33 @@ func TestParseCodexVersion(t *testing.T) {
 	}
 }
 
+func TestParseCodexModelCatalog(t *testing.T) {
+	// Real (trimmed) shape of `codex debug models` output: user-selectable
+	// models are "list" visibility; internal ones like the auto-reviewer are
+	// "hide" and must not show up in the settings dropdown.
+	out := `{"models":[
+		{"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","visibility":"list"},
+		{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list"},
+		{"slug":"codex-auto-review","display_name":"Codex Auto Review","visibility":"hide"}
+	]}`
+	got := parseCodexModelCatalog(out)
+	want := []string{"gpt-5.6-sol", "gpt-5.5"}
+	if len(got) != len(want) {
+		t.Fatalf("parseCodexModelCatalog() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("parseCodexModelCatalog()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseCodexModelCatalog_InvalidJSON(t *testing.T) {
+	if got := parseCodexModelCatalog("not json"); got != nil {
+		t.Errorf("parseCodexModelCatalog(invalid) = %v, want nil", got)
+	}
+}
+
 // TestCodexReadinessDecision locks the gate logic: a codex missing
 // --ignore-user-config is blocked with upgrade guidance naming the version; a
 // ready codex emits a one-time notice on first use and proceeds silently after.

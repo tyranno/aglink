@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>aglink-web options</title>
+    <style>
+      body { font: 13px system-ui, sans-serif; margin: 16px; max-width: 480px; }
+      label { display: block; margin-bottom: 8px; }
+      input { width: 100px; }
+      #status { margin-left: 8px; color: #2a7; }
+      p.hint { color: #666; }
+    </style>
+  </head>
+  <body>
+    <h3>aglink-web</h3>
+    <label>
+      Daemon port:
+      <input id="port" type="number" min="1" max="65535" placeholder="48219" />
+    </label>
+    <button id="save">Save</button>
+    <span id="status"></span>
+    <p class="hint">
+      Must match the daemon's port. Leave blank to use the default
+      <code>48219</code>. Only change this if you set <code>AGLINK_WEB_PORT</code>
+      on the daemon.
+    </p>
+    <script src="options.js"></script>
+  </body>
+</html>

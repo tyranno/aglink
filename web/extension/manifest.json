@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "aglink-web",
+  "version": "0.1.0",
+  "description": "Bridges the user's Chrome browser to teleclaude (aglink-web) over a local WebSocket, so a worker can list tabs, navigate, and read page text.",
+  "permissions": ["tabs", "scripting", "alarms", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["console-capture.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

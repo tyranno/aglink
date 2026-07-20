@@ -20,7 +20,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// wsFrame is teleclaude's browser-facing frame envelope (relayed to the UI as a
+// wsFrame is aglink's browser-facing frame envelope (relayed to the UI as a
 // Wails "frame" event).
 type wsFrame struct {
 	Type    string          `json:"type"` // text | image | typing | done | user
@@ -30,7 +30,7 @@ type wsFrame struct {
 	Target  json.RawMessage `json:"target,omitempty"`
 }
 
-// controlOut is what teleclaude's control API sends us.
+// controlOut is what aglink's control API sends us.
 type controlOut struct {
 	Kind  string          `json:"kind"` // frame | reply
 	Frame *wsFrame        `json:"frame,omitempty"`
@@ -38,7 +38,7 @@ type controlOut struct {
 	Data  json.RawMessage `json:"data,omitempty"`
 }
 
-// controlIn is what we send to teleclaude's control API.
+// controlIn is what we send to aglink's control API.
 type controlIn struct {
 	Type    string          `json:"type"`
 	ReqID   string          `json:"reqID,omitempty"`
@@ -54,7 +54,7 @@ type controlIn struct {
 }
 
 // ControlService is the Wails-bound service the Svelte frontend calls. It keeps a
-// persistent client connection to teleclaude's control API (the same relay role
+// persistent client connection to aglink's control API (the same relay role
 // aglink-chat plays) and forwards live frames to the UI as Wails events:
 //   - "frame"          → a wsFrame (assistant text/image, typing, done, echo)
 //   - "control:status" → bool (connected?)
@@ -77,15 +77,18 @@ func NewControlService() *ControlService {
 		tok = strings.TrimSpace(string(b))
 	}
 	return &ControlService{
-		addr:    "127.0.0.1:17170",
+		addr:    "127.0.0.1:27270",
 		token:   tok,
 		pending: map[string]chan json.RawMessage{},
 	}
 }
 
 func controlTokenPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".teleclaude", "chat_control.token")
+	dir, err := dataDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "chat_control.token")
 }
 
 // ServiceStartup (Wails lifecycle hook) launches the control-client loop.
@@ -274,11 +277,11 @@ func attachmentImageMimeType(path string) (string, bool) {
 }
 
 func attachmentsStagingDir() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := dataDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
+		return "", fmt.Errorf("resolve aglink data dir: %w", err)
 	}
-	return filepath.Join(home, ".teleclaude", "attachments"), nil
+	return filepath.Join(dir, "attachments"), nil
 }
 
 func writeStagedAttachmentBytes(data []byte, ext string) (string, error) {
@@ -446,7 +449,7 @@ func (c *ControlService) PickFolder() (string, error) {
 		PromptForSingleSelection()
 }
 
-// GetVersion returns the teleclaude version payload as a JSON string.
+// GetVersion returns the aglink version payload as a JSON string.
 func (c *ControlService) GetVersion() (string, error) {
 	data, err := c.request(controlIn{Type: "get_version"})
 	return string(data), err
@@ -490,7 +493,7 @@ func (c *ControlService) PickFile() (string, error) {
 		PromptForSingleSelection()
 }
 
-// SaveClipboardImage stores a pasted clipboard image data URL under teleclaude's
+// SaveClipboardImage stores a pasted clipboard image data URL under aglink's
 // attachments directory so the control API will accept it for ingestion.
 func (c *ControlService) SaveClipboardImage(dataURL string) (string, error) {
 	data, ext, err := decodeClipboardImageDataURL(dataURL)
@@ -500,8 +503,8 @@ func (c *ControlService) SaveClipboardImage(dataURL string) (string, error) {
 	return writeStagedAttachmentBytes(data, ext)
 }
 
-// StageAttachment copies a native picked file into teleclaude's attachments
-// directory before UploadAttachment asks teleclaude to ingest it.
+// StageAttachment copies a native picked file into aglink's attachments
+// directory before UploadAttachment asks aglink to ingest it.
 func (c *ControlService) StageAttachment(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -535,7 +538,7 @@ func (c *ControlService) PreviewAttachmentImage(path string) (string, error) {
 	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
-// UploadAttachment relays a local file path through teleclaude's attachment pipeline.
+// UploadAttachment relays a local file path through aglink's attachment pipeline.
 func (c *ControlService) UploadAttachment(path, caption, kind, id string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {

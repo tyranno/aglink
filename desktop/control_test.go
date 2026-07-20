@@ -98,7 +98,7 @@ func TestSaveClipboardImageWritesAttachmentsFile(t *testing.T) {
 	if filepath.Ext(path) != ".png" {
 		t.Fatalf("extension = %q, want .png", filepath.Ext(path))
 	}
-	wantDir := filepath.Join(home, ".teleclaude", "attachments")
+	wantDir := filepath.Join(home, ".aglink", "attachments")
 	if filepath.Dir(path) != wantDir {
 		t.Fatalf("dir = %q, want %q", filepath.Dir(path), wantDir)
 	}
@@ -125,7 +125,7 @@ func TestStageAttachmentCopiesIntoAttachmentsDir(t *testing.T) {
 	}
 	defer os.Remove(path)
 
-	wantDir := filepath.Join(home, ".teleclaude", "attachments")
+	wantDir := filepath.Join(home, ".aglink", "attachments")
 	if filepath.Dir(path) != wantDir {
 		t.Fatalf("dir = %q, want %q", filepath.Dir(path), wantDir)
 	}

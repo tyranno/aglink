@@ -1,59 +1,78 @@
-# Welcome to Your New Wails3 Project!
+# aglink-desktop
 
-Congratulations on generating your Wails3 application! This README will guide you through the next steps to get your project up and running.
+Wails v3 desktop client for aglink. Talks to the host over the control API on
+`127.0.0.1:27270`.
 
-## Getting Started
+This module is **excluded from `go.work`** (see the comment there): it depends on a
+local `wails/v3` checkout outside this repo, so it is always built standalone with
+`GOWORK=off`.
 
-1. Navigate to your project directory in the terminal.
+## Build
 
-2. To run your application in development mode, use the following command:
+```
+cd desktop
+wails3 task build
+```
 
-   ```
-   wails3 dev
-   ```
+`wails3 task build` does three things a plain `go build` does not:
 
-   This will start your application and enable hot-reloading for both frontend and backend changes.
+1. builds the frontend into `frontend/dist/` (embedded via `go:embed` — an empty
+   dist directory fails to compile),
+2. generates `frontend/bindings/`,
+3. generates `wails_windows_<arch>.syso`, which carries the **application icon**
+   and the version resource.
 
-3. To build your application for production, use:
+`frontend/dist/`, `frontend/bindings/` and `*.syso` are all gitignored, so a fresh
+clone has none of them.
 
-   ```
-   wails3 build
-   ```
+### Building by hand
 
-   This will create a production-ready executable in the `build` directory.
+If you build with `go build` directly, generate the resource file first or the
+executable ships with the generic Windows icon:
 
-## Exploring Wails3 Features
+```
+cd desktop/build
+wails3 generate syso -arch amd64 \
+  -icon windows/icon.ico \
+  -manifest windows/wails.exe.manifest \
+  -info windows/info.json \
+  -out ../wails_windows_amd64.syso
 
-Now that you have your project set up, it's time to explore the features that Wails3 offers:
+cd ..
+GOWORK=off go build -ldflags "-H windowsgui -s -w" -o bin/aglink-desktop.exe .
+```
 
-1. **Check out the examples**: The best way to learn is by example. Visit the `examples` directory in the `v3/examples` directory to see various sample applications.
+**`-H windowsgui` is not optional.** Without it the binary links as a console
+subsystem app and Windows opens a terminal window next to the GUI every launch.
 
-2. **Run an example**: To run any of the examples, navigate to the example's directory and use:
+## Logs
 
-   ```
-   go run .
-   ```
+Because the binary is GUI-subsystem it has no stderr, so all logging goes to a
+file under the data dir (`$AGLINK_HOME`, else `~/.aglink`):
 
-   Note: Some examples may be under development during the alpha phase.
+```
+<data dir>/aglink-desktop.log        # current
+<data dir>/aglink-desktop.log.old    # previous, rotated at 10 MiB on startup
+```
 
-3. **Explore the documentation**: Visit the [Wails3 documentation](https://v3.wails.io/) for in-depth guides and API references.
+It captures both the standard logger (control API connect/disconnect) and the
+Wails system logger. It is deliberately separate from the host's `aglink.log`:
+the two processes share a data dir and would otherwise interleave.
 
-4. **Join the community**: Have questions or want to share your progress? Join the [Wails Discord](https://discord.gg/JDdSxwjhGf) or visit the [Wails discussions on GitHub](https://github.com/wailsapp/wails/discussions).
+## Icon
 
-## Project Structure
+The source artwork is `frontend/public/aglink-icon.svg`. The build assets derived
+from it:
 
-Take a moment to familiarize yourself with your project structure:
+| File | Used for |
+|---|---|
+| `build/appicon.png` | source for regenerating the platform icons |
+| `build/windows/icon.ico` | Windows executable + window/taskbar icon |
+| `build/darwin/icons.icns` | macOS bundle |
+| `build/linux/…` | Linux desktop entry |
 
-- `frontend/`: Contains your frontend code (HTML, CSS, JavaScript/TypeScript)
-- `main.go`: The entry point of your Go backend
-- `app.go`: Define your application structure and methods here
-- `wails.json`: Configuration file for your Wails project
+After changing the artwork, regenerate with `wails3 task common:generate:icons`,
+then rebuild so the new `.syso` is linked in.
 
-## Next Steps
-
-1. Modify the frontend in the `frontend/` directory to create your desired UI.
-2. Add backend functionality in `main.go`.
-3. Use `wails3 dev` to see your changes in real-time.
-4. When ready, build your application with `wails3 build`.
-
-Happy coding with Wails3! If you encounter any issues or have questions, don't hesitate to consult the documentation or reach out to the Wails community.
+Executable metadata (product name, company, description) lives in
+`build/windows/info.json`.

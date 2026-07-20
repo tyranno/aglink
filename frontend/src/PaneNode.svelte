@@ -32,10 +32,25 @@
     progressForTarget,
     toggleProgressPopup,
     paneColor,
+    scrollPaneLogToBottom,
+    togglePaneBackendMenu,
+    setTargetBackend,
+    togglePaneWorkDirMenu,
+    setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
 
   let { node } = $props();
+
+  // Drives the "jump to latest" FAB: hidden while the log is already near
+  // its bottom, shown once the user scrolls up to read earlier messages.
+  let atBottom = $state(true);
+  const NEAR_BOTTOM_PX = 80;
+
+  function handleLogScroll(event) {
+    const el = event.currentTarget;
+    atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+  }
 
   // User bubbles stay verbatim (typed text shown as typed); assistant/system
   // output is Markdown and gets rendered, matching aglink-chat's web/app.js
@@ -75,12 +90,22 @@
     {#each node.children as child, index (child.node.type === "leaf" ? child.node.paneId : child.node.id)}
       {#if index > 0}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
-          class={node.direction === "column"
-            ? "h-px w-full shrink-0 cursor-row-resize bg-slate-200 hover:bg-blue-300"
-            : "w-px shrink-0 cursor-col-resize bg-slate-200 hover:bg-blue-300"}
+          class={`split-resizer-hitbox group relative z-20 shrink-0 bg-transparent ${node.direction === "column"
+            ? "h-[9px] -my-1 w-full cursor-row-resize"
+            : "w-[9px] -mx-1 cursor-col-resize"}`}
+          role="separator"
+          aria-orientation={node.direction === "column" ? "horizontal" : "vertical"}
+          aria-label={node.direction === "column" ? "상하 창 크기 조절" : "좌우 창 크기 조절"}
           onmousedown={(event) => startSplitResize(event, node.id, node.direction, index)}
-        ></div>
+        >
+          <div
+            class={node.direction === "column"
+              ? "pointer-events-none absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-200 group-hover:bg-blue-300"
+              : "pointer-events-none absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-slate-200 group-hover:bg-blue-300"}
+          ></div>
+        </div>
       {/if}
       <div class="flex min-w-0 min-h-0 overflow-hidden" style={`flex: 0 0 ${child.size}%`}>
         <PaneNode node={child.node} />
@@ -110,7 +135,7 @@
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
-        class={`flex h-10 shrink-0 cursor-grab items-center gap-2 border-b border-slate-200 px-4 backdrop-blur active:cursor-grabbing ${color ? color.headerBg : "bg-white/75"}`}
+        class={`relative z-30 flex h-10 shrink-0 cursor-grab items-center gap-2 border-b border-slate-200 px-4 backdrop-blur active:cursor-grabbing ${color ? color.headerBg : "bg-white/75"}`}
         draggable="true"
         ondragstart={(event) => handlePaneDragStart(event, p.id)}
         ondragend={handlePaneDragEnd}
@@ -126,11 +151,66 @@
           <div class="flex min-w-0 flex-1 items-center gap-2">
             <div class="min-w-0 truncate text-sm font-semibold text-slate-900">{paneConversationMeta(p.target).title}</div>
             <span class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-600">#{paneConversationMeta(p.target).id}</span>
-            <span class="shrink-0 rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700">{backendLabel(paneConversationMeta(p.target).backend)}</span>
-            {#if paneConversationMeta(p.target).workDir}
-              <span class="min-w-0 truncate rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{paneConversationMeta(p.target).workDir}</span>
-            {:else if paneConversationMeta(p.target).kind === "web"}
-              <span class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">작업 폴더 미지정</span>
+            <div class="relative shrink-0" data-pane-backend-menu>
+              <button
+                type="button"
+                draggable="false"
+                class="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-300"
+                onmousedown={(event) => { event.preventDefault(); event.stopPropagation(); togglePaneBackendMenu(p.id); }}
+                onclick={(event) => event.stopPropagation()}
+                onkeydown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  togglePaneBackendMenu(p.id);
+                }}
+                title="AI backend 변경"
+                aria-label="AI backend 변경"
+              >
+                {backendLabel(paneConversationMeta(p.target).backend)}
+              </button>
+              {#if chat.backendMenuPaneId === p.id}
+                <div class="absolute left-0 top-6 z-40 w-32 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "default"); }}>Default</button>
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "claude"); }}>Claude</button>
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "codex"); }}>Codex</button>
+                </div>
+              {/if}
+            </div>
+            {#if paneConversationMeta(p.target).kind === "web"}
+              <div class="relative min-w-0 shrink" data-pane-workdir-menu>
+                <button
+                  type="button"
+                  draggable="false"
+                  class={`block max-w-[260px] truncate rounded-full px-2 py-0.5 text-left text-[11px] ${paneConversationMeta(p.target).workDir ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                  onmousedown={(event) => { event.preventDefault(); event.stopPropagation(); togglePaneWorkDirMenu(p.id); }}
+                  onclick={(event) => event.stopPropagation()}
+                  onkeydown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    togglePaneWorkDirMenu(p.id);
+                  }}
+                  title={paneConversationMeta(p.target).workDir || "작업 폴더 미지정"}
+                  aria-label="작업 폴더 확인 및 변경"
+                >
+                  {paneConversationMeta(p.target).workDir || "작업 폴더 미지정"}
+                </button>
+                {#if chat.workDirMenuPaneId === p.id}
+                  <div class="absolute left-0 top-6 z-40 w-80 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+                    <div class="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">작업 폴더</div>
+                    <div class="max-h-28 overflow-y-auto break-all rounded-md bg-slate-50 px-2 py-2 text-xs leading-5 text-slate-700">
+                      {paneConversationMeta(p.target).workDir || "설정되지 않음"}
+                    </div>
+                    <button
+                      class="mt-1 block w-full rounded-md px-2 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
+                      onclick={(event) => { event.stopPropagation(); void setTargetWorkDir(p.target); }}
+                    >
+                      작업 폴더 선택...
+                    </button>
+                  </div>
+                {/if}
+              </div>
             {/if}
           </div>
         {:else}
@@ -148,41 +228,53 @@
         {/if}
       </div>
 
-      <div use:registerPaneLog={p.id} class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
-        <div class="flex min-h-full w-full flex-col gap-2">
-          {#if messagesForPane(p.target).length === 0}
-            <div class="rounded-lg border border-dashed border-slate-300 bg-white/60 px-6 py-10 text-center text-sm text-slate-500">
-              메시지가 없습니다. 첫 요청을 보내 보세요.
-            </div>
-          {/if}
-
-          {#each messagesForPane(p.target) as message, mIndex (`${mIndex}-${message.role}-${message.text}-${message.image}`)}
-            <div class={`flex w-full ${message.role === "user" ? "justify-end" : message.role === "system" ? "justify-center" : "justify-start"}`}>
-              <div class={`min-w-0 max-w-[92%] overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
-                message.role === "user"
-                  ? "bg-blue-50 text-blue-950 ring-blue-200"
-                  : message.role === "system"
-                    ? "bg-amber-50 text-amber-900 ring-amber-200"
-                    : "bg-white/95 text-slate-900 ring-slate-200"
-              }`}>
-                {#if message.text}
-                  {#if message.role === "user"}
-                    <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{message.text}</div>
-                  {:else}
-                    <div class="markdown-body text-[13px] leading-4" use:renderMarkdownInto={message.text}></div>
-                  {/if}
-                {/if}
-                {#if message.image}
-                  <img
-                    alt=""
-                    class="mt-2 max-h-[420px] w-auto max-w-full rounded-lg border border-slate-200"
-                    src={`data:image/png;base64,${message.image}`}
-                  />
-                {/if}
+      <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div use:registerPaneLog={p.id} onscroll={handleLogScroll} class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
+          <div class="flex min-h-full w-full flex-col gap-2">
+            {#if messagesForPane(p.target).length === 0}
+              <div class="rounded-lg border border-dashed border-slate-300 bg-white/60 px-6 py-10 text-center text-sm text-slate-500">
+                메시지가 없습니다. 첫 요청을 보내 보세요.
               </div>
-            </div>
-          {/each}
+            {/if}
+
+            {#each messagesForPane(p.target) as message, mIndex (`${mIndex}-${message.role}-${message.text}-${message.image}`)}
+              <div class={`flex w-full ${message.role === "user" ? "justify-end" : message.role === "system" ? "justify-center" : "justify-start"}`}>
+                <div class={`min-w-0 max-w-[92%] overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
+                  message.role === "user"
+                    ? "bg-blue-50 text-blue-950 ring-blue-200"
+                    : message.role === "system"
+                      ? "bg-amber-50 text-amber-900 ring-amber-200"
+                      : "bg-white/95 text-slate-900 ring-slate-200"
+                }`}>
+                  {#if message.text}
+                    {#if message.role === "user"}
+                      <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{message.text}</div>
+                    {:else}
+                      <div class="markdown-body text-[13px] leading-4" use:renderMarkdownInto={message.text}></div>
+                    {/if}
+                  {/if}
+                  {#if message.image}
+                    <img
+                      alt=""
+                      class="mt-2 max-h-[420px] w-auto max-w-full rounded-lg border border-slate-200"
+                      src={`data:image/png;base64,${message.image}`}
+                    />
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
         </div>
+        {#if !atBottom && messagesForPane(p.target).length > 0}
+          <button
+            class="absolute bottom-3 right-4 grid h-8 w-8 place-items-center rounded-full border border-slate-200 bg-white text-sm text-slate-600 shadow-md hover:bg-slate-50"
+            onclick={() => scrollPaneLogToBottom(p.id)}
+            title="마지막 메시지로 이동"
+            aria-label="마지막 메시지로 이동"
+          >
+            ↓
+          </button>
+        {/if}
       </div>
 
       {#if paneWorking(p.target)}

@@ -90,6 +90,9 @@ assert(store.includes("function removeLeaf"), "docking must support removing a p
 assert(store.includes("function swapLeaves"), "dropping on the center of a pane must swap the two panes");
 assert(store.includes("export function startSplitResize"), "each split node must support independent drag-to-resize of its own children");
 assert(store.includes("export const MIN_PANE_PERCENT"), "pane resize must enforce a minimum size so a pane cannot be dragged to zero");
+assert(pane.includes("split-resizer-hitbox"), "split resize handles must keep a larger hitbox than the visible 1px divider");
+assert(pane.includes('aria-label={node.direction === "column" ? "상하 창 크기 조절" : "좌우 창 크기 조절"}'), "split resize handles must expose the correct vertical/horizontal resize affordance");
+assert(pane.includes("startSplitResize(event, node.id, node.direction, index)"), "split resize handles must start resizing with the split direction");
 assert(pane.includes('draggable="true"') && pane.includes("ondragstart={(event) => handlePaneDragStart(event, p.id)}"), "a pane's header must be draggable to redock it");
 assert(pane.includes("ondragover={(event) => handlePaneDragOver(event, p.id)}") && pane.includes("ondrop={(event) => handlePaneDrop(event, p.id)}"), "a pane must accept drops to dock another pane against one of its edges");
 assert(store.includes('if (x < 0.25) return "left"'), "drop targeting must resolve which edge (or center) the cursor is over");
@@ -166,6 +169,33 @@ assert(!app.includes("진행 메시지"), "the progress popover must live in Pan
 assert(app.includes('if (!target.closest("[data-progress-popup]")) closeProgressPopup();'), "clicking outside the popover must close it");
 assert(app.includes("if (chat.progressPopupPaneId) closeProgressPopup();"), "Escape must close the progress popover like the other modals");
 
+// The backend badge in each pane header must be directly actionable, mirroring
+// the sidebar channel backend menu without forcing the user to leave the pane.
+assert(store.includes("backendMenuPaneId: null"), "chat state must track which pane header backend menu is open");
+assert(store.includes("export async function setTargetBackend"), "pane headers must share a store-level backend setter");
+assert(store.includes("ControlService.SetChannelBackend"), "the shared backend setter must call the desktop control service");
+assert(store.includes("export function togglePaneBackendMenu") && store.includes("export function closePaneBackendMenu"), "pane header backend menus must support toggle and click-away close");
+assert(pane.includes("data-pane-backend-menu"), "pane headers must wrap the backend badge/menu in a click-away scope");
+assert(pane.includes("togglePaneBackendMenu(p.id)") && pane.includes("setTargetBackend(p.target, \"claude\")") && pane.includes("setTargetBackend(p.target, \"codex\")"), "pane backend badge must expose Claude and Codex choices");
+assert(pane.includes("event.preventDefault(); event.stopPropagation(); togglePaneBackendMenu(p.id);"), "pane backend badge must open from mousedown so the draggable header cannot swallow the click");
+assert(pane.includes("relative z-30 flex h-10"), "pane headers must stack above message logs so the backend menu is visible");
+assert(app.includes('if (!target.closest("[data-pane-backend-menu]")) closePaneBackendMenu();'), "clicking outside a pane backend menu must close it");
+assert(app.includes("if (chat.backendMenuPaneId) closePaneBackendMenu();"), "Escape must close the pane backend menu");
+
+// The work-directory chip in each local pane header must be directly
+// inspectable and configurable, using the same picker/backend path as the
+// sidebar conversation menu.
+assert(store.includes("workDirMenuPaneId: null"), "chat state must track which pane header work-directory menu is open");
+assert(store.includes("export async function setTargetWorkDir"), "pane headers must share a store-level work-directory setter");
+assert(store.includes("ControlService.PickFolder") && store.includes("ControlService.WebSetDir"), "the shared work-directory setter must call the folder picker and web_setdir control path");
+assert(store.includes('if (normalized.kind !== "web")'), "work-directory changes must only apply to local/web conversations");
+assert(store.includes("export function togglePaneWorkDirMenu") && store.includes("export function closePaneWorkDirMenu"), "pane header work-directory menus must support toggle and click-away close");
+assert(pane.includes("data-pane-workdir-menu"), "pane headers must wrap the work-directory chip/menu in a click-away scope");
+assert(pane.includes("togglePaneWorkDirMenu(p.id)") && pane.includes("setTargetWorkDir(p.target)"), "pane work-directory chip must expose a picker action");
+assert(pane.includes("event.preventDefault(); event.stopPropagation(); togglePaneWorkDirMenu(p.id);"), "pane work-directory chip must open from mousedown so the draggable header cannot swallow the click");
+assert(app.includes('if (!target.closest("[data-pane-workdir-menu]")) closePaneWorkDirMenu();'), "clicking outside a pane work-directory menu must close it");
+assert(app.includes("if (chat.workDirMenuPaneId) closePaneWorkDirMenu();"), "Escape must close the pane work-directory menu");
+
 // Saving structured settings (e.g. changing the default backend) must refresh
 // the header badge instead of leaving it stuck at whatever backend was active
 // when the app launched.
@@ -197,6 +227,14 @@ assert(store.includes("export function moveGroupToRoot"), "must support dragging
 assert(store.includes("function isSameOrDescendantGroup") && store.includes("function canReparentGroup"), "reparenting must refuse to create a group/subgroup cycle");
 assert(app.includes("rootWebGroups()") && app.includes("<GroupNode"), "the sidebar must render only root groups directly, delegating subgroups to GroupNode");
 assert(group.includes("childWebGroups(group.id)") && group.includes("<GroupNode group={child}"), "each group must render its own subgroups recursively");
+
+// Model fields (manager/worker/codex worker/codex manager) come from teleclaude
+// as a detected list ("select") or plain text as a fallback — never a
+// free-typed field where a typo silently breaks the backend. The select must
+// still show a legacy/custom value that isn't in the detected list, instead of
+// silently defaulting the picker to the wrong option.
+assert(app.includes("function selectOptionsFor(field)"), "settings select fields must be able to surface a legacy value not in the detected options list");
+assert(app.includes("selectOptionsFor(field)") && app.includes('option === "" ? "기본값"'), "the settings select must render options through selectOptionsFor and label the blank option as 기본값");
 
 if (process.exitCode) {
   process.exit(process.exitCode);

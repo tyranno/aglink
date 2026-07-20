@@ -54,6 +54,8 @@ export const chat = $state({
   dragOverGroupZone: null,
   progressByKey: new Map(),
   progressPopupPaneId: null,
+  backendMenuPaneId: null,
+  workDirMenuPaneId: null,
 });
 
 export const UNGROUPED_DROP_ZONE = "none";
@@ -401,6 +403,68 @@ export function findWebConv(id) {
 
 export function backendLabel(backend) {
   return backend ? String(backend).toUpperCase() : "DEFAULT";
+}
+
+const CHANNEL_BACKENDS = new Set(["default", "claude", "codex"]);
+
+function normalizeBackendChoice(backend) {
+  const value = String(backend || "default").toLowerCase();
+  return CHANNEL_BACKENDS.has(value) ? value : "default";
+}
+
+export function togglePaneBackendMenu(paneId) {
+  chat.backendMenuPaneId = chat.backendMenuPaneId === paneId ? null : paneId;
+}
+
+export function closePaneBackendMenu() {
+  chat.backendMenuPaneId = null;
+}
+
+export function togglePaneWorkDirMenu(paneId) {
+  chat.workDirMenuPaneId = chat.workDirMenuPaneId === paneId ? null : paneId;
+}
+
+export function closePaneWorkDirMenu() {
+  chat.workDirMenuPaneId = null;
+}
+
+export async function setTargetBackend(target, backend) {
+  const normalized = normalizeTarget(target);
+  const nextBackend = normalizeBackendChoice(backend);
+  try {
+    const reply = parseJSON(
+      await ControlService.SetChannelBackend(normalized.kind || "telegram", normalized.id || "", nextBackend),
+      { ok: false },
+    );
+    if (!reply.ok) {
+      chat.statusNote = `Backend 설정 실패: ${reply.error || "알 수 없는 오류"}`;
+      return false;
+    }
+    chat.statusNote = "";
+    closePaneBackendMenu();
+    await loadConversations({ forceReloadCurrent: false });
+    return true;
+  } catch (error) {
+    chat.statusNote = `Backend 설정 실패: ${error}`;
+    return false;
+  }
+}
+
+export async function setTargetWorkDir(target) {
+  const normalized = normalizeTarget(target);
+  if (normalized.kind !== "web") return false;
+  try {
+    const dir = await ControlService.PickFolder();
+    if (!dir) return false;
+    await ControlService.WebSetDir(normalized.id || "", dir);
+    closePaneWorkDirMenu();
+    const shown = chat.panes.some((item) => item.target?.kind === "web" && item.target.id === normalized.id);
+    await loadConversations({ forceReloadCurrent: shown });
+    return true;
+  } catch (error) {
+    chat.statusNote = `작업 폴더 변경 실패: ${error}`;
+    return false;
+  }
 }
 
 // ---- layout tree (leaf | split) ----

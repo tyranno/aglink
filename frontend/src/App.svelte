@@ -37,6 +37,10 @@
     handleGroupDrop,
     UNGROUPED_DROP_ZONE,
     closeProgressPopup,
+    closePaneBackendMenu,
+    setTargetBackend,
+    closePaneWorkDirMenu,
+    setTargetWorkDir,
   } from "./paneStore.svelte.js";
 
   let view = $state("chat");
@@ -62,17 +66,8 @@
   }
 
   async function setChannelBackend(target, backend) {
-    try {
-      const reply = parseJSON(await ControlService.SetChannelBackend(target.kind || "telegram", target.id || "", backend), { ok: false });
-      if (!reply.ok) {
-        chat.statusNote = `Backend 설정 실패: ${reply.error || "알 수 없는 오류"}`;
-        return;
-      }
-      openMenuId = "";
-      await loadConversations({ forceReloadCurrent: false });
-    } catch (error) {
-      chat.statusNote = `Backend 설정 실패: ${error}`;
-    }
+    openMenuId = "";
+    await setTargetBackend(target, backend);
   }
 
   async function loadVersionInfo() {
@@ -147,6 +142,17 @@
 
   function updateSettingValue(key, value) {
     settingsValues = { ...settingsValues, [key]: value };
+  }
+
+  // A select field's current value can be a legacy/custom string the backend
+  // didn't detect (e.g. a hand-typed codex model from before this dropdown
+  // existed). Keep it selectable and visibly correct instead of the native
+  // <select> silently falling back to the first option.
+  function selectOptionsFor(field) {
+    const options = field.options || [];
+    const current = settingsValues[field.key] ?? "";
+    if (current === "" || options.includes(current)) return options;
+    return [...options, current];
   }
 
   async function saveSettings() {
@@ -254,15 +260,8 @@
   }
 
   async function changeWebDirectory(conv) {
-    try {
-      const dir = await ControlService.PickFolder();
-      if (!dir) return;
-      await ControlService.WebSetDir(conv.id, dir);
-      const shown = chat.panes.some((item) => item.target?.kind === "web" && item.target.id === conv.id);
-      await loadConversations({ forceReloadCurrent: shown });
-    } catch (error) {
-      chat.statusNote = `작업 폴더 변경 실패: ${error}`;
-    }
+    openMenuId = "";
+    await setTargetWorkDir({ kind: "web", id: conv.id });
   }
 
   async function deleteWebConversation(conv) {
@@ -398,6 +397,8 @@
       if (!(target instanceof HTMLElement)) return;
       if (!target.closest("[data-conv-menu]")) openMenuId = "";
       if (!target.closest("[data-progress-popup]")) closeProgressPopup();
+      if (!target.closest("[data-pane-backend-menu]")) closePaneBackendMenu();
+      if (!target.closest("[data-pane-workdir-menu]")) closePaneWorkDirMenu();
     };
 
     const onEscape = (event) => {
@@ -405,6 +406,8 @@
       if (promptState) resolvePrompt(null);
       if (confirmState) resolveConfirm(false);
       if (chat.progressPopupPaneId) closeProgressPopup();
+      if (chat.backendMenuPaneId) closePaneBackendMenu();
+      if (chat.workDirMenuPaneId) closePaneWorkDirMenu();
       openMenuId = "";
     };
 
@@ -766,8 +769,8 @@
                                       value={settingsValues[field.key] ?? ""}
                                       onchange={(event) => updateSettingValue(field.key, event.currentTarget.value)}
                                     >
-                                      {#each field.options || [] as option}
-                                        <option value={option}>{option}</option>
+                                      {#each selectOptionsFor(field) as option}
+                                        <option value={option}>{option === "" ? "기본값" : option}</option>
                                       {/each}
                                     </select>
                                   {:else}
@@ -963,4 +966,3 @@
     </div>
   </div>
 {/if}
-

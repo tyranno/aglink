@@ -1,0 +1,10 @@
+go 1.25.5
+
+// desktop/ is excluded: it depends on a local wails/v3 checkout outside this repo
+// and is built standalone (see desktop/README).
+use (
+	./chat
+	./host
+	./screen
+	./web
+)

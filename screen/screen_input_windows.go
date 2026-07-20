@@ -1,0 +1,683 @@
+//go:build windows
+
+package main
+
+import (
+	"fmt"
+	"strings"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+// Design Ref: §2 (click/move/type/key/scroll), §4 (screen_input_windows.go).
+//
+// CGO-free mouse/keyboard input via Win32 SendInput (golang.org/x/sys/windows).
+// All coordinate-based ops normalize to the 65535 virtual-screen space and use
+// MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK so they work across multiple
+// monitors with the same origin/scale as the screenshot capture.
+
+var (
+	modUser32In = windows.NewLazySystemDLL("user32.dll")
+
+	procSendInput          = modUser32In.NewProc("SendInput")
+	procGetSystemMetricsIn = modUser32In.NewProc("GetSystemMetrics")
+	procVkKeyScanW         = modUser32In.NewProc("VkKeyScanW")
+	procMapVirtualKeyW     = modUser32In.NewProc("MapVirtualKeyW")
+	procGetCursorPos       = modUser32In.NewProc("GetCursorPos")
+	procWindowFromPoint    = modUser32In.NewProc("WindowFromPoint")
+)
+
+// windowUnderCursor returns the window handle currently under the mouse cursor —
+// the actual routing target of a wheel event — or 0 if none. Used to warn (via
+// uipiWarning) when a scroll is likely to be silently dropped by UIPI.
+func windowUnderCursor() uintptr {
+	x, y := cursorPos()
+	// POINT is two 32-bit LONGs packed into one 64-bit register on amd64:
+	// low dword = x, high dword = y (both interpreted signed).
+	pt := uintptr(uint32(int32(x))) | uintptr(uint32(int32(y)))<<32
+	h, _, _ := procWindowFromPoint.Call(pt)
+	return h
+}
+
+// cursorPos returns the current mouse cursor position in screen pixels.
+func cursorPos() (int, int) {
+	ensureDPIAware()
+	var pt struct{ X, Y int32 }
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	return int(pt.X), int(pt.Y)
+}
+
+const (
+	inputMouse    = 0
+	inputKeyboard = 1
+
+	// Mouse event flags.
+	mouseeventfMove        = 0x0001
+	mouseeventfLeftDown    = 0x0002
+	mouseeventfLeftUp      = 0x0004
+	mouseeventfRightDown   = 0x0008
+	mouseeventfRightUp     = 0x0010
+	mouseeventfMiddleDown  = 0x0020
+	mouseeventfMiddleUp    = 0x0040
+	mouseeventfWheel       = 0x0800
+	mouseeventfHWheel      = 0x1000
+	mouseeventfAbsolute    = 0x8000
+	mouseeventfVirtualDesk = 0x4000
+
+	// Keyboard event flags.
+	keyeventfKeyUp   = 0x0002
+	keyeventfUnicode = 0x0004
+
+	wheelDelta = 120
+
+	// System metrics for the virtual screen (same as capture).
+	inSmXVirtualScreen  = 76
+	inSmYVirtualScreen  = 77
+	inSmCXVirtualScreen = 78
+	inSmCYVirtualScreen = 79
+
+	// syntheticInputTag marks every INPUT event we generate (in dwExtraInfo) so
+	// the low-level input hook in screen_userwatch_windows.go can tell our own
+	// synthetic input apart from genuine user input.
+	syntheticInputTag = uintptr(0x41474c4b) // "AGLK"
+)
+
+// Common virtual-key codes (for keyCombo). Lowercase keys.
+var vkMap = map[string]uint16{
+	"enter":     0x0D,
+	"return":    0x0D,
+	"tab":       0x09,
+	"esc":       0x1B,
+	"escape":    0x1B,
+	"space":     0x20,
+	"backspace": 0x08,
+	"bksp":      0x08,
+	"delete":    0x2E,
+	"del":       0x2E,
+	"insert":    0x2D,
+	"home":      0x24,
+	"end":       0x23,
+	"pageup":    0x21,
+	"pgup":      0x21,
+	"pagedown":  0x22,
+	"pgdn":      0x22,
+	"up":        0x26,
+	"down":      0x28,
+	"left":      0x25,
+	"right":     0x27,
+	"f1":        0x70,
+	"f2":        0x71,
+	"f3":        0x72,
+	"f4":        0x73,
+	"f5":        0x74,
+	"f6":        0x75,
+	"f7":        0x76,
+	"f8":        0x77,
+	"f9":        0x78,
+	"f10":       0x79,
+	"f11":       0x7A,
+	"f12":       0x7B,
+
+	// Media/system keys — same physical keys a real keyboard's media row sends.
+	// These are genuinely useful for "일반 컴퓨터 에이전트" requests ("볼륨 낮춰줘",
+	// "다음 곡") that have nothing to do with any particular foreground app.
+	"volumeup":    0xAF, // VK_VOLUME_UP
+	"volumedown":  0xAE, // VK_VOLUME_DOWN
+	"volumemute":  0xAD, // VK_VOLUME_MUTE
+	"mute":        0xAD,
+	"medianext":   0xB0, // VK_MEDIA_NEXT_TRACK
+	"mediaprev":   0xB1, // VK_MEDIA_PREV_TRACK
+	"mediastop":   0xB2, // VK_MEDIA_STOP
+	"mediaplay":   0xB3, // VK_MEDIA_PLAY_PAUSE
+	"playpause":   0xB3,
+	"printscreen": 0x2C, // VK_SNAPSHOT
+	"prtsc":       0x2C,
+}
+
+// Modifier virtual-key codes.
+var modVK = map[string]uint16{
+	"ctrl":    0x11, // VK_CONTROL
+	"control": 0x11,
+	"alt":     0x12, // VK_MENU
+	"shift":   0x10, // VK_SHIFT
+	"win":     0x5B, // VK_LWIN
+	"super":   0x5B,
+	"meta":    0x5B,
+	"cmd":     0x5B,
+}
+
+// mouseInput mirrors the MOUSEINPUT portion of the Win32 INPUT union. The struct
+// below is sized for the mouse case (the largest of the union members on amd64).
+type mouseInputBlock struct {
+	Type uint32
+	_    uint32 // padding to 8-byte alignment on amd64
+	Mi   struct {
+		Dx          int32
+		Dy          int32
+		MouseData   uint32
+		DwFlags     uint32
+		Time        uint32
+		DwExtraInfo uintptr
+	}
+}
+
+// keybdInputBlock mirrors the KEYBDINPUT case of the Win32 INPUT union, padded to
+// the same overall size as the mouse case so a homogeneous []input array works.
+type keybdInputBlock struct {
+	Type uint32
+	_    uint32
+	Ki   struct {
+		WVk         uint16
+		WScan       uint16
+		DwFlags     uint32
+		Time        uint32
+		DwExtraInfo uintptr
+		_           uint32 // pad to match mouseInputBlock size
+		_           uint32
+	}
+}
+
+// sendInputs sends a contiguous block of INPUT structures. Each entry must be
+// exactly sizeof(mouseInputBlock) bytes (the union size we standardize on).
+func sendInputs(raw []byte, count int) error {
+	if count == 0 {
+		return nil
+	}
+	size := unsafe.Sizeof(mouseInputBlock{})
+	n, _, err := procSendInput.Call(
+		uintptr(count),
+		uintptr(unsafe.Pointer(&raw[0])),
+		size,
+	)
+	if int(n) != count {
+		return fmt.Errorf("SendInput sent %d of %d events: %v", int(n), count, err)
+	}
+	return nil
+}
+
+// mouseEvent builds a single mouse INPUT block (union-sized) as raw bytes.
+func mouseEvent(dx, dy int32, mouseData uint32, flags uint32) []byte {
+	var blk mouseInputBlock
+	blk.Type = inputMouse
+	blk.Mi.Dx = dx
+	blk.Mi.Dy = dy
+	blk.Mi.MouseData = mouseData
+	blk.Mi.DwFlags = flags
+	blk.Mi.DwExtraInfo = syntheticInputTag
+	return structBytes(unsafe.Pointer(&blk))
+}
+
+// keyEvent builds a single keyboard INPUT block (union-sized) as raw bytes.
+func keyEvent(vk, scan uint16, flags uint32) []byte {
+	var blk keybdInputBlock
+	blk.Type = inputKeyboard
+	blk.Ki.WVk = vk
+	blk.Ki.WScan = scan
+	blk.Ki.DwFlags = flags
+	blk.Ki.DwExtraInfo = syntheticInputTag
+	return structBytes(unsafe.Pointer(&blk))
+}
+
+// structBytes copies a union-sized INPUT block into a fresh byte slice.
+func structBytes(p unsafe.Pointer) []byte {
+	size := int(unsafe.Sizeof(mouseInputBlock{}))
+	out := make([]byte, size)
+	copy(out, unsafe.Slice((*byte)(p), size))
+	return out
+}
+
+// toAbsolute converts a physical pixel coordinate on the virtual desktop to the
+// 0..65535 normalized space SendInput expects with MOUSEEVENTF_ABSOLUTE.
+func toAbsolute(x, y int) (int32, int32) {
+	originX, _, _ := procGetSystemMetricsIn.Call(inSmXVirtualScreen)
+	originY, _, _ := procGetSystemMetricsIn.Call(inSmYVirtualScreen)
+	w, _, _ := procGetSystemMetricsIn.Call(inSmCXVirtualScreen)
+	h, _, _ := procGetSystemMetricsIn.Call(inSmCYVirtualScreen)
+
+	width := int(int32(w))
+	height := int(int32(h))
+	ox := int(int32(originX))
+	oy := int(int32(originY))
+	// Clamp to >= 2 so the (width-1)/(height-1) divisors below are never 0
+	// (a degenerate 1px virtual screen would otherwise divide by zero).
+	if width < 2 {
+		width = 2
+	}
+	if height < 2 {
+		height = 2
+	}
+
+	// Normalize relative to the virtual-screen origin. The +1 / (w-1) form maps
+	// the last pixel to 65535 to reduce off-by-one drift on the far edge.
+	nx := int64(x-ox) * 65535 / int64(width-1)
+	ny := int64(y-oy) * 65535 / int64(height-1)
+	if nx < 0 {
+		nx = 0
+	}
+	if nx > 65535 {
+		nx = 65535
+	}
+	if ny < 0 {
+		ny = 0
+	}
+	if ny > 65535 {
+		ny = 65535
+	}
+	return int32(nx), int32(ny)
+}
+
+// mouseMove moves the cursor to absolute (x,y) on the virtual desktop.
+func mouseMove(x, y int) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	ax, ay := toAbsolute(x, y)
+	flags := uint32(mouseeventfMove | mouseeventfAbsolute | mouseeventfVirtualDesk)
+	raw := mouseEvent(ax, ay, 0, flags)
+	return sendInputs(raw, 1)
+}
+
+// mouseClick moves to (x,y) then performs a down+up of the given button.
+// button is one of "left", "right", "middle" (default "left").
+func mouseClick(x, y int, button string) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+
+	var down, up uint32
+	switch strings.ToLower(strings.TrimSpace(button)) {
+	case "", "left":
+		down, up = mouseeventfLeftDown, mouseeventfLeftUp
+	case "right":
+		down, up = mouseeventfRightDown, mouseeventfRightUp
+	case "middle":
+		down, up = mouseeventfMiddleDown, mouseeventfMiddleUp
+	default:
+		return fmt.Errorf("unknown mouse button %q (want left/right/middle)", button)
+	}
+
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	var buf []byte
+	buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfMove|abs)...)
+	buf = append(buf, mouseEvent(ax, ay, 0, down|abs)...)
+	buf = append(buf, mouseEvent(ax, ay, 0, up|abs)...)
+	return sendInputs(buf, 3)
+}
+
+// resolveButton maps a button name to its down/up MOUSEEVENTF flags.
+func resolveButton(button string) (down, up uint32, err error) {
+	switch strings.ToLower(strings.TrimSpace(button)) {
+	case "", "left":
+		return mouseeventfLeftDown, mouseeventfLeftUp, nil
+	case "right":
+		return mouseeventfRightDown, mouseeventfRightUp, nil
+	case "middle":
+		return mouseeventfMiddleDown, mouseeventfMiddleUp, nil
+	default:
+		return 0, 0, fmt.Errorf("unknown mouse button %q (want left/right/middle)", button)
+	}
+}
+
+// mouseClickMods clicks at (x,y) while holding the given modifier keys (any of
+// ctrl/alt/shift/win) down — e.g. ctrl+click or shift+click for multi-select.
+// Keyboard and mouse events are sent as one ordered SendInput batch.
+func mouseClickMods(x, y int, button string, mods []string) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	down, up, err := resolveButton(button)
+	if err != nil {
+		return err
+	}
+	var modVKs []uint16
+	for _, m := range mods {
+		m = strings.ToLower(strings.TrimSpace(m))
+		if m == "" {
+			continue
+		}
+		vk, ok := modVK[m]
+		if !ok {
+			return fmt.Errorf("unknown modifier %q (want ctrl/alt/shift/win)", m)
+		}
+		modVKs = append(modVKs, vk)
+	}
+	if len(modVKs) == 0 {
+		return mouseClick(x, y, button)
+	}
+
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	var buf []byte
+	count := 0
+	for _, vk := range modVKs {
+		buf = append(buf, keyEvent(vk, 0, 0)...)
+		count++
+	}
+	buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfMove|abs)...)
+	buf = append(buf, mouseEvent(ax, ay, 0, down|abs)...)
+	buf = append(buf, mouseEvent(ax, ay, 0, up|abs)...)
+	count += 3
+	for i := len(modVKs) - 1; i >= 0; i-- {
+		buf = append(buf, keyEvent(modVKs[i], 0, keyeventfKeyUp)...)
+		count++
+	}
+	return sendInputs(buf, count)
+}
+
+// mouseDrag presses button at (x1,y1), moves through interpolated steps to
+// (x2,y2), then releases — for rubber-band selection, sliders, and drag & drop.
+// Small delays between phases make the gesture register reliably across apps.
+func mouseDrag(x1, y1, x2, y2 int, button string) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	down, up, err := resolveButton(button)
+	if err != nil {
+		return err
+	}
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	ax1, ay1 := toAbsolute(x1, y1)
+	if err := sendInputs(mouseEvent(ax1, ay1, 0, mouseeventfMove|abs), 1); err != nil {
+		return err
+	}
+	time.Sleep(15 * time.Millisecond)
+	if err := sendInputs(mouseEvent(ax1, ay1, 0, down|abs), 1); err != nil {
+		return err
+	}
+	time.Sleep(15 * time.Millisecond)
+
+	const steps = 12
+	for i := 1; i <= steps; i++ {
+		xi := x1 + (x2-x1)*i/steps
+		yi := y1 + (y2-y1)*i/steps
+		axi, ayi := toAbsolute(xi, yi)
+		if err := sendInputs(mouseEvent(axi, ayi, 0, mouseeventfMove|abs), 1); err != nil {
+			return err
+		}
+		time.Sleep(8 * time.Millisecond)
+	}
+
+	ax2, ay2 := toAbsolute(x2, y2)
+	time.Sleep(15 * time.Millisecond)
+	return sendInputs(mouseEvent(ax2, ay2, 0, up|abs), 1)
+}
+
+// mouseDouble performs a left double-click at (x,y).
+func mouseDouble(x, y int) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	var buf []byte
+	buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfMove|abs)...)
+	for i := 0; i < 2; i++ {
+		buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfLeftDown|abs)...)
+		buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfLeftUp|abs)...)
+	}
+	return sendInputs(buf, 5)
+}
+
+// mouseTriple performs a left triple-click at (x,y) — selects a whole
+// line/paragraph in text editors and word processors, a common gesture
+// double_click alone doesn't cover. Matches Anthropic's own computer-use
+// reference tool, which offers triple_click alongside double_click.
+func mouseTriple(x, y int) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	var buf []byte
+	buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfMove|abs)...)
+	for i := 0; i < 3; i++ {
+		buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfLeftDown|abs)...)
+		buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfLeftUp|abs)...)
+	}
+	return sendInputs(buf, 7)
+}
+
+// typeText types a Unicode string by emitting KEYEVENTF_UNICODE down/up pairs per
+// UTF-16 code unit. This bypasses the keyboard layout, so any printable rune
+// (including non-ASCII) is entered verbatim.
+func typeText(s string) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	if s == "" {
+		return nil
+	}
+	units := windows.StringToUTF16(s)
+	// Drop the trailing NUL terminator.
+	if n := len(units); n > 0 && units[n-1] == 0 {
+		units = units[:n-1]
+	}
+	if len(units) == 0 {
+		return nil
+	}
+
+	// vkReturn matches vkMap["enter"] below — kept local so typeText doesn't
+	// depend on map lookup for its hot path.
+	const vkReturn = 0x0D
+
+	var buf []byte
+	count := 0
+	for i := 0; i < len(units); i++ {
+		u := units[i]
+		// A KEYEVENTF_UNICODE character event for CR/LF does NOT behave like
+		// pressing Enter in every app — e.g. VS Code's Monaco editor silently
+		// drops a raw WM_CHAR(0x0A) instead of inserting a line break, since it
+		// expects Enter as an actual VK_RETURN key event, not a composed
+		// character (found by testing: typing a multi-line string into a new
+		// VS Code file collapsed everything onto one line, dropping the
+		// leading text along with every embedded newline). Send a real
+		// VK_RETURN tap instead — the same mechanism key("enter") uses — and
+		// collapse a \r\n pair into a single Enter so CRLF-encoded input
+		// doesn't produce a double line break.
+		if u == '\r' || u == '\n' {
+			if u == '\r' && i+1 < len(units) && units[i+1] == '\n' {
+				i++
+			}
+			buf = append(buf, keyEvent(vkReturn, 0, 0)...)
+			buf = append(buf, keyEvent(vkReturn, 0, keyeventfKeyUp)...)
+			count += 2
+			continue
+		}
+		buf = append(buf, keyEvent(0, u, keyeventfUnicode)...)
+		buf = append(buf, keyEvent(0, u, keyeventfUnicode|keyeventfKeyUp)...)
+		count += 2
+	}
+	return sendInputs(buf, count)
+}
+
+// keyCombo parses a combo like "ctrl+c", "alt+f4", "ctrl+shift+s" or a bare key
+// like "enter", presses modifiers down, taps the key, then releases modifiers.
+func keyCombo(combo string) error {
+	return keyComboHold(combo, 0)
+}
+
+// keyRepeatInitialDelay / keyRepeatInterval approximate a physical keyboard's
+// typematic autorepeat timing (Windows' own defaults are in the same
+// ballpark). keyComboHold uses these to re-send the key's own keydown
+// periodically during a hold — a single sustained "down" key-state change
+// (no repeat keydowns) does NOT produce repeated characters in ordinary text
+// editors/fields, since those respond to WM_KEYDOWN repeat messages, not to
+// polling raw key state the way a game reading GetAsyncKeyState would. Found
+// by testing against real Notepad: holding "a" for 800ms with a single
+// keydown+sleep+keyup produced exactly one "a", not several — this fixes
+// that so hold_ms behaves like an actually-held key in both kinds of app.
+const (
+	keyRepeatInitialDelay = 500 * time.Millisecond
+	keyRepeatInterval     = 50 * time.Millisecond
+)
+
+// keyComboHold presses combo, and if holdMs > 0 holds it down for that long
+// before releasing instead of releasing immediately — e.g. games or UIs that
+// distinguish a long-press from a tap. Matches Anthropic's computer-use
+// hold_key action. holdMs <= 0 is the original instant tap (down+up sent as
+// one SendInput batch, unchanged from before this was added).
+func keyComboHold(combo string, holdMs int) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+
+	parts := strings.Split(strings.TrimSpace(combo), "+")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return fmt.Errorf("empty key combo")
+	}
+
+	var mods []uint16
+	var key string
+	for i, p := range parts {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		if vk, ok := modVK[p]; ok && i != len(parts)-1 {
+			mods = append(mods, vk)
+			continue
+		}
+		key = p // last (non-modifier) token is the key
+	}
+	if key == "" {
+		return fmt.Errorf("no key in combo %q", combo)
+	}
+
+	keyVK, ok := resolveKeyVK(key)
+	if !ok {
+		return fmt.Errorf("unknown key %q in combo %q", key, combo)
+	}
+
+	var modsDown, modsUp []byte
+	for _, m := range mods {
+		modsDown = append(modsDown, keyEvent(m, 0, 0)...)
+	}
+	for i := len(mods) - 1; i >= 0; i-- {
+		modsUp = append(modsUp, keyEvent(mods[i], 0, keyeventfKeyUp)...)
+	}
+	keyDown := keyEvent(keyVK, 0, 0)
+	keyUp := keyEvent(keyVK, 0, keyeventfKeyUp)
+
+	if holdMs <= 0 {
+		buf := append(append(append([]byte{}, modsDown...), keyDown...), keyUp...)
+		buf = append(buf, modsUp...)
+		return sendInputs(buf, len(mods)*2+2)
+	}
+
+	if len(mods) > 0 {
+		if err := sendInputs(modsDown, len(mods)); err != nil {
+			return err
+		}
+	}
+	if err := sendInputs(keyDown, 1); err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(time.Duration(holdMs) * time.Millisecond)
+	if remain := time.Until(deadline); remain > 0 {
+		wait := keyRepeatInitialDelay
+		if remain < wait {
+			wait = remain
+		}
+		time.Sleep(wait)
+	}
+	for time.Now().Before(deadline) {
+		if err := sendInputs(keyDown, 1); err != nil {
+			break
+		}
+		time.Sleep(keyRepeatInterval)
+	}
+
+	if err := sendInputs(keyUp, 1); err != nil {
+		return err
+	}
+	if len(mods) > 0 {
+		return sendInputs(modsUp, len(mods))
+	}
+	return nil
+}
+
+// resolveKeyVK maps a key token to a virtual-key code. Named keys come from
+// vkMap; single characters fall back to VkKeyScanW for layout-aware mapping.
+func resolveKeyVK(key string) (uint16, bool) {
+	if vk, ok := vkMap[key]; ok {
+		return vk, true
+	}
+	runes := []rune(key)
+	if len(runes) == 1 {
+		r := runes[0]
+		res, _, _ := procVkKeyScanW.Call(uintptr(uint16(r)))
+		low := uint16(res) & 0xFF
+		if low != 0xFF {
+			return low, true
+		}
+	}
+	return 0, false
+}
+
+// scrollHoverSettle is how long we wait after re-asserting the cursor position
+// before emitting the wheel, so a Chromium/Electron target's message loop can
+// process the WM_MOUSEMOVE and update its hover/scroll target first.
+const scrollHoverSettle = 40 * time.Millisecond
+
+// scroll scrolls the mouse wheel at the current cursor position. dy>0 scrolls up,
+// dy<0 down; dx>0 right, dx<0 left. Values are in "lines" (one wheelDelta per unit).
+//
+// Before the wheel we re-assert an absolute MOVE to the current cursor position and
+// wait a short settle — exactly as mouseClick/mouseDrag/mouseDouble position with a
+// MOVE before their button events. scroll() used to be the lone input primitive
+// that emitted a bare event with no positioning move. Chromium/Electron targets
+// (VS Code webviews, browsers, Slack, ...) route a wheel to the element under the
+// pointer using a hover position that is refreshed by WM_MOUSEMOVE, so a fresh move
+// immediately before the wheel makes the gesture behave like a real hovering mouse
+// wheel and removes a class of "wheel went nowhere" failures caused by a stale or
+// unexpected hover/cursor state at wheel time.
+func scroll(dx, dy int) error {
+	if err := beginSyntheticInput(); err != nil {
+		return err
+	}
+	ensureDPIAware()
+	if dx == 0 && dy == 0 {
+		return nil
+	}
+
+	// Re-assert hover at the current cursor position so Chromium-based targets
+	// refresh their scroll target before the wheel arrives.
+	x, y := cursorPos()
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+	if err := sendInputs(mouseEvent(ax, ay, 0, mouseeventfMove|abs), 1); err != nil {
+		return err
+	}
+	time.Sleep(scrollHoverSettle)
+
+	// Wheel events carry the delta in mouseData; position comes from the cursor
+	// we just re-asserted (no MOVE/ABSOLUTE flag on the wheel itself).
+	if dy != 0 {
+		if err := sendInputs(mouseEvent(0, 0, uint32(int32(dy*wheelDelta)), mouseeventfWheel), 1); err != nil {
+			return err
+		}
+	}
+	if dx != 0 {
+		if err := sendInputs(mouseEvent(0, 0, uint32(int32(dx*wheelDelta)), mouseeventfHWheel), 1); err != nil {
+			return err
+		}
+	}
+	return nil
+}

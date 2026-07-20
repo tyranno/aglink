@@ -14,7 +14,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// teleclaude — Telegram ↔ Claude agent for Windows (MVP).
+// aglink — Telegram ↔ Claude agent for Windows (MVP).
 // Design Ref: §11 — wiring/assembly + claude health check.
 
 func main() {
@@ -85,7 +85,7 @@ func main() {
 			log.Fatalf("설정 마법사 중단: %v", err)
 		}
 	case "version", "--version", "-v":
-		line := "teleclaude " + runningVersion()
+		line := "aglink " + runningVersion()
 		if buildCommit != "" {
 			line += " (" + buildCommit + ")"
 		}
@@ -94,14 +94,20 @@ func main() {
 		}
 		fmt.Println(line)
 	default:
-		fmt.Println("usage: teleclaude [run [config-path]] | setup [config-path] | setup telegram [config-path] | version")
+		fmt.Println("usage: aglink [run [config-path]] | setup [config-path] | setup telegram [config-path] | version")
 	}
 }
 
-// pidFilePath returns the path to the PID file (~/.teleclaude/teleclaude.pid).
+// pidFilePath returns the path to the PID file (<data dir>/aglink.pid). It goes
+// through dataDir so it lands beside the rest of the state even on a
+// pre-rename install still rooted at ~/.teleclaude.
 func pidFilePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".teleclaude", "teleclaude.pid")
+	dir, err := dataDir()
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".aglink")
+	}
+	return filepath.Join(dir, "aglink.pid")
 }
 
 // writePIDFile records the current process PID so the next instance can kill it cleanly.
@@ -155,7 +161,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	if err != nil {
 		// No (or incomplete) config → run the interactive wizard, then reload.
 		if !isInteractive() {
-			return fmt.Errorf("%w\n대화형 터미널에서 `teleclaude setup`을 먼저 실행하세요 (%s)", err, cfgPath)
+			return fmt.Errorf("%w\n대화형 터미널에서 `aglink setup`을 먼저 실행하세요 (%s)", err, cfgPath)
 		}
 		fmt.Println("⚙️  설정이 없거나 불완전합니다. 설정 마법사를 시작합니다.")
 		if serr := RunSetup(cfgPath); serr != nil {
@@ -188,7 +194,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 
 	holder := NewConfigHolder(cfg)
 
-	// Resolve both backends; neither is individually required. teleclaude boots as
+	// Resolve both backends; neither is individually required. aglink boots as
 	// long as at least one of claude/codex is installed, so a claude-only machine
 	// and a codex-only machine both work. The active backend's binary must exist;
 	// the other is optional and simply can't be switched to.
@@ -472,7 +478,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	}
 
 	// The embedded browser web server was removed in Phase 2 — aglink-chat is now
-	// the primary frontend and serves the browser directly (below). teleclaude
+	// the primary frontend and serves the browser directly (below). aglink
 	// keeps only the control API (chatCtl) that aglink-chat connects to.
 	//
 	// aglink-chat runs as a managed child frontend. Requires the control API
@@ -505,9 +511,9 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 			if notifyChatID != 0 {
 				_ = bot.Send(notifyChatID, fmt.Sprintf("✅ 새 버전 활성화됨! (PID %d)", os.Getpid()))
 			}
-			// Rename teleclaude_new → teleclaude so the next !update
+			// Rename aglink_new → aglink so the next !update
 			// can build to a fresh file (can't overwrite a running exe on Windows).
-			if filepath.Base(currentExe) == "teleclaude_new"+exeSuffix {
+			if filepath.Base(currentExe) == "aglink_new"+exeSuffix {
 				go selfRename(currentExe, bot, notifyChatID)
 			}
 		}
@@ -517,15 +523,15 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	return nil
 }
 
-// selfRename renames teleclaude_new → teleclaude.
+// selfRename renames aglink_new → aglink.
 // On Windows, renaming a running exe is allowed (kernel tracks by handle, not name).
 func selfRename(currentExe string, bot *Bot, notifyChatID int64) {
-	target := filepath.Join(filepath.Dir(currentExe), "teleclaude"+exeSuffix)
+	target := filepath.Join(filepath.Dir(currentExe), "aglink"+exeSuffix)
 	var lastErr error
 	for i := 0; i < 10; i++ {
 		time.Sleep(time.Second)
 		if err := os.Rename(currentExe, target); err == nil {
-			log.Printf("[main] self-rename: teleclaude_new.exe → teleclaude.exe OK")
+			log.Printf("[main] self-rename: aglink_new.exe → aglink.exe OK")
 			return
 		} else {
 			lastErr = err

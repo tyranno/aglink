@@ -10,7 +10,7 @@ import (
 
 // aglinkChatUpdating suppresses the supervisor's respawn while !update rebuilds
 // aglink-chat.exe (the running child is killed to release the file lock; the
-// next teleclaude respawns it fresh).
+// next aglink respawns it fresh).
 var aglinkChatUpdating atomic.Bool
 
 // fastExitWarnThreshold is how many back-to-back immediate exits the supervisor
@@ -36,7 +36,7 @@ func resolveAglinkChatBinary(cfg *Config, selfExe string) string {
 
 // startAglinkChat spawns and supervises `aglink-chat serve`, restarting it with
 // backoff if it exits. It first kills any orphan aglink-chat from a previous
-// teleclaude (a handoff's os.Exit does not reap children on Windows). Blocks
+// aglink (a handoff's os.Exit does not reap children on Windows). Blocks
 // until ctx is cancelled; the child is killed via CommandContext on cancel.
 func startAglinkChat(ctx context.Context, binPath, addr, controlAddr, controlToken, browserToken string) {
 	killByImageName("aglink-chat" + exeSuffix) // clear an orphan from a prior instance

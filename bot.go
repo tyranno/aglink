@@ -1030,7 +1030,7 @@ func (b *Bot) formatChatList(project string) string {
 	return sb.String()
 }
 
-// handleUpdate builds teleclaude_new.exe, starts it, waits for it to connect to
+// handleUpdate builds aglink_new.exe, starts it, waits for it to connect to
 // Telegram, then hands over: old process exits cleanly, new process renames itself.
 // Works without launcher.ps1 — zero downtime.
 func (b *Bot) handleUpdate(reply replySender, chatID int64) {
@@ -1042,8 +1042,8 @@ func (b *Bot) handleUpdate(reply replySender, chatID int64) {
 		return
 	}
 	srcDir := filepath.Dir(exe)
-	newExe := filepath.Join(srcDir, "teleclaude_new"+exeSuffix)
-	readyFile := filepath.Join(os.TempDir(), fmt.Sprintf(".teleclaude_ready_%d", os.Getpid()))
+	newExe := filepath.Join(srcDir, "aglink_new"+exeSuffix)
+	readyFile := filepath.Join(os.TempDir(), fmt.Sprintf(".aglink_ready_%d", os.Getpid()))
 
 	// Verify source code exists in srcDir (fix: exe copied to different dir would silently fail)
 	if _, serr := os.Stat(filepath.Join(srcDir, "main.go")); serr != nil {
@@ -1051,19 +1051,19 @@ func (b *Bot) handleUpdate(reply replySender, chatID int64) {
 		return
 	}
 
-	// If we're already running as teleclaude_new.exe, the self-rename from the previous
-	// handoff hasn't completed yet (or failed). teleclaude_new.exe is our own exe file,
+	// If we're already running as aglink_new.exe, the self-rename from the previous
+	// handoff hasn't completed yet (or failed). aglink_new.exe is our own exe file,
 	// so go build cannot overwrite it. Abort and instruct the user.
-	if filepath.Base(exe) == "teleclaude_new"+exeSuffix {
+	if filepath.Base(exe) == "aglink_new"+exeSuffix {
 		if _, serr := os.Stat(newExe); serr == nil {
-			_ = reply.Send(chatID, "⚠️ 이전 핸드오프의 이름 변경이 아직 완료되지 않았습니다.\n잠시 후 다시 시도하거나 teleclaude_new를 teleclaude로 수동 교체 후 재시작하세요.")
+			_ = reply.Send(chatID, "⚠️ 이전 핸드오프의 이름 변경이 아직 완료되지 않았습니다.\n잠시 후 다시 시도하거나 aglink_new를 aglink로 수동 교체 후 재시작하세요.")
 			return
 		}
 	}
 
-	// Plugins first (fail fast — don't touch teleclaude if a sibling plugin's
+	// Plugins first (fail fast — don't touch aglink if a sibling plugin's
 	// source is broken). Skips silently on deployments that don't have
-	// aglink-screen/aglink-web checked out next to teleclaude.
+	// aglink-screen/aglink-web checked out next to aglink.
 	pluginReport, perr := updatePlugins(srcDir)
 	if perr != nil {
 		_ = reply.Send(chatID, "⚠️ "+perr.Error())
@@ -1731,7 +1731,7 @@ func (b *Bot) hasAttachment(msg *tgbotapi.Message) bool {
 		msg.Audio != nil || msg.Voice != nil
 }
 
-// handleAttachment downloads the attached file, saves it to ~/.teleclaude/attachments/,
+// handleAttachment downloads the attached file, saves it to <data dir>/attachments/,
 // and dispatches a combined prompt (caption + file path) to Claude.
 func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 	caption := strings.TrimSpace(msg.Caption)
@@ -1754,14 +1754,14 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 	b.ingestAttachment(chatID, savePath, caption, OriginTelegram)
 }
 
-// attachmentsDir is the one directory teleclaude saves attachments into. Both
+// attachmentsDir is the one directory aglink saves attachments into. Both
 // producers — the Telegram download and aglink-chat's upload relay — write here.
 func attachmentsDir() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := dataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".teleclaude", "attachments"), nil
+	return filepath.Join(dir, "attachments"), nil
 }
 
 // insideDir reports whether path resolves to something under dir. Purely
@@ -2206,7 +2206,7 @@ func (b *Bot) handleUser(reply replySender, chatID int64, fields []string) {
 
 func helpText() string {
 	return strings.TrimSpace(`
-🤖 teleclaude — 폰에서 PC의 Claude를 자연어로 쓰세요.
+🤖 aglink — 폰에서 PC의 Claude를 자연어로 쓰세요.
 
 그냥 말하세요. 예) "myapp 로그인 버그 이어서 보자", "voice 서버에 헬스체크 추가해줘"
 → 어느 프로젝트의 어느 대화인지 알아서 찾아 작업합니다.
@@ -2239,7 +2239,7 @@ func helpText() string {
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
 !history list [프로젝트|all]          날짜 목록 (all = 전체 프로젝트)
 
-!compact   지금까지의 텔레그램 대화 핵심을 이 대화 전용 메모리 파일(.teleclaude/memory/telegram.md)에 저장하고
+!compact   지금까지의 텔레그램 대화 핵심을 이 대화 전용 메모리 파일(.aglink/memory/telegram.md)에 저장하고
            세션을 새로 시작 (컨텍스트가 길어져 느려졌을 때 사용)
 
 사용자 관리:

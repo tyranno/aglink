@@ -66,7 +66,9 @@ func killPreviousInstance() {
 
 	if !killed {
 		// Use pgrep to enumerate PIDs and skip self — pkill without exclusion would kill us.
-		for _, name := range []string{"teleclaude", "teleclaude_new"} {
+		// Pre-rename names kept so a fresh aglink still kills a leftover
+		// teleclaude from before the rename (see platform_windows.go).
+		for _, name := range []string{"aglink", "aglink_new", "teleclaude", "teleclaude_new"} {
 			out, err := exec.Command("pgrep", "-x", name).Output()
 			if err != nil {
 				continue

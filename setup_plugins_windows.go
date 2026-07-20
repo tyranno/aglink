@@ -13,7 +13,7 @@ import (
 )
 
 // aglinkRepoURL is the public HTTPS clone URL for an aglink-* plugin repo.
-// HTTPS (not the origin SSH remote teleclaude's own repo uses) so a fresh
+// HTTPS (not the origin SSH remote aglink's own repo uses) so a fresh
 // machine with no SSH key configured can still clone it.
 func aglinkRepoURL(name string) string {
 	return "https://github.com/tyranno/" + name + ".git"
@@ -21,7 +21,7 @@ func aglinkRepoURL(name string) string {
 
 // ensureAglinkPlugins offers to clone+build any aglink-* sibling repo
 // (screen/browser/web-chat control — Windows-only, hence this file) that
-// isn't already checked out next to teleclaude's own source, mirroring
+// isn't already checked out next to aglink's own source, mirroring
 // updatePlugins' srcDir/parent layout so the result is auto-discovered the
 // same way !update's rebuilds are. git/go absence just skips this silently:
 // it is a convenience for a from-source setup, never a hard requirement.

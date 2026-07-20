@@ -57,13 +57,13 @@ func TestEnsureAglinkPlugins_SkipsWhenAllPresent(t *testing.T) {
 	pluginNames = []string{"already-here"}
 
 	parent := t.TempDir()
-	teleclaudeDir := filepath.Join(parent, "teleclaude")
-	mustMkdir(t, teleclaudeDir)
+	aglinkDir := filepath.Join(parent, "aglink")
+	mustMkdir(t, aglinkDir)
 	mustMkdir(t, filepath.Join(parent, "already-here"))
 
 	// A nil *bufio.Reader would panic if ensureAglinkPlugins tried to prompt;
 	// reaching the end without a panic confirms it took the early-return path.
-	ensureAglinkPlugins(nil, teleclaudeDir)
+	ensureAglinkPlugins(nil, aglinkDir)
 }
 
 // A machine with no git/go on PATH must skip auto-install silently, not try to
@@ -79,10 +79,10 @@ func TestEnsureAglinkPlugins_NoToolchainSkips(t *testing.T) {
 	t.Setenv("PATH", "") // hide git and go
 
 	parent := t.TempDir()
-	teleclaudeDir := filepath.Join(parent, "teleclaude")
-	mustMkdir(t, teleclaudeDir)
+	aglinkDir := filepath.Join(parent, "aglink")
+	mustMkdir(t, aglinkDir)
 	// The plugin dir is absent, so without the toolchain guard the loop would
 	// reach confirm(nil, …) and panic on the nil reader.
 
-	ensureAglinkPlugins(nil, teleclaudeDir)
+	ensureAglinkPlugins(nil, aglinkDir)
 }

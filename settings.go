@@ -135,7 +135,7 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "screen_control.elevated", Label: "관리자 권한 실행", Desc: "화면 제어를 관리자 권한으로 실행.", Type: "bool", Value: cfg.ScreenElevated},
 		}},
 		{Title: "연결", Fields: []settingField{
-			{Key: "aglink_chat.enabled", Label: "aglink-chat 프론트", Desc: "teleclaude가 aglink-chat 웹 프론트를 자식으로 기동. (변경 시 재시작 필요)", Type: "bool", Value: cfg.AglinkChat},
+			{Key: "aglink_chat.enabled", Label: "aglink-chat 프론트", Desc: "aglink가 aglink-chat 웹 프론트를 자식으로 기동. (변경 시 재시작 필요)", Type: "bool", Value: cfg.AglinkChat},
 			{Key: "aglink_chat.addr", Label: "aglink-chat 주소", Desc: "웹 프론트 bind 주소:포트 (예: 127.0.0.1:1717). (변경 시 재시작 필요)", Type: "string", Value: cfg.AglinkChatAddr},
 			{Key: "chat_control.enabled", Label: "제어 API", Desc: "aglink-chat이 붙는 제어 API 서버. (변경 시 재시작 필요)", Type: "bool", Value: cfg.ChatControl},
 			{Key: "chat_control.addr", Label: "제어 API 주소", Desc: "제어 API bind 주소:포트 (예: 127.0.0.1:17170). (변경 시 재시작 필요)", Type: "string", Value: cfg.ChatControlAddr},

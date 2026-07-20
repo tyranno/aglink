@@ -14,7 +14,7 @@ import (
 // codexModelOptionsFor → the real codexRunner.modelCatalog() → a real `codex
 // debug models` subprocess. Skips (doesn't fail) when codex isn't installed,
 // since that's expected on machines/CI without it. This runs against a
-// throwaway in-test Manager/Bot, never the live teleclaude process.
+// throwaway in-test Manager/Bot, never the live aglink process.
 func TestGetSettings_CodexModelSelect_RealCLI(t *testing.T) {
 	codexPath, err := findCodex("")
 	if err != nil || codexPath == "" {

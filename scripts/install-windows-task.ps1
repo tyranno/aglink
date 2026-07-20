@@ -1,4 +1,4 @@
-# teleclaude Windows 작업 스케줄러 등록 스크립트
+# aglink Windows 작업 스케줄러 등록 스크립트
 # 사용법: .\scripts\install-windows-task.ps1 [-BinaryDir <경로>] [-Elevated] [-Uninstall]
 #
 # 특징:
@@ -10,7 +10,7 @@
 #   RunLevel Highest 로 등록 → 로그온 시 UAC 프롬프트 없이 승격 상태로 시작.
 #   화면제어(aglink-screen)는 UIPI 때문에 승격이 필요하고, 세션 0 서비스로는
 #   사용자 데스크톱을 조작할 수 없으므로 이 방식(session 1 + Highest)이 정답.
-#   승격 상태로 시작하면 teleclaude 가 스스로 UAC 재실행을 하지 않아 창/프롬프트가
+#   승격 상태로 시작하면 aglink 가 스스로 UAC 재실행을 하지 않아 창/프롬프트가
 #   전혀 뜨지 않는다. 화면제어가 필요 없으면 -Elevated:$false 로 비승격 등록 가능.
 #   (Highest 로 등록하려면 이 스크립트를 관리자 PowerShell 에서 실행해야 한다.)
 
@@ -20,9 +20,9 @@ param(
     [switch]$Uninstall
 )
 
-$TaskName = "Teleclaude"
+$TaskName = "Aglink"
 $LauncherPath = Join-Path $BinaryDir "launcher.ps1"
-$BinaryPath = Join-Path $BinaryDir "teleclaude.exe"
+$BinaryPath = Join-Path $BinaryDir "aglink.exe"
 
 if ($Uninstall) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -36,16 +36,16 @@ if ($Uninstall) {
 
 # 사전 검사
 if (-not (Test-Path $BinaryPath)) {
-    Write-Error "teleclaude.exe 를 찾을 수 없습니다: $BinaryPath"
-    Write-Host "  먼저 빌드하세요: go build -o teleclaude.exe ."
+    Write-Error "aglink.exe 를 찾을 수 없습니다: $BinaryPath"
+    Write-Host "  먼저 빌드하세요: go build -o aglink.exe ."
     exit 1
 }
 
-$ConfigPath = Join-Path $env:USERPROFILE ".teleclaude\config.txt"
+$ConfigPath = Join-Path $env:USERPROFILE ".aglink\config.txt"
 if (-not (Test-Path $ConfigPath)) {
     Write-Warning "설정 파일이 없습니다: $ConfigPath"
     Write-Host "  서비스 등록 전에 설정 마법사를 실행하세요:"
-    Write-Host "    .\teleclaude.exe run"
+    Write-Host "    .\aglink.exe run"
 }
 
 # 기존 작업 제거
@@ -66,7 +66,7 @@ if (Test-Path $LauncherPath) {
         -Execute $BinaryPath `
         -Argument "run" `
         -WorkingDirectory $BinaryDir
-    Write-Host "▶ teleclaude.exe 직접 실행"
+    Write-Host "▶ aglink.exe 직접 실행"
 }
 
 # 로그온 시 트리거
@@ -91,7 +91,7 @@ Register-ScheduledTask `
     -Trigger $Trigger `
     -Settings $Settings `
     -Principal $Principal `
-    -Description "Teleclaude - Telegram Claude Agent (자동 시작)" | Out-Null
+    -Description "Aglink - Telegram Claude Agent (자동 시작)" | Out-Null
 
 Write-Host "✅ 작업 스케줄러 등록 완료: $TaskName (RunLevel=$RunLevel, session 1, 창 숨김)"
 Write-Host ""

@@ -9,7 +9,7 @@ import (
 
 func TestResolveAglinkChatBinary_Priority(t *testing.T) {
 	dir := t.TempDir()
-	srcDir := filepath.Join(dir, "teleclaude")
+	srcDir := filepath.Join(dir, "aglink")
 	sibling := filepath.Join(dir, "aglink-chat")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -17,7 +17,7 @@ func TestResolveAglinkChatBinary_Priority(t *testing.T) {
 	if err := os.MkdirAll(sibling, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	selfExe := filepath.Join(srcDir, "teleclaude"+exeSuffix)
+	selfExe := filepath.Join(srcDir, "aglink"+exeSuffix)
 	name := "aglink-chat" + exeSuffix
 
 	// Isolate PATH so the real machine's PATH can't satisfy the lookup and mask
@@ -62,7 +62,7 @@ func TestResolveAglinkChatBinary_Priority(t *testing.T) {
 // system-installed aglink-chat runs with no config at all.
 func TestResolveAglinkChatBinary_PathFallback(t *testing.T) {
 	dir := t.TempDir()
-	srcDir := filepath.Join(dir, "teleclaude")
+	srcDir := filepath.Join(dir, "aglink")
 	pathDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestResolveAglinkChatBinary_PathFallback(t *testing.T) {
 	if err := os.MkdirAll(pathDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	selfExe := filepath.Join(srcDir, "teleclaude"+exeSuffix)
+	selfExe := filepath.Join(srcDir, "aglink"+exeSuffix)
 	name := "aglink-chat" + exeSuffix
 
 	pathBin := filepath.Join(pathDir, name)
@@ -84,7 +84,7 @@ func TestResolveAglinkChatBinary_PathFallback(t *testing.T) {
 		t.Errorf("PATH fallback: got %q, want %q", got, pathBin)
 	}
 
-	// A binary next to teleclaude still wins over PATH.
+	// A binary next to aglink still wins over PATH.
 	srcBin := filepath.Join(srcDir, name)
 	if err := os.WriteFile(srcBin, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
@@ -98,11 +98,11 @@ func TestResolveAglinkChatBinary_PathFallback(t *testing.T) {
 // the sibling/PATH lookup instead of returning "".
 func TestResolveAglinkChatBinary_MissingConfiguredPathFallsThrough(t *testing.T) {
 	dir := t.TempDir()
-	srcDir := filepath.Join(dir, "teleclaude")
+	srcDir := filepath.Join(dir, "aglink")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	selfExe := filepath.Join(srcDir, "teleclaude"+exeSuffix)
+	selfExe := filepath.Join(srcDir, "aglink"+exeSuffix)
 	srcBin := filepath.Join(srcDir, "aglink-chat"+exeSuffix)
 	if err := os.WriteFile(srcBin, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)

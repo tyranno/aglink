@@ -1,9 +1,9 @@
-# teleclaude — agent notes
+# aglink — agent notes
 
 ## Multiple concurrent sessions touch this repo
 
 This machine regularly has **more than one Claude Code session open on this
-same working tree at once** — e.g. a teleclaude-spawned worker (a Telegram/web
+same working tree at once** — e.g. an aglink-spawned worker (a Telegram/web
 chat turn) and a separate VS Code Claude Code session, sometimes on the same
 files. There is no lock file or coordination between them.
 

@@ -12,8 +12,8 @@ func TestUpdatePlugins_SkipsMissingSibling(t *testing.T) {
 	defer func() { pluginNames = orig }()
 	pluginNames = []string{"nonexistent-plugin"}
 
-	teleclaudeDir := t.TempDir()
-	report, err := updatePlugins(teleclaudeDir)
+	aglinkDir := t.TempDir()
+	report, err := updatePlugins(aglinkDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,20 +31,20 @@ func TestUpdatePlugins_BuildsSiblingAndReportsIt(t *testing.T) {
 	pluginNames = []string{"okplugin"}
 
 	parent := t.TempDir()
-	teleclaudeDir := filepath.Join(parent, "teleclaude")
-	mustMkdir(t, teleclaudeDir)
+	aglinkDir := filepath.Join(parent, "aglink")
+	mustMkdir(t, aglinkDir)
 	pluginDir := filepath.Join(parent, "okplugin")
 	mustMkdir(t, pluginDir)
 	writeMinimalGoModule(t, pluginDir, "okplugin")
 
-	report, err := updatePlugins(teleclaudeDir)
+	report, err := updatePlugins(aglinkDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(report) != 1 || report[0] != "okplugin" {
 		t.Errorf("report = %v, want [okplugin]", report)
 	}
-	binPath := filepath.Join(teleclaudeDir, "okplugin"+exeSuffix)
+	binPath := filepath.Join(aglinkDir, "okplugin"+exeSuffix)
 	if _, statErr := os.Stat(binPath); statErr != nil {
 		t.Errorf("expected binary at %s: %v", binPath, statErr)
 	}
@@ -59,8 +59,8 @@ func TestUpdatePlugins_BuildFailureAborts(t *testing.T) {
 	pluginNames = []string{"brokenplugin"}
 
 	parent := t.TempDir()
-	teleclaudeDir := filepath.Join(parent, "teleclaude")
-	mustMkdir(t, teleclaudeDir)
+	aglinkDir := filepath.Join(parent, "aglink")
+	mustMkdir(t, aglinkDir)
 	pluginDir := filepath.Join(parent, "brokenplugin")
 	mustMkdir(t, pluginDir)
 	if err := os.WriteFile(filepath.Join(pluginDir, "go.mod"), []byte("module brokenplugin\n\ngo 1.21\n"), 0o644); err != nil {
@@ -70,7 +70,7 @@ func TestUpdatePlugins_BuildFailureAborts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := updatePlugins(teleclaudeDir); err == nil {
+	if _, err := updatePlugins(aglinkDir); err == nil {
 		t.Fatal("expected error for broken plugin build")
 	}
 }

@@ -7,7 +7,7 @@ import (
 )
 
 // A relative PATH entry (".", "bin", …) must never resolve a helper binary: that
-// is how a binary dropped into whatever directory teleclaude happens to be
+// is how a binary dropped into whatever directory aglink happens to be
 // running from gets executed instead of the real one. exec.LookPath refuses
 // these (exec.ErrDot); resolveAglinkBinary must not undo that by walking PATH
 // itself and absolutising the hit.

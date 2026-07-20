@@ -21,7 +21,7 @@ func TestResolveWebBinaryPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	dir := t.TempDir()
-	self := filepath.Join(dir, "teleclaude"+exeSuffix)
+	self := filepath.Join(dir, "aglink"+exeSuffix)
 	agl := filepath.Join(dir, "aglink-web"+exeSuffix)
 
 	// An explicit override that exists wins regardless of selfExe.
@@ -65,7 +65,7 @@ func TestResolveWebBinaryPath_PathFallback(t *testing.T) {
 	}
 	t.Setenv("PATH", pathDir)
 
-	self := filepath.Join(dir, "teleclaude"+exeSuffix)
+	self := filepath.Join(dir, "aglink"+exeSuffix)
 	if got := resolveWebBinaryPath(&Config{}, self); got != pathBin {
 		t.Errorf("PATH fallback: got %q, want %q", got, pathBin)
 	}

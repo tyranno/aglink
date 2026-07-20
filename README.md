@@ -1,4 +1,4 @@
-# teleclaude
+# aglink
 
 Telegram 봇 1개로 **여러 프로젝트·여러 대화**를 **자연어로** 골라가며,
 로컬에 설치된 `claude` CLI로 작업을 수행하고 결과를 받아보는 **Go 단일 바이너리** 에이전트.
@@ -18,8 +18,8 @@ Telegram 봇 1개로 **여러 프로젝트·여러 대화**를 **자연어로** 
 ### Windows
 
 ```powershell
-go build -o teleclaude.exe .
-.\teleclaude.exe run        # 처음 실행 시 설정 마법사 자동 시작
+go build -o aglink.exe .
+.\aglink.exe run        # 처음 실행 시 설정 마법사 자동 시작
 ```
 
 상시화 (로그온 시 자동 시작):
@@ -45,26 +45,26 @@ $env:GOARCH="amd64"; .\scripts\deploy-linux.sh user@192.168.1.100
 
 **대상 머신에서 서비스 설치:**
 ```bash
-# 바이너리를 ~/teleclaude 로 복사한 후:
+# 바이너리를 ~/aglink 로 복사한 후:
 bash scripts/install-linux-service.sh
 
 # 또는 수동으로 설정 파일 먼저 작성:
-cp config.example.txt ~/.teleclaude/config.txt
-nano ~/.teleclaude/config.txt   # 토큰·user ID 편집
+cp config.example.txt ~/.aglink/config.txt
+nano ~/.aglink/config.txt   # 토큰·user ID 편집
 bash scripts/install-linux-service.sh
 ```
 
 **Linux에서 직접 빌드:**
 ```bash
-git clone https://github.com/tyranno/teleclaude
-cd teleclaude
-go build -o teleclaude .
-./teleclaude run                # 설정 마법사
+git clone https://github.com/tyranno/aglink
+cd aglink
+go build -o aglink .
+./aglink run                # 설정 마법사
 ```
 
 ---
 
-## 설정 (`~/.teleclaude/config.txt`)
+## 설정 (`~/.aglink/config.txt`)
 
 ```ini
 # 필수
@@ -83,7 +83,7 @@ MANAGER_ALWAYS=true
 
 전체 항목은 [`config.example.txt`](config.example.txt) 참조.
 
-처음 실행 시 설정 마법사가 자동으로 안내합니다 (`teleclaude run`):
+처음 실행 시 설정 마법사가 자동으로 안내합니다 (`aglink run`):
 1. **봇 만들기 + 토큰** — [@BotFather](https://t.me/BotFather) 5단계 안내 + 즉시 검증
 2. **내 계정 연결** — 봇에게 메시지 한 번 보내면 user ID 자동 감지
 3. **(선택) 첫 프로젝트 폴더** 등록
@@ -94,15 +94,15 @@ MANAGER_ALWAYS=true
 
 텔레그램 없이(또는 텔레그램과 병행해) 브라우저에서도 같은 대화 상태로 채팅할 수 있습니다.
 별도 저장소인 [`aglink-chat`](https://github.com/tyranno/aglink-chat)이 실제 웹 서버 역할을
-하고, teleclaude는 로컬 전용 control API로만 붙습니다.
+하고, aglink는 로컬 전용 control API로만 붙습니다.
 
 ```
 88.MyProject/
-├── teleclaude/        ← 이 저장소
-└── aglink-chat/        ← 형제 디렉터리로 clone + go build
+├── aglink/        ← 이 저장소
+└── aglink-chat/   ← 형제 디렉터리로 clone + go build
 ```
 
-`~/.teleclaude/config.yaml`에 추가 후 재시작:
+`~/.aglink/config.yaml`에 추가 후 재시작:
 
 ```yaml
 chat_control:
@@ -189,9 +189,9 @@ aglink_chat:
 
 ## 플러그인 확장 (aglink-*)
 
-teleclaude 본체는 텔레그램 봇/라우팅/스케줄러만 다루고, **실제 화면·브라우저
+aglink 본체는 텔레그램 봇/라우팅/스케줄러만 다루고, **실제 화면·브라우저
 조작**은 sibling 저장소로 독립 배포되는 aglink-* 플러그인이 담당합니다. 각자
-자체 GitHub 저장소를 갖는 완전히 독립된 프로젝트지만, teleclaude 옆에
+자체 GitHub 저장소를 갖는 완전히 독립된 프로젝트지만, aglink 옆에
 나란히 두면 워커의 `--mcp-config`에 자동으로 물려 도구로 노출됩니다.
 
 | 플러그인 | 기능 |
@@ -201,17 +201,17 @@ teleclaude 본체는 텔레그램 봇/라우팅/스케줄러만 다루고, **실
 
 ### 설치
 
-각 플러그인을 teleclaude와 **형제 디렉터리**로 clone하고 빌드해서 teleclaude
+각 플러그인을 aglink와 **형제 디렉터리**로 clone하고 빌드해서 aglink
 실행파일과 같은 폴더에 둡니다:
 
 ```
 88.MyProject/
-├── teleclaude/
-│   ├── teleclaude.exe
+├── aglink/
+│   ├── aglink.exe
 │   ├── aglink-screen.exe   ← 여기 나란히
 │   └── aglink-web.exe      ← 여기 나란히
 ├── aglink-screen/          ← 소스 (형제 디렉터리)
-└── aglink-web/              ← 소스 (형제 디렉터리)
+└── aglink-web/             ← 소스 (형제 디렉터리)
 ```
 
 `config.yaml`에서 켭니다 (레거시 `config.txt` 포맷은 지원하지 않음 — yaml 전용):
@@ -219,23 +219,23 @@ teleclaude 본체는 텔레그램 봇/라우팅/스케줄러만 다루고, **실
 ```yaml
 screen_control:
   enabled: true
-  binary_path: ""   # 비우면 teleclaude exe와 같은 폴더에서 자동 탐색
+  binary_path: ""   # 비우면 aglink exe와 같은 폴더에서 자동 탐색
 
 web_control:
   enabled: true
-  binary_path: ""   # 비우면 teleclaude exe와 같은 폴더에서 자동 탐색
+  binary_path: ""   # 비우면 aglink exe와 같은 폴더에서 자동 탐색
 ```
 
 둘 다 켜도 워커의 `--mcp-config`/`--allowedTools`가 자동으로 하나로 병합되어
 노출됩니다 (Claude CLI가 이 플래그들을 1회씩만 받기 때문에, 플러그인마다 따로
-넘기면 나중 것이 앞 것을 덮어씁니다 — teleclaude가 이 병합을 대신 처리).
+넘기면 나중 것이 앞 것을 덮어씁니다 — aglink가 이 병합을 대신 처리).
 
 ### `!update`가 셋 다 같이 배포
 
-`!update`는 teleclaude 자체를 빌드하기 전에 형제 디렉터리에 있는
-`aglink-screen`/`aglink-web`도 먼저 `go build`해서 teleclaude 옆에 배치합니다
+`!update`는 aglink 자체를 빌드하기 전에 형제 디렉터리에 있는
+`aglink-screen`/`aglink-web`도 먼저 `go build`해서 aglink 옆에 배치합니다
 — 저장소 3개를 손으로 각각 빌드/복사할 필요 없이 명령 하나로 전부
-최신화됩니다. 플러그인 중 하나라도 빌드가 깨지면 teleclaude 자체 업데이트도
+최신화됩니다. 플러그인 중 하나라도 빌드가 깨지면 aglink 자체 업데이트도
 시작하지 않고 에러만 보고합니다. 형제 디렉터리가 없는 배포(예: 화면제어가
 필요 없는 헤드리스 NanoPi)에서는 조용히 건너뜁니다.
 
@@ -259,16 +259,16 @@ web_control:
 각 claude 실행은 `--strict-mcp-config` + `--setting-sources project,local` 으로 격리됩니다
 (전역 MCP 서버 차단, OAuth 인증은 유지).
 
-상태 파일: `~/.teleclaude/store.json`  
-태스크 파일: `~/.teleclaude/tasks.json`  
-히스토리: `~/.teleclaude/history/<프로젝트>/<YYYY-MM-DD>.md`
+상태 파일: `~/.aglink/store.json`  
+태스크 파일: `~/.aglink/tasks.json`  
+히스토리: `~/.aglink/history/<프로젝트>/<YYYY-MM-DD>.md`
 
 ## 로그
 
 ```bash
 # Linux (systemd)
-tail -f ~/.teleclaude/logs/teleclaude.error.log
-journalctl --user -u teleclaude -f
+tail -f ~/.aglink/logs/aglink.error.log
+journalctl --user -u aglink -f
 
 # Windows (Task Scheduler)
 # 표준 출력 없음 — 로그 파일 설정은 launcher.ps1 수정 필요

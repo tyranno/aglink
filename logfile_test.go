@@ -10,7 +10,7 @@ func TestRotateLogIfLarge_Boundaries(t *testing.T) {
 	const cap = 100
 
 	t.Run("missing file is a no-op", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "teleclaude.log")
+		p := filepath.Join(t.TempDir(), "aglink.log")
 		rotateLogIfLarge(p, cap) // must not panic or create anything
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Error("rotation must not create the log")
@@ -21,7 +21,7 @@ func TestRotateLogIfLarge_Boundaries(t *testing.T) {
 	})
 
 	t.Run("just under the cap stays put", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "teleclaude.log")
+		p := filepath.Join(t.TempDir(), "aglink.log")
 		write(t, p, cap-1)
 		rotateLogIfLarge(p, cap)
 		if sz := size(t, p); sz != cap-1 {
@@ -33,7 +33,7 @@ func TestRotateLogIfLarge_Boundaries(t *testing.T) {
 	})
 
 	t.Run("exactly at the cap rotates", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "teleclaude.log")
+		p := filepath.Join(t.TempDir(), "aglink.log")
 		write(t, p, cap)
 		rotateLogIfLarge(p, cap)
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
@@ -46,7 +46,7 @@ func TestRotateLogIfLarge_Boundaries(t *testing.T) {
 
 	t.Run("only one .old generation is kept", func(t *testing.T) {
 		dir := t.TempDir()
-		p := filepath.Join(dir, "teleclaude.log")
+		p := filepath.Join(dir, "aglink.log")
 		write(t, p+".old", 7) // a previous generation
 		write(t, p, cap+50)
 

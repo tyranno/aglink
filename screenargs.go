@@ -4,7 +4,7 @@ package main
 //
 // This file assembles the worker guidance and binary resolution for the screen
 // MCP server — the standalone "aglink-screen" binary (see
-// https://github.com/tyranno/aglink-screen), not teleclaude itself. The actual
+// https://github.com/tyranno/aglink-screen), not aglink itself. The actual
 // CLI args (--mcp-config/--allowedTools/--append-system-prompt) are assembled
 // in mcpargs.go, which merges this with any other enabled aglink-* plugin
 // (e.g. aglink-web) into one combined set — the claude CLI only accepts one of
@@ -28,7 +28,7 @@ func screenSystemPrompt() string {
 		"5. 속도: 화면 변화 감지는 screenshot(느림) 대신 win_controls를 다시 호출해 보이는 컨트롤 집합의 변화로 판단하라(수 ms). " +
 		"한 번의 답변에서 여러 클릭/감지를 묶어 처리해 LLM 왕복을 줄여라.\n" +
 		"6. 대상 앱이 관리자 권한이면 일반 권한 클릭은 UIPI로 무시된다. click_control 결과에 UIPI 경고가 보이면 " +
-		"screen_control.elevated를 켜고 teleclaude를 관리자로 실행해야 한다.\n" +
+		"screen_control.elevated를 켜고 aglink를 관리자로 실행해야 한다.\n" +
 		"7. 명령 클릭 후 앱이 '전송하시겠습니까?' 같은 확인창을 띄우면, 사용자에게 묻지 말고 confirm_dialogs(app)로 " +
 		"자동 확인하라(연쇄 확인창도 처리). 그래야 메뉴 전수 스윕이 사용자 개입 없이 연속 진행된다. 외부 패킷 캡처는 Bash로 " +
 		"dumpcap/tshark를 실행하고 결과파일을 읽어 기능↔패킷을 상관시켜라.\n" +

@@ -32,7 +32,7 @@ func writeAged(t *testing.T, dir string, n int) []string {
 
 // upload_attachment carries a client-supplied Path. ingestAttachment used to
 // prune filepath.Dir(that path), so a path outside the attachments directory
-// made teleclaude delete everything but the newest maxAttachments files in
+// made aglink delete everything but the newest maxAttachments files in
 // whatever directory it named.
 func TestIngestAttachment_RefusesPathOutsideAttachmentsDir(t *testing.T) {
 	home := t.TempDir()
@@ -75,7 +75,7 @@ func TestIngestAttachment_AcceptsPathInsideAttachmentsDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	dir := filepath.Join(home, ".teleclaude", "attachments")
+	dir := filepath.Join(home, ".aglink", "attachments")
 	files := writeAged(t, dir, maxAttachments+5)
 	newest := files[len(files)-1]
 
@@ -109,7 +109,7 @@ func TestIngestAttachmentTargeted_WebTargetQueuesInWebLane(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	dir := filepath.Join(home, ".teleclaude", "attachments")
+	dir := filepath.Join(home, ".aglink", "attachments")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

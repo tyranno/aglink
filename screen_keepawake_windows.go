@@ -10,7 +10,7 @@ import (
 )
 
 // Design Ref: screen_control.keep_awake — prevents the idle-timeout screensaver/
-// lock from kicking in while teleclaude is running with screen control enabled,
+// lock from kicking in while aglink is running with screen control enabled,
 // since a locked workstation blocks focus_window/click (SendInput/SetForegroundWindow
 // can't cross into the Winlogon secure desktop) and capture_window returns a black
 // image (BitBlt reads the un-composited Default desktop). This only defeats

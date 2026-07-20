@@ -1,9 +1,9 @@
-# teleclaude 설정 파일 예제
-# 위치: ~/.teleclaude/config.txt  (Linux/macOS)
-#        %USERPROFILE%\.teleclaude\config.txt  (Windows)
+# aglink 설정 파일 예제
+# 위치: ~/.aglink/config.txt  (Linux/macOS)
+#        %USERPROFILE%\.aglink\config.txt  (Windows)
 #
 # 처음 실행 시 설정 마법사가 자동으로 안내합니다:
-#   teleclaude run    (Windows: teleclaude.exe run)
+#   aglink run    (Windows: aglink.exe run)
 
 # ─── 필수 ──────────────────────────────────────────────────────────────────────
 

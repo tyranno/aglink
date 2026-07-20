@@ -1,4 +1,4 @@
-module teleclaude
+module aglink
 
 go 1.25.5
 

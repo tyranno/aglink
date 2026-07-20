@@ -1,5 +1,6 @@
 # Build output
 *.exe
+aglink
 teleclaude
 
 # bkit / IDE local state (not part of the project)
@@ -8,7 +9,7 @@ teleclaude
 .idea/
 *.user
 
-# Local runtime data (lives in %USERPROFILE%\.teleclaude, never committed)
+# Local runtime data (lives in %USERPROFILE%\.aglink, never committed)
 config.txt
 store.json
 *.tmp
@@ -29,4 +30,5 @@ Thumbs.db
 .claude/agent-memory/
 
 # Repo-local runtime data (store/config written when workdir is the repo)
+.aglink/
 .teleclaude/

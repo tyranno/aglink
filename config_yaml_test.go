@@ -4,7 +4,7 @@ import "testing"
 
 func TestYAMLRoundTrip(t *testing.T) {
 	c := &Config{
-		HomeDir:             "C:\\tools\\teleclaude-home",
+		HomeDir:             "C:\\tools\\aglink-home",
 		TelegramBotToken:    "123:ABC",
 		AllowedUserIDs:      []int64{111, 222},
 		AllowedUsernames:    []string{"alice"},

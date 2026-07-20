@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Unified 3-state model for teleclaude's aglink helper features (aglink-chat
+// Unified 3-state model for aglink's aglink helper features (aglink-chat
 // relay, aglink-screen, aglink-web). All three use the same vocabulary so the UI
 // can render them with one rule.
 const (

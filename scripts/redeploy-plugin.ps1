@@ -1,5 +1,5 @@
 ﻿# Rebuilds an aglink-* plugin from its sibling source repo and hot-swaps the
-# deployed binary next to teleclaude.exe, without touching teleclaude itself.
+# deployed binary next to aglink.exe, without touching aglink itself.
 #
 # Why this exists: during local dev, redeploying a plugin after an edit was a
 # manual 3-step dance (kill process -> copy exe -> eyeball whether it came back)
@@ -13,7 +13,7 @@
 #
 # Assumes the standard sibling-directory layout:
 #   88.MyProject/
-#     Teleclaude/        <- this repo (teleclaude.exe lives here)
+#     Aglink/        <- this repo (aglink.exe lives here)
 #     aglink-chat/       <- plugin source (built here, then copied)
 #     aglink-screen/
 #     aglink-web/
@@ -26,15 +26,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$teleclaudeDir = Split-Path -Parent $PSScriptRoot
-$parentDir = Split-Path -Parent $teleclaudeDir
+$aglinkDir = Split-Path -Parent $PSScriptRoot
+$parentDir = Split-Path -Parent $aglinkDir
 $srcDir = Join-Path $parentDir $Name
 $exeName = "$Name.exe"
 $srcExe = Join-Path $srcDir $exeName
-$deployExe = Join-Path $teleclaudeDir $exeName
+$deployExe = Join-Path $aglinkDir $exeName
 
 if (-not (Test-Path $srcDir)) {
-    Write-Error "[redeploy] source repo not found: $srcDir (expected as a sibling of $teleclaudeDir)"
+    Write-Error "[redeploy] source repo not found: $srcDir (expected as a sibling of $aglinkDir)"
     exit 1
 }
 
@@ -62,7 +62,7 @@ Copy-Item -Path $srcExe -Destination $deployExe -Force
 Write-Host "[redeploy] deployed -> $deployExe"
 
 if ($Name -eq "aglink-chat") {
-    # aglink-chat is supervised by teleclaude (aglinkchat_supervisor.go) and
+    # aglink-chat is supervised by aglink (aglinkchat_supervisor.go) and
     # respawns on its own, but not instantly — the supervisor's backoff loop and
     # the new process's own startup (control-API connect, browser listener) take
     # a few seconds. Poll instead of a single fixed sleep so a slow respawn
@@ -77,7 +77,7 @@ if ($Name -eq "aglink-chat") {
         Write-Host "[redeploy] OK — $Name respawned: PID $($after.Id), started $($after.StartTime)"
     }
     else {
-        Write-Warning "[redeploy] $Name did not respawn within 5s — is teleclaude running, and is aglink_chat.enabled: true in config.yaml?"
+        Write-Warning "[redeploy] $Name did not respawn within 5s — is aglink running, and is aglink_chat.enabled: true in config.yaml?"
     }
 }
 else {

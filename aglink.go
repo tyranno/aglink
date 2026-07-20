@@ -13,7 +13,7 @@ import (
 //
 //  1. the explicit path from config (screen_control.binary_path,
 //     web_control.binary_path, aglink_chat.binary_path) when it exists;
-//  2. next to teleclaude's own executable — the expected deployment layout,
+//  2. next to aglink's own executable — the expected deployment layout,
 //     and where !update deploys rebuilt plugins;
 //  3. the sibling source repo (../aglink-<name>/) for a dev checkout;
 //  4. PATH, so a system-installed helper works with no config at all.

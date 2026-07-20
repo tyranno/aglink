@@ -19,15 +19,15 @@ import (
 // used by the control API (chatcontrol.go), aglink-chat relay, and main.go.
 
 // loadOrCreateWebToken returns cfgToken if set, otherwise reads (or creates and
-// persists) ~/.teleclaude/web_chat.token with 0600 perms. This token is now the
-// shared browser token teleclaude hands to the aglink-chat child (so an
+// persists) <data dir>/web_chat.token with 0600 perms. This token is now the
+// shared browser token aglink hands to the aglink-chat child (so an
 // already-connected browser keeps authenticating after the frontend swap).
 func loadOrCreateWebToken(cfgToken string) (string, error) {
 	return loadOrCreateToken(cfgToken, "web_chat.token")
 }
 
 // loadOrCreateToken returns cfgToken if set, otherwise reads (or creates and
-// persists) ~/.teleclaude/<filename> with 0600 perms. Used for the web_chat,
+// persists) <data dir>/<filename> with 0600 perms. Used for the web_chat,
 // chat_control, and aglink_chat shared tokens.
 func loadOrCreateToken(cfgToken, filename string) (string, error) {
 	if cfgToken != "" {

@@ -11,19 +11,19 @@ import (
 )
 
 // pluginNames are the aglink-* sibling repos !update also rebuilds and
-// deploys alongside teleclaude itself, so one command keeps the whole set
-// (teleclaude + its Windows plugins) in sync instead of hand-building each
+// deploys alongside aglink itself, so one command keeps the whole set
+// (aglink + its Windows plugins) in sync instead of hand-building each
 // repo and copying the binary over after every change.
 var pluginNames = []string{"aglink-screen", "aglink-web", "aglink-chat"}
 
 // updatePlugins rebuilds each plugin in pluginNames from its sibling source
-// directory (../<name> relative to teleclaude's own source dir, srcDir) and
+// directory (../<name> relative to aglink's own source dir, srcDir) and
 // drops the resulting binary directly into srcDir under <name>+exeSuffix —
 // the exact layout resolveScreenBinaryPath/resolveWebBinaryPath auto-discover.
 // A plugin whose sibling directory isn't checked out is silently skipped:
 // most deployments (e.g. a headless NanoPi) don't have these Windows-only
 // screen/browser-control plugins at all, and that must not block updating
-// teleclaude itself. Returns a short per-plugin report for the Telegram
+// aglink itself. Returns a short per-plugin report for the Telegram
 // progress message, or an error that aborts the whole !update (a broken
 // plugin build shouldn't be silently deployed).
 func updatePlugins(srcDir string) ([]string, error) {
@@ -36,7 +36,7 @@ func updatePlugins(srcDir string) ([]string, error) {
 		}
 		target := filepath.Join(srcDir, name+exeSuffix)
 		// aglink-chat runs as a supervised child; kill it (release the exe lock)
-		// and pause the supervisor's respawn while we rebuild. The next teleclaude
+		// and pause the supervisor's respawn while we rebuild. The next aglink
 		// respawns it from the fresh binary.
 		if name == "aglink-chat" {
 			aglinkChatUpdating.Store(true)

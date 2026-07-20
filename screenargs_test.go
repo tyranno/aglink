@@ -22,7 +22,7 @@ func TestResolveScreenBinaryPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	dir := t.TempDir()
-	self := filepath.Join(dir, "teleclaude"+exeSuffix)
+	self := filepath.Join(dir, "aglink"+exeSuffix)
 	agl := filepath.Join(dir, "aglink-screen"+exeSuffix)
 
 	// An explicit override that exists wins regardless of selfExe.
@@ -68,7 +68,7 @@ func TestResolveScreenBinaryPath_PathFallback(t *testing.T) {
 	}
 	t.Setenv("PATH", pathDir)
 
-	self := filepath.Join(dir, "teleclaude"+exeSuffix)
+	self := filepath.Join(dir, "aglink"+exeSuffix)
 	if got := resolveScreenBinaryPath(&Config{}, self); got != pathBin {
 		t.Errorf("PATH fallback: got %q, want %q", got, pathBin)
 	}

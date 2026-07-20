@@ -13,8 +13,8 @@ import (
 //
 // Windows UIPI (User Interface Privilege Isolation) silently drops synthetic
 // input (SendInput button events, etc.) sent from a lower-integrity process to a
-// higher-integrity (elevated) window. To drive elevated apps the whole teleclaude
-// chain (teleclaude → claude worker → aglink-screen) must itself run elevated.
+// higher-integrity (elevated) window. To drive elevated apps the whole aglink
+// chain (aglink → claude worker → aglink-screen) must itself run elevated.
 // These helpers detect our elevation and re-launch elevated via UAC; the
 // per-window UIPI detection (windowIsElevated/uipiWarning) now lives in
 // aglink-screen since only its screen tools need it.
@@ -27,7 +27,7 @@ func isElevated() bool {
 // runAsAdmin launches target (an exe path, a .lnk, or an app name the shell can
 // resolve) elevated via the "runas" verb, triggering a UAC prompt the user must
 // approve. args may be empty. The elevated process is started with SW_HIDE so no
-// console window pops up — teleclaude is a background bot and its only caller is
+// console window pops up — aglink is a background bot and its only caller is
 // the self-elevation relaunch (relaunchElevated); a visible console for the
 // elevated instance is just noise. Logs still go to the (hidden) console's
 // stderr, so redirect via the launcher/scheduled task if you need to capture them.

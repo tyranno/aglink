@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// maxAttachments caps how many files are retained in ~/.teleclaude/attachments.
+// maxAttachments caps how many files are retained in <data dir>/attachments.
 // Each time a new attachment is ingested, older files (by mtime) beyond this
 // many are deleted so the directory can't grow without bound. Both the Telegram
 // download path and the aglink-chat upload relay funnel through ingestAttachment,

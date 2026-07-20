@@ -7,10 +7,10 @@ package main
 // `claude -p` process per turn (see runner.go / claudeRunner). This lets a
 // mid-turn message be steered into the same running session — which the
 // Claude Code CLI already supports natively via its own message queue — so
-// teleclaude does not need to reimplement queuing/steering itself.
+// aglink does not need to reimplement queuing/steering itself.
 //
 // Feasibility was proven separately in a throwaway probe (see
-// C:\Users\lab\conpty-test and the "teleclaude interactive CLI feasibility"
+// C:\Users\lab\conpty-test and the "aglink interactive CLI feasibility"
 // memory): a live ConPTY session preserves conversation context across
 // writes, and the CLI shows "Press up to edit queued messages · esc to
 // interrupt" when a second message is sent while a turn is still running.
@@ -320,7 +320,7 @@ func interactiveSessionArgs(cfg *Config, req RunRequest) []string {
 }
 
 // sessionEnv builds the child process environment, replacing (not
-// inheriting) AGLINK_OWNER_LABEL: teleclaude worker processes may themselves
+// inheriting) AGLINK_OWNER_LABEL: aglink worker processes may themselves
 // be spawned with that variable set for the screen-control lease, and
 // blindly inheriting it via os.Environ() would leak the wrong owner label
 // into a freshly spawned interactive session.

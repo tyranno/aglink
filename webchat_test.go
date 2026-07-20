@@ -257,7 +257,7 @@ func TestBuildConversationsResponse_GroupsContinuationChains(t *testing.T) {
 	}
 }
 
-// TestWSFrameJSONTags locks the wire protocol between teleclaude and app.js:
+// TestWSFrameJSONTags locks the wire protocol between aglink and app.js:
 // field names and omitempty behavior must not drift silently. wsFrame is still
 // used by the control-API channel that forwards frames to aglink-chat.
 func TestWSFrameJSONTags(t *testing.T) {

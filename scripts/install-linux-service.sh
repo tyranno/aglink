@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# teleclaude systemd user 서비스 설치 스크립트 (Linux)
+# aglink systemd user 서비스 설치 스크립트 (Linux)
 # 대상 머신에서 직접 실행하세요.
 # 사용법: bash install-linux-service.sh [BINARY_PATH]
-#   BINARY_PATH: teleclaude 바이너리 경로 (기본: ~/teleclaude)
+#   BINARY_PATH: aglink 바이너리 경로 (기본: ~/aglink)
 #
 # 특징:
 #   - systemd user 서비스 (루트 권한 불필요)
-#   - 로그: ~/.teleclaude/logs/
+#   - 로그: ~/.aglink/logs/
 #   - 자동 재시작 on-failure
 #   - 부팅 시 자동 시작 (loginctl enable-linger)
 
 set -euo pipefail
 
-BINARY="${1:-$HOME/teleclaude}"
-SERVICE_NAME="teleclaude"
+BINARY="${1:-$HOME/aglink}"
+SERVICE_NAME="aglink"
 SERVICE_FILE="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
-LOG_DIR="${HOME}/.teleclaude/logs"
-CONFIG_FILE="${HOME}/.teleclaude/config.txt"
+LOG_DIR="${HOME}/.aglink/logs"
+CONFIG_FILE="${HOME}/.aglink/config.txt"
 
 # 사전 검사
 if [[ ! -x "${BINARY}" ]]; then
@@ -63,7 +63,7 @@ SERVICE_PATH="/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin${NVM_BIN}"
 
 cat > "${SERVICE_FILE}" << EOF
 [Unit]
-Description=Teleclaude - Telegram Claude Agent
+Description=Aglink - Telegram Claude Agent
 After=network.target
 
 [Service]
@@ -75,8 +75,8 @@ RestartSec=5
 KillMode=process
 Environment=HOME=${HOME}
 Environment=PATH=${SERVICE_PATH}
-StandardOutput=append:${LOG_DIR}/teleclaude.log
-StandardError=append:${LOG_DIR}/teleclaude.error.log
+StandardOutput=append:${LOG_DIR}/aglink.log
+StandardError=append:${LOG_DIR}/aglink.error.log
 
 [Install]
 WantedBy=default.target
@@ -98,8 +98,8 @@ echo ""
 systemctl --user status "${SERVICE_NAME}.service" --no-pager
 
 echo ""
-echo "✅ teleclaude 서비스 설치 완료"
-echo "   로그:    tail -f ${LOG_DIR}/teleclaude.error.log"
-echo "   중단:    systemctl --user stop teleclaude"
-echo "   재시작:  systemctl --user restart teleclaude"
-echo "   제거:    systemctl --user disable --now teleclaude && rm ${SERVICE_FILE}"
+echo "✅ aglink 서비스 설치 완료"
+echo "   로그:    tail -f ${LOG_DIR}/aglink.error.log"
+echo "   중단:    systemctl --user stop aglink"
+echo "   재시작:  systemctl --user restart aglink"
+echo "   제거:    systemctl --user disable --now aglink && rm ${SERVICE_FILE}"

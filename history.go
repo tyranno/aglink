@@ -18,7 +18,7 @@ var historyMu sync.Mutex
 var historyDirOverride string
 
 // historyDir returns the history base directory (created if needed).
-// Defaults to ~/.teleclaude/history; overridden by historyDirOverride in tests.
+// Defaults to <data dir>/history; overridden by historyDirOverride in tests.
 func historyDir() (string, error) {
 	if historyDirOverride != "" {
 		if err := os.MkdirAll(historyDirOverride, 0o700); err != nil {
@@ -26,18 +26,20 @@ func historyDir() (string, error) {
 		}
 		return historyDirOverride, nil
 	}
-	home, err := os.UserHomeDir()
+	// Via dataDir so a pre-rename install keeps writing to the history it
+	// already has under ~/.teleclaude instead of starting an empty one.
+	base, err := dataDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".teleclaude", "history")
+	dir := filepath.Join(base, "history")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
-// WriteHistory appends a conversation turn to ~/.teleclaude/history/<project>/<YYYY-MM-DD>.md.
+// WriteHistory appends a conversation turn to <data dir>/history/<project>/<YYYY-MM-DD>.md.
 // Response is truncated to 500 characters.
 // Uses historyMu to serialise concurrent writes from parallel workers.
 func WriteHistory(project, title, prompt, response string) error {

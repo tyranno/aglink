@@ -675,7 +675,7 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	useOutFile := r.supportsOutputLastMessage()
 	var outFile string
 	if useOutFile {
-		of, err := os.CreateTemp("", "teleclaude_route_out_*.txt")
+		of, err := os.CreateTemp("", "aglink_route_out_*.txt")
 		if err != nil {
 			return RouteDecision{}, fmt.Errorf("codex route 출력 임시 파일 생성 실패: %w", err)
 		}
@@ -766,7 +766,7 @@ func codexRunBaseArgs(workDir, sessionID string, resume, ignoreUserConfig bool) 
 // could hand the user the other turn's reply. Route already used os.CreateTemp;
 // this brings Run in line.
 func newCodexOutFile() (string, error) {
-	of, err := os.CreateTemp("", "teleclaude_codex_out_*.txt")
+	of, err := os.CreateTemp("", "aglink_codex_out_*.txt")
 	if err != nil {
 		return "", err
 	}

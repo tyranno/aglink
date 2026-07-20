@@ -36,7 +36,7 @@ func isInteractive() bool {
 // RunSetup walks the user through prerequisites + config and writes config.txt.
 func RunSetup(cfgPath string) error {
 	in := bufio.NewReader(os.Stdin)
-	fmt.Println("================ teleclaude 설정 마법사 ================")
+	fmt.Println("================ aglink 설정 마법사 ================")
 
 	// Prerequisite: at least one of claude/codex CLI must be present. Neither is
 	// individually required — a codex-only machine (no claude installed) must be
@@ -71,7 +71,7 @@ func RunSetup(cfgPath string) error {
 	// practice (main.go's boot already tolerates no bot token; the wizard
 	// didn't offer that path at all).
 	fmt.Println("\n[1/5] 사용 방식")
-	useTelegram, err := confirm(in, "   텔레그램 봇을 연결할까요? 아니요를 고르면 웹 채팅만으로 시작합니다 (나중에 `teleclaude setup telegram`으로 언제든 추가 가능) [Y/n]: ")
+	useTelegram, err := confirm(in, "   텔레그램 봇을 연결할까요? 아니요를 고르면 웹 채팅만으로 시작합니다 (나중에 `aglink setup telegram`으로 언제든 추가 가능) [Y/n]: ")
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func RunSetup(cfgPath string) error {
 	// [5/5] aglink-* plugins: offer to fetch+build any missing sibling
 	// (screen/browser/web-chat control) so a from-source setup doesn't require
 	// manually cloning 4 repos, then default-enable whichever ones are actually
-	// present — they were deployed alongside teleclaude for a reason, so a
+	// present — they were deployed alongside aglink for a reason, so a
 	// present-but-disabled binary would just be a silent dead weight the user
 	// has to discover and turn on by hand. Screen control is the one exception:
 	// it hands the AI direct mouse/keyboard control, so it stays opt-in even
@@ -134,7 +134,7 @@ func RunSetup(cfgPath string) error {
 	}
 	if !useTelegram && !enableAglinkChat {
 		fmt.Println("   ⚠️ 텔레그램도 없고 aglink-chat도 못 찾았습니다 — 이대로면 봇과 대화할 방법이 없습니다.")
-		fmt.Println("      나중에 aglink-chat을 설치하거나 `teleclaude setup telegram`으로 텔레그램을 연결하세요.")
+		fmt.Println("      나중에 aglink-chat을 설치하거나 `aglink setup telegram`으로 텔레그램을 연결하세요.")
 	}
 
 	// Save config.
@@ -177,7 +177,7 @@ func tokenOf(api *tgbotapi.BotAPI) string {
 func RunTelegramSetup(cfgPath string) error {
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
-		return fmt.Errorf("기존 설정을 불러오지 못했습니다 (%s): %w — 설정이 아예 없다면 `teleclaude setup`을 먼저 실행하세요", cfgPath, err)
+		return fmt.Errorf("기존 설정을 불러오지 못했습니다 (%s): %w — 설정이 아예 없다면 `aglink setup`을 먼저 실행하세요", cfgPath, err)
 	}
 	in := bufio.NewReader(os.Stdin)
 	fmt.Println("================ Telegram 연결 ================")
@@ -214,7 +214,7 @@ func RunTelegramSetup(cfgPath string) error {
 		return werr
 	}
 	fmt.Printf("\n✅ 텔레그램 연결 완료: 봇 @%s, 허용 ID %d\n", api.Self.UserName, userID)
-	fmt.Println("   teleclaude를 재시작하면(또는 `!update`) 텔레그램에서도 대화할 수 있습니다.")
+	fmt.Println("   aglink를 재시작하면(또는 `!update`) 텔레그램에서도 대화할 수 있습니다.")
 	fmt.Println("===================================================")
 	return nil
 }

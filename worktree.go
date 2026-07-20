@@ -21,7 +21,7 @@ func CreateWorktree(projectPath, id string) (string, error) {
 	if !isGitRepo(projectPath) {
 		return "", nil // not a git repo — no worktree needed
 	}
-	wtPath := filepath.Join(os.TempDir(), "teleclaude-wt-"+id)
+	wtPath := filepath.Join(os.TempDir(), "aglink-wt-"+id)
 	// --detach avoids creating/modifying a branch; HEAD is already a valid ref.
 	cmd := exec.Command("git", "-C", projectPath, "worktree", "add", "--detach", wtPath)
 	if out, err := cmd.CombinedOutput(); err != nil {

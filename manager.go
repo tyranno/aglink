@@ -408,27 +408,45 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	m.runWorker(ctx, chatID, text, m.telegramSink(project), workDir, tc, s, client, backend)
 }
 
+// projectMemoryDirName picks the per-project memory directory for projectPath.
+//
+// New projects get .aglink/. Projects that already accumulated memory under the
+// pre-rename .teleclaude/ keep using it in place — silently switching them to a
+// fresh empty .aglink/ would drop every decision a conversation had recorded
+// there. Move the directory by hand to opt a project into the new name.
+func projectMemoryDirName(projectPath string) string {
+	if projectPath != "" {
+		if _, err := os.Stat(filepath.Join(projectPath, ".aglink")); os.IsNotExist(err) {
+			if st, lerr := os.Stat(filepath.Join(projectPath, legacyDataDirName)); lerr == nil && st.IsDir() {
+				return legacyDataDirName
+			}
+		}
+	}
+	return ".aglink"
+}
+
 // conversationMemoryPath returns the relative, conversation-scoped memory file
 // path a Worker should read/write. Each conversation gets its own file under
-// .teleclaude/memory/ instead of every conversation sharing one growing
-// .teleclaude/memory.md — mixing unrelated topics into one file made it
+// <dir>/memory/ instead of every conversation sharing one growing
+// <dir>/memory.md — mixing unrelated topics into one file made it
 // unreadable and caused conversations to leak context into each other
-// (2026-07-16 decision). Pre-existing .teleclaude/memory.md files are left on
+// (2026-07-16 decision). Pre-existing memory.md files are left on
 // disk untouched as an archive; they are no longer read or written.
-func conversationMemoryPath(convID string) string {
+func conversationMemoryPath(projectPath, convID string) string {
+	dir := projectMemoryDirName(projectPath)
 	if convID == "" {
-		return ".teleclaude/memory.md"
+		return dir + "/memory.md"
 	}
-	return ".teleclaude/memory/" + convID + ".md"
+	return dir + "/memory/" + convID + ".md"
 }
 
 // compactPromptFor asks the Worker to externalize this conversation's durable
 // facts into its own conversation-scoped memory file instead of relying on the
 // CLI session's ever-growing --resume context to carry them. Mirrors the
-// manual /compact command in devladpopov/teleclaude, which the project journal
-// names as a gap worth closing (see .teleclaude/memory.md, 2026-07-09).
-func compactPromptFor(convID string) string {
-	return fmt.Sprintf("지금까지의 대화에서 앞으로도 참고해야 할 핵심 결정사항/사실을 이 대화 전용 메모리 파일(%s)에 정리해서 저장해줘(파일이 없으면 새로 만들고, 이미 있는 내용과 중복되면 병합·정리). 다른 대화의 메모와 섞이지 않도록 이 경로만 사용해줘. 저장한 뒤에는 무엇을 저장했는지 3~5줄로 요약해서 답해줘.", conversationMemoryPath(convID))
+// manual /compact command in devladpopov/aglink, which the project journal
+// names as a gap worth closing (see the project memory file, 2026-07-09).
+func compactPromptFor(projectPath, convID string) string {
+	return fmt.Sprintf("지금까지의 대화에서 앞으로도 참고해야 할 핵심 결정사항/사실을 이 대화 전용 메모리 파일(%s)에 정리해서 저장해줘(파일이 없으면 새로 만들고, 이미 있는 내용과 중복되면 병합·정리). 다른 대화의 메모와 섞이지 않도록 이 경로만 사용해줘. 저장한 뒤에는 무엇을 저장했는지 3~5줄로 요약해서 답해줘.", conversationMemoryPath(projectPath, convID))
 }
 
 // CompactTelegramConversation runs one Worker turn asking Claude to persist the
@@ -476,7 +494,7 @@ func (m *Manager) CompactTelegramConversation(ctx context.Context, chatID int64,
 	_ = s.Send(chatID, "🗜 대화 압축 중...")
 
 	res, err := client.Run(ctx, RunRequest{
-		Prompt:    compactPromptFor(tc.ID),
+		Prompt:    compactPromptFor(workDir, tc.ID),
 		WorkDir:   workDir,
 		SessionID: tc.SessionID,
 		Resume:    tc.Started,
@@ -1064,7 +1082,8 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	if pPath != "" {
 		projectMemory = readProjectMemory(pPath, workConv.ID)
 	}
-	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, workConv.ID, historyForPrompt)
+	memPath := conversationMemoryPath(pPath, workConv.ID)
+	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, historyForPrompt)
 
 	workerModel := m.workerModelForBackendName(backend)
 	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
@@ -1129,7 +1148,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			log.Printf("[worker] session lost (%v) — retrying once without --resume, with fuller history", err)
 			sessionRecovered = true
 			recoveryHistory := historyForContext(workConv.History[:pendingIdx], false)
-			recoveryPrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, workConv.ID, recoveryHistory)
+			recoveryPrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, recoveryHistory)
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
@@ -1182,7 +1201,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			}
 			// Reactive context-overflow split: continue seamlessly in a new series
 			// (summary carried); keep it internal — logged below, not sent to the user.
-			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, workConv.ID, nil)
+			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, memPath, nil)
 			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
 
 			// Restart heartbeat for the retry turn — it may take another full TimeoutMinutes.
@@ -1360,7 +1379,7 @@ func formatCompletion(elapsed time.Duration) string {
 }
 
 // readProjectMemory reads this conversation's own memory file
-// (.teleclaude/memory/<convID>.md) from the project directory. Worker Claude
+// (<memory dir>/memory/<convID>.md) from the project directory. Worker Claude
 // can freely update this file to persist decisions specific to this
 // conversation — it is not shared with other conversations in the same
 // project (see conversationMemoryPath).
@@ -1368,20 +1387,21 @@ func readProjectMemory(projectPath, convID string) string {
 	if convID == "" {
 		return ""
 	}
-	b, err := os.ReadFile(filepath.Join(projectPath, ".teleclaude", "memory", convID+".md"))
+	dir := projectMemoryDirName(projectPath)
+	b, err := os.ReadFile(filepath.Join(projectPath, dir, "memory", convID+".md"))
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
 }
 
-// readGlobalMemory reads ~/.teleclaude/global-memory.md for cross-project long-term memory.
+// readGlobalMemory reads <data dir>/global-memory.md for cross-project long-term memory.
 func readGlobalMemory() string {
-	home, err := os.UserHomeDir()
+	dir, err := dataDir()
 	if err != nil {
 		return ""
 	}
-	b, err := os.ReadFile(filepath.Join(home, ".teleclaude", "global-memory.md"))
+	b, err := os.ReadFile(filepath.Join(dir, "global-memory.md"))
 	if err != nil {
 		return ""
 	}
@@ -1442,7 +1462,7 @@ func tailTurns(history []ConversationTurn, maxTurns, maxChars int) []Conversatio
 // Layer order: global memory → project memory → parent summary → recent history → current request.
 // Only adds sections when content exists — no empty headers. convID scopes the
 // trailing memory-save reminder to this conversation's own memory file.
-func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemory, convID string, history []ConversationTurn) string {
+func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemory, memoryPath string, history []ConversationTurn) string {
 	hasContext := globalMemory != "" || projectMemory != "" || parentSummary != "" || len(history) > 0
 	if !hasContext {
 		return currentPrompt
@@ -1481,7 +1501,7 @@ func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemor
 
 	sb.WriteString("## 현재 요청\n\n")
 	sb.WriteString(currentPrompt)
-	fmt.Fprintf(&sb, "\n\n> 중요한 결정/해결책은 이 대화 전용 메모리 파일(%s)에 기록해두세요. 다른 대화의 메모와 섞이지 않도록 이 경로만 사용하세요.", conversationMemoryPath(convID))
+	fmt.Fprintf(&sb, "\n\n> 중요한 결정/해결책은 이 대화 전용 메모리 파일(%s)에 기록해두세요. 다른 대화의 메모와 섞이지 않도록 이 경로만 사용하세요.", memoryPath)
 	return sb.String()
 }
 

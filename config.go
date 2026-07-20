@@ -14,13 +14,31 @@ import (
 
 // Design Ref: §4.2, §8.3 — config.txt (key=value) parsing + claude path auto-detect.
 
-// dataDir returns %USERPROFILE%\.teleclaude (created if missing).
+// legacyDataDirName is the pre-rename data dir (project was called aglink).
+// Installs created before the aglink rename keep all their state — config.yaml,
+// store.json, tasks.json, history/ — under this name.
+const legacyDataDirName = ".teleclaude"
+
+// dataDir returns %USERPROFILE%\.aglink (created if missing).
+//
+// For backward compatibility it does NOT migrate an existing pre-rename
+// ~/.teleclaude directory: if that exists and ~/.aglink does not, the old
+// directory is used in place. Renaming it would have to happen while a live
+// process may hold open handles to the log and store inside it (which fails
+// outright on Windows), so the safe move is to keep reading where the state
+// already is. Delete or rename ~/.teleclaude by hand to opt into the new path.
 func dataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".teleclaude")
+	dir := filepath.Join(home, ".aglink")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		legacy := filepath.Join(home, legacyDataDirName)
+		if st, lerr := os.Stat(legacy); lerr == nil && st.IsDir() {
+			return legacy, nil
+		}
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -36,7 +54,7 @@ func defaultConfigPath() (string, error) {
 	return filepath.Join(dir, "config.txt"), nil
 }
 
-// defaultYAMLPath returns ~/.teleclaude/config.yaml.
+// defaultYAMLPath returns <data dir>/config.yaml.
 func defaultYAMLPath() (string, error) {
 	dir, err := dataDir()
 	if err != nil {
@@ -238,7 +256,7 @@ func parseBool(val string, def bool) bool {
 const maxAllowedWorkers = 50
 
 func (c *Config) validate() error {
-	// Web-chat-only mode: teleclaude can boot without a Telegram bot token as long
+	// Web-chat-only mode: aglink can boot without a Telegram bot token as long
 	// as a web frontend is enabled (chat_control/aglink_chat, or the legacy web_chat).
 	// In that mode Telegram polling is skipped and the browser UI is the only surface.
 	webFrontendEnabled := c.ChatControl || c.AglinkChat || c.WebChat

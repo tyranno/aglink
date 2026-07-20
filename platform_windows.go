@@ -84,7 +84,7 @@ func pluginRunStatuses(names []string) (map[string]pluginRun, bool) {
 	return res, true
 }
 
-// killPreviousInstance terminates any running teleclaude processes (except self).
+// killPreviousInstance terminates any running aglink processes (except self).
 func killPreviousInstance() {
 	myPID := os.Getpid()
 	killed := false
@@ -98,7 +98,13 @@ func killPreviousInstance() {
 		}
 	}
 
-	for _, name := range []string{"teleclaude" + exeSuffix, "teleclaude_new" + exeSuffix} {
+	// The pre-rename names stay in this list on purpose: the first aglink.exe to
+	// start after the rename must still find and kill a teleclaude.exe left
+	// running from before it, or both would poll Telegram at once.
+	for _, name := range []string{
+		"aglink" + exeSuffix, "aglink_new" + exeSuffix,
+		"teleclaude" + exeSuffix, "teleclaude_new" + exeSuffix,
+	} {
 		out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq "+name, "/FO", "CSV", "/NH").CombinedOutput()
 		for _, line := range strings.Split(string(out), "\n") {
 			line = strings.TrimSpace(line)

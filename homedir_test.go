@@ -12,7 +12,7 @@ func TestResolveHomeDir_DefaultCreatesTeleclaudeUnderHome(t *testing.T) {
 	t.Setenv("HOME", tmpHome)        // Unix
 	cfg := &Config{}                 // no HomeDir → default
 	got := resolveHomeDir(cfg)
-	want := filepath.Join(tmpHome, "teleclaude")
+	want := filepath.Join(tmpHome, "aglink")
 	if got != want {
 		t.Fatalf("default home = %q, want %q", got, want)
 	}

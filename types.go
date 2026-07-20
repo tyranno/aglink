@@ -7,7 +7,7 @@ import (
 
 // Design Ref: §3.1 — Domain types. Plan SC: 멀티프로젝트 × 프로젝트별 다중 대화.
 
-// Config holds runtime settings loaded from %USERPROFILE%\.teleclaude\config.txt.
+// Config holds runtime settings loaded from %USERPROFILE%\.aglink\config.txt.
 type Config struct {
 	TelegramBotToken      string
 	AllowedUserIDs        []int64
@@ -21,19 +21,19 @@ type Config struct {
 	CodexModel            string   // worker model (powerful) — "" = codex built-in default
 	CodexManagerModel     string   // routing model (fast/cheap) — "" = same as CodexModel
 	DefaultBackend        string   // "claude" | "codex" — "" = "claude"
-	HomeDir               string   // 서비스 기본 작업 홈 (yaml home_dir); "" → <userHome>/teleclaude
+	HomeDir               string   // 서비스 기본 작업 홈 (yaml home_dir); "" → <userHome>/aglink
 	MaxWorkers            int      // max concurrent Worker goroutines, default 3
 	RateLimitPerMin       int      // max user messages per minute, 0 = unlimited, default 20
 	AllowScripts          bool     // permit --script in !task add/update, default false
 	AllowedScriptCommands []string // whitelist of allowed script first-tokens; empty = any
 	AllowedUsernames      []string // Telegram usernames (without @) allowed to use the bot
 	ScreenControl         bool     // screen-control MCP 활성화 (Windows). 기본 false
-	ScreenPresetsFile     string   // 좌표 프리셋 파일 경로. 빈 값이면 ~/.teleclaude/presets.json
+	ScreenPresetsFile     string   // 좌표 프리셋 파일 경로. 빈 값이면 <data dir>/presets.json
 	ScreenElevated        bool     // 관리자 권한으로 실행해 관리자 대상 앱도 제어 (Windows UIPI 우회). 기본 false
 	ScreenKeepAwake       bool     // 화면 유휴 잠금/화면보호기 방지 (SetThreadExecutionState, Windows). 기본 false
-	ScreenBinaryPath      string   // aglink-screen 실행파일 경로. 빈 값이면 teleclaude 실행파일과 같은 폴더에서 찾음
+	ScreenBinaryPath      string   // aglink-screen 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 	WebControl            bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
-	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 teleclaude 실행파일과 같은 폴더에서 찾음
+	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 	WebChat               bool     // local web chat transport enabled
 	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:1717
@@ -47,7 +47,7 @@ type Config struct {
 	ChatControlToken       string // control-API auth token; empty → auto-generated + persisted
 	ChatControlOwnerChatID int64  // chatID aglink-chat actions run as; 0 → first AllowedUserIDs
 
-	// aglink_chat: teleclaude spawns aglink-chat.exe serve as a managed child so
+	// aglink_chat: aglink spawns aglink-chat.exe serve as a managed child so
 	// it runs as the primary frontend. Phase 1 runs it on a parallel port (1718)
 	// alongside the embedded web_chat server; requires ChatControl enabled.
 	AglinkChat           bool   // spawn+supervise aglink-chat.exe serve

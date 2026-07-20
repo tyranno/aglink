@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 )
 
-// defaultHomeDir is the service's default working home: <userHome>/teleclaude.
+// defaultHomeDir is the service's default working home: <userHome>/aglink.
 func defaultHomeDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "teleclaude"
+		return "aglink"
 	}
-	return filepath.Join(home, "teleclaude")
+	return filepath.Join(home, "aglink")
 }
 
 // resolveHomeDir returns the configured home dir (or the default) and ensures it

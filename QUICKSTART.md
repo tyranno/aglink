@@ -1,4 +1,4 @@
-# teleclaude 빠른 시작 (테스터용)
+# aglink 빠른 시작 (테스터용)
 
 텔레그램 봇 + (선택) 브라우저 채팅창 하나로 내 컴퓨터에서 `claude` CLI를 돌려 코딩/작업을
 시키는 개인용 도구입니다. **1인 1인스턴스** 구조라 — 다른 사람이 써보려면 이 저장소를
@@ -17,25 +17,25 @@
 
 ## 1. 저장소 clone (전부 형제 디렉터리로!)
 
-teleclaude 본체 + 원하는 플러그인을 **같은 부모 폴더 아래** 나란히 clone하면
-teleclaude가 자동으로 찾아줍니다. 전부 선택사항(텔레그램만 쓸 거면 teleclaude 하나로
+aglink 본체 + 원하는 플러그인을 **같은 부모 폴더 아래** 나란히 clone하면
+aglink가 자동으로 찾아줍니다. 전부 선택사항(텔레그램만 쓸 거면 aglink 하나로
 충분)이지만, 아래처럼 다 받아두면 이 가이드의 모든 기능을 써볼 수 있습니다.
 
 ```powershell
 mkdir myfolder; cd myfolder
-git clone https://github.com/tyranno/teleclaude
+git clone https://github.com/tyranno/aglink
 git clone https://github.com/tyranno/aglink-chat      # 브라우저 채팅 UI
 git clone https://github.com/tyranno/aglink-screen    # Windows 화면 제어 (Windows 전용)
 git clone https://github.com/tyranno/aglink-web       # 실제 Chrome 브라우저 제어
 ```
 
-> 이 단계는 사실 건너뛰어도 됩니다 — `teleclaude`만 clone해서 3단계(설정 마법사)까지
+> 이 단계는 사실 건너뛰어도 됩니다 — `aglink`만 clone해서 3단계(설정 마법사)까지
 > 진행하면, 없는 aglink-* 저장소를 마법사가 자동으로 clone+빌드해줄지 하나씩 물어봅니다
 > (Windows 전용, git/go가 PATH에 있어야 함).
 
 ```
 myfolder/
-├── teleclaude/        ← 봇 본체
+├── aglink/             ← 봇 본체
 ├── aglink-chat/        ← 브라우저 채팅 UI
 ├── aglink-screen/      ← 화면 제어 플러그인
 └── aglink-web/         ← 브라우저 제어 플러그인
@@ -44,7 +44,7 @@ myfolder/
 ## 2. 빌드
 
 ```powershell
-cd teleclaude;      go build -o teleclaude.exe .;      cd ..
+cd aglink;          go build -o aglink.exe .;          cd ..
 cd aglink-chat;     go build -o aglink-chat.exe .;     cd ..
 cd aglink-screen;   go build -o aglink-screen.exe .;   cd ..
 cd aglink-web;      go build -o aglink-web.exe .;      cd ..
@@ -55,14 +55,14 @@ cd aglink-web;      go build -o aglink-web.exe .;      cd ..
 ## 3. 첫 실행 — 설정 마법사
 
 ```powershell
-cd teleclaude
-.\teleclaude.exe run
+cd aglink
+.\aglink.exe run
 ```
 
 처음 실행하면 마법사가 순서대로 안내합니다:
 1. **사용 방식** — 텔레그램 봇을 연결할지 물어봅니다. **아니요**를 고르면 웹 채팅만으로
    바로 시작하고(봇 만들기/계정 연결 단계 전부 건너뜀), 텔레그램은 나중에 아무 때나
-   `teleclaude setup telegram`으로 추가할 수 있습니다. **예**를 고르면 이어서:
+   `aglink setup telegram`으로 추가할 수 있습니다. **예**를 고르면 이어서:
    - **봇 만들기** — [@BotFather](https://t.me/BotFather)에게 `/newbot` → 토큰 발급 → 붙여넣기 (즉시 검증)
    - **내 계정 연결** — 안내대로 봇에게 아무 메시지나 한 번 보내면 자동으로 내 user ID 등록
 2. **(선택) 첫 프로젝트 폴더 등록**
@@ -75,16 +75,16 @@ cd teleclaude
    채로 남는 일은 없습니다. `aglink-screen`(마우스/키보드 직접 조작)만 예외로, 설치돼
    있어도 켤지 따로 물어봅니다(민감한 권한이라 기본은 끔).
 
-완료되면 `~/.teleclaude/config.yaml`이 생성되고 바로 동작합니다 — 텔레그램을 연결했다면
+완료되면 `~/.aglink/config.yaml`이 생성되고 바로 동작합니다 — 텔레그램을 연결했다면
 봇에게 말을 걸면 되고, 웹 채팅만 골랐다면 실행 후 콘솔 로그에 뜨는
 `http://127.0.0.1:1717/?token=...` 주소로 접속하면 됩니다.
 
 ## 4. 나중에 텔레그램 추가하기
 
-웹 채팅만으로 시작했다가 텔레그램도 쓰고 싶어지면, teleclaude 폴더에서:
+웹 채팅만으로 시작했다가 텔레그램도 쓰고 싶어지면, aglink 폴더에서:
 
 ```powershell
-.\teleclaude.exe setup telegram
+.\aglink.exe setup telegram
 ```
 
 봇 만들기 + 계정 연결만 물어보고, 기존 `config.yaml`의 나머지 설정(등록된 프로젝트,
@@ -119,8 +119,8 @@ voice 서버에 헬스체크 엔드포인트 새로 만들자
 ## 5-1. Codex 백엔드 (선택 — 기본은 Claude)
 
 워커를 Claude 대신 [OpenAI Codex CLI](https://github.com/openai/codex)로 돌릴 수 있습니다.
-teleclaude 설치와 무관하게 완전히 선택사항이며, 설치가 안 돼 있으면 조용히 무시됩니다.
-**claude가 아예 없는 codex 전용 환경**도 지원합니다 — `teleclaude setup` 마법사가 claude를
+aglink 설치와 무관하게 완전히 선택사항이며, 설치가 안 돼 있으면 조용히 무시됩니다.
+**claude가 아예 없는 codex 전용 환경**도 지원합니다 — `aglink setup` 마법사가 claude를
 못 찾으면 자동으로 codex 전용 설정으로 진행하고, 부팅 시에도 둘 중 하나만 있으면 됩니다.
 
 **1) codex CLI 설치 + 로그인**
@@ -130,7 +130,7 @@ npm install -g @openai/codex
 codex login
 ```
 
-`codex` 명령이 PATH에서 그냥 실행되는 상태면 끝 — teleclaude가 시작할 때 자동으로 찾습니다
+`codex` 명령이 PATH에서 그냥 실행되는 상태면 끝 — aglink가 시작할 때 자동으로 찾습니다
 (`CODEX_PATH`/`backend.codex_path`로 경로를 직접 지정할 수도 있음).
 
 **2) `config.yaml`에 추가 (선택 — 기본 백엔드를 아예 codex로 하고 싶을 때만)**
@@ -165,12 +165,12 @@ backend:
 ```yaml
 screen_control:
   enabled: true
-  binary_path: ""    # 비우면 teleclaude.exe와 같은 폴더에서 자동 탐색
+  binary_path: ""    # 비우면 aglink.exe와 같은 폴더에서 자동 탐색
   elevated: false    # 대상 앱이 "관리자 권한"으로 떠 있으면 true로 (UIPI 우회)
   keep_awake: false
 ```
 
-teleclaude를 재시작하면 워커(claude)가 자동으로 이 도구들을 인식합니다. 그냥
+aglink를 재시작하면 워커(claude)가 자동으로 이 도구들을 인식합니다. 그냥
 자연어로 시키면 됩니다:
 
 ```
@@ -189,7 +189,7 @@ LLM을 거치지 않는 즉시-실행 명령(`!screen`)도 있습니다 (빠른 
 | `!screen click <프리셋이름>` | 저장한 좌표를 즉시 클릭 |
 
 > 대상 앱이 관리자 권한으로 떠 있는데 클릭이 씹히면(UIPI), `screen_control.elevated: true`로
-> 바꾸고 재시작하세요 — teleclaude 전체가 관리자 권한으로 재기동됩니다.
+> 바꾸고 재시작하세요 — aglink 전체가 관리자 권한으로 재기동됩니다.
 
 ## 7. aglink-web — 실제 Chrome 브라우저 제어 (선택)
 
@@ -202,10 +202,10 @@ LLM을 거치지 않는 즉시-실행 명령(`!screen`)도 있습니다 (빠른 
 3. 카드에 표시된 확장 **ID**를 확인 (나중에 여러 확장이 섞여 헷갈리면 이 ID로 특정 가능)
 
 확장은 로컬 데몬(`ws://127.0.0.1:48219`)에 자동으로 연결/재연결됩니다. 별도 설정 없이
-바로 동작하며, ID를 고정하고 싶으면 teleclaude 실행 전 환경변수로
+바로 동작하며, ID를 고정하고 싶으면 aglink 실행 전 환경변수로
 `AGLINK_WEB_EXT_ID=<그 ID>`를 설정하면 됩니다(선택사항).
 
-**2) teleclaude에 연결**
+**2) aglink에 연결**
 
 설정 마법사가 `aglink-web`이 설치된 걸 보면 자동으로 켜줍니다(`aglink-chat`과 함께 —
 바이너리가 이미 배포돼 있는데 꺼진 채로 남겨두지 않음). 수동으로 켜거나 확인하려면
@@ -214,7 +214,7 @@ LLM을 거치지 않는 즉시-실행 명령(`!screen`)도 있습니다 (빠른 
 ```yaml
 web_control:
   enabled: true
-  binary_path: ""    # 비우면 teleclaude.exe와 같은 폴더에서 자동 탐색
+  binary_path: ""    # 비우면 aglink.exe와 같은 폴더에서 자동 탐색
 ```
 
 재시작 후 자연어로 시키면 됩니다:
@@ -228,7 +228,7 @@ example.com 열어서 페이지 내용 읽어줘
 `screen_control`과 동시에 켜도 워커가 두 플러그인 도구를 하나로 병합해서 받으므로
 문제없이 같이 동작합니다.
 
-> teleclaude 없이 `aglink-web`만 단독 테스트하려면:
+> aglink 없이 `aglink-web`만 단독 테스트하려면:
 > ```sh
 > ./aglink-web.exe serve                    # 데몬 기동 (1회, 백그라운드)
 > ./aglink-web.exe cmd list_tabs            # 열린 탭 확인
@@ -255,7 +255,7 @@ web_control:
 
 ## 9. 업데이트 (`!update`)
 
-teleclaude, aglink-chat, aglink-screen, aglink-web을 전부 형제 디렉터리로 clone해뒀다면,
+aglink, aglink-chat, aglink-screen, aglink-web을 전부 형제 디렉터리로 clone해뒀다면,
 텔레그램/웹 채팅창에서 `!update` 한 번이면 **넷 다** 최신 소스로 재빌드 + 무중단
 재시작됩니다 (Windows 전용 기능). 없는 저장소는 조용히 건너뜁니다.
 
@@ -265,7 +265,7 @@ teleclaude, aglink-chat, aglink-screen, aglink-web을 전부 형제 디렉터리
 
 ## 문제 해결
 
-- **로그**: Windows는 콘솔 출력 그대로, Linux(systemd)는 `~/.teleclaude/logs/teleclaude.error.log`
+- **로그**: Windows는 콘솔 출력 그대로, Linux(systemd)는 `~/.aglink/logs/aglink.error.log`
 - **포트 충돌**: `config.yaml`의 `aglink_chat.addr` / `chat_control.addr` 값을 바꾸면 됨
 - **1717/17170 포트가 이미 사용 중**이거나 `aglink-chat` 바이너리가 안 잡히면, 재시작 로그에
   `[aglinkchat] binary not found` / `listen ... failed` 메시지로 원인이 찍힘

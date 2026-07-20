@@ -33,6 +33,8 @@
     toggleProgressPopup,
     paneColor,
     scrollPaneLogToBottom,
+    recordPaneLogScroll,
+    NEAR_BOTTOM_PX,
     togglePaneBackendMenu,
     setTargetBackend,
     togglePaneWorkDirMenu,
@@ -45,11 +47,11 @@
   // Drives the "jump to latest" FAB: hidden while the log is already near
   // its bottom, shown once the user scrolls up to read earlier messages.
   let atBottom = $state(true);
-  const NEAR_BOTTOM_PX = 80;
 
   function handleLogScroll(event) {
     const el = event.currentTarget;
     atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    recordPaneLogScroll(node.paneId, el);
   }
 
   // User bubbles stay verbatim (typed text shown as typed); assistant/system

@@ -68,13 +68,27 @@ const ORDERED_RE = /^\s*\d+[.)]\s+(.*)$/;
 const QUOTE_RE = /^\s*>\s?(.*)$/;
 const TABLE_SEPARATOR_RE = /^:?-{3,}:?$/;
 
+// Only an unescaped "|" separates cells: "\|" is a literal pipe belonging to the
+// cell, which is how a table shows shell or jq syntax. Splitting on it blindly
+// gave the row one cell too many, and the width check below then cut the table
+// off mid-way and dumped the remaining rows as a paragraph.
 function splitTableRow(line) {
-  if (!String(line).includes("|")) return null;
-  let body = String(line).trim();
-  if (body.startsWith("|")) body = body.slice(1);
-  if (body.endsWith("|")) body = body.slice(0, -1);
-  const cells = body.split("|").map((cell) => cell.trim());
-  return cells.length >= 2 ? cells : null;
+  const raw = String(line).trim();
+  const cells = [];
+  let cell = "";
+  let sawPipe = false;
+  for (let n = 0; n < raw.length; n++) {
+    if (raw[n] === "\\" && raw[n + 1] === "|") { cell += "|"; n++; continue; }
+    if (raw[n] === "|") { cells.push(cell); cell = ""; sawPipe = true; continue; }
+    cell += raw[n];
+  }
+  cells.push(cell);
+  if (!sawPipe) return null;
+  // Leading and trailing delimiters are optional; each leaves an empty edge cell.
+  if (cells.length > 1 && !cells[0].trim()) cells.shift();
+  if (cells.length > 1 && !cells[cells.length - 1].trim()) cells.pop();
+  const trimmed = cells.map((c) => c.trim());
+  return trimmed.length >= 2 ? trimmed : null;
 }
 
 function isTableSeparator(line, width) {

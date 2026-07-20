@@ -173,7 +173,7 @@
       if (reply.ok) {
         settingsMsg = "저장했습니다. 필요한 경우 서비스 재시작이 필요할 수 있습니다.";
         await loadSettingsSchema();
-        // teleclaude's config hot-reload is debounced (~300ms) before it takes
+        // aglink's config hot-reload is debounced (~300ms) before it takes
         // effect, so refetch the version/backend info shortly after saving —
         // otherwise the header badge keeps showing the backend from launch.
         window.setTimeout(() => {
@@ -432,7 +432,7 @@
         {chat.connected ? "연결됨" : "연결 끊김"}
       </span>
       <div class="min-w-0 flex-1">
-        <div class="truncate text-sm font-semibold">teleclaude</div>
+        <div class="truncate text-sm font-semibold">aglink</div>
       </div>
       {#if backendBadgeText()}
         <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-2 py-1 text-[11px] font-semibold capitalize text-slate-100" title="현재 연결된 백엔드">
@@ -838,7 +838,7 @@
 
                 <div class="grid gap-4 md:grid-cols-2">
                   <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
-                    <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">teleclaude</div>
+                    <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">aglink</div>
                     <div class="space-y-2 text-sm text-slate-700">
                       <div class="flex items-center justify-between gap-3">
                         <span>현재 백엔드</span>

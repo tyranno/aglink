@@ -88,5 +88,10 @@ check("pipe table",
   render("| | 지금 | 목표 |\n|---|---|---|\n| 저장소 | 5개 | 1개 (모노레포) |\n| exe | 4개 (39MB) | 2개 (~22MB) |\n| 빌드 | 5곳 순회 | go build ./cmd/... + desktop만 task |"),
   "<table><thead><tr><th></th><th>지금</th><th>목표</th></tr></thead><tbody><tr><td>저장소</td><td>5개</td><td>1개 (모노레포)</td></tr><tr><td>exe</td><td>4개 (39MB)</td><td>2개 (~22MB)</td></tr><tr><td>빌드</td><td>5곳 순회</td><td>go build ./cmd/... + desktop만 task</td></tr></tbody></table>");
 
+// An escaped pipe used to end the table early and dump the rest as a paragraph.
+check("escaped pipe stays inside its cell",
+  render("| 항목 | 상태 |\n|---|---|\n| 파싱 | .a.b \\| add → 6 |\n| PATH | 미반영 |"),
+  "<table><thead><tr><th>항목</th><th>상태</th></tr></thead><tbody><tr><td>파싱</td><td>.a.b | add → 6</td></tr><tr><td>PATH</td><td>미반영</td></tr></tbody></table>");
+
 console.log(fail === 0 ? "\nALL PASS ✅" : `\n${fail} FAILED ❌`);
 process.exitCode = fail ? 1 : 0;

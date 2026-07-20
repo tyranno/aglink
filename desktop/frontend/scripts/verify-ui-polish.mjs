@@ -37,7 +37,7 @@ assert(store.includes('event.key === "ArrowUp"'), "composer must recall sent his
 assert(store.includes("function handleComposerPaste"), "composer must handle pasted clipboard images");
 assert(pane.includes("onpaste={(event) => handleComposerPaste(p.id, event)}"), "composer textarea must wire the clipboard paste handler");
 assert(store.includes("ControlService.SaveClipboardImage"), "clipboard image paste must persist the image through the desktop service");
-assert(store.includes("ControlService.StageAttachment"), "picked files must be staged into teleclaude attachments before upload");
+assert(store.includes("ControlService.StageAttachment"), "picked files must be staged into aglink attachments before upload");
 assert(store.includes("attachments: []"), "each pane must keep its own multiple attachments");
 assert(!all.includes("let attachedFilePath"), "composer must not keep only one global attachment path");
 assert(store.includes("function imageFilesFromClipboard"), "clipboard paste must collect every pasted image item");
@@ -64,8 +64,9 @@ assert(!composer.includes("mb-3 flex w-full items-center gap-2 rounded-lg border
 assert(!html.includes("/style.css"), "Wails starter CSS must not be loaded");
 assert(!html.includes("Wails + Svelte"), "window title must not expose framework text");
 assert(!html.includes("wails.png"), "favicon must not use the Wails starter icon");
-assert(html.includes("<title>teleclaude</title>"), "HTML title must be teleclaude");
-assert(!all.includes(">aglink-chat<"), "desktop visible app title must be teleclaude, not aglink-chat");
+assert(html.includes("<title>aglink</title>"), "HTML title must be aglink");
+assert(!all.includes(">aglink-chat<"), "desktop visible app title must be aglink, not aglink-chat");
+assert(!all.includes(">teleclaude<"), "no visible text may still say teleclaude");
 assert(store.includes("const SLASH_COMMANDS"), "composer must define the known !command list for autocomplete");
 assert(store.includes("function showCommandMenuForPane"), "composer must derive whether the command menu is visible per pane");
 assert(composer.includes("bottom-full") && composer.includes("role=\"listbox\""), "command menu must render as a dropdown above the composer input");
@@ -111,7 +112,7 @@ assert(
   "composer must allow sending a follow-up message while the conversation is still working, not gate on paneWorking",
 );
 
-// Web channel groups: client-side organization layer, teleclaude's own
+// Web channel groups: client-side organization layer, aglink's own
 // conversation management (create/rename/move/delete) is untouched.
 assert(store.includes("webGroups: []") && store.includes("webGroupOf: new Map()"), "chat state must track web channel groups and per-conversation group assignment");
 assert(store.includes("export function createWebGroup"), "must support creating a new web channel group");
@@ -123,7 +124,7 @@ assert(store.includes("localStorage.setItem(\n      WEB_GROUPS_STORAGE_KEY"), "g
 {
   const groupFns = store.match(/export function (?:createWebGroup|renameWebGroup|deleteWebGroup|setConversationGroup|toggleWebGroupCollapsed)\([^)]*\) \{[\s\S]*?\n\}/g) || [];
   assert(groupFns.length === 5, "expected to find all 5 web-group management functions");
-  assert(groupFns.every((fn) => !fn.includes("ControlService")), "web grouping must stay client-side and not call teleclaude's own channel management API");
+  assert(groupFns.every((fn) => !fn.includes("ControlService")), "web grouping must stay client-side and not call aglink's own channel management API");
 }
 assert(app.includes("{#snippet webConvRow(conv)}") && app.includes("{@render webConvRow(conv)}"), "sidebar must render conversation rows through a shared snippet so grouped and ungrouped lists stay in sync");
 assert(group.includes("toggleWebGroupCollapsed(group.id)"), "each group row must be collapsible");
@@ -158,7 +159,7 @@ assert(store.includes('!chat.messagesByKey.has(nextKey)'), "restored panes must 
 
 // Clicking the "작업 진행 중" indicator must open a small anchored popover (not a
 // full-screen modal) with live CLI progress lines, fed by a new "progress"
-// control-API frame type (teleclaude backend).
+// control-API frame type (aglink backend).
 assert(store.includes("progressByKey: new Map()") && store.includes("progressPopupPaneId: null"), "chat state must track progress lines per conversation and which pane's popover is open");
 assert(store.includes('if (frame.type === "progress")'), "handleFrame must recognize the new progress frame type");
 assert(store.includes("export function toggleProgressPopup") && store.includes("export function closeProgressPopup"), "must be able to open/close the progress popover");
@@ -229,7 +230,7 @@ assert(store.includes("function isSameOrDescendantGroup") && store.includes("fun
 assert(app.includes("rootWebGroups()") && app.includes("<GroupNode"), "the sidebar must render only root groups directly, delegating subgroups to GroupNode");
 assert(group.includes("childWebGroups(group.id)") && group.includes("<GroupNode group={child}"), "each group must render its own subgroups recursively");
 
-// Model fields (manager/worker/codex worker/codex manager) come from teleclaude
+// Model fields (manager/worker/codex worker/codex manager) come from aglink
 // as a detected list ("select") or plain text as a fallback — never a
 // free-typed field where a typo silently breaks the backend. The select must
 // still show a legacy/custom value that isn't in the detected list, instead of

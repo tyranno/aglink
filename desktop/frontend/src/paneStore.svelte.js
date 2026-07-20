@@ -68,7 +68,10 @@ let webGroupSeq = 1;
 export const paneTextareas = new Map();
 export const paneLogs = new Map();
 
-// ---- web channel groups (client-side only display grouping; teleclaude's
+// How close to the bottom still counts as "following the latest message".
+export const NEAR_BOTTOM_PX = 80;
+
+// ---- web channel groups (client-side only display grouping; aglink's
 // own conversation management is untouched) ----
 
 const WEB_GROUPS_STORAGE_KEY = "aglink-desktop:webGroups";
@@ -355,11 +358,51 @@ export function registerPaneTextarea(node, paneId) {
   };
 }
 
+// Dragging a pane to a new dock position rebuilds the layout tree, so Svelte
+// tears down the moved pane's DOM and mounts it fresh — which resets the log's
+// scrollTop to 0. Remembering the offset per pane id lets the remounted log
+// come back where the user left it instead of snapping to the top.
+const paneScrollOffsets = new Map();
+
+export function recordPaneLogScroll(paneId, el) {
+  if (!el) return;
+  paneScrollOffsets.set(paneId, {
+    top: el.scrollTop,
+    pinned: el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX,
+  });
+}
+
+function restorePaneLogScroll(paneId, el) {
+  const saved = paneScrollOffsets.get(paneId);
+  if (!saved) return;
+  // Pinned logs re-pin instead of restoring a stale pixel offset: the pane's
+  // new width reflows messages, so the old scrollTop no longer means "bottom".
+  el.scrollTop = saved.pinned ? el.scrollHeight : saved.top;
+}
+
 export function registerPaneLog(node, paneId) {
   paneLogs.set(paneId, node);
+  restorePaneLogScroll(paneId, node);
+  // Markdown bodies and images settle a frame later and change scrollHeight,
+  // so re-apply once the post-mount layout is final.
+  requestAnimationFrame(() => {
+    if (paneLogs.get(paneId) === node) restorePaneLogScroll(paneId, node);
+  });
+
+  // Resizing the window (snap layouts, split resizer) reflows the log without
+  // touching scrollTop, which silently unpins a bottom-anchored view.
+  const observer = new ResizeObserver(() => {
+    if (paneScrollOffsets.get(paneId)?.pinned) node.scrollTop = node.scrollHeight;
+  });
+  observer.observe(node);
+
   return {
     destroy() {
-      if (paneLogs.get(paneId) === node) paneLogs.delete(paneId);
+      observer.disconnect();
+      if (paneLogs.get(paneId) === node) {
+        recordPaneLogScroll(paneId, node);
+        paneLogs.delete(paneId);
+      }
     },
   };
 }
@@ -618,6 +661,7 @@ export function closePane(paneId) {
   if (closing) for (const attachment of closing.attachments) revokeAttachmentPreview(attachment);
   paneTextareas.delete(paneId);
   paneLogs.delete(paneId);
+  paneScrollOffsets.delete(paneId);
   const result = removeLeaf(chat.layout, paneId);
   if (result.node) chat.layout = result.node;
   chat.panes = chat.panes.filter((item) => item.id !== paneId);
@@ -863,6 +907,7 @@ export function paneConversationMeta(target) {
 export function scrollPaneLogToBottom(paneId) {
   const el = paneLogs.get(paneId);
   if (!el) return;
+  paneScrollOffsets.set(paneId, { top: el.scrollHeight, pinned: true });
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
@@ -1117,6 +1162,7 @@ export async function loadConversations(options = {}) {
   try {
     const raw = await ControlService.ListConversations();
     const data = parseJSON(raw, {});
+    chat.statusNote = "";
     chat.telegram = data.telegram || null;
     chat.webConvs = Array.isArray(data.webConvs) ? data.webConvs : [];
 

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>teleclaude</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <button id="toggle-sidebar" class="icon-button" type="button" title="대화 목록 표시/숨김" aria-label="대화 목록 표시/숨김" aria-pressed="false">☰</button>
+    <span id="status" class="off">연결 끊김</span> teleclaude web chat
+    <span id="backend-badge" class="backend-badge" title="현재 연결된 백엔드" hidden></span>
+    <span id="admin-controls" hidden>
+      <span id="version-badge" class="version-badge" title="실행 중인 버전"></span>
+      <button id="btn-config" class="icon-button" type="button" title="설정 파일 편집" aria-label="설정 파일 편집">⚙</button>
+      <button id="btn-connections" class="icon-button" type="button" title="연결 / aglink 연동 상태" aria-label="연결 상태">🔌</button>
+    </span>
+  </header>
+  <div id="shell">
+    <aside id="topics" aria-label="대화 주제">
+      <div id="topics-head">
+        <span>대화 주제</span>
+        <button id="new-chat" class="icon-button" type="button" title="새 대화 시작 (웹 전용)" aria-label="새 대화 시작">＋</button>
+        <button id="refresh-topics" class="icon-button" type="button" title="대화 주제 새로고침" aria-label="대화 주제 새로고침">↻</button>
+      </div>
+      <div id="topic-list"></div>
+    </aside>
+    <section id="chat-panel">
+      <div id="current-topic" class="current-topic" title="현재 보고 있는 대화">
+        <span id="current-project" class="current-project"></span>
+        <span id="current-title" class="current-title empty">대화 미선택</span>
+        <span id="current-id" class="current-id"></span>
+      </div>
+      <main id="log"></main>
+      <div id="working" hidden>
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span id="working-label">작업 진행 중…</span>
+      </div>
+      <form id="composer">
+        <button type="button" id="attach-btn" class="icon-button" title="파일 첨부" aria-label="파일 첨부">📎</button>
+        <input id="file" type="file" hidden />
+        <img id="file-thumb" hidden alt="" />
+        <span id="file-name" hidden></span>
+        <button type="button" id="file-clear" class="icon-button" hidden title="첨부 취소" aria-label="첨부 취소">✕</button>
+        <textarea id="input" rows="1" autocomplete="off" spellcheck="false" placeholder="메시지 또는 !명령…"></textarea>
+        <button type="submit" id="send-btn" class="icon-button" title="전송" aria-label="전송">➤</button>
+      </form>
+    </section>
+  </div>
+  <div id="settings-view" hidden>
+    <div class="settings-topbar">
+      <button type="button" id="settings-back" class="icon-button" title="채팅으로 돌아가기" aria-label="채팅으로">←</button>
+      <span class="settings-title">설정</span>
+      <div class="settings-tabs">
+        <button type="button" class="settings-tab" data-tab="config">설정</button>
+        <button type="button" class="settings-tab" data-tab="conn">연결 / aglink</button>
+      </div>
+    </div>
+    <div class="settings-body">
+      <div id="settings-tab-config" class="settings-tab-panel">
+        <div id="settings-form" class="settings-form"></div>
+        <div class="settings-form-foot">
+          <span id="settings-msg"></span>
+          <button type="button" id="settings-save">변경사항 저장</button>
+        </div>
+        <details class="settings-raw">
+          <summary>고급: 설정 파일 직접 편집 (raw)</summary>
+          <p class="settings-raw-note">config.yaml 원문입니다. 구조화 폼에 없는 항목(비밀값·허용자 목록 등)이나 주석 보존이 필요할 때만 사용하세요.</p>
+          <textarea id="config-text" spellcheck="false"></textarea>
+          <div class="panel-foot"><span id="config-msg"></span><button type="button" id="config-save">raw 저장 (핫리로드)</button></div>
+        </details>
+      </div>
+      <div id="settings-tab-conn" class="settings-tab-panel" hidden>
+        <div id="conn-body" class="conn-body"></div>
+      </div>
+    </div>
+  </div>
+  <div id="dialog-overlay" class="overlay" hidden>
+    <div class="panel dialog-panel">
+      <div class="panel-head"><span id="dialog-title"></span><button type="button" id="dialog-close" class="icon-button" title="닫기" aria-label="닫기">✕</button></div>
+      <div id="dialog-body" class="dialog-body"></div>
+      <div class="panel-foot dialog-foot" id="dialog-foot"></div>
+    </div>
+  </div>
+  <script src="/static/markdown.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

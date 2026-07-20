@@ -1,0 +1,8 @@
+# Build artifacts
+/aglink-chat
+/aglink-chat.exe
+*.exe
+*.exe~
+
+# bkit local state (not part of the project)
+/.bkit/

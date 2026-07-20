@@ -1,0 +1,24 @@
+# Build output at the repo root (each module has its own .gitignore too)
+*.exe
+*.exe~
+aglink
+aglink-chat
+aglink-desktop
+aglink-screen
+aglink-web
+
+# bkit / IDE local state (not part of the project)
+.bkit/
+.vs/
+.idea/
+*.user
+
+# Repo-local runtime data (written when the workdir is the repo)
+.aglink/
+.teleclaude/
+*.log
+*.err
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="aglink">
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <path d="M15 20c0-4 3-7 7-7h18c4 0 7 3 7 7v8c0 4-3 7-7 7H28l-9 8v-8c-2-1-4-4-4-7z" fill="#2563eb"/>
+  <path d="M24 33c0-4 3-7 7-7h12c4 0 7 3 7 7v7c0 4-3 7-7 7h-7l-8 6v-6c-3-1-4-4-4-7z" fill="#10b981"/>
+  <circle cx="28" cy="25" r="3" fill="#ffffff"/>
+  <circle cx="37" cy="25" r="3" fill="#ffffff"/>
+  <circle cx="35" cy="38" r="3" fill="#ffffff"/>
+  <circle cx="43" cy="38" r="3" fill="#ffffff"/>
+</svg>

@@ -1,0 +1,459 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// --- parseOnceDatetime ---
+
+func TestParseOnceDatetime_HHMM_Future(t *testing.T) {
+	// Build a time in the future today by using "23:59" which is almost always in the future.
+	// If we're past 23:59 it still works because it advances to tomorrow.
+	tokens := []string{"23:59", "알림 텍스트"}
+	fireAt, consumed, err := parseOnceDatetime(tokens)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if consumed != 1 {
+		t.Errorf("consumed = %d, want 1", consumed)
+	}
+	if fireAt.IsZero() {
+		t.Error("fireAt should not be zero")
+	}
+	// fireAt should be >= now (advanced to tomorrow if already past)
+	if fireAt.Before(time.Now()) {
+		t.Errorf("fireAt %v is before now", fireAt)
+	}
+}
+
+func TestHandleChatUseQualifiedProjectConversation(t *testing.T) {
+	dir := t.TempDir()
+	st := NewFileStore(filepath.Join(dir, "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+	alphaDir := filepath.Join(dir, "alpha")
+	betaDir := filepath.Join(dir, "beta")
+	if err := os.Mkdir(alphaDir, 0o700); err != nil {
+		t.Fatalf("mkdir alpha: %v", err)
+	}
+	if err := os.Mkdir(betaDir, 0o700); err != nil {
+		t.Fatalf("mkdir beta: %v", err)
+	}
+	if err := st.AddProject("alpha", alphaDir); err != nil {
+		t.Fatalf("add alpha: %v", err)
+	}
+	if err := st.AddProject("beta", betaDir); err != nil {
+		t.Fatalf("add beta: %v", err)
+	}
+	alphaConv, err := st.NewConversation("alpha", "alpha topic", "")
+	if err != nil {
+		t.Fatalf("new alpha conversation: %v", err)
+	}
+	betaConv, err := st.NewConversation("beta", "beta topic", "")
+	if err != nil {
+		t.Fatalf("new beta conversation: %v", err)
+	}
+	if err := st.SetActive("alpha", alphaConv.ID); err != nil {
+		t.Fatalf("set active alpha: %v", err)
+	}
+
+	b := &Bot{store: st, out: NewHub()}
+	w := &recCh{}
+	b.out.Register(55, w)
+	// !chat is web-only (Task 6); origin must be OriginWeb for the subcommand
+	// to run at all — see TestHandleChat_TelegramRejected in chat_cmd_test.go.
+	b.handleChat(b.ReplyTo(TelegramTarget()), 55, "!chat use beta "+betaConv.ID, strings.Fields("!chat use beta "+betaConv.ID), OriginWeb)
+
+	active := st.GetActive()
+	if active.Project != "beta" || active.ConversationID != betaConv.ID {
+		t.Fatalf("active = %+v, want beta/%s", active, betaConv.ID)
+	}
+	if len(w.texts) != 1 || !strings.Contains(w.texts[0], "beta topic") {
+		t.Fatalf("sent = %v, want beta topic confirmation", w.texts)
+	}
+}
+
+func TestParseOnceDatetime_HHMM_PastAutoAdvances(t *testing.T) {
+	// "00:01" is almost always in the past today; should advance to tomorrow.
+	tokens := []string{"00:01"}
+	fireAt, consumed, err := parseOnceDatetime(tokens)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if consumed != 1 {
+		t.Errorf("consumed = %d, want 1", consumed)
+	}
+	// Must be in the future
+	if !fireAt.After(time.Now()) {
+		t.Errorf("fireAt %v should be in the future", fireAt)
+	}
+}
+
+func TestParseOnceDatetime_FullDate_Future(t *testing.T) {
+	future := time.Now().Add(48 * time.Hour)
+	dateStr := future.Format("2006-01-02")
+	tokens := []string{dateStr, "14:30", "메시지"}
+	fireAt, consumed, err := parseOnceDatetime(tokens)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if consumed != 2 {
+		t.Errorf("consumed = %d, want 2", consumed)
+	}
+	if fireAt.Hour() != 14 || fireAt.Minute() != 30 {
+		t.Errorf("time = %v, want 14:30", fireAt)
+	}
+}
+
+func TestParseOnceDatetime_FullDate_Past_Error(t *testing.T) {
+	past := time.Now().Add(-48 * time.Hour)
+	tokens := []string{past.Format("2006-01-02"), "10:00"}
+	_, _, err := parseOnceDatetime(tokens)
+	if err == nil {
+		t.Error("expected error for past full datetime")
+	}
+	if !strings.Contains(err.Error(), "과거") {
+		t.Errorf("error = %q, want 과거 message", err.Error())
+	}
+}
+
+func TestParseOnceDatetime_InvalidFormat(t *testing.T) {
+	cases := [][]string{
+		{},
+		{"25:00"},
+		{"not-a-date", "10:00"},
+		{"2026-13-01", "10:00"},
+	}
+	for _, tc := range cases {
+		if _, _, err := parseOnceDatetime(tc); err == nil {
+			t.Errorf("parseOnceDatetime(%v): expected error", tc)
+		}
+	}
+}
+
+// --- allCronFields ---
+
+func TestAllCronFields_Valid(t *testing.T) {
+	cases := [][]string{
+		{"*", "*", "*", "*", "*"},
+		{"0", "9", "*", "*", "1-5"},
+		{"*/30", "0", "*", "*", "0"},
+		{"0", "0", "1", "1", "*"},
+	}
+	for _, tokens := range cases {
+		if !allCronFields(tokens) {
+			t.Errorf("allCronFields(%v) = false, want true", tokens)
+		}
+	}
+}
+
+func TestAllCronFields_Invalid(t *testing.T) {
+	cases := [][]string{
+		{"*", "*", "*", "*"},           // only 4 fields
+		{},                             // empty
+		{"abc", "*", "*", "*", "*"},    // invalid char
+		{"*", "*", "*", "*", "*", "*"}, // 6 fields (still returns true because checks first 5)
+		{"", "*", "*", "*", "*"},       // empty field
+	}
+	want := []bool{false, false, false, true, false}
+	for i, tokens := range cases {
+		got := allCronFields(tokens)
+		if got != want[i] {
+			t.Errorf("allCronFields(%v) = %v, want %v", tokens, got, want[i])
+		}
+	}
+}
+
+// --- isCronExpr ---
+
+func TestIsCronExpr(t *testing.T) {
+	cases := []struct {
+		s    string
+		want bool
+	}{
+		{"0 9 * * 1-5", true},
+		{"*/30 * * * *", true},
+		{"@hourly", true},
+		{"@every 30m", true},
+		{"30m", false},
+		{"hourly", false},
+		{"매일", false},
+		{"0 9 *", false},
+	}
+	for _, tc := range cases {
+		got := isCronExpr(tc.s)
+		if got != tc.want {
+			t.Errorf("isCronExpr(%q) = %v, want %v", tc.s, got, tc.want)
+		}
+	}
+}
+
+// --- buildContextPrompt ---
+
+func TestBuildContextPrompt_NoContext(t *testing.T) {
+	// When no context available, returns the prompt as-is.
+	prompt := "코드 작성해줘"
+	got := buildContextPrompt(prompt, "", "", "", ".aglink/memory/42.md", nil)
+	if got != prompt {
+		t.Errorf("got %q, want %q", got, prompt)
+	}
+}
+
+func TestBuildContextPrompt_WithGlobalMemory(t *testing.T) {
+	got := buildContextPrompt("현재 작업", "", "global mem content", "", ".aglink/memory/42.md", nil)
+	if !strings.Contains(got, "global mem content") {
+		t.Errorf("global memory missing from prompt")
+	}
+	if !strings.Contains(got, "장기 기억") {
+		t.Errorf("global memory header missing")
+	}
+	if !strings.Contains(got, "현재 작업") {
+		t.Errorf("current prompt missing")
+	}
+}
+
+func TestBuildContextPrompt_WithHistory(t *testing.T) {
+	history := []ConversationTurn{
+		{Timestamp: time.Now(), Prompt: "이전 질문", Response: "이전 응답"},
+	}
+	got := buildContextPrompt("새 질문", "", "", "", ".aglink/memory/42.md", history)
+	if !strings.Contains(got, "이전 질문") {
+		t.Errorf("history prompt missing")
+	}
+	if !strings.Contains(got, "새 질문") {
+		t.Errorf("current prompt missing")
+	}
+}
+
+func TestBuildContextPrompt_WithParentSummary(t *testing.T) {
+	got := buildContextPrompt("질문", "부모 요약 내용", "", "", ".aglink/memory/42.md", nil)
+	if !strings.Contains(got, "부모 요약 내용") {
+		t.Errorf("parent summary missing")
+	}
+	if !strings.Contains(got, "이전 대화 요약") {
+		t.Errorf("parent summary header missing")
+	}
+}
+
+func TestBuildContextPrompt_MemoryNote(t *testing.T) {
+	got := buildContextPrompt("작업", "", "mem", "", ".aglink/memory/42.md", nil)
+	if !strings.Contains(got, ".aglink/memory/42.md") {
+		t.Errorf("memory reminder missing from prompt")
+	}
+}
+
+// --- parseTaskAddArgs ---
+
+func TestParseTaskAddArgs_FivefieldCron(t *testing.T) {
+	cronExpr, script, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"0", "9", "*", "*", "1-5", "task", "daily standup"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "0 9 * * 1-5" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "0 9 * * 1-5")
+	}
+	if !isTask {
+		t.Error("isTask should be true")
+	}
+	if prompt != "daily standup" {
+		t.Errorf("prompt = %q, want %q", prompt, "daily standup")
+	}
+	if script != "" {
+		t.Errorf("script = %q, want empty", script)
+	}
+}
+
+func TestParseTaskAddArgs_DurationShorthand(t *testing.T) {
+	cronExpr, _, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"30m", "배포 확인"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 30m → "*/30 * * * *"
+	if cronExpr != "*/30 * * * *" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "*/30 * * * *")
+	}
+	if isTask {
+		t.Error("no 'task' keyword → isTask should be false")
+	}
+	if prompt != "배포 확인" {
+		t.Errorf("prompt = %q, want %q", prompt, "배포 확인")
+	}
+}
+
+func TestParseTaskAddArgs_KoreanDuration(t *testing.T) {
+	cronExpr, _, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"매시간", "task", "서버 확인"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "0 * * * *" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "0 * * * *")
+	}
+	if !isTask {
+		t.Error("isTask should be true")
+	}
+	if prompt != "서버 확인" {
+		t.Errorf("prompt = %q, want %q", prompt, "서버 확인")
+	}
+}
+
+func TestParseTaskAddArgs_AtEvery(t *testing.T) {
+	cronExpr, _, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"@every", "30m", "알림"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "@every 30m" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "@every 30m")
+	}
+	if isTask {
+		t.Error("isTask should be false (no 'task' keyword)")
+	}
+	if prompt != "알림" {
+		t.Errorf("prompt = %q, want %q", prompt, "알림")
+	}
+}
+
+func TestParseTaskAddArgs_ScriptFlag(t *testing.T) {
+	cronExpr, script, _, isTask, prompt, err := parseTaskAddArgs(
+		[]string{"1h", "--script", "echo ok", "task", "do work"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cronExpr != "0 * * * *" {
+		t.Errorf("cronExpr = %q, want %q", cronExpr, "0 * * * *")
+	}
+	if script != "echo ok" {
+		t.Errorf("script = %q, want %q", script, "echo ok")
+	}
+	if !isTask {
+		t.Error("isTask should be true")
+	}
+	if prompt != "do work" {
+		t.Errorf("prompt = %q, want %q", prompt, "do work")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorNoArgs(t *testing.T) {
+	if _, _, _, _, _, err := parseTaskAddArgs(nil); err == nil {
+		t.Error("expected error for empty args")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorNoPrompt(t *testing.T) {
+	// Valid schedule but no prompt text.
+	if _, _, _, _, _, err := parseTaskAddArgs([]string{"30m"}); err == nil {
+		t.Error("expected error when no prompt provided")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorMissingScriptValue(t *testing.T) {
+	if _, _, _, _, _, err := parseTaskAddArgs([]string{"30m", "--script"}); err == nil {
+		t.Error("expected error when --script has no value")
+	}
+}
+
+func TestParseTaskAddArgs_ErrorInvalidSchedule(t *testing.T) {
+	if _, _, _, _, _, err := parseTaskAddArgs([]string{"notvalid", "hello"}); err == nil {
+		t.Error("expected error for invalid schedule string")
+	}
+}
+
+// --- ingestAttachment ---
+
+// savedAttachment points HOME at a temp dir and returns a path inside the
+// attachments directory. ingestAttachment refuses anything outside it, so these
+// tests can no longer hand it an arbitrary path — which is the point: the old
+// ones named C:\a and /tmp, the very directories the prune would have emptied.
+func savedAttachment(t *testing.T, name string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".aglink", "attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestIngestAttachment_BuildsPrompt(t *testing.T) {
+	p := savedAttachment(t, "file.png")
+	var got string
+	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
+	b.ingestAttachment(7, p, "설명해줘", "")
+	if !strings.Contains(got, "설명해줘") || !strings.Contains(got, "[첨부파일: "+p+"]") {
+		t.Errorf("prompt = %q", got)
+	}
+}
+
+func TestIngestAttachment_DefaultCaption(t *testing.T) {
+	p := savedAttachment(t, "x.pdf")
+	var got string
+	b := &Bot{dispatchHook: func(_ int64, text string) { got = text }}
+	b.ingestAttachment(7, p, "", "")
+	if !strings.Contains(got, "첨부파일을 분석해줘") || !strings.Contains(got, "[첨부파일: "+p+"]") {
+		t.Errorf("prompt = %q", got)
+	}
+}
+
+// --- handleCommand concurrency ---
+
+// TestHandleCommand_SerializedAcrossConcurrentCalls guards the invariant
+// documented on handleCommand ("processes commands synchronously"). Telegram's
+// Run() loop only ever calls handleCommand from a single goroutine, but the
+// web-chat reader loop spawns a goroutine per inbound message (go s.inject),
+// so nothing previously stopped two "!update"-style commands from racing each
+// other (e.g. two overlapping self-rebuild+restart flows sharing one
+// newExe/readyFile path). handleCommand must serialize concurrent callers via
+// cmdMu.
+func TestHandleCommand_SerializedAcrossConcurrentCalls(t *testing.T) {
+	b := &Bot{}
+	var running, maxConcurrent int32
+	b.commandHook = func(_ int64, _ string) {
+		n := atomic.AddInt32(&running, 1)
+		for {
+			old := atomic.LoadInt32(&maxConcurrent)
+			if n <= old {
+				break
+			}
+			if atomic.CompareAndSwapInt32(&maxConcurrent, old, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		atomic.AddInt32(&running, -1)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.handleCommand(7, "!status", "", TelegramTarget())
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&maxConcurrent); got != 1 {
+		t.Errorf("handleCommand ran with %d concurrent invocations, want 1 (serialized)", got)
+	}
+}

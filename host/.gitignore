@@ -1,0 +1,34 @@
+# Build output
+*.exe
+aglink
+teleclaude
+
+# bkit / IDE local state (not part of the project)
+.bkit/
+.vs/
+.idea/
+*.user
+
+# Local runtime data (lives in %USERPROFILE%\.aglink, never committed)
+config.txt
+store.json
+*.tmp
+
+# Runtime logs and backup files
+*.log
+*.err
+*.exe~
+
+# Local test scripts
+test_flow.ps1
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Subagent-generated memory (not part of the project)
+.claude/agent-memory/
+
+# Repo-local runtime data (store/config written when workdir is the repo)
+.aglink/
+.teleclaude/

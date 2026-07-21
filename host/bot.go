@@ -88,6 +88,11 @@ type Bot struct {
 	// newExe/readyFile. handleCommand's doc comment ("processes commands
 	// synchronously") is the invariant this lock restores.
 	cmdMu sync.Mutex
+
+	// restarting guards the config-triggered self-restart (ScheduleRestart) so
+	// several startup-only setting edits in quick succession queue only one
+	// restart. Set under mu; only ever cleared if the restart fails to launch.
+	restarting bool
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
@@ -737,6 +742,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 			return
 		}
 		b.handleUpdate(reply, chatID)
+	case "!restart":
+		b.handleRestart(reply, chatID)
 	case "!task":
 		b.handleTask(reply, chatID, text, fields)
 	case "!remind":
@@ -1330,6 +1337,112 @@ func (b *Bot) handleUpdate(reply replySender, chatID int64) {
 	// Timeout — kill new process, keep current running
 	_ = newProc.Process.Kill()
 	_ = reply.Send(chatID, "⚠️ 새 버전 연결 대기 시간 초과 (60초). 이전 버전 계속 사용합니다.")
+}
+
+// handoffRestart re-launches targetExe using the same zero-downtime handoff as
+// !update (start new instance → wait for it to signal ready via the pid-scoped
+// ready file → close interactive sessions → exit so the newcomer takes over),
+// but WITHOUT a rebuild: it restarts the same binary to pick up config that is
+// only wired at startup (interactive_claude, telegram token, helper binaries).
+// notify (may be nil) relays progress. Returns an error only when the new
+// instance failed to come up, in which case the caller keeps running; on
+// success it never returns (os.Exit).
+func (b *Bot) handoffRestart(targetExe string, notifyChatID int64, notify func(string)) error {
+	readyFile := filepath.Join(os.TempDir(), fmt.Sprintf(".aglink_ready_%d", os.Getpid()))
+	_ = os.Remove(readyFile)
+	args := []string{"run", "--handoff-ready", readyFile}
+	if notifyChatID != 0 {
+		args = append(args, "--notify-chat", fmt.Sprintf("%d", notifyChatID))
+	}
+	newProc := exec.Command(targetExe, args...)
+	if err := newProc.Start(); err != nil {
+		return fmt.Errorf("새 인스턴스 시작 실패: %w", err)
+	}
+	// Wait up to 60s for the newcomer to signal readiness (claude health check is
+	// up to 20s, bot init adds more) — same budget as !update.
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		if _, serr := os.Stat(readyFile); serr == nil {
+			_ = os.Remove(readyFile)
+			if notify != nil {
+				notify("🔄 새 인스턴스 연결됨 — 전환합니다")
+			}
+			log.Println("[bot] handoff restart: new instance ready, exiting")
+			if b.manager != nil {
+				b.manager.CloseInteractive()
+			}
+			os.Exit(0)
+		}
+	}
+	_ = newProc.Process.Kill()
+	return fmt.Errorf("새 인스턴스 연결 대기 시간 초과 (60초)")
+}
+
+// handleRestart runs !restart: an on-demand, zero-downtime restart of the same
+// binary (no rebuild) so a startup-only config change can be applied deliberately.
+func (b *Bot) handleRestart(reply replySender, chatID int64) {
+	if active, _ := b.dispatchLoad(); active > 0 {
+		_ = reply.Send(chatID, "⏳ 진행 중인 작업이 끝난 뒤 !restart 하세요 (또는 !cancel 후).")
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		_ = reply.Send(chatID, "⚠️ 실행 파일 경로 확인 실패: "+err.Error())
+		return
+	}
+	_ = reply.Send(chatID, "🔄 재시작합니다...")
+	if err := b.handoffRestart(exe, chatID, func(s string) { _ = reply.Send(chatID, s) }); err != nil {
+		_ = reply.Send(chatID, "⚠️ "+err.Error()+" — 현재 버전 계속 사용합니다.")
+	}
+}
+
+// ScheduleRestart performs a config-triggered restart once the bot is idle, so a
+// startup-only setting change (interactive_claude, telegram token, helper binary
+// paths) takes effect without a manual restart and without killing an in-flight
+// turn. Guarded so several config edits in quick succession schedule one restart.
+func (b *Bot) ScheduleRestart(reason string) {
+	b.mu.Lock()
+	if b.restarting {
+		b.mu.Unlock()
+		return
+	}
+	b.restarting = true
+	b.mu.Unlock()
+
+	go func() {
+		b.notifyOwners("⚙️ 설정 변경(" + reason + ") 반영을 위해 진행 중 작업이 끝나면 재시작합니다.")
+		// Wait for idle so a running turn is not killed, capped so a stuck turn
+		// eventually yields to the restart rather than deferring it forever.
+		for i := 0; i < 1200; i++ {
+			if active, _ := b.dispatchLoad(); active == 0 {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			log.Printf("[config] 재시작용 실행파일 경로 확인 실패: %v", err)
+			b.mu.Lock()
+			b.restarting = false
+			b.mu.Unlock()
+			return
+		}
+		if err := b.handoffRestart(exe, 0, b.notifyOwners); err != nil {
+			log.Printf("[config] 자동 재시작 실패: %v", err)
+			b.notifyOwners("⚠️ 자동 재시작 실패: " + err.Error() + " — 필요하면 !restart 하세요.")
+			b.mu.Lock()
+			b.restarting = false
+			b.mu.Unlock()
+		}
+	}()
+}
+
+// notifyOwners broadcasts a message to every allowed user (the owner surface).
+func (b *Bot) notifyOwners(msg string) {
+	for _, id := range b.cfg().AllowedUserIDs {
+		_ = b.Send(id, msg)
+	}
 }
 
 // handleRemind processes !remind commands.

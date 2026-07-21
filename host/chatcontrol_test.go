@@ -74,7 +74,7 @@ func TestRemoteChatChannel_FramesCarryTarget(t *testing.T) {
 func TestChatControl_SendText_Dispatches(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
 	m, st, _ := webTgtManager(t, fc)
-	b := &Bot{manager: m, store: st, cfgh: NewConfigHolder(&Config{MaxWorkers: 3, TimeoutMinutes: 1}), cancels: make(map[int]cancelEntry)}
+	b := &Bot{manager: m, store: st, cfgh: NewConfigHolder(&Config{MaxWorkers: 3, TimeoutMinutes: 1}), cancels: make(map[int]*cancelEntry)}
 	b.out = NewHub()
 	s := &chatControlServer{ownerChatID: 7, bot: b, hub: b.out}
 	ch := &remoteChatChannel{send: make(chan controlOut, 4), cancel: func() {}}

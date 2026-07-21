@@ -155,13 +155,22 @@ type webActiveWorker struct {
 
 type webActiveWorkersResponse struct {
 	Workers []webActiveWorker `json:"workers"`
+	// BaseTimeoutMinutes is the configured per-turn timeout. Clients show it as
+	// the running task's current limit and mirror its clamp when the user nudges
+	// the limit with !timeout (which never drops the effective total below it).
+	BaseTimeoutMinutes int `json:"baseTimeoutMinutes,omitempty"`
 }
 
 // buildActiveWorkersResponse projects the manager's running workers onto the
 // wire shape. Conversation IDs match the client's target ids — the telegram
 // stream's conversation is literally "telegram" — so a client can key on them.
-func buildActiveWorkersResponse(workers []WorkerStatus) webActiveWorkersResponse {
-	out := webActiveWorkersResponse{Workers: make([]webActiveWorker, 0, len(workers))}
+// baseTimeoutMinutes is the config timeout, surfaced so the status bar can show
+// each turn's current limit without a separate settings fetch.
+func buildActiveWorkersResponse(workers []WorkerStatus, baseTimeoutMinutes int) webActiveWorkersResponse {
+	out := webActiveWorkersResponse{
+		Workers:            make([]webActiveWorker, 0, len(workers)),
+		BaseTimeoutMinutes: baseTimeoutMinutes,
+	}
 	for _, w := range workers {
 		aw := webActiveWorker{
 			Project:        w.Project,
@@ -382,6 +391,13 @@ func versionPayload(backend string) map[string]any {
 	}
 	if backend != "" {
 		p["backend"] = backend
+	}
+	// opencode update notice, read from the background checker's cache (never
+	// blocks on npm here). Omitted entirely when opencode isn't installed.
+	if u := opencodeUpdateSnapshot(); u.Installed != "" {
+		p["opencodeInstalled"] = u.Installed
+		p["opencodeLatest"] = u.Latest
+		p["opencodeUpdateAvailable"] = u.Available
 	}
 	if exe, err := os.Executable(); err == nil {
 		srcDir := filepath.Dir(exe)

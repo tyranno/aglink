@@ -16,11 +16,12 @@ import (
 // Design Ref: §2.2, §4.1, §6.3 — routing orchestration, clarify, fallback. Application layer.
 
 type Manager struct {
-	client       ClaudeClient
-	backendName  string // "claude" | "codex"
-	backendMu    sync.RWMutex
-	claudeClient ClaudeClient // preserved for switching back to claude
-	codexClient  ClaudeClient // nil if codex not available
+	client         ClaudeClient
+	backendName    string // "claude" | "codex" | "opencode"
+	backendMu      sync.RWMutex
+	claudeClient   ClaudeClient // preserved for switching back to claude
+	codexClient    ClaudeClient // nil if codex not available
+	opencodeClient ClaudeClient // nil if opencode not available (installed on demand via SetOpencodeClient)
 
 	// interactiveClient is a second ClaudeClient for the "claude" backend backed
 	// by a persistent ConPTY session (interactiveClaudeRunner) instead of a
@@ -73,6 +74,17 @@ func (m *Manager) SetScheduler(s *Scheduler) { m.scheduler = s }
 // which case clientFor/IsInteractive-gated turns silently fall back to the
 // normal headless client (see clientFor).
 func (m *Manager) SetInteractiveClient(c ClaudeClient) { m.interactiveClient = c }
+
+// SetOpencodeClient installs the opencode-backed runner (see runner_opencode.go).
+// Called once at startup, only when opencode is installed. Kept as a setter
+// (rather than a NewManager parameter) so adding this third backend doesn't churn
+// every NewManager call site — mirrors SetInteractiveClient. nil / never-called
+// means the opencode backend simply can't be selected.
+func (m *Manager) SetOpencodeClient(c ClaudeClient) {
+	m.backendMu.Lock()
+	defer m.backendMu.Unlock()
+	m.opencodeClient = c
+}
 
 // interactiveCloser is the optional lifecycle hook a ClaudeClient may
 // implement to release resources held outside the request/response cycle —
@@ -170,8 +182,15 @@ func (m *Manager) setBackend(name string, persist bool) error {
 		m.client = m.codexClient
 		m.backendName = "codex"
 		log.Printf("[manager] backend → codex (codex_model=%q codex_manager_model=%q)", m.cfg().CodexModel, m.cfg().CodexManagerModel)
+	case "opencode":
+		if m.opencodeClient == nil {
+			return fmt.Errorf("OpenCode가 설치되어 있지 않습니다")
+		}
+		m.client = m.opencodeClient
+		m.backendName = "opencode"
+		log.Printf("[manager] backend → opencode (model=%q manager_model=%q)", m.cfg().OpencodeModel, m.cfg().OpencodeManagerModel)
 	default:
-		return fmt.Errorf("알 수 없는 백엔드: %s (claude | codex)", name)
+		return fmt.Errorf("알 수 없는 백엔드: %s (claude | codex | opencode)", name)
 	}
 	if persist {
 		if err := m.store.SetStoredBackend(name); err != nil {
@@ -191,6 +210,13 @@ func (m *Manager) Backend() string {
 // CodexAvailable reports whether codex is registered.
 func (m *Manager) CodexAvailable() bool {
 	return m.codexClient != nil
+}
+
+// OpencodeAvailable reports whether opencode is registered.
+func (m *Manager) OpencodeAvailable() bool {
+	m.backendMu.RLock()
+	defer m.backendMu.RUnlock()
+	return m.opencodeClient != nil
 }
 
 // detectBackendSwitchIntent checks if the message explicitly intends to switch the AI backend.
@@ -763,10 +789,14 @@ func (m *Manager) workerModelForBackend() string {
 // independent of the globally active backend — so a conversation resumed on its
 // own backend uses that backend's model, not the currently selected one.
 func (m *Manager) workerModelForBackendName(backend string) string {
-	if backend == "codex" {
+	switch backend {
+	case "codex":
 		return m.cfg().CodexModel
+	case "opencode":
+		return m.cfg().OpencodeModel
+	default:
+		return m.cfg().WorkerModel
 	}
-	return m.cfg().WorkerModel
 }
 
 // clientForBackend returns the CLI client for a backend name, or nil if that
@@ -780,6 +810,8 @@ func (m *Manager) clientForBackend(name string) ClaudeClient {
 		return m.codexClient
 	case "claude":
 		return m.claudeClient
+	case "opencode":
+		return m.opencodeClient
 	default:
 		return nil
 	}

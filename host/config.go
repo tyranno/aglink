@@ -285,8 +285,8 @@ func (c *Config) validate() error {
 	if len(c.AllowedUserIDs) == 0 {
 		return fmt.Errorf("ALLOWED_USER_IDS가 비어 있습니다 (보안상 최소 1개 필요)")
 	}
-	if c.DefaultBackend != "" && c.DefaultBackend != "claude" && c.DefaultBackend != "codex" {
-		return fmt.Errorf("DEFAULT_BACKEND는 'claude' 또는 'codex'여야 합니다: %q", c.DefaultBackend)
+	if c.DefaultBackend != "" && c.DefaultBackend != "claude" && c.DefaultBackend != "codex" && c.DefaultBackend != "opencode" {
+		return fmt.Errorf("DEFAULT_BACKEND는 'claude', 'codex', 'opencode' 중 하나여야 합니다: %q", c.DefaultBackend)
 	}
 	if c.MaxWorkers > maxAllowedWorkers {
 		return fmt.Errorf("MAX_WORKERS는 최대 %d까지 허용됩니다 (입력값: %d)", maxAllowedWorkers, c.MaxWorkers)
@@ -342,6 +342,24 @@ func findCodex(explicit string) (string, error) {
 		return explicit, nil
 	}
 	p, err := exec.LookPath("codex")
+	if err != nil {
+		return "", nil // not installed — not an error
+	}
+	return p, nil
+}
+
+// findOpencode returns the opencode CLI path (explicit override or PATH lookup).
+// Returns ("", nil) if not installed — opencode is optional, exactly like codex,
+// so a machine without it still boots and simply can't select the opencode
+// backend.
+func findOpencode(explicit string) (string, error) {
+	if explicit != "" {
+		if _, err := os.Stat(explicit); err != nil {
+			return "", fmt.Errorf("opencode 경로 없음: %s", explicit)
+		}
+		return explicit, nil
+	}
+	p, err := exec.LookPath("opencode")
 	if err != nil {
 		return "", nil // not installed — not an error
 	}

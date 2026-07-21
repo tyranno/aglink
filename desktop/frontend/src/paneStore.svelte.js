@@ -11,6 +11,7 @@ export const SLASH_COMMANDS = [
   { cmd: "!chat", desc: "대화 생성/목록/전환 (new|list|use)" },
   { cmd: "!status", desc: "실행 중 작업 + 활성 대화 + 백엔드" },
   { cmd: "!cancel", desc: "진행 중 작업 취소" },
+  { cmd: "!timeout", desc: "진행 중 작업의 제한 시간 조절 (+분|-분|reset, 기본값 미만 불가)" },
   { cmd: "!parallel", desc: "여러 프롬프트를 동시에 실행 (p1 | p2 | ...)" },
   { cmd: "!task", desc: "예약 작업/알림 (add|once|list|pause|resume|cancel|update|help)" },
   { cmd: "!history", desc: "대화 기록 조회 (list)" },
@@ -19,7 +20,7 @@ export const SLASH_COMMANDS = [
   { cmd: "!screen", desc: "화면 제어 (list|shot|region|preset|click)" },
   { cmd: "!remind", desc: "일회성 알림 (구버전 호환)" },
   { cmd: "!cron", desc: "반복 작업 (구버전 호환)" },
-  { cmd: "!backend", desc: "AI 백엔드 전환 (claude|codex)" },
+  { cmd: "!backend", desc: "AI 백엔드 전환 (claude|codex|opencode)" },
   { cmd: "!update", desc: "새 버전 빌드 & 자동 재시작" },
   { cmd: "!help", desc: "이 도움말" },
 ];
@@ -38,6 +39,7 @@ export const chat = $state({
   sentHistoryByKey: new Map(),
   historyIndexByKey: new Map(),
   working: new Map(),
+  baseTimeoutMin: 0, // configured per-turn timeout (minutes), from get_active_workers poll
   unread: new Set(),
   loadingBuffers: new Map(),
   statusNote: "",
@@ -448,7 +450,7 @@ export function backendLabel(backend) {
   return backend ? String(backend).toUpperCase() : "DEFAULT";
 }
 
-const CHANNEL_BACKENDS = new Set(["default", "claude", "codex"]);
+const CHANNEL_BACKENDS = new Set(["default", "claude", "codex", "opencode"]);
 
 function normalizeBackendChoice(backend) {
   const value = String(backend || "default").toLowerCase();
@@ -982,7 +984,19 @@ export function startWorking(key) {
   next.set(key, {
     startedAt: prev?.startedAt || now,
     lastAliveAt: now,
+    timeoutMin: prev?.timeoutMin, // per-task override set by !timeout; undefined = use base
   });
+  chat.working = next;
+}
+
+// setWorkingTimeout records the adjusted per-task limit (minutes) locally so the
+// status bar reflects it immediately, without waiting for a round-trip. The host
+// is the source of truth and applies the same base floor; this only mirrors it.
+export function setWorkingTimeout(key, minutes) {
+  const prev = chat.working.get(key);
+  if (!prev) return;
+  const next = new Map(chat.working);
+  next.set(key, { ...prev, timeoutMin: minutes });
   chat.working = next;
 }
 
@@ -997,16 +1011,32 @@ export function paneWorking(target) {
   return target ? chat.working.get(targetKey(target)) : undefined;
 }
 
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  return sec < 60 ? `${sec}초` : `${Math.floor(sec / 60)}분 ${sec % 60}초`;
+}
+
+// paneWorkingTimeoutMin is the running task's current limit in minutes: its
+// !timeout override if set, otherwise the configured base. 0 = unknown yet.
+export function paneWorkingTimeoutMin(target) {
+  const active = paneWorking(target);
+  if (!active) return 0;
+  return active.timeoutMin ?? chat.baseTimeoutMin ?? 0;
+}
+
 export function paneWorkingText(target) {
   const active = paneWorking(target);
   if (!active) return "";
   const elapsedSec = Math.max(0, Math.floor((chat.nowTick - active.startedAt) / 1000));
-  const elapsed =
-    elapsedSec < 60
-      ? `${elapsedSec}초`
-      : `${Math.floor(elapsedSec / 60)}분 ${elapsedSec % 60}초`;
+  const elapsed = fmtDuration(elapsedSec);
   if (chat.nowTick - active.lastAliveAt > STALE_AFTER_MS) {
     return `작업 상태 확인이 오래되었습니다 (${elapsed})`;
+  }
+  const limitMin = paneWorkingTimeoutMin(target);
+  if (limitMin > 0) {
+    const remainSec = limitMin * 60 - elapsedSec;
+    const remain = remainSec > 0 ? `남은 ${fmtDuration(remainSec)}` : "시간 초과 임박";
+    return `작업 진행 중 · 경과 ${elapsed} · 제한 ${limitMin}분 (${remain})`;
   }
   return `작업 진행 중 (${elapsed})`;
 }
@@ -1268,6 +1298,39 @@ export async function sendFromPane(paneId) {
   } catch (error) {
     pushMessageToKey(key, { role: "system", text: `전송 실패: ${error}` });
     stopWorking(key);
+  }
+}
+
+// adjustPaneTimeout sends the !timeout command for this pane's conversation,
+// letting the user extend (or claw back) the running turn's deadline from the
+// status bar. arg is "+5" / "-10" / "reset" etc.; the host floors the effective
+// total at the base TimeoutMinutes, so a reduce can never cut below the config.
+// Reuses the ordinary command path — the "!" prefix routes to handle_command —
+// so no new control message is needed. It does not touch the working indicator:
+// the task keeps running, and the host's reply arrives as a normal frame.
+export async function adjustPaneTimeout(paneId, arg) {
+  const p = pane(paneId);
+  if (!p?.target || !arg) return;
+  const key = targetKey(p.target);
+
+  // Mirror the host's clamp locally so the status bar updates at once: the
+  // effective total moves by the delta (or resets), but never below the base.
+  const base = chat.baseTimeoutMin || 0;
+  if (base > 0) {
+    const cur = paneWorkingTimeoutMin(p.target) || base;
+    let nextMin = cur;
+    if (arg === "reset") nextMin = base;
+    else {
+      const delta = parseInt(arg, 10);
+      if (!Number.isNaN(delta)) nextMin = Math.max(base, cur + delta);
+    }
+    setWorkingTimeout(key, nextMin);
+  }
+
+  try {
+    await ControlService.SendText(`!timeout ${arg}`, p.target.kind, p.target.id || "");
+  } catch (error) {
+    pushMessageToKey(key, { role: "system", text: `제한 시간 조절 실패: ${error}` });
   }
 }
 

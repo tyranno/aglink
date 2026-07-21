@@ -11,7 +11,7 @@ func normalizeChannelBackendOverride(name string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "default", "inherit":
 		return "", true
-	case "claude", "codex":
+	case "claude", "codex", "opencode":
 		return strings.ToLower(strings.TrimSpace(name)), true
 	default:
 		return "", false

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,8 +72,8 @@ type Bot struct {
 	// concurrently — it no longer serializes unrelated conversations behind one
 	// global pool, which is what stopped them running in parallel.
 	mu           sync.Mutex
-	workerSeq    int                 // monotonic counter for worker IDs
-	cancels      map[int]cancelEntry // workerID → (laneKey, cancel) for !cancel
+	workerSeq    int                  // monotonic counter for worker IDs
+	cancels      map[int]*cancelEntry // workerID → (laneKey, cancel, deadline) for !cancel / !timeout
 	lanes        map[string]*lane    // laneKey → its queue + running flag
 	readyLanes   []string            // idle lanes with queued work, waiting for a global slot (FIFO)
 	runningLanes int                 // lanes currently executing a turn (== global concurrency)
@@ -103,7 +104,7 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 		scheduler:   scheduler,
 		rateLimiter: NewRateLimiter(cfgh.Get().RateLimitPerMin),
 		userStore:   userStore,
-		cancels:     make(map[int]cancelEntry),
+		cancels:     make(map[int]*cancelEntry),
 		lanes:       make(map[string]*lane),
 		out:         hub,
 	}
@@ -130,9 +131,16 @@ type lane struct {
 
 // cancelEntry ties a running worker's cancel func to the lane it belongs to, so
 // !cancel can target only the caller's own conversation instead of every lane.
+// It also carries a resettable enforcement timer so !timeout can push (or pull,
+// down to the base) a single running turn's deadline. All fields are guarded by
+// Bot.mu; the timer's AfterFunc callback re-locks Bot.mu before touching them.
 type cancelEntry struct {
-	key    string
-	cancel context.CancelFunc
+	key      string
+	cancel   context.CancelFunc
+	timer    *time.Timer // enforcement timer; !timeout calls Reset on it
+	start    time.Time   // when this turn started, anchor for the effective total
+	deadline time.Time   // current enforcement deadline (moves when !timeout fires)
+	timedOut bool        // set by the timer before it cancels, to tell timeout apart from !cancel
 }
 
 // laneKeyOf maps a message's conversation to its lane key. All non-web targets
@@ -598,14 +606,31 @@ func (b *Bot) finishTurn(key string, wid int, queued bool) (queuedMsg, bool) {
 // slot pass to a waiting conversation. queued must match how msg was
 // dispatched — see finishTurn's doc comment.
 func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
+	// A plain WithTimeout deadline is immutable, so instead we cancel manually
+	// from a resettable timer: this lets !timeout push the deadline out (or pull
+	// it back to the base) for just this one running turn. The timer re-checks
+	// the current deadline when it fires, so a deadline moved out from under it
+	// (by an extend racing the fire) re-arms instead of killing live work.
 	b.mu.Lock()
 	b.workerSeq++
 	wid := b.workerSeq
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		time.Duration(b.cfg().TimeoutMinutes)*time.Minute,
-	)
-	b.cancels[wid] = cancelEntry{key: key, cancel: cancel}
+	ctx, cancel := context.WithCancel(context.Background())
+	start := time.Now()
+	base := time.Duration(b.cfg().TimeoutMinutes) * time.Minute
+	entry := &cancelEntry{key: key, cancel: cancel, start: start, deadline: start.Add(base)}
+	entry.timer = time.AfterFunc(base, func() {
+		b.mu.Lock()
+		if time.Now().Before(entry.deadline) {
+			// Deadline was extended after this timer was armed — reschedule.
+			entry.timer.Reset(time.Until(entry.deadline))
+			b.mu.Unlock()
+			return
+		}
+		entry.timedOut = true
+		b.mu.Unlock()
+		cancel()
+	})
+	b.cancels[wid] = entry
 	b.mu.Unlock()
 
 	defer func() {
@@ -613,6 +638,7 @@ func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 			log.Printf("[bot] panic recovered (wid=%d): %v", wid, r)
 			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "⚠️ 내부 오류가 발생했습니다.")
 		}
+		entry.timer.Stop()
 		cancel()
 		next, ok := b.finishTurn(key, wid, queued)
 		if ok {
@@ -631,12 +657,20 @@ func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 		b.manager.Handle(ctx, msg.chatID, msg.text, msg.origin, b)
 	}
 
-	switch ctx.Err() {
-	case context.DeadlineExceeded:
+	// The timer cancels the same ctx as !cancel, so ctx.Err() alone can't tell a
+	// deadline from a manual cancel — entry.timedOut disambiguates. The reported
+	// limit is the effective total (base plus any !timeout extension), not the
+	// raw config value.
+	b.mu.Lock()
+	timedOut := entry.timedOut
+	effMinutes := int(entry.deadline.Sub(entry.start).Round(time.Minute) / time.Minute)
+	b.mu.Unlock()
+	switch {
+	case timedOut:
 		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
 			"⏱ 제한 시간(%d분)을 초과해 작업을 중단했습니다 — 죽은 게 아니라 시간 안에 못 끝낸 것입니다. 다시 메시지를 보내시면 이어서 진행됩니다(같은 대화 세션이라 지금까지 맥락은 유지됩니다).",
-			b.cfg().TimeoutMinutes))
-	case context.Canceled:
+			effMinutes))
+	case ctx.Err() == context.Canceled:
 		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "🛑 작업이 취소되었습니다.")
 	}
 }
@@ -673,6 +707,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		_ = reply.Send(chatID, helpText())
 	case "!cancel":
 		b.cancel(reply, chatID, laneKeyOf(tgt))
+	case "!timeout":
+		b.handleTimeout(reply, chatID, fields, laneKeyOf(tgt))
 	case "!status":
 		workers := b.manager.DescribeActiveWorkers()
 		var msg string
@@ -718,6 +754,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleParallel(reply, chatID, text, origin)
 	case "!screen":
 		b.handleScreen(reply, chatID, fields)
+	case "!ssh":
+		b.handleSSH(reply, chatID, fields)
 	case "!compact":
 		if active, _ := b.dispatchLoad(); active > 0 {
 			_ = reply.Send(chatID, "⏳ 작업 중에는 압축할 수 없습니다. !cancel 후 다시 시도하세요.")
@@ -818,6 +856,87 @@ func (b *Bot) handleScreen(reply replySender, chatID int64, fields []string) {
 	_ = reply.Send(chatID, res.Text)
 }
 
+// handleSSH runs the !ssh command: list registered hosts, or execute a remote
+// command over SSH on a named host. Gated by ssh.enabled and the host registry
+// (only names in ssh.hosts are reachable), so it never becomes an arbitrary
+// outbound SSH client. Runs synchronously in the command-dispatch path with a
+// bounded context so a hung connection can't freeze message processing.
+func (b *Bot) handleSSH(reply replySender, chatID int64, fields []string) {
+	cfg := b.cfg()
+	if !cfg.SSHEnabled {
+		_ = reply.Send(chatID, "❌ SSH가 비활성화되어 있습니다. 설정에서 'SSH 원격 제어 허용'을 켜세요(config.yaml ssh.enabled=true).")
+		return
+	}
+	if len(fields) < 2 {
+		_ = reply.Send(chatID, "사용법: !ssh list | !ssh <호스트> <명령...> | !ssh test <호스트>")
+		return
+	}
+	switch fields[1] {
+	case "list":
+		if len(cfg.SSHHosts) == 0 {
+			_ = reply.Send(chatID, "등록된 SSH 호스트가 없습니다. 원본 설정편집기의 ssh.hosts에 추가하세요.")
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("🔐 등록된 SSH 호스트:\n")
+		for _, h := range cfg.SSHHosts {
+			port := h.Port
+			if port == 0 {
+				port = 22
+			}
+			auth := "키" // default assumption
+			if h.KeyFile == "" && h.Password != "" {
+				auth = "비밀번호"
+			} else if h.KeyFile != "" {
+				auth = "키:" + h.KeyFile
+			}
+			sb.WriteString(fmt.Sprintf("• %s → %s@%s:%d (%s)\n", h.Name, h.User, h.Host, port, auth))
+		}
+		_ = reply.Send(chatID, strings.TrimRight(sb.String(), "\n"))
+		return
+	case "test":
+		if len(fields) < 3 {
+			_ = reply.Send(chatID, "사용법: !ssh test <호스트>")
+			return
+		}
+		b.runSSHReply(reply, chatID, fields[2], "echo aglink-ssh-ok")
+		return
+	default:
+		host := fields[1]
+		remote := strings.TrimSpace(strings.Join(fields[2:], " "))
+		if remote == "" {
+			_ = reply.Send(chatID, "실행할 원격 명령이 없습니다. 예: !ssh "+host+" uptime")
+			return
+		}
+		b.runSSHReply(reply, chatID, host, remote)
+	}
+}
+
+// runSSHReply executes one remote command and sends its output back, capping the
+// reply length so a chatty command can't blow past Telegram's message limit.
+func (b *Bot) runSSHReply(reply replySender, chatID int64, host, remote string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := runSSH(ctx, b.cfg(), host, remote)
+	out = strings.TrimRight(out, "\n")
+	const maxLen = 3500
+	if len(out) > maxLen {
+		out = out[:maxLen] + "\n…(생략)"
+	}
+	if err != nil {
+		msg := "❌ SSH 실패: " + err.Error()
+		if out != "" {
+			msg += "\n" + out
+		}
+		_ = reply.Send(chatID, msg)
+		return
+	}
+	if out == "" {
+		out = "(출력 없음)"
+	}
+	_ = reply.Send(chatID, "🔐 "+host+":\n"+out)
+}
+
 // cancel stops only the running worker(s) in the caller's own lane (key),
 // leaving other conversations' workers untouched. A lane runs its turns
 // strictly one at a time, so at most one entry ever matches, but we scan
@@ -839,6 +958,92 @@ func (b *Bot) cancel(reply replySender, chatID int64, key string) {
 		fn()
 	}
 	_ = reply.Send(chatID, fmt.Sprintf("🛑 %d개 작업 취소 요청됨.", len(fns)))
+}
+
+// timeoutOp describes how !timeout should move a running turn's deadline:
+// reset back to the base, set an absolute total, or add a signed delta to the
+// current deadline. Exactly one of the three is meaningful per call.
+type timeoutOp struct {
+	reset    bool          // snap the effective total back to the base
+	absolute time.Duration // >0: set the effective total (from turn start) to this
+	delta    time.Duration // otherwise: add this (may be negative) to the current deadline
+}
+
+// adjustTimeout moves the enforcement deadline of every running worker in the
+// caller's own lane (key). The effective total (deadline minus turn start) is
+// never allowed below the base TimeoutMinutes — reducing only claws back an
+// earlier extension, it can't cut a turn below its configured budget. Already
+// timed-out entries are skipped. Returns how many workers were adjusted and the
+// resulting effective total (minutes) of the last one, for the reply.
+func (b *Bot) adjustTimeout(key string, op timeoutOp) (n, effMinutes int) {
+	base := time.Duration(b.cfg().TimeoutMinutes) * time.Minute
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, e := range b.cancels {
+		if e.key != key || e.timedOut {
+			continue
+		}
+		var nd time.Time
+		switch {
+		case op.reset:
+			nd = e.start.Add(base)
+		case op.absolute > 0:
+			nd = e.start.Add(op.absolute)
+		default:
+			nd = e.deadline.Add(op.delta)
+		}
+		if floor := e.start.Add(base); nd.Before(floor) {
+			nd = floor // 기본 설정 미만으로는 줄이지 않는다
+		}
+		e.deadline = nd
+		rem := time.Until(nd)
+		if rem < 0 {
+			rem = 0 // deadline already past → fire (and thus time out) immediately
+		}
+		e.timer.Reset(rem)
+		n++
+		effMinutes = int(nd.Sub(e.start).Round(time.Minute) / time.Minute)
+	}
+	return
+}
+
+// handleTimeout runs !timeout: adjust the running turn's deadline for the
+// caller's lane only. Forms: "+N" / "-N" (분 가감), "reset" (기본값 복귀),
+// or a bare "N" (분 절대값). The desktop status-bar dropdown sends the +/-/reset
+// forms; a bare number is convenient when typed directly.
+func (b *Bot) handleTimeout(reply replySender, chatID int64, fields []string, key string) {
+	base := b.cfg().TimeoutMinutes
+	usage := fmt.Sprintf("사용법: !timeout +<분> | -<분> | reset  (실행 중인 작업의 제한 시간을 조절, 기본 %d분 미만으로는 줄지 않습니다)", base)
+	if len(fields) < 2 {
+		_ = reply.Send(chatID, usage)
+		return
+	}
+	arg := strings.TrimSpace(fields[1])
+	var op timeoutOp
+	switch {
+	case arg == "reset" || arg == "base" || arg == "default" || arg == "기본":
+		op.reset = true
+	case strings.HasPrefix(arg, "+") || strings.HasPrefix(arg, "-"):
+		mins, err := strconv.Atoi(arg)
+		if err != nil || mins == 0 {
+			_ = reply.Send(chatID, "분 단위 정수를 입력하세요. 예) !timeout +10")
+			return
+		}
+		op.delta = time.Duration(mins) * time.Minute
+	default:
+		mins, err := strconv.Atoi(arg)
+		if err != nil || mins <= 0 {
+			_ = reply.Send(chatID, "분 단위 정수를 입력하세요. 예) !timeout +10 또는 !timeout 30")
+			return
+		}
+		op.absolute = time.Duration(mins) * time.Minute
+	}
+	n, eff := b.adjustTimeout(key, op)
+	if n == 0 {
+		_ = reply.Send(chatID, "조절할 실행 중 작업이 없습니다.")
+		return
+	}
+	_ = reply.Send(chatID, fmt.Sprintf("⏱ 이 작업의 제한 시간을 %d분으로 조절했습니다 (이 작업에만 적용, 기본 설정 %d분은 그대로).", eff, base))
 }
 
 // handleProject: !project add <name> <path> | remove <name> | list
@@ -2014,9 +2219,9 @@ func (b *Bot) handleBackend(reply replySender, chatID int64, fields []string) {
 	}
 	target := strings.ToLower(fields[1])
 	switch target {
-	case "claude", "codex":
+	case "claude", "codex", "opencode":
 	default:
-		_ = reply.Send(chatID, "사용법: !backend [claude|codex]")
+		_ = reply.Send(chatID, "사용법: !backend [claude|codex|opencode]")
 		return
 	}
 
@@ -2221,6 +2426,7 @@ func helpText() string {
 !chat use <id|프로젝트 id>    대화 수동 전환
 !status                      실행 중 작업 + 활성 대화 + 백엔드
 !cancel                      진행 중 작업 취소
+!timeout +<분>|-<분>|reset    진행 중 작업의 제한 시간 조절 (이 작업만, 기본값 미만 불가)
 
 병렬 작업:
 !parallel <p1> | <p2> | ...  여러 프롬프트를 동시에 Claude에 전달
@@ -2254,10 +2460,15 @@ func helpText() string {
 !screen preset save <이름>    현재 커서 위치를 프리셋으로 저장
 !screen click <프리셋이름>     저장한 프리셋 좌표 클릭 (즉시)
 
+원격 제어 (SSH):
+!ssh list                    등록된 원격 호스트 목록
+!ssh <호스트> <명령...>        원격 호스트에서 명령 실행 (예: !ssh gpu1 nvidia-smi)
+!ssh test <호스트>            원격 접속 확인
+
 기타:
 !remind <시간> <메시지>      일회성 알림 (구버전 호환)
 !cron add|list|remove        반복 작업 (구버전 호환)
-!backend [claude|codex]      AI 백엔드 전환
+!backend [claude|codex|opencode]  AI 백엔드 전환
 !interactive [on|off]        상주 세션 모드 전환 (웹 대화 전용, 실험적)
                               처리 중에도 메시지를 보내면 끼워넣기(steering)됩니다
 !update                      새 버전 빌드 & 자동 재시작

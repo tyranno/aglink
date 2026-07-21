@@ -60,10 +60,13 @@ func TestBuildActiveWorkersResponse(t *testing.T) {
 	resp := buildActiveWorkersResponse([]WorkerStatus{
 		{Project: "", ConversationID: "telegram", Title: "텔레그램 대화", Status: "running", StartTime: started},
 		{Project: "alpha", ConversationID: "4", Title: "topic", Status: "running"},
-	})
+	}, 10)
 
 	if len(resp.Workers) != 2 {
 		t.Fatalf("workers = %d, want 2", len(resp.Workers))
+	}
+	if resp.BaseTimeoutMinutes != 10 {
+		t.Errorf("baseTimeoutMinutes = %d, want 10", resp.BaseTimeoutMinutes)
 	}
 	if resp.Workers[0].ConversationID != "telegram" {
 		t.Errorf("telegram stream conv id = %q, want %q", resp.Workers[0].ConversationID, "telegram")
@@ -83,7 +86,7 @@ func TestBuildActiveWorkersResponse(t *testing.T) {
 // An empty active list must marshal as an empty array, not null — the client
 // iterates it directly.
 func TestBuildActiveWorkersResponse_EmptyIsNotNull(t *testing.T) {
-	resp := buildActiveWorkersResponse(nil)
+	resp := buildActiveWorkersResponse(nil, 10)
 	if resp.Workers == nil {
 		t.Error("Workers must be an empty slice, not nil")
 	}

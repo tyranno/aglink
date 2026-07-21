@@ -449,27 +449,32 @@ func TestSetBackend_ClaudeUnavailable(t *testing.T) {
 
 func TestChooseBackend(t *testing.T) {
 	cases := []struct {
-		name          string
-		preferred     string
-		claude, codex bool
-		want          string
-		wantOK        bool
+		name                    string
+		preferred               string
+		claude, codex, opencode bool
+		want                    string
+		wantOK                  bool
 	}{
-		{"prefer codex, both installed", "codex", true, true, "codex", true},
-		{"prefer claude, both installed", "claude", true, true, "claude", true},
-		{"prefer codex, only claude → fallback", "codex", true, false, "claude", true},
-		{"prefer claude, only codex → fallback", "claude", false, true, "codex", true},
-		{"empty pref, only codex", "", false, true, "codex", true},
-		{"empty pref, only claude", "", true, false, "claude", true},
-		{"empty pref, both → claude", "", true, true, "claude", true},
-		{"unknown pref, only codex", "weird", false, true, "codex", true},
-		{"neither installed", "claude", false, false, "", false},
+		{"prefer codex, both installed", "codex", true, true, false, "codex", true},
+		{"prefer claude, both installed", "claude", true, true, false, "claude", true},
+		{"prefer codex, only claude → fallback", "codex", true, false, false, "claude", true},
+		{"prefer claude, only codex → fallback", "claude", false, true, false, "codex", true},
+		{"empty pref, only codex", "", false, true, false, "codex", true},
+		{"empty pref, only claude", "", true, false, false, "claude", true},
+		{"empty pref, both → claude", "", true, true, false, "claude", true},
+		{"unknown pref, only codex", "weird", false, true, false, "codex", true},
+		{"neither installed", "claude", false, false, false, "", false},
+		{"prefer opencode, installed", "opencode", true, true, true, "opencode", true},
+		{"prefer opencode, not installed → claude", "opencode", true, false, false, "claude", true},
+		{"empty pref, only opencode", "", false, false, true, "opencode", true},
+		{"only opencode, none installed", "opencode", false, false, false, "", false},
+		{"fallback order claude before opencode", "", true, false, true, "claude", true},
 	}
 	for _, c := range cases {
-		got, ok := chooseBackend(c.preferred, c.claude, c.codex)
+		got, ok := chooseBackend(c.preferred, c.claude, c.codex, c.opencode)
 		if got != c.want || ok != c.wantOK {
-			t.Errorf("%s: chooseBackend(%q,%v,%v)=(%q,%v), want (%q,%v)",
-				c.name, c.preferred, c.claude, c.codex, got, ok, c.want, c.wantOK)
+			t.Errorf("%s: chooseBackend(%q,%v,%v,%v)=(%q,%v), want (%q,%v)",
+				c.name, c.preferred, c.claude, c.codex, c.opencode, got, ok, c.want, c.wantOK)
 		}
 	}
 }

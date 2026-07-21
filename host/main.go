@@ -220,11 +220,33 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		log.Printf("[main] codex: 미설치 (선택적)")
 	}
 
-	if claudeRunner == nil && codexRunner == nil {
-		return fmt.Errorf("claude 또는 codex 중 하나는 설치되어야 합니다 (둘 다 찾지 못함)")
+	// opencode is a third optional backend. Like codex it is inert unless the CLI
+	// is installed: findOpencode returns "" when it isn't, the runner is never
+	// constructed, and the backend cannot be selected — so adding it can't regress
+	// a claude/codex-only machine.
+	var opencodeRunner ClaudeClient
+	if opencodePath, err := findOpencode(cfg.OpencodePath); err == nil && opencodePath != "" {
+		opencodeRunner = NewOpencodeRunner(opencodePath, holder)
+		log.Printf("[main] opencode: %s", opencodePath)
+	} else if err != nil {
+		log.Printf("[main] opencode not available: %v", err)
+	} else {
+		log.Printf("[main] opencode: 미설치 (선택적)")
+	}
+
+	if claudeRunner == nil && codexRunner == nil && opencodeRunner == nil {
+		return fmt.Errorf("claude, codex, opencode 중 하나는 설치되어야 합니다 (모두 찾지 못함)")
 	}
 
 	manager := NewManager(claudeRunner, codexRunner, store, holder)
+	if opencodeRunner != nil {
+		manager.SetOpencodeClient(opencodeRunner)
+	}
+
+	// Background opencode update checker: refreshes the installed-vs-latest cache
+	// the version UI reads to surface an "opencode 업데이트 있음" notice. Inert when
+	// opencode isn't installed (records an empty snapshot).
+	startOpencodeUpdateChecker(holder)
 
 	// Interactive (B안): a persistent ConPTY-backed claude session, opted into
 	// per web conversation via "!interactive on" (see bot.go handleInteractive).
@@ -250,7 +272,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	if preferred == "" {
 		preferred = cfg.DefaultBackend
 	}
-	backend, ok := chooseBackend(preferred, claudeRunner != nil, codexRunner != nil)
+	backend, ok := chooseBackend(preferred, claudeRunner != nil, codexRunner != nil, opencodeRunner != nil)
 	if !ok {
 		return fmt.Errorf("사용 가능한 백엔드가 없습니다")
 	}
@@ -545,20 +567,19 @@ func selfRename(currentExe string, bot *Bot, notifyChatID int64) {
 
 // chooseBackend picks the effective startup backend. It honors the preferred
 // backend (persisted choice or DEFAULT_BACKEND) when that backend is installed;
-// otherwise it falls back to whichever single backend is installed. An empty or
-// unknown preference prefers claude, then codex. Returns ok=false only when
-// neither backend is available.
-func chooseBackend(preferred string, claudeAvail, codexAvail bool) (string, bool) {
-	order := []string{"claude", "codex"}
-	if preferred == "codex" {
-		order = []string{"codex", "claude"}
+// otherwise it falls back to whichever backend is installed, in claude → codex →
+// opencode order. An empty or unknown preference uses that same default order.
+// Returns ok=false only when no backend is available.
+func chooseBackend(preferred string, claudeAvail, codexAvail, opencodeAvail bool) (string, bool) {
+	avail := map[string]bool{"claude": claudeAvail, "codex": codexAvail, "opencode": opencodeAvail}
+	// Preferred backend wins when it's actually installed.
+	if avail[preferred] {
+		return preferred, true
 	}
-	for _, b := range order {
-		if b == "claude" && claudeAvail {
-			return "claude", true
-		}
-		if b == "codex" && codexAvail {
-			return "codex", true
+	// Otherwise fall back to the first installed backend in default order.
+	for _, b := range []string{"claude", "codex", "opencode"} {
+		if avail[b] {
+			return b, true
 		}
 	}
 	return "", false

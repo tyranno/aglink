@@ -31,6 +31,7 @@
     handlePaneDrop,
     progressForTarget,
     toggleProgressPopup,
+    adjustPaneTimeout,
     paneColor,
     scrollPaneLogToBottom,
     recordPaneLogScroll,
@@ -176,6 +177,7 @@
                   <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "default"); }}>Default</button>
                   <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "claude"); }}>Claude</button>
                   <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "codex"); }}>Codex</button>
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "opencode"); }}>OpenCode</button>
                 </div>
               {/if}
             </div>
@@ -297,7 +299,7 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="flex cursor-pointer items-center gap-3 border-t border-slate-200/80 bg-white/80 px-4 py-2 text-xs text-slate-600 backdrop-blur hover:bg-slate-100"
+            class="flex cursor-pointer items-center gap-2 border-t border-slate-200/80 bg-white/80 px-4 py-1 text-xs text-slate-600 backdrop-blur hover:bg-slate-100"
             onclick={() => toggleProgressPopup(p.id)}
             title="클릭하면 진행 메시지 보기"
           >
@@ -307,8 +309,31 @@
               <span class="h-2 w-2 animate-pulse rounded-full bg-blue-300 [animation-delay:300ms]"></span>
             </div>
             <span>{paneWorkingText(p.target)}</span>
+            <select
+              class="ml-auto shrink-0 cursor-pointer rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-slate-400"
+              title="이 작업의 제한 시간만 조절합니다 (기본 설정값 미만으로는 줄지 않습니다)"
+              onclick={(e) => e.stopPropagation()}
+              onchange={(e) => {
+                const v = e.currentTarget.value;
+                e.currentTarget.value = "";
+                if (v) adjustPaneTimeout(p.id, v);
+              }}
+            >
+              <option value="" selected>⏱ 제한시간</option>
+              <optgroup label="연장">
+                <option value="+5">+5분</option>
+                <option value="+10">+10분</option>
+                <option value="+30">+30분</option>
+                <option value="+60">+1시간</option>
+              </optgroup>
+              <optgroup label="단축">
+                <option value="-5">−5분</option>
+                <option value="-10">−10분</option>
+              </optgroup>
+              <option value="reset">기본값으로</option>
+            </select>
             {#if progressForTarget(p.target).length > 0}
-              <span class="ml-auto shrink-0 text-[11px] font-semibold text-blue-600">
+              <span class="shrink-0 text-[11px] font-semibold text-blue-600">
                 진행 메시지 {progressForTarget(p.target).length}건 {chat.progressPopupPaneId === p.id ? "▾" : "▸"}
               </span>
             {/if}
@@ -316,7 +341,7 @@
         </div>
       {/if}
 
-      <div class="shrink-0 border-t border-slate-200/80 bg-white/92 px-4 py-3 backdrop-blur relative">
+      <div class="shrink-0 border-t border-slate-200/80 bg-white/92 px-4 py-1.5 backdrop-blur relative">
         {#if showCommandMenuForPane(p)}
           <div
             class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
@@ -338,9 +363,9 @@
           </div>
         {/if}
 
-        <div class="flex w-full items-end gap-3">
+        <div class="flex w-full items-end gap-2">
           <button
-            class="grid h-[42px] w-[42px] shrink-0 place-items-center rounded-md border border-slate-300 bg-white text-base text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
             onclick={() => pickAttachment(p.id)}
             disabled={!p.target}
             title="파일 첨부"
@@ -375,7 +400,7 @@
 
           <textarea
             use:registerPaneTextarea={p.id}
-            class="min-h-[42px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-2.5 text-sm leading-5 text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
+            class="min-h-[34px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm leading-5 text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
             placeholder={p.target ? "메시지 또는 !명령을 입력하세요" : "먼저 대화를 선택하세요"}
             value={p.composerText}
             disabled={!p.target}
@@ -387,7 +412,7 @@
           ></textarea>
 
           <button
-            class="grid h-[42px] w-[46px] shrink-0 place-items-center rounded-md bg-blue-600 text-base font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            class="grid h-[34px] w-[40px] shrink-0 place-items-center rounded-md bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             onclick={() => sendFromPane(p.id)}
             disabled={(p.attachments.length === 0 && !canSendPane(p)) || !chat.connected}
             title={p.attachments.length > 0 ? "업로드" : "전송"}

@@ -482,6 +482,7 @@
       { value: "default", label: "Default" + (!currentBackend ? " ✓" : "") },
       { value: "claude", label: "Claude" + (currentBackend === "claude" ? " ✓" : "") },
       { value: "codex", label: "Codex" + (currentBackend === "codex" ? " ✓" : "") },
+      { value: "opencode", label: "OpenCode" + (currentBackend === "opencode" ? " ✓" : "") },
     ]);
     if (backend == null) return;
     await setChannelBackend(target, backend);
@@ -942,8 +943,9 @@
   function renderVersionBadge(v) {
     if (!versionBadge || !v) return;
     const running = v.version || "?";
-    versionBadge.textContent = running + (v.updateAvailable ? " ▲" : "");
-    versionBadge.classList.toggle("update-available", !!v.updateAvailable);
+    const anyUpdate = !!v.updateAvailable || !!v.opencodeUpdateAvailable;
+    versionBadge.textContent = running + (anyUpdate ? " ▲" : "");
+    versionBadge.classList.toggle("update-available", anyUpdate);
     let tip = "실행 중: " + running;
     if (v.commit) tip += " (" + v.commit + ")";
     if (v.buildTime) tip += " · " + v.buildTime;
@@ -951,6 +953,10 @@
       tip += "\n최신 소스: " + v.latestVersion;
       if (v.latestCommit) tip += " (" + v.latestCommit + ")";
       tip += v.updateAvailable ? " → 업데이트 필요" : " (동일)";
+    }
+    if (v.opencodeInstalled) {
+      tip += "\nopencode: " + v.opencodeInstalled;
+      if (v.opencodeUpdateAvailable) tip += " → " + (v.opencodeLatest || "") + " 업데이트 있음 (opencode upgrade)";
     }
     versionBadge.title = tip;
     renderBackendBadge(v.backend);
@@ -1052,6 +1058,14 @@
     settingsFields.push({ key: f.key, type: f.type, el, orig: f.value });
     return row;
   }
+  // Render one section (title + optional plain-language help + its rows) into
+  // the given parent element.
+  function renderSection(parent, section) {
+    const h = document.createElement("div"); h.className = "settings-section-title"; h.textContent = section.title;
+    parent.appendChild(h);
+    if (section.desc) { const d = document.createElement("div"); d.className = "settings-section-desc"; d.textContent = section.desc; parent.appendChild(d); }
+    for (const f of (section.fields || [])) parent.appendChild(buildSettingRow(f));
+  }
   async function loadSettingsForm() {
     if (!settingsForm) return;
     settingsForm.replaceChildren();
@@ -1059,10 +1073,24 @@
     if (settingsMsg) settingsMsg.textContent = "";
     let data = { sections: [] };
     try { const r = await fetch("/api/settings", { headers: authHeaders }); if (r.ok) data = await r.json(); } catch (e) { /* empty */ }
-    for (const section of (data.sections || [])) {
-      const h = document.createElement("div"); h.className = "settings-section-title"; h.textContent = section.title;
-      settingsForm.appendChild(h);
-      for (const f of (section.fields || [])) settingsForm.appendChild(buildSettingRow(f));
+    const sections = data.sections || [];
+    const basic = sections.filter((s) => !s.advanced);
+    const advanced = sections.filter((s) => s.advanced);
+    for (const section of basic) renderSection(settingsForm, section);
+    // Advanced sections go under a single collapsed disclosure so the everyday
+    // view stays short. Their fields still register in settingsFields (built
+    // eagerly) so saving works whether or not the user expanded them.
+    if (advanced.length) {
+      const wrap = document.createElement("div"); wrap.className = "settings-advanced";
+      const toggle = document.createElement("button");
+      toggle.type = "button"; toggle.className = "settings-advanced-toggle";
+      const body = document.createElement("div"); body.className = "settings-advanced-body"; body.hidden = true;
+      const setLabel = () => { toggle.textContent = (body.hidden ? "▸" : "▾") + " 고급 설정 " + (body.hidden ? "보기" : "숨기기") + " (평소엔 건드릴 필요 없음)"; };
+      toggle.addEventListener("click", () => { body.hidden = !body.hidden; setLabel(); });
+      setLabel();
+      for (const section of advanced) renderSection(body, section);
+      wrap.append(toggle, body);
+      settingsForm.appendChild(wrap);
     }
     if (settingsFields.length === 0) {
       const e = document.createElement("div"); e.className = "settings-desc"; e.textContent = "설정을 불러오지 못했습니다.";
@@ -1143,6 +1171,14 @@
         connBody.appendChild(connRow("상태", "업데이트 필요 (" + behind + "커밋 뒤처짐)", "conn-off"));
       } else {
         connBody.appendChild(connRow("상태", "최신", "conn-ok"));
+      }
+    }
+    if (ver.opencodeInstalled) {
+      connBody.appendChild(connRow("opencode", ver.opencodeInstalled + (ver.opencodeLatest ? " → " + ver.opencodeLatest : "")));
+      if (ver.opencodeUpdateAvailable) {
+        connBody.appendChild(connRow("opencode 상태", "업데이트 있음 (opencode upgrade)", "conn-off"));
+      } else {
+        connBody.appendChild(connRow("opencode 상태", "최신", "conn-ok"));
       }
     }
     if (ver.buildTime) connBody.appendChild(connNote("빌드 시각: " + ver.buildTime));

@@ -52,6 +52,7 @@
   let settingsValues = $state({});
   let settingsOriginal = $state({});
   let settingsMsg = $state("");
+  let showAdvanced = $state(false);
   let configText = $state("");
   let configMsg = $state("");
   let openMenuId = $state("");
@@ -204,6 +205,9 @@
     if (!force && chat.working.size === 0) return;
     try {
       const data = parseJSON(await ControlService.GetActiveWorkers(), { workers: [] });
+      if (typeof data.baseTimeoutMinutes === "number" && data.baseTimeoutMinutes > 0) {
+        chat.baseTimeoutMin = data.baseTimeoutMinutes;
+      }
       const activeKeys = new Set(
         (data.workers || []).map((worker) =>
           worker.conversationId === "telegram" ? "telegram" : `web:${worker.conversationId}`,
@@ -349,7 +353,10 @@
 
   function versionBadgeText() {
     const version = versionInfo.version || "?";
-    return versionInfo.updateAvailable ? `${version} 업데이트 가능` : version;
+    const parts = [];
+    if (versionInfo.updateAvailable) parts.push("업데이트 가능");
+    if (versionInfo.opencodeUpdateAvailable) parts.push("opencode 업데이트");
+    return parts.length ? `${version} · ${parts.join(" · ")}` : version;
   }
 
   function backendBadgeText() {
@@ -440,7 +447,7 @@
           {backendBadgeText()}
         </span>
       {/if}
-      <span class={`inline-flex shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold ${versionInfo.updateAvailable ? "bg-amber-300 text-amber-950" : "bg-white/10 text-slate-100"}`} title="실행 중인 버전">
+      <span class={`inline-flex shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold ${versionInfo.updateAvailable || versionInfo.opencodeUpdateAvailable ? "bg-amber-300 text-amber-950" : "bg-white/10 text-slate-100"}`} title="실행 중인 버전">
         {versionBadgeText()}
       </span>
       <div class="ml-auto flex items-center gap-2">
@@ -546,6 +553,7 @@
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "default")}>Default</button>
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "claude")}>Claude</button>
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "codex")}>Codex</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "opencode")}>OpenCode</button>
                         </div>
                       {/if}
                     </div>
@@ -595,6 +603,7 @@
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "default")}>Default</button>
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "claude")}>Claude</button>
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "codex")}>Codex</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "opencode")}>OpenCode</button>
                           <div class="my-1 h-px bg-slate-100"></div>
                           <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">그룹</div>
                           {#if chat.webGroupOf.get(conv.id)}
@@ -727,10 +736,71 @@
         <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
           <div class="mx-auto flex w-full max-w-5xl flex-col gap-5">
             {#if settingsTab === "settings"}
+              {#snippet settingSection(section)}
+                <div>
+                  <div class="mb-1 text-sm font-bold text-slate-800">{section.title}</div>
+                  {#if section.desc}
+                    <div class="mb-3 max-w-3xl whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">{section.desc}</div>
+                  {/if}
+                  <div class="space-y-3">
+                    {#each section.fields || [] as field}
+                      <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
+                        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div class="min-w-0 md:max-w-[60%]">
+                            <div class="text-sm font-semibold text-slate-900">{field.label}</div>
+                            {#if field.desc}
+                              <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">{field.desc}</div>
+                            {/if}
+                          </div>
+                          <div class="md:min-w-[220px]">
+                            {#if field.type === "bool"}
+                              <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+                                <input
+                                  class="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                  type="checkbox"
+                                  checked={!!settingsValues[field.key]}
+                                  onchange={(event) => updateSettingValue(field.key, event.currentTarget.checked)}
+                                />
+                                사용
+                              </label>
+                            {:else if field.type === "select"}
+                              <select
+                                class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                value={settingsValues[field.key] ?? ""}
+                                onchange={(event) => updateSettingValue(field.key, event.currentTarget.value)}
+                              >
+                                {#each selectOptionsFor(field) as option}
+                                  <option value={option}>{option === "" ? "기본값" : option}</option>
+                                {/each}
+                              </select>
+                            {:else}
+                              <input
+                                class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                type={field.type === "int" ? "number" : "text"}
+                                value={settingsValues[field.key] ?? ""}
+                                oninput={(event) =>
+                                  updateSettingValue(
+                                    field.key,
+                                    field.type === "int"
+                                      ? event.currentTarget.value === ""
+                                        ? 0
+                                        : Number(event.currentTarget.value)
+                                      : event.currentTarget.value,
+                                  )}
+                              />
+                            {/if}
+                          </div>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/snippet}
+
               <section class="rounded-lg border border-slate-200 bg-white/90 p-5 shadow-sm">
                 <div class="mb-5">
-                  <div class="text-sm font-semibold text-slate-900">구조화 설정</div>
-                  <div class="mt-1 text-xs text-slate-500">bool, select, int, text 타입을 그대로 편집합니다.</div>
+                  <div class="text-sm font-semibold text-slate-900">설정</div>
+                  <div class="mt-1 text-xs text-slate-500">번호(①②③) 순서대로 채우면 AI가 연결됩니다. 잘 모르는 칸은 비워두거나 기본값 그대로 두세요.</div>
                 </div>
 
                 {#if settingsSchema.length === 0}
@@ -739,64 +809,29 @@
                   </div>
                 {:else}
                   <div class="space-y-6">
-                    {#each settingsSchema as section}
-                      <div>
-                        <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">{section.title}</div>
-                        <div class="space-y-3">
-                          {#each section.fields || [] as field}
-                            <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
-                              <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                <div class="min-w-0 md:max-w-[60%]">
-                                  <div class="text-sm font-semibold text-slate-900">{field.label}</div>
-                                  {#if field.desc}
-                                    <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">{field.desc}</div>
-                                  {/if}
-                                </div>
-                                <div class="md:min-w-[220px]">
-                                  {#if field.type === "bool"}
-                                    <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
-                                      <input
-                                        class="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                        type="checkbox"
-                                        checked={!!settingsValues[field.key]}
-                                        onchange={(event) => updateSettingValue(field.key, event.currentTarget.checked)}
-                                      />
-                                      사용
-                                    </label>
-                                  {:else if field.type === "select"}
-                                    <select
-                                      class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                                      value={settingsValues[field.key] ?? ""}
-                                      onchange={(event) => updateSettingValue(field.key, event.currentTarget.value)}
-                                    >
-                                      {#each selectOptionsFor(field) as option}
-                                        <option value={option}>{option === "" ? "기본값" : option}</option>
-                                      {/each}
-                                    </select>
-                                  {:else}
-                                    <input
-                                      class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                                      type={field.type === "int" ? "number" : "text"}
-                                      value={settingsValues[field.key] ?? ""}
-                                      oninput={(event) =>
-                                        updateSettingValue(
-                                          field.key,
-                                          field.type === "int"
-                                            ? event.currentTarget.value === ""
-                                              ? 0
-                                              : Number(event.currentTarget.value)
-                                            : event.currentTarget.value,
-                                        )}
-                                    />
-                                  {/if}
-                                </div>
-                              </div>
-                            </div>
-                          {/each}
-                        </div>
-                      </div>
+                    {#each settingsSchema.filter((s) => !s.advanced) as section}
+                      {@render settingSection(section)}
                     {/each}
                   </div>
+
+                  {#if settingsSchema.some((s) => s.advanced)}
+                    <div class="mt-6 border-t border-slate-200 pt-4">
+                      <button
+                        class="flex items-center gap-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                        onclick={() => (showAdvanced = !showAdvanced)}
+                      >
+                        <span class="inline-block w-3">{showAdvanced ? "▾" : "▸"}</span>
+                        고급 설정 {showAdvanced ? "숨기기" : "보기"} (평소엔 건드릴 필요 없음)
+                      </button>
+                      {#if showAdvanced}
+                        <div class="mt-4 space-y-6">
+                          {#each settingsSchema.filter((s) => s.advanced) as section}
+                            {@render settingSection(section)}
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
                 {/if}
 
                 <div class="mt-5 flex items-center gap-3">
@@ -811,8 +846,8 @@
 
               <section class="rounded-lg border border-slate-200 bg-white/90 p-5 shadow-sm">
                 <div class="mb-5">
-                  <div class="text-sm font-semibold text-slate-900">raw config</div>
-                  <div class="mt-1 text-xs text-slate-500">`get_config` / `set_config` 응답 형식에 맞춰 원문을 직접 수정합니다.</div>
+                  <div class="text-sm font-semibold text-slate-900">전문가용: 설정 파일 직접 편집</div>
+                  <div class="mt-1 text-xs text-slate-500">위 항목으로 안 되는 세부 설정(예: SSH 호스트 목록)만 여기서 직접 고칩니다. 형식이 틀리면 저장되지 않으니 익숙하지 않으면 건드리지 마세요.</div>
                 </div>
                 <textarea
                   class="min-h-[320px] w-full rounded-lg border border-slate-300 bg-slate-950 px-4 py-3 font-mono text-[12px] leading-6 text-slate-100 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
@@ -858,6 +893,20 @@
                           {versionInfo.updateAvailable ? "업데이트 필요" : "최신"}
                         </span>
                       </div>
+                      {#if versionInfo.opencodeInstalled}
+                        <div class="flex items-center justify-between gap-3 border-t border-slate-200 pt-2">
+                          <span>opencode</span>
+                          <span class="font-mono text-xs text-slate-600" title={versionInfo.opencodeLatest ? `최신: ${versionInfo.opencodeLatest}` : ""}>
+                            {versionInfo.opencodeInstalled}
+                            {#if versionInfo.opencodeUpdateAvailable}
+                              <span class="ml-1 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">▲ {versionInfo.opencodeLatest} 있음</span>
+                            {/if}
+                          </span>
+                        </div>
+                        {#if versionInfo.opencodeUpdateAvailable}
+                          <div class="text-[11px] text-amber-700">터미널에서 <code class="rounded bg-amber-50 px-1">opencode upgrade</code> 로 업데이트하세요.</div>
+                        {/if}
+                      {/if}
                     </div>
                   </div>
 

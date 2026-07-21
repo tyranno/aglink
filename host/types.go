@@ -20,7 +20,11 @@ type Config struct {
 	CodexPath             string   // "" = auto-detect
 	CodexModel            string   // worker model (powerful) — "" = codex built-in default
 	CodexManagerModel     string   // routing model (fast/cheap) — "" = same as CodexModel
-	DefaultBackend        string   // "claude" | "codex" — "" = "claude"
+	OpencodePath          string   // opencode CLI 경로 — "" = auto-detect
+	OpencodeModel         string   // worker model 참조 "provider/model" (예 anthropic/claude, ollama/qwen2.5) — "" = opencode 기본
+	OpencodeManagerModel  string   // routing model 참조 — "" = OpencodeModel와 동일
+	OpencodeConfigPath    string   // opencode.json 경로. provider baseURL/apiKey는 opencode가 이 파일에서 관리 — "" = opencode 기본 탐색
+	DefaultBackend        string   // "claude" | "codex" | "opencode" — "" = "claude"
 	HomeDir               string   // 서비스 기본 작업 홈 (yaml home_dir); "" → <userHome>/aglink
 	MaxWorkers            int      // max concurrent Worker goroutines, default 3
 	RateLimitPerMin       int      // max user messages per minute, 0 = unlimited, default 20
@@ -61,6 +65,42 @@ type Config struct {
 	// ever use it, but the runner itself is only built/spawned when this is true,
 	// so an unset config leaves behavior byte-for-byte identical to before.
 	InteractiveClaude bool
+
+	// ToolPaths is a generic registry of external tool executables keyed by tool
+	// name (e.g. "ssh", "sshpass"). Empty/absent → resolve from PATH. Lets an
+	// install place a tool in a non-PATH location (e.g. C:\cygwin\bin\sshpass.exe)
+	// and point aglink at it without editing the system PATH. See resolveToolPath.
+	ToolPaths map[string]string
+
+	// VLLMServers are OpenAI-compatible local inference endpoints. The first is
+	// primary; more are added later as GPU capacity grows (also the failover
+	// order). When the opencode backend has no explicit opencode.json, these are
+	// rendered into a generated one so opencode can target local vLLM with no
+	// manual provider editing. See renderVLLMOpencodeConfig / resolveOpencodeConfigPath.
+	VLLMServers []VLLMServer
+
+	// Providers holds per-user creds (api key + optional model) for the built-in
+	// free-remote catalog (Groq/Cerebras/Gemini/OpenRouter), keyed by catalog id.
+	// Only ids with a non-empty key are rendered into the generated opencode.json
+	// as OpenAI-compatible providers, so an empty map changes nothing. See
+	// providers.go / renderOpencodeProviderConfig.
+	Providers map[string]ProviderCred
+
+	// CustomProviders are user-defined OpenAI-compatible backends added entirely
+	// from the settings UI (id/base_url/default_model), merged into the effective
+	// provider catalog alongside the built-ins and any providers.d drop-ins. This
+	// lets a user register a brand-new opencode provider without hand-editing a
+	// providers.d YAML file or rebuilding; the API key is then supplied the normal
+	// way via Providers (the free-provider key row the settings section renders
+	// automatically once the definition exists). See catalogProviders.
+	CustomProviders []FreeProvider
+
+	// SSHEnabled gates the !ssh remote-control command and its host registry. Off
+	// by default: an unset config can never reach out over SSH.
+	SSHEnabled bool
+	// SSHHosts is the registry of named remotes !ssh may reach. !ssh takes a host
+	// *name*, never a raw host:port, so only registered hosts are reachable.
+	SSHHosts []SSHHost
 }
 
 // ConversationTurn represents one exchange in a conversation.

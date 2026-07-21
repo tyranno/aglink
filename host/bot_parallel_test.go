@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newParallelTestBot builds a minimal Bot wired for lane-dispatch unit tests.
@@ -13,7 +14,7 @@ import (
 func newParallelTestBot(maxWorkers int) *Bot {
 	return &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: maxWorkers, TimeoutMinutes: 1}),
-		cancels: make(map[int]cancelEntry),
+		cancels: make(map[int]*cancelEntry),
 		lanes:   make(map[string]*lane),
 	}
 }
@@ -50,8 +51,8 @@ func TestBot_CancelOnlyOwnLane(t *testing.T) {
 
 	cancelledA, cancelledB := 0, 0
 	b.mu.Lock()
-	b.cancels[1] = cancelEntry{key: "telegram", cancel: func() { cancelledA++ }}
-	b.cancels[2] = cancelEntry{key: "web:other-topic", cancel: func() { cancelledB++ }}
+	b.cancels[1] = &cancelEntry{key: "telegram", cancel: func() { cancelledA++ }}
+	b.cancels[2] = &cancelEntry{key: "web:other-topic", cancel: func() { cancelledB++ }}
 	b.mu.Unlock()
 
 	b.cancel(noopReply{}, 0, "telegram")
@@ -61,6 +62,67 @@ func TestBot_CancelOnlyOwnLane(t *testing.T) {
 	}
 	if cancelledB != 0 {
 		t.Errorf("cancelledB = %d, want 0 (other lane must survive)", cancelledB)
+	}
+}
+
+// TestBot_AdjustTimeout checks the deadline math of !timeout: extend/reduce move
+// the deadline, the effective total never drops below the base TimeoutMinutes,
+// reset snaps back to the base, and only the caller's own lane is touched.
+func TestBot_AdjustTimeout(t *testing.T) {
+	b := newParallelTestBot(3) // base TimeoutMinutes = 1
+	base := time.Minute
+	start := time.Now()
+
+	// A far-future timer so it never fires mid-test; adjustTimeout only Resets it.
+	mk := func(key string) *cancelEntry {
+		return &cancelEntry{key: key, cancel: func() {}, timer: time.AfterFunc(time.Hour, func() {}), start: start, deadline: start.Add(base)}
+	}
+	b.mu.Lock()
+	eMine := mk("telegram")
+	eOther := mk("web:other")
+	b.cancels[1] = eMine
+	b.cancels[2] = eOther
+	b.mu.Unlock()
+	defer func() { eMine.timer.Stop(); eOther.timer.Stop() }()
+
+	effOf := func(e *cancelEntry) float64 { return e.deadline.Sub(e.start).Minutes() }
+
+	// Extend +10 → effective ~11 minutes.
+	if n, eff := b.adjustTimeout("telegram", timeoutOp{delta: 10 * time.Minute}); n != 1 || eff != 11 {
+		t.Fatalf("extend +10: n=%d eff=%d, want 1/11", n, eff)
+	}
+	if got := effOf(eMine); got < 10.99 || got > 11.01 {
+		t.Errorf("after +10 effective = %.2f min, want ~11", got)
+	}
+
+	// Reduce -5 → ~6 minutes (still above base).
+	if _, eff := b.adjustTimeout("telegram", timeoutOp{delta: -5 * time.Minute}); eff != 6 {
+		t.Errorf("reduce -5: eff=%d, want 6", eff)
+	}
+
+	// Reduce far below base → floored at base (1 min), never below.
+	if _, eff := b.adjustTimeout("telegram", timeoutOp{delta: -60 * time.Minute}); eff != 1 {
+		t.Errorf("reduce past base: eff=%d, want 1 (floored at base)", eff)
+	}
+
+	// Absolute 30 → exactly 30 minutes.
+	if _, eff := b.adjustTimeout("telegram", timeoutOp{absolute: 30 * time.Minute}); eff != 30 {
+		t.Errorf("absolute 30: eff=%d, want 30", eff)
+	}
+
+	// Reset → back to base.
+	if _, eff := b.adjustTimeout("telegram", timeoutOp{reset: true}); eff != 1 {
+		t.Errorf("reset: eff=%d, want 1 (base)", eff)
+	}
+
+	// The other lane must be untouched throughout.
+	if got := effOf(eOther); got < 0.99 || got > 1.01 {
+		t.Errorf("other lane effective = %.2f min, want ~1 (untouched)", got)
+	}
+
+	// A lane with no running worker adjusts nothing.
+	if n, _ := b.adjustTimeout("web:nobody", timeoutOp{delta: time.Minute}); n != 0 {
+		t.Errorf("adjust on empty lane: n=%d, want 0", n)
 	}
 }
 
@@ -209,7 +271,7 @@ func TestDispatch_ChattyConversationDoesNotStarveOthers(t *testing.T) {
 
 	b := &Bot{
 		cfgh:    NewConfigHolder(&Config{MaxWorkers: 2, TimeoutMinutes: 1}),
-		cancels: make(map[int]cancelEntry),
+		cancels: make(map[int]*cancelEntry),
 		lanes:   make(map[string]*lane),
 		store:   st,
 	}

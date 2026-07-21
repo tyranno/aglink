@@ -4,8 +4,118 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestOpencodeSettingsRoundTrip verifies the opencode settings a user edits in
+// the UI flow through applySettings and persist to their OWN top-level
+// `opencode:` YAML section (kept separate from claude/codex), then load back
+// unchanged. This is the "settings saved distinctly" guarantee.
+func TestOpencodeSettingsRoundTrip(t *testing.T) {
+	base := &Config{
+		TelegramBotToken: "t",
+		AllowedUserIDs:   []int64{1},
+	}
+	updates := map[string]any{
+		"backend.default":        "opencode",
+		"opencode.path":          `C:\tools\opencode.cmd`,
+		"opencode.model":         "ollama/qwen2.5",
+		"opencode.manager_model": "groq/llama-3.3-70b",
+		"opencode.config_path":   `C:\cfg\opencode.json`,
+	}
+	cfg := *base
+	if err := applySettings(&cfg, updates); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	raw, err := marshalConfigYAML(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The opencode block must land under its own `opencode:` key, not `backend:`.
+	if s := string(raw); !strings.Contains(s, "opencode:") || !strings.Contains(s, "model: ollama/qwen2.5") {
+		t.Fatalf("expected a distinct opencode: section in YAML, got:\n%s", s)
+	}
+	got, err := unmarshalConfigYAML(raw)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.DefaultBackend != "opencode" || got.OpencodePath != `C:\tools\opencode.cmd` ||
+		got.OpencodeModel != "ollama/qwen2.5" || got.OpencodeManagerModel != "groq/llama-3.3-70b" ||
+		got.OpencodeConfigPath != `C:\cfg\opencode.json` {
+		t.Fatalf("opencode fields did not round-trip: %+v", got)
+	}
+}
+
+// TestVLLMToolSSHSettingsRoundTrip verifies the new vLLM/tool-path/SSH settings
+// flow through applySettings, persist to their own YAML sections, and load back
+// unchanged — and that applySettings never mutates shared map/slice fields of the
+// source config in place (the invalid-save-must-not-corrupt-live-config guard).
+func TestVLLMToolSSHSettingsRoundTrip(t *testing.T) {
+	base := &Config{
+		TelegramBotToken: "t",
+		AllowedUserIDs:   []int64{1},
+	}
+	updates := map[string]any{
+		"vllm.primary_url":     "http://10.0.0.5:8000/v1",
+		"vllm.primary_model":   "qwen2.5-coder",
+		"vllm.secondary_url":   "http://10.0.0.6:8000/v1",
+		"vllm.secondary_model": "llama-3.3",
+		"tools.ssh":            `C:\Program Files\Git\usr\bin\ssh.exe`,
+		"tools.sshpass":        `C:\cygwin\bin\sshpass.exe`,
+		"ssh.enabled":          true,
+	}
+	cfg := *base
+	if err := applySettings(&cfg, updates); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	raw, err := marshalConfigYAML(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := unmarshalConfigYAML(raw)
+	if err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, raw)
+	}
+	if len(got.VLLMServers) != 2 || got.VLLMServers[0].BaseURL != "http://10.0.0.5:8000/v1" ||
+		got.VLLMServers[1].Model != "llama-3.3" {
+		t.Fatalf("vLLM servers did not round-trip: %+v", got.VLLMServers)
+	}
+	if got.ToolPaths["sshpass"] != `C:\cygwin\bin\sshpass.exe` || !got.SSHEnabled {
+		t.Fatalf("tool paths / ssh flag did not round-trip: %+v enabled=%v", got.ToolPaths, got.SSHEnabled)
+	}
+}
+
+// TestApplySettingsUpdate_NoInPlaceMutation asserts that a settings save works on
+// a copy: the caller's live cfg map/slice must be untouched after applying.
+func TestApplySettingsUpdate_NoInPlaceMutation(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	live := &Config{
+		TelegramBotToken: "t",
+		AllowedUserIDs:   []int64{1},
+		ToolPaths:        map[string]string{"ssh": `C:\old\ssh.exe`},
+		VLLMServers:      []VLLMServer{{BaseURL: "http://old"}},
+	}
+	body, _ := json.Marshal(map[string]any{
+		"tools.ssh":        `C:\new\ssh.exe`,
+		"vllm.primary_url": "http://new",
+	})
+	reply := applySettingsUpdate(cfgPath, live, body)
+	var res struct {
+		OK bool `json:"ok"`
+	}
+	_ = json.Unmarshal(reply, &res)
+	if !res.OK {
+		t.Fatalf("save failed: %s", reply)
+	}
+	if live.ToolPaths["ssh"] != `C:\old\ssh.exe` {
+		t.Errorf("live ToolPaths mutated in place: %v", live.ToolPaths)
+	}
+	if live.VLLMServers[0].BaseURL != "http://old" {
+		t.Errorf("live VLLMServers mutated in place: %v", live.VLLMServers)
+	}
+}
 
 // TestGetSettings_CodexModelSelect_RealCLI is an integration test against
 // whatever codex CLI is actually installed on the machine running the test

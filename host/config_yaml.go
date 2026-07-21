@@ -31,6 +31,16 @@ type yamlConfig struct {
 		CodexModel        string `yaml:"codex_model"`
 		CodexManagerModel string `yaml:"codex_manager_model"`
 	} `yaml:"backend"`
+	// Opencode is its own top-level section (not nested under backend) so the
+	// opencode CLI's settings stay clearly separated from claude/codex. aglink
+	// only stores how to *invoke* opencode here; provider baseURL/apiKey live in
+	// opencode's own opencode.json (pointed at by ConfigPath).
+	Opencode struct {
+		Path         string `yaml:"path"`
+		Model        string `yaml:"model"`
+		ManagerModel string `yaml:"manager_model"`
+		ConfigPath   string `yaml:"config_path"`
+	} `yaml:"opencode"`
 	Runtime struct {
 		TimeoutMinutes      *int `yaml:"timeout_minutes"`
 		MaxWorkers          *int `yaml:"max_workers"`
@@ -73,6 +83,26 @@ type yamlConfig struct {
 	InteractiveClaude struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"interactive_claude"`
+	// Tools is a name→path registry for external executables (ssh, sshpass, …).
+	// Empty/absent → resolve from PATH. See resolveToolPath.
+	Tools map[string]string `yaml:"tools,omitempty"`
+	// VLLM lists OpenAI-compatible local inference servers; the first is primary,
+	// the rest are added as capacity grows. See renderVLLMOpencodeConfig.
+	VLLM struct {
+		Servers []VLLMServer `yaml:"servers,omitempty"`
+	} `yaml:"vllm,omitempty"`
+	// Providers stores creds for the built-in free-remote catalog, keyed by
+	// catalog id (groq/cerebras/…). See providers.go.
+	Providers map[string]ProviderCred `yaml:"providers,omitempty"`
+	// CustomProviders are user-defined OpenAI-compatible backends added from the
+	// settings UI (same shape as a providers.d drop-in), merged into the effective
+	// catalog. See catalogProviders.
+	CustomProviders []FreeProvider `yaml:"custom_providers,omitempty"`
+	// SSH is the remote-control host registry the !ssh command reaches.
+	SSH struct {
+		Enabled bool      `yaml:"enabled"`
+		Hosts   []SSHHost `yaml:"hosts,omitempty"`
+	} `yaml:"ssh,omitempty"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -107,6 +137,10 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.CodexPath = y.Backend.CodexPath
 	c.CodexModel = y.Backend.CodexModel
 	c.CodexManagerModel = y.Backend.CodexManagerModel
+	c.OpencodePath = y.Opencode.Path
+	c.OpencodeModel = y.Opencode.Model
+	c.OpencodeManagerModel = y.Opencode.ManagerModel
+	c.OpencodeConfigPath = y.Opencode.ConfigPath
 	if y.Runtime.TimeoutMinutes != nil {
 		c.TimeoutMinutes = *y.Runtime.TimeoutMinutes
 	}
@@ -161,6 +195,16 @@ func yamlToConfig(y *yamlConfig) *Config {
 		c.ChatControl = true
 	}
 	c.InteractiveClaude = y.InteractiveClaude.Enabled
+	if len(y.Tools) > 0 {
+		c.ToolPaths = y.Tools
+	}
+	c.VLLMServers = y.VLLM.Servers
+	if len(y.Providers) > 0 {
+		c.Providers = y.Providers
+	}
+	c.CustomProviders = y.CustomProviders
+	c.SSHEnabled = y.SSH.Enabled
+	c.SSHHosts = y.SSH.Hosts
 	return c
 }
 
@@ -180,6 +224,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Backend.CodexPath = c.CodexPath
 	y.Backend.CodexModel = c.CodexModel
 	y.Backend.CodexManagerModel = c.CodexManagerModel
+	y.Opencode.Path = c.OpencodePath
+	y.Opencode.Model = c.OpencodeModel
+	y.Opencode.ManagerModel = c.OpencodeManagerModel
+	y.Opencode.ConfigPath = c.OpencodeConfigPath
 	tm, mw, rl, ttl := c.TimeoutMinutes, c.MaxWorkers, c.RateLimitPerMin, c.ConversationTTLDays
 	y.Runtime.TimeoutMinutes = &tm
 	y.Runtime.MaxWorkers = &mw
@@ -207,6 +255,16 @@ func configToYAML(c *Config) *yamlConfig {
 	y.AglinkChat.BinaryPath = c.AglinkChatBinaryPath
 	y.AglinkChat.Token = c.AglinkChatToken
 	y.InteractiveClaude.Enabled = c.InteractiveClaude
+	if len(c.ToolPaths) > 0 {
+		y.Tools = c.ToolPaths
+	}
+	y.VLLM.Servers = c.VLLMServers
+	if len(c.Providers) > 0 {
+		y.Providers = c.Providers
+	}
+	y.CustomProviders = c.CustomProviders
+	y.SSH.Enabled = c.SSHEnabled
+	y.SSH.Hosts = c.SSHHosts
 	return y
 }
 

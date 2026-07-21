@@ -29,6 +29,7 @@ export const chat = $state({
   connected: false,
   telegram: null,
   webConvs: [],
+  backendModels: {},
   panes: [
     { id: "pane-0", target: null, attachments: [], composerText: "", commandMenuHidden: false, highlightedCommandIndex: 0 },
   ],
@@ -448,6 +449,15 @@ export function findWebConv(id) {
 
 export function backendLabel(backend) {
   return backend ? String(backend).toUpperCase() : "DEFAULT";
+}
+
+// backendModelLabel returns the worker model wired to a backend (from the last
+// list_conversations payload), so the pane header can show which LLM answers.
+// An empty per-conversation backend falls back to the global "default" entry.
+export function backendModelLabel(backend) {
+  const key = backend ? String(backend).toLowerCase() : "default";
+  const models = chat.backendModels || {};
+  return models[key] || models.default || "";
 }
 
 const CHANNEL_BACKENDS = new Set(["default", "claude", "codex", "opencode"]);
@@ -1195,6 +1205,7 @@ export async function loadConversations(options = {}) {
     chat.statusNote = "";
     chat.telegram = data.telegram || null;
     chat.webConvs = Array.isArray(data.webConvs) ? data.webConvs : [];
+    chat.backendModels = data.backendModels && typeof data.backendModels === "object" ? data.backendModels : {};
 
     for (const item of chat.panes) {
       if (!item.target) {

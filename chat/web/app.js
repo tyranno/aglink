@@ -31,6 +31,9 @@
   const adminControls = document.getElementById("admin-controls");
   const versionBadge = document.getElementById("version-badge");
   const backendBadge = document.getElementById("backend-badge");
+  // Worker model per backend (from list_conversations' backendModels), so the
+  // header badge and topic rows can show which LLM a backend is wired to.
+  let backendModels = {};
   const btnConfig = document.getElementById("btn-config");
   const btnConnections = document.getElementById("btn-connections");
   const settingsView = document.getElementById("settings-view");
@@ -477,6 +480,13 @@
     return backend ? String(backend).toUpperCase() : "DEFAULT";
   }
 
+  // backendModelLabel returns the worker model wired to a backend (from the last
+  // conversations poll). An empty backend falls back to the global "default".
+  function backendModelLabel(backend) {
+    const key = backend ? String(backend).toLowerCase() : "default";
+    return backendModels[key] || backendModels.default || "";
+  }
+
   async function chooseChannelBackend(target, currentBackend) {
     const backend = await askMenu("AI backend", [
       { value: "default", label: "Default" + (!currentBackend ? " ✓" : "") },
@@ -595,7 +605,8 @@
     const backend = document.createElement("span");
     backend.className = "topic-backend";
     backend.textContent = backendLabel(tg.backend);
-    backend.title = "AI backend";
+    const tgModel = backendModelLabel(tg.backend);
+    backend.title = tgModel ? "연결된 LLM: " + tgModel : "AI backend";
     button.appendChild(backend);
     button.addEventListener("click", (e) => {
       if (e.target && e.target.dataset && e.target.dataset.gear) return;
@@ -630,7 +641,8 @@
     const backend = document.createElement("span");
     backend.className = "topic-backend";
     backend.textContent = backendLabel(wc.backend);
-    backend.title = "AI backend";
+    const wcModel = backendModelLabel(wc.backend);
+    backend.title = wcModel ? "연결된 LLM: " + wcModel : "AI backend";
     button.appendChild(backend);
     if (wc.workDir) {
       const sub = document.createElement("span");
@@ -714,6 +726,7 @@
 
   function renderConversations(data) {
     if (!topicList) return;
+    if (data && data.backendModels && typeof data.backendModels === "object") backendModels = data.backendModels;
     // Keep the header backend badge live: telegram.backend mirrors the global
     // active backend, refreshed on every conversations poll.
     if (data && data.telegram && data.telegram.backend) renderBackendBadge(data.telegram.backend);
@@ -969,9 +982,10 @@
   function renderBackendBadge(backend) {
     if (!backendBadge) return;
     if (!backend) { backendBadge.hidden = true; return; }
-    backendBadge.textContent = backend;
+    const model = backendModelLabel(backend);
+    backendBadge.textContent = model ? backend + " · " + model : backend;
     backendBadge.dataset.backend = String(backend).toLowerCase();
-    backendBadge.title = "AI 백엔드: " + backend;
+    backendBadge.title = model ? "AI 백엔드: " + backend + " (연결된 LLM: " + model + ")" : "AI 백엔드: " + backend;
     backendBadge.hidden = false;
   }
 

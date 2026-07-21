@@ -205,7 +205,11 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 	case "handle_command":
 		go s.bot.handleCommand(chatID, m.Text, origin, tgt)
 	case "list_conversations":
-		data, err := json.Marshal(buildConversationsResponse(s.bot.store))
+		resp := buildConversationsResponse(s.bot.store)
+		if s.bot != nil && s.bot.manager != nil {
+			resp.BackendModels = s.bot.manager.BackendModels()
+		}
+		data, err := json.Marshal(resp)
 		if err != nil {
 			log.Printf("[chatcontrol] list_conversations marshal: %v", err)
 			return

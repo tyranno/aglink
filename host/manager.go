@@ -799,6 +799,19 @@ func (m *Manager) workerModelForBackendName(backend string) string {
 	}
 }
 
+// BackendModels returns the resolved worker model for each selectable backend,
+// keyed by backend name, so clients can show which LLM a conversation's backend
+// is wired to next to its badge. The "default" key resolves to whichever backend
+// is currently the global default (matching an empty per-conversation override).
+func (m *Manager) BackendModels() map[string]string {
+	return map[string]string{
+		"claude":   m.workerModelForBackendName("claude"),
+		"codex":    m.workerModelForBackendName("codex"),
+		"opencode": m.workerModelForBackendName("opencode"),
+		"default":  m.workerModelForBackendName(m.effectiveBackend("")),
+	}
+}
+
 // clientForBackend returns the CLI client for a backend name, or nil if that
 // backend is not installed. Used to resume a conversation on the backend it was
 // created with, regardless of the current global backend selection.

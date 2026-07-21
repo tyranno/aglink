@@ -38,6 +38,47 @@ func TestFreeProvider_MountsWithKeyUnderCatalogID(t *testing.T) {
 	}
 }
 
+// Gemini must render as the native @ai-sdk/google provider (not the generic
+// openai-compatible shim) and without a baseURL: its 2.5 thinking models require
+// a thought_signature round-trip on tool calls that only the native provider
+// preserves. A plain openai-compatible endpoint gets a baseURL as before.
+func TestGemini_UsesNativeGoogleProvider(t *testing.T) {
+	cfg := &Config{}
+	setProviderCredField(cfg, "gemini", "key", "AQ.test")
+	setProviderCredField(cfg, "groq", "key", "gsk_test")
+	b, err := renderOpencodeProviderConfig(cfg)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var root struct {
+		Provider map[string]struct {
+			NPM     string         `json:"npm"`
+			Options map[string]any `json:"options"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(b, &root); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, b)
+	}
+	gem := root.Provider["gemini"]
+	if gem.NPM != "@ai-sdk/google" {
+		t.Errorf("gemini npm = %q, want @ai-sdk/google", gem.NPM)
+	}
+	if _, ok := gem.Options["baseURL"]; ok {
+		t.Errorf("native gemini must not carry a baseURL: %v", gem.Options)
+	}
+	if gem.Options["apiKey"] != "AQ.test" {
+		t.Errorf("gemini apiKey not passed: %v", gem.Options)
+	}
+	// A plain openai-compatible provider is unaffected: still shim + baseURL.
+	groq := root.Provider["groq"]
+	if groq.NPM != "@ai-sdk/openai-compatible" {
+		t.Errorf("groq npm = %q, want @ai-sdk/openai-compatible", groq.NPM)
+	}
+	if groq.Options["baseURL"] != "https://api.groq.com/openai/v1" {
+		t.Errorf("groq baseURL wrong: %v", groq.Options)
+	}
+}
+
 // No key → nothing mounted → generated config not needed (fall back to opencode).
 func TestFreeProvider_KeylessIsInert(t *testing.T) {
 	cfg := &Config{Providers: map[string]ProviderCred{"groq": {Model: "x"}}}

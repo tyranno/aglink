@@ -22,7 +22,27 @@ type FreeProvider struct {
 	DefaultModel string `yaml:"default_model" json:"default_model"` // recommended free model id (user-overridable)
 	FreeNote     string `yaml:"free_note" json:"free_note"`         // one-line free-tier summary for the settings hint
 	SignupURL    string `yaml:"signup_url" json:"signup_url"`       // where to get a free key
+	// NPM is the AI-SDK provider package opencode should load for this provider.
+	// Empty means "@ai-sdk/openai-compatible" (the default for every plain
+	// OpenAI-compatible endpoint, incl. vLLM and custom providers). Gemini pins
+	// "@ai-sdk/google": its 2.5 models are thinking models that require a
+	// thought_signature to be round-tripped on tool calls, which the generic
+	// openai-compatible shim drops (→ "Function call is missing a
+	// thoughtsignature" 400 after the first tool call). The native provider
+	// preserves it. Native providers use the SDK's own default endpoint, so
+	// BaseURL is not emitted for them.
+	NPM string `yaml:"npm,omitempty" json:"npm,omitempty"`
 }
+
+// defaultProviderNPM is the AI-SDK package used for a catalog entry that does not
+// pin one — every plain OpenAI-compatible endpoint (vLLM, custom, groq, …).
+const defaultProviderNPM = "@ai-sdk/openai-compatible"
+
+// nativeGoogleNPM is the AI-SDK package for Google's Gemini. It round-trips the
+// thought_signature that Gemini 2.5 thinking models require on tool calls, which
+// the OpenAI-compatible shim cannot; using its own default endpoint means no
+// baseURL is passed.
+const nativeGoogleNPM = "@ai-sdk/google"
 
 // freeProviderCatalog is the ordered list surfaced in the settings UI. Order is
 // the recommended try-order (best free throughput first). BaseURLs are the
@@ -52,6 +72,7 @@ var freeProviderCatalog = []FreeProvider{
 		DefaultModel: "gemini-2.5-flash",
 		FreeNote:     "무료 티어 Flash ~1500 요청/일. 카드 없이 발급.",
 		SignupURL:    "https://aistudio.google.com/apikey",
+		NPM:          nativeGoogleNPM, // thinking model → needs native provider for tool calls
 	},
 	{
 		ID:           "openrouter",
@@ -149,14 +170,22 @@ func freeProviderProviders(cfg *Config) map[string]any {
 		if model == "" {
 			model = cat.DefaultModel
 		}
+		npm := strings.TrimSpace(cat.NPM)
+		if npm == "" {
+			npm = defaultProviderNPM
+		}
+		opts := map[string]any{"apiKey": strings.TrimSpace(cred.APIKey)}
+		// Native providers (e.g. @ai-sdk/google) reach the vendor through the
+		// SDK's own default endpoint; a baseURL is only meaningful for the
+		// generic OpenAI-compatible shim.
+		if npm == defaultProviderNPM {
+			opts["baseURL"] = cat.BaseURL
+		}
 		out[id] = map[string]any{
-			"npm":  "@ai-sdk/openai-compatible",
-			"name": cat.Name,
-			"options": map[string]any{
-				"baseURL": cat.BaseURL,
-				"apiKey":  strings.TrimSpace(cred.APIKey),
-			},
-			"models": map[string]any{model: map[string]any{}},
+			"npm":     npm,
+			"name":    cat.Name,
+			"options": opts,
+			"models":  map[string]any{model: map[string]any{}},
 		}
 	}
 	return out

@@ -8,6 +8,7 @@
     startSplitResize,
     paneConversationMeta,
     backendLabel,
+    backendModelLabel,
     messagesForPane,
     paneWorking,
     paneWorkingText,
@@ -181,6 +182,14 @@
                 </div>
               {/if}
             </div>
+            {#if backendModelLabel(paneConversationMeta(p.target).backend)}
+              <span
+                class="shrink-0 truncate font-mono text-[11px] text-slate-400"
+                title={`연결된 LLM: ${backendModelLabel(paneConversationMeta(p.target).backend)}`}
+              >
+                {backendModelLabel(paneConversationMeta(p.target).backend)}
+              </span>
+            {/if}
             {#if paneConversationMeta(p.target).kind === "web"}
               <div class="relative min-w-0 shrink" data-pane-workdir-menu>
                 <button

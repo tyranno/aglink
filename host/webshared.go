@@ -141,6 +141,10 @@ type webConversationsResponse struct {
 	Telegram *webTelegramEntry  `json:"telegram,omitempty"`
 	Projects []webProjectTopics `json:"projects"`
 	WebConvs []webWebConv       `json:"webConvs"`
+	// BackendModels maps each selectable backend name (plus "default") to the
+	// worker model it is currently wired to, so clients can show the connected
+	// LLM alongside the backend badge without a separate settings fetch.
+	BackendModels map[string]string `json:"backendModels,omitempty"`
 }
 
 // webActiveWorker is one still-running worker turn. Clients poll these to

@@ -948,6 +948,321 @@
     }, 400);
   });
 
+  // --- 업무 관리 (Playbook) 사이드바 -----------------------------------------
+  // A second sidebar tab holding reusable work routines in a group tree. Routines
+  // are persisted server-side (/api/playbooks), so the same tree shows in the
+  // desktop app and survives a cache clear — unlike conversation groups, which
+  // are browser-local. "실행" composes a routine into a prompt, opens a fresh
+  // conversation, and dispatches it, automating the repeat.
+  const playbookPanel = document.getElementById("playbook-panel");
+  const topicsPanel = document.getElementById("topics-panel");
+  const playbookListEl = document.getElementById("playbook-list");
+  const newPlaybookBtn = document.getElementById("new-playbook");
+  const newPlaybookGroupBtn = document.getElementById("new-playbook-group");
+  const refreshPlaybooksBtn = document.getElementById("refresh-playbooks");
+  let playbookData = { groups: [], playbooks: [] };
+  let playbooksLoaded = false;
+
+  function setSidebarTab(tab) {
+    document.querySelectorAll(".sidebar-tab").forEach((b) =>
+      b.classList.toggle("active", b.dataset.sidetab === tab));
+    if (topicsPanel) topicsPanel.hidden = tab !== "chat";
+    if (playbookPanel) playbookPanel.hidden = tab !== "playbook";
+    if (tab === "playbook" && !playbooksLoaded) loadPlaybooks();
+  }
+  document.querySelectorAll(".sidebar-tab").forEach((b) =>
+    b.addEventListener("click", () => setSidebarTab(b.dataset.sidetab)));
+
+  async function loadPlaybooks() {
+    if (!playbookListEl) return;
+    try {
+      const resp = await fetch("/api/playbooks", { headers: authHeaders });
+      if (!resp.ok) throw new Error("status " + resp.status);
+      playbookData = await resp.json();
+      playbooksLoaded = true;
+      renderPlaybooks();
+    } catch (e) {
+      playbookListEl.replaceChildren();
+      const err = document.createElement("div");
+      err.className = "topic-empty";
+      err.textContent = "업무 목록을 불러오지 못했습니다.";
+      playbookListEl.appendChild(err);
+    }
+  }
+
+  function pbGroupName(id) {
+    const g = (playbookData.groups || []).find((x) => x.id === id);
+    return g ? g.name : "";
+  }
+
+  function renderPlaybooks() {
+    if (!playbookListEl) return;
+    playbookListEl.replaceChildren();
+    const groups = Array.isArray(playbookData.groups) ? playbookData.groups : [];
+    const books = Array.isArray(playbookData.playbooks) ? playbookData.playbooks : [];
+    if (groups.length === 0 && books.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "topic-empty";
+      empty.textContent = "＋로 업무 루틴을, 📁＋로 그룹을 만들어 보세요";
+      playbookListEl.appendChild(empty);
+      return;
+    }
+    const childrenOf = (pid) => groups.filter((g) => (g.parentId || "") === (pid || ""));
+    const booksOf = (gid) => books.filter((b) => (b.groupId || "") === (gid || ""));
+    // Root routines (no group) first, then the group tree.
+    for (const b of booksOf("")) playbookListEl.appendChild(makePlaybookRow(b));
+    const renderGroup = (g, depth) => {
+      playbookListEl.appendChild(makeGroupHeader(g, depth));
+      for (const b of booksOf(g.id)) playbookListEl.appendChild(makePlaybookRow(b, depth + 1));
+      for (const child of childrenOf(g.id)) renderGroup(child, depth + 1);
+    };
+    for (const g of childrenOf("")) renderGroup(g, 0);
+  }
+
+  function makeGroupHeader(g, depth) {
+    const row = document.createElement("div");
+    row.className = "pb-group-header";
+    row.style.paddingLeft = 8 + depth * 14 + "px";
+    const name = document.createElement("span");
+    name.className = "pb-group-name";
+    const count = (playbookData.playbooks || []).filter((b) => (b.groupId || "") === g.id).length;
+    name.textContent = "📁 " + g.name + (count ? " (" + count + ")" : "");
+    row.appendChild(name);
+    const menu = document.createElement("button");
+    menu.type = "button";
+    menu.className = "icon-button pb-menu";
+    menu.textContent = "⋯";
+    menu.title = "그룹 메뉴";
+    menu.addEventListener("click", (e) => { e.stopPropagation(); groupMenu(g); });
+    row.appendChild(menu);
+    return row;
+  }
+
+  function makePlaybookRow(b, depth) {
+    const row = document.createElement("div");
+    row.className = "pb-row";
+    row.style.paddingLeft = 8 + (depth || 0) * 14 + "px";
+    const run = document.createElement("button");
+    run.type = "button";
+    run.className = "icon-button pb-run";
+    run.textContent = "▶";
+    run.title = "이 업무 루틴 실행";
+    run.addEventListener("click", (e) => { e.stopPropagation(); runPlaybook(b); });
+    row.appendChild(run);
+    const name = document.createElement("span");
+    name.className = "pb-name";
+    const meta = [];
+    if (b.runCount) meta.push("실행 " + b.runCount);
+    name.textContent = b.name + (meta.length ? "  · " + meta.join(" · ") : "");
+    name.title = b.description || b.name;
+    name.addEventListener("click", () => openPlaybookEditor(b));
+    row.appendChild(name);
+    const menu = document.createElement("button");
+    menu.type = "button";
+    menu.className = "icon-button pb-menu";
+    menu.textContent = "⋯";
+    menu.title = "루틴 메뉴";
+    menu.addEventListener("click", (e) => { e.stopPropagation(); rowMenu(b); });
+    row.appendChild(menu);
+    return row;
+  }
+
+  async function groupMenu(g) {
+    const choice = await askMenu("그룹: " + g.name, [
+      { value: "add", label: "＋ 이 그룹에 업무 루틴 추가" },
+      { value: "sub", label: "📁 하위 그룹 추가" },
+      { value: "rename", label: "✏️ 이름 변경" },
+      { value: "delete", label: "🗑 그룹 삭제 (내용은 상위로 이동)", danger: true },
+    ]);
+    if (choice === "add") return openPlaybookEditor(null, g.id);
+    if (choice === "sub") {
+      const name = await askText("하위 그룹", "그룹 이름", "");
+      if (name) await savePlaybookGroup({ name: name, parentId: g.id });
+      return;
+    }
+    if (choice === "rename") {
+      const name = await askText("이름 변경", "그룹 이름", g.name);
+      if (name) await savePlaybookGroup({ id: g.id, name: name, parentId: g.parentId || "" });
+      return;
+    }
+    if (choice === "delete") {
+      const ok = await askConfirm("그룹 삭제", "\"" + g.name + "\" 그룹을 삭제할까요? 안의 루틴과 하위 그룹은 상위로 옮겨집니다.", { danger: true, okLabel: "삭제" });
+      if (ok) {
+        const resp = await fetch("/api/playbooks/group?id=" + encodeURIComponent(g.id), { method: "DELETE", headers: authHeaders });
+        await afterMutate(resp);
+      }
+    }
+  }
+
+  async function rowMenu(b) {
+    const groups = playbookData.groups || [];
+    const choice = await askMenu("업무: " + b.name, [
+      { value: "edit", label: "✏️ 편집" },
+      { value: "run", label: "▶ 실행" },
+      { value: "move", label: "📁 그룹 이동" },
+      { value: "delete", label: "🗑 삭제", danger: true },
+    ]);
+    if (choice === "edit") return openPlaybookEditor(b);
+    if (choice === "run") return runPlaybook(b);
+    if (choice === "move") {
+      const opts = [{ value: "", label: "(그룹 없음 · 루트)" }].concat(groups.map((g) => ({ value: g.id, label: g.name })));
+      const gid = await askMenu("이동할 그룹 선택", opts);
+      if (gid !== null) await savePlaybook(Object.assign({}, b, { groupId: gid }));
+      return;
+    }
+    if (choice === "delete") {
+      const ok = await askConfirm("업무 삭제", "\"" + b.name + "\" 루틴을 삭제할까요?", { danger: true, okLabel: "삭제" });
+      if (ok) {
+        const resp = await fetch("/api/playbooks?id=" + encodeURIComponent(b.id), { method: "DELETE", headers: authHeaders });
+        await afterMutate(resp);
+      }
+    }
+  }
+
+  async function savePlaybookGroup(g) {
+    const resp = await fetch("/api/playbooks/group", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders),
+      body: JSON.stringify(g),
+    });
+    await afterMutate(resp);
+  }
+
+  async function savePlaybook(p) {
+    const resp = await fetch("/api/playbooks", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders),
+      body: JSON.stringify(p),
+    });
+    await afterMutate(resp);
+  }
+
+  async function afterMutate(resp) {
+    let ok = resp && resp.ok;
+    if (ok) {
+      try { const j = await resp.json(); if (j && j.ok === false) { ok = false; toast(j.error || "저장 실패"); } } catch (e) { /* no body */ }
+    } else {
+      toast("요청 실패");
+    }
+    await loadPlaybooks();
+  }
+
+  function toast(msg) {
+    if (statusEl) { statusEl.textContent = msg; window.setTimeout(() => { statusEl.textContent = ""; }, 3000); }
+  }
+
+  async function runPlaybook(b) {
+    const ok = await askConfirm("업무 실행", "\"" + b.name + "\" 루틴을 새 대화에서 실행할까요? 등록한 업무 내용을 AI가 스킬처럼 이해해 실행합니다.", { okLabel: "실행" });
+    if (!ok) return;
+    try {
+      const resp = await fetch("/api/playbooks/run", {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, authHeaders),
+        body: JSON.stringify({ id: b.id }),
+      });
+      const j = await resp.json();
+      if (!resp.ok || j.ok === false) { toast(j.error || "실행 실패"); return; }
+      await loadPlaybooks(); // refresh run count
+      setSidebarTab("chat");
+      await loadConversations();
+      if (j.conversationId) selectTarget({ kind: "web", id: j.conversationId });
+    } catch (e) {
+      toast("실행 실패: " + e.message);
+    }
+  }
+
+  // Full-screen-ish routine editor built on the generic dialog. Steps are one per
+  // line (simplest durable model); delivery targets are dynamic kind/dest/note rows.
+  // Surface a legacy structured routine (steps/delivery) as editable natural-language
+  // text so pre-skill routines aren't lost when opened in the new body editor.
+  function legacyToText(p) {
+    const lines = [];
+    const steps = (p && p.steps) || [];
+    if (steps.length) { lines.push("점검·작업 단계:"); steps.forEach((s, i) => lines.push((i + 1) + ". " + s.text)); }
+    const del = (p && p.delivery) || [];
+    if (del.length) {
+      if (lines.length) lines.push("");
+      lines.push("완료 후 배포·전달:");
+      for (const d of del) {
+        const lab = d.kind === "folder" ? "공유 폴더" : d.kind === "email" ? "메일" : "전달";
+        lines.push("- " + lab + ": " + d.dest + (d.note ? " (" + d.note + ")" : ""));
+      }
+    }
+    return lines.join("\n");
+  }
+
+  function openPlaybookEditor(existing, presetGroupId) {
+    const p = existing || {};
+    const backends = ["", "claude", "codex", "opencode"];
+    return openDialog(existing ? "업무 편집" : "새 업무 루틴", (body, foot, finish) => {
+      // Isolate styling in a wrapper — openDialog reuses dialogBody without
+      // resetting its classList, so adding a class to body would leak into the
+      // next (askText/askConfirm) dialog.
+      const form = document.createElement("div");
+      form.className = "pb-editor";
+      body.appendChild(form);
+      const field = (labelText, el) => {
+        const wrap = document.createElement("div");
+        wrap.className = "pb-field";
+        const l = document.createElement("div");
+        l.className = "dialog-label";
+        l.textContent = labelText;
+        wrap.append(l, el);
+        form.appendChild(wrap);
+        return el;
+      };
+      const nameInp = field("이름", Object.assign(document.createElement("input"), { className: "dialog-input", value: p.name || "" }));
+      const descInp = field("언제 사용 / 설명 (선택)", Object.assign(document.createElement("textarea"), { className: "dialog-input pb-textarea", value: p.description || "", rows: 2, placeholder: "예: 특정 프로젝트의 정기 릴리스를 낼 때" }));
+      const dirInp = field("작업 폴더 (선택)", Object.assign(document.createElement("input"), { className: "dialog-input", value: p.workDir || "", placeholder: "예: C:\\proj 또는 \\\\share\\..." }));
+      const beSel = document.createElement("select");
+      beSel.className = "dialog-input";
+      for (const be of backends) {
+        const o = document.createElement("option");
+        o.value = be; o.textContent = be === "" ? "기본 백엔드" : be;
+        if ((p.backend || "") === be) o.selected = true;
+        beSel.appendChild(o);
+      }
+      field("실행 백엔드", beSel);
+      // Natural-language body — the routine is a "skill" the AI reads and executes.
+      // A legacy routine (steps/delivery only) is surfaced as editable text so it
+      // isn't lost when reopened.
+      const instrTa = field("업무 내용 (자연어)", Object.assign(document.createElement("textarea"), {
+        className: "dialog-input pb-textarea", rows: 10,
+        value: (typeof p.instructions === "string" && p.instructions) ? p.instructions : legacyToText(p),
+        placeholder: "이 업무에서 무엇을 어떻게 하는지 평소 말로 설명하듯 적어 주세요.\n\n예)\n- main 최신화 후 빌드·테스트를 돌린다\n- 실패하면 원인을 요약해서 알려준다\n- 통과하면 결과물을 \\\\share\\rel 폴더에 복사하고 팀에 메일로 알린다",
+      }));
+      const hint = document.createElement("div");
+      hint.className = "dialog-hint";
+      hint.textContent = "AI가 이 내용을 하나의 '스킬'처럼 이해해 스스로 단계를 나눠 실행합니다.";
+      form.appendChild(hint);
+
+      const cancel = Object.assign(document.createElement("button"), { type: "button", className: "dialog-btn-secondary", textContent: "취소" });
+      cancel.addEventListener("click", () => finish(null));
+      const save = Object.assign(document.createElement("button"), { type: "button", textContent: "저장" });
+      save.addEventListener("click", () => {
+        const name = nameInp.value.trim();
+        if (!name) { nameInp.focus(); return; }
+        finish({
+          id: p.id || "",
+          name: name,
+          groupId: existing ? (p.groupId || "") : (presetGroupId || ""),
+          description: descInp.value.trim(),
+          workDir: dirInp.value.trim(),
+          backend: beSel.value,
+          instructions: instrTa.value,
+        });
+      });
+      foot.append(cancel, save);
+    }, null).then((result) => { if (result) return savePlaybook(result); });
+  }
+
+  if (refreshPlaybooksBtn) refreshPlaybooksBtn.addEventListener("click", loadPlaybooks);
+  if (newPlaybookBtn) newPlaybookBtn.addEventListener("click", () => openPlaybookEditor(null, ""));
+  if (newPlaybookGroupBtn) newPlaybookGroupBtn.addEventListener("click", async () => {
+    const name = await askText("새 그룹", "그룹 이름", "");
+    if (name) await savePlaybookGroup({ name: name });
+  });
+
   // --- Admin surface (Teleclaude embedded only) -----------------------------
 
   // Render the header version badge from a version payload (/api/capabilities or

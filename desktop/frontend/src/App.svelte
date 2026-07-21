@@ -4,6 +4,7 @@
   import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
   import PaneNode from "./PaneNode.svelte";
   import GroupNode from "./GroupNode.svelte";
+  import PlaybookPanel from "./PlaybookPanel.svelte";
   import {
     chat,
     MAX_PANES,
@@ -45,6 +46,7 @@
 
   let view = $state("chat");
   let settingsTab = $state("settings");
+  let sidebarTab = $state("chat"); // "chat" | "playbook" — 대화 목록 / 업무 관리
   let sidebarCollapsed = $state(false);
   let versionInfo = $state({});
   let auxInfo = $state({ features: [] });
@@ -512,6 +514,23 @@
       <div class="flex min-h-0 flex-1 overflow-hidden">
         {#if !sidebarCollapsed}
           <aside class="flex h-full w-[296px] shrink-0 flex-col border-r border-slate-200 bg-slate-50/90 backdrop-blur">
+            <div class="flex h-9 shrink-0 items-center border-b border-slate-200 bg-slate-100/60">
+              <button
+                class="grid h-full w-8 shrink-0 place-items-center text-sm text-slate-500 hover:bg-slate-200"
+                onclick={() => (sidebarCollapsed = true)}
+                title="사이드바 숨기기"
+                aria-label="사이드바 숨기기"
+              >«</button>
+              <button
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "chat" ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-900"}`}
+                onclick={() => (sidebarTab = "chat")}
+              >대화</button>
+              <button
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "playbook" ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-900"}`}
+                onclick={() => (sidebarTab = "playbook")}
+              >업무 관리</button>
+            </div>
+            {#if sidebarTab === "chat"}
             <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 px-3">
               <button
                 class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100"
@@ -710,6 +729,9 @@
                 </div>
               </div>
             </div>
+            {:else}
+              <PlaybookPanel />
+            {/if}
           </aside>
         {:else}
           <div class="flex h-full w-7 shrink-0 flex-col items-center border-r border-slate-200 bg-slate-50/90 pt-2 backdrop-blur">

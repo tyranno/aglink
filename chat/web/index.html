@@ -18,13 +18,28 @@
     </span>
   </header>
   <div id="shell">
-    <aside id="topics" aria-label="대화 주제">
-      <div id="topics-head">
-        <span>대화 주제</span>
-        <button id="new-chat" class="icon-button" type="button" title="새 대화 시작 (웹 전용)" aria-label="새 대화 시작">＋</button>
-        <button id="refresh-topics" class="icon-button" type="button" title="대화 주제 새로고침" aria-label="대화 주제 새로고침">↻</button>
+    <aside id="topics" aria-label="사이드바">
+      <div class="sidebar-tabs" role="tablist">
+        <button type="button" class="sidebar-tab active" data-sidetab="chat" role="tab">대화</button>
+        <button type="button" class="sidebar-tab" data-sidetab="playbook" role="tab">업무 관리</button>
       </div>
-      <div id="topic-list"></div>
+      <div id="topics-panel" class="sidebar-panel">
+        <div id="topics-head">
+          <span>대화 주제</span>
+          <button id="new-chat" class="icon-button" type="button" title="새 대화 시작 (웹 전용)" aria-label="새 대화 시작">＋</button>
+          <button id="refresh-topics" class="icon-button" type="button" title="대화 주제 새로고침" aria-label="대화 주제 새로고침">↻</button>
+        </div>
+        <div id="topic-list"></div>
+      </div>
+      <div id="playbook-panel" class="sidebar-panel" hidden>
+        <div id="topics-head">
+          <span>업무 루틴</span>
+          <button id="new-playbook-group" class="icon-button" type="button" title="새 그룹 추가" aria-label="새 그룹">📁＋</button>
+          <button id="new-playbook" class="icon-button" type="button" title="새 업무 루틴 추가" aria-label="새 루틴">＋</button>
+          <button id="refresh-playbooks" class="icon-button" type="button" title="새로고침" aria-label="새로고침">↻</button>
+        </div>
+        <div id="playbook-list"></div>
+      </div>
     </aside>
     <section id="chat-panel">
       <div id="current-topic" class="current-topic" title="현재 보고 있는 대화">

@@ -59,6 +59,7 @@ type Bot struct {
 	scheduler   *Scheduler
 	rateLimiter *RateLimiter
 	userStore   *UserStore
+	playbooks   *PlaybookStore // reusable work routines (업무 관리); nil in tests that don't need it
 	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
 	out         *Hub   // output fan-out: telegram (global) + web channels (per-chat)
 

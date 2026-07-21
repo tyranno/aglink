@@ -33,7 +33,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -44,7 +44,8 @@ type controlIn struct {
 	ID      string  `json:"id,omitempty"`
 	Title   string  `json:"title,omitempty"`
 	Backend string  `json:"backend,omitempty"`
-	Body    string  `json:"body,omitempty"` // set_config: edited config.yaml text
+	Body    string  `json:"body,omitempty"`    // set_config: edited config.yaml text
+	Payload json.RawMessage `json:"payload,omitempty"` // playbook_save/pbgroup_save: the Playbook/PlaybookGroup JSON
 }
 
 // controlOut is a message to aglink-chat: either a Hub-driven browser frame
@@ -313,6 +314,34 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "set_settings":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: applySettingsUpdate(s.cfgPath, s.bot.cfg(), []byte(m.Body))})
+	case "playbook_list":
+		data, err := json.Marshal(buildPlaybooksResponse(s.bot.playbooks))
+		if err != nil {
+			log.Printf("[chatcontrol] playbook_list marshal: %v", err)
+			return
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "playbook_save":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.savePlaybook(m.Payload)})
+	case "playbook_delete":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: mutateResult(deletePlaybook(s.bot.playbooks, m.ID))})
+	case "pbgroup_save":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.savePlaybookGroup(m.Payload)})
+	case "pbgroup_delete":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: mutateResult(deletePlaybookGroup(s.bot.playbooks, m.ID))})
+	case "playbook_run":
+		// Compose the routine into a prompt, spin up a fresh web conversation, and
+		// dispatch it — one click repeats the whole routine. The reply carries the
+		// new conversation id so the client can switch to it.
+		out := map[string]any{"ok": true}
+		if convID, err := s.bot.runPlaybook(chatID, m.ID); err != nil {
+			out["ok"] = false
+			out["error"] = err.Error()
+		} else {
+			out["conversationId"] = convID
+		}
+		data, _ := json.Marshal(out)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	default:
 		log.Printf("[chatcontrol] unknown control message type %q", m.Type)
 	}

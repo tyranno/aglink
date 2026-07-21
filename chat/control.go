@@ -57,7 +57,8 @@ type controlIn struct {
 	Title   string          `json:"title,omitempty"`
 	Backend string          `json:"backend,omitempty"`
 	Target  json.RawMessage `json:"target,omitempty"`
-	Body    string          `json:"body,omitempty"` // set_config: edited config.yaml text
+	Body    string          `json:"body,omitempty"`    // set_config: edited config.yaml text
+	Payload json.RawMessage `json:"payload,omitempty"` // playbook_save/pbgroup_save: routine/group JSON
 }
 
 // controlClient maintains one connection to teleclaude's loopback control API,

@@ -324,7 +324,14 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		log.Printf("[main] userstore load warning: %v", err)
 	}
 
+	// Playbooks: reusable work routines (업무 관리), persisted server-side.
+	playbooks := NewPlaybookStore(filepath.Join(dir, "playbooks.json"))
+	if err := playbooks.Load(); err != nil {
+		log.Printf("[main] playbook load warning: %v", err)
+	}
+
 	bot := NewBot(api, holder, store, manager, sched, userStore)
+	bot.playbooks = playbooks
 
 	// Wire scheduler send/dispatch after bot is created
 	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })

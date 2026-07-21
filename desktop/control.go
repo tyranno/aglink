@@ -50,6 +50,7 @@ type controlIn struct {
 	Title   string          `json:"title,omitempty"`
 	Backend string          `json:"backend,omitempty"`
 	Body    string          `json:"body,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 	Target  json.RawMessage `json:"target,omitempty"`
 }
 
@@ -435,6 +436,47 @@ func (c *ControlService) SetChannelBackend(kind, id, backend string) (string, er
 		Target:  targetJSON(kind, "", id),
 		Backend: backend,
 	})
+	return string(data), err
+}
+
+// --- Playbooks (업무 관리) ---------------------------------------------------
+// Reusable work routines, persisted server-side. The routine/group JSON is
+// relayed opaquely so the host owns the schema (same as the chat relay).
+
+// ListPlaybooks returns the routine tree ({groups,playbooks}) as a JSON string.
+func (c *ControlService) ListPlaybooks() (string, error) {
+	data, err := c.request(controlIn{Type: "playbook_list"})
+	return string(data), err
+}
+
+// SavePlaybook upserts a routine from its JSON and returns the saved entity.
+func (c *ControlService) SavePlaybook(payload string) (string, error) {
+	data, err := c.request(controlIn{Type: "playbook_save", Payload: json.RawMessage(payload)})
+	return string(data), err
+}
+
+// DeletePlaybook removes a routine by id.
+func (c *ControlService) DeletePlaybook(id string) (string, error) {
+	data, err := c.request(controlIn{Type: "playbook_delete", ID: id})
+	return string(data), err
+}
+
+// SavePlaybookGroup upserts a tree group from its JSON.
+func (c *ControlService) SavePlaybookGroup(payload string) (string, error) {
+	data, err := c.request(controlIn{Type: "pbgroup_save", Payload: json.RawMessage(payload)})
+	return string(data), err
+}
+
+// DeletePlaybookGroup removes a group (reparenting its content to the parent).
+func (c *ControlService) DeletePlaybookGroup(id string) (string, error) {
+	data, err := c.request(controlIn{Type: "pbgroup_delete", ID: id})
+	return string(data), err
+}
+
+// RunPlaybook composes a routine into a prompt, opens a fresh conversation, and
+// dispatches it. Returns {ok, conversationId} as JSON.
+func (c *ControlService) RunPlaybook(id string) (string, error) {
+	data, err := c.request(controlIn{Type: "playbook_run", ID: id})
 	return string(data), err
 }
 

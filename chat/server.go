@@ -357,6 +357,81 @@ func (s *browserServer) handleChannelBackend(w http.ResponseWriter, r *http.Requ
 	http.Error(w, m.Error, http.StatusBadRequest)
 }
 
+// handlePlaybooks proxies the reusable-routine (업무 관리) API to the host.
+// GET → list; POST → upsert routine; DELETE?id= → delete routine. Routine JSON
+// is relayed opaquely in the control payload so the host owns the schema.
+func (s *browserServer) handlePlaybooks(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.relayControl(w, controlIn{Type: "playbook_list"})
+	case http.MethodPost:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		s.relayControl(w, controlIn{Type: "playbook_save", Payload: json.RawMessage(body)})
+	case http.MethodDelete:
+		s.relayControl(w, controlIn{Type: "playbook_delete", ID: r.URL.Query().Get("id")})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handlePlaybookGroup proxies routine-tree group ops: POST upsert, DELETE?id=.
+func (s *browserServer) handlePlaybookGroup(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		s.relayControl(w, controlIn{Type: "pbgroup_save", Payload: json.RawMessage(body)})
+	case http.MethodDelete:
+		s.relayControl(w, controlIn{Type: "pbgroup_delete", ID: r.URL.Query().Get("id")})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handlePlaybookRun triggers a routine: the host composes it into a prompt,
+// spins up a fresh conversation, and dispatches it. Returns the new conv id.
+func (s *browserServer) handlePlaybookRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	s.relayControl(w, controlIn{Type: "playbook_run", ID: body.ID})
+}
+
+// relayControl forwards one control request and writes the raw JSON reply back,
+// the shared shape the playbook endpoints use.
+func (s *browserServer) relayControl(w http.ResponseWriter, m controlIn) {
+	data, err := s.control.request(m)
+	if err != nil {
+		http.Error(w, "control API error", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(data)
+}
+
 // --- Admin endpoints (proxied to teleclaude via the control API) -------------
 // aglink-chat is the primary frontend, so it exposes the same /api/* the
 // embedded teleclaude web server does. Version/config/aux data lives in
@@ -605,6 +680,9 @@ func (s *browserServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/webconv/rename", s.handleWebconvRename)
 	mux.HandleFunc("/api/channel/backend", s.handleChannelBackend)
+	mux.HandleFunc("/api/playbooks", s.handlePlaybooks)
+	mux.HandleFunc("/api/playbooks/group", s.handlePlaybookGroup)
+	mux.HandleFunc("/api/playbooks/run", s.handlePlaybookRun)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/capabilities", s.handleCapabilities)
 	mux.HandleFunc("/api/version", s.handleVersion)

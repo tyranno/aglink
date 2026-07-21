@@ -421,6 +421,10 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 			}
 			log.Printf("[config] backend.default → %q 적용됨 (즉시 전환)", name)
 		},
+		OnNeedRestart: func(reason string) {
+			log.Printf("[config] 재시작 필요 설정 변경: %s — idle 되면 자동 재시작 예약", reason)
+			bot.ScheduleRestart(reason)
+		},
 		Notify: func(msg string) {
 			for _, id := range holder.Get().AllowedUserIDs {
 				_ = bot.Send(id, msg)

@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -15,7 +16,38 @@ type ReloadHooks struct {
 	OnScreenControl  func(bool)   // screen_control.enabled toggled
 	OnKeepAwake      func(bool)   // screen_control.keep_awake toggled
 	OnDefaultBackend func(string) // backend.default changed — switch the live active backend now
+	OnNeedRestart    func(string) // a startup-only field changed (see configNeedsRestart) — restart to apply
 	Notify           func(string)
+}
+
+// configNeedsRestart reports whether the change between old and nw touches a
+// field that is only wired at process startup — long-lived objects that a live
+// config swap cannot rebuild: the ConPTY interactive-claude client, the Telegram
+// poller, and the spawned helper binaries / bound addresses. The value fields
+// themselves already hot-apply (code reads holder.Get() live); only these
+// boot-constructed objects need a restart. reason lists the changed fields.
+func configNeedsRestart(old, nw *Config) (bool, string) {
+	checks := []struct {
+		changed bool
+		name    string
+	}{
+		{old.InteractiveClaude != nw.InteractiveClaude, "interactive_claude"},
+		{old.TelegramBotToken != nw.TelegramBotToken, "telegram 토큰"},
+		{old.ScreenBinaryPath != nw.ScreenBinaryPath, "screen 바이너리 경로"},
+		{old.WebBinaryPath != nw.WebBinaryPath, "web 바이너리 경로"},
+		{old.AglinkChat != nw.AglinkChat, "aglink_chat 사용여부"},
+		{old.AglinkChatBinaryPath != nw.AglinkChatBinaryPath, "aglink_chat 바이너리 경로"},
+		{old.AglinkChatAddr != nw.AglinkChatAddr, "aglink_chat 주소"},
+		{old.ChatControlAddr != nw.ChatControlAddr, "control 주소"},
+		{old.WebChatAddr != nw.WebChatAddr, "web chat 주소"},
+	}
+	var changed []string
+	for _, c := range checks {
+		if c.changed {
+			changed = append(changed, c.name)
+		}
+	}
+	return len(changed) > 0, strings.Join(changed, ", ")
 }
 
 // applyReload compares old vs new config and fires the relevant hooks.
@@ -34,6 +66,11 @@ func applyReload(old, nw *Config, h ReloadHooks) {
 	}
 	if old.DefaultBackend != nw.DefaultBackend && h.OnDefaultBackend != nil {
 		h.OnDefaultBackend(nw.DefaultBackend)
+	}
+	if h.OnNeedRestart != nil {
+		if need, reason := configNeedsRestart(old, nw); need {
+			h.OnNeedRestart(reason)
+		}
 	}
 }
 

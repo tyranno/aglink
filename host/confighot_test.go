@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestApplyReload_RateLimitChanged(t *testing.T) {
 	old := &Config{RateLimitPerMin: 20, TelegramBotToken: "t"}
@@ -20,6 +23,31 @@ func TestApplyReload_TokenChanged(t *testing.T) {
 	if !called {
 		t.Error("OnTokenChanged should fire on token change")
 	}
+}
+
+// A startup-only field change (interactive_claude here) fires OnNeedRestart with
+// the field named, so main.go can schedule a self-restart to apply it.
+func TestApplyReload_NeedRestartOnStartupOnlyField(t *testing.T) {
+	old := &Config{InteractiveClaude: false}
+	nw := &Config{InteractiveClaude: true}
+	got := ""
+	applyReload(old, nw, ReloadHooks{OnNeedRestart: func(reason string) { got = reason }})
+	if got == "" {
+		t.Fatal("OnNeedRestart should fire when interactive_claude changes")
+	}
+	if !strings.Contains(got, "interactive_claude") {
+		t.Errorf("reason %q should name interactive_claude", got)
+	}
+}
+
+// A pure value-field change (worker model here) hot-applies via holder.Get() and
+// must NOT trigger a restart.
+func TestApplyReload_NoRestartOnHotField(t *testing.T) {
+	old := &Config{WorkerModel: "opus", InteractiveClaude: true, TelegramBotToken: "t"}
+	nw := &Config{WorkerModel: "haiku", InteractiveClaude: true, TelegramBotToken: "t"}
+	applyReload(old, nw, ReloadHooks{OnNeedRestart: func(string) {
+		t.Error("OnNeedRestart must not fire for a value-only (hot-applied) field")
+	}})
 }
 
 func TestApplyReload_ScreenControlToggle(t *testing.T) {

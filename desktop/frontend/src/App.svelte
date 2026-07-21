@@ -52,7 +52,7 @@
   let settingsValues = $state({});
   let settingsOriginal = $state({});
   let settingsMsg = $state("");
-  let showAdvanced = $state(false);
+  let activeSettingsGroup = $state("");
   let configText = $state("");
   let configMsg = $state("");
   let openMenuId = $state("");
@@ -155,6 +155,35 @@
     if (current === "" || options.includes(current)) return options;
     return [...options, current];
   }
+
+  // Settings are split into tabs by section.group. A section can also be gated
+  // on another field's *live* value (section.visibleWhen) — e.g. the opencode
+  // provider sections appear only once "사용할 AI" is set to opencode. Because
+  // settingsValues is reactive, switching the backend re-evaluates visibility
+  // (and empty tabs disappear) without a save/reload.
+  function sectionVisible(section) {
+    const vw = section?.visibleWhen;
+    if (!vw) return true;
+    return String(settingsValues[vw.key] ?? "") === String(vw.equals);
+  }
+  function sectionsInGroup(group) {
+    return settingsSchema.filter((s) => (s.group || "기타") === group && sectionVisible(s));
+  }
+  const settingsGroups = $derived.by(() => {
+    const order = [];
+    for (const section of settingsSchema) {
+      const group = section.group || "기타";
+      if (sectionVisible(section) && !order.includes(group)) order.push(group);
+    }
+    return order;
+  });
+  // Keep the active tab valid: if it vanishes (e.g. leaving opencode hides the
+  // "무료·로컬 AI" tab), fall back to the first remaining tab.
+  $effect(() => {
+    if (settingsGroups.length && !settingsGroups.includes(activeSettingsGroup)) {
+      activeSettingsGroup = settingsGroups[0];
+    }
+  });
 
   async function saveSettings() {
     const updates = {};
@@ -808,30 +837,24 @@
                     {settingsMsg || "표시할 설정이 없습니다."}
                   </div>
                 {:else}
+                  <div class="mb-5 flex flex-wrap gap-1 border-b border-slate-200">
+                    {#each settingsGroups as group}
+                      <button
+                        class="-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition-colors {activeSettingsGroup ===
+                        group
+                          ? 'border-blue-600 text-blue-700'
+                          : 'border-transparent text-slate-500 hover:text-slate-800'}"
+                        onclick={() => (activeSettingsGroup = group)}
+                      >
+                        {group}
+                      </button>
+                    {/each}
+                  </div>
                   <div class="space-y-6">
-                    {#each settingsSchema.filter((s) => !s.advanced) as section}
+                    {#each sectionsInGroup(activeSettingsGroup) as section}
                       {@render settingSection(section)}
                     {/each}
                   </div>
-
-                  {#if settingsSchema.some((s) => s.advanced)}
-                    <div class="mt-6 border-t border-slate-200 pt-4">
-                      <button
-                        class="flex items-center gap-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
-                        onclick={() => (showAdvanced = !showAdvanced)}
-                      >
-                        <span class="inline-block w-3">{showAdvanced ? "▾" : "▸"}</span>
-                        고급 설정 {showAdvanced ? "숨기기" : "보기"} (평소엔 건드릴 필요 없음)
-                      </button>
-                      {#if showAdvanced}
-                        <div class="mt-4 space-y-6">
-                          {#each settingsSchema.filter((s) => s.advanced) as section}
-                            {@render settingSection(section)}
-                          {/each}
-                        </div>
-                      {/if}
-                    </div>
-                  {/if}
                 {/if}
 
                 <div class="mt-5 flex items-center gap-3">

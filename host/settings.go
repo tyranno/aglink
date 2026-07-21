@@ -70,18 +70,49 @@ type settingField struct {
 	Options []string `json:"options,omitempty"` // for type "select"
 }
 
+// settingVisibility gates a whole section on the *live* value of another field
+// in the same form (evaluated client-side as the user edits, before saving). It
+// lets opencode-only sections stay hidden until the user actually picks the
+// opencode backend, instead of cluttering the form for claude/codex users.
+type settingVisibility struct {
+	Key    string `json:"key"`    // dotted key of the controlling field, e.g. "backend.default"
+	Equals string `json:"equals"` // section shows only when that field's value equals this
+}
+
 type settingSection struct {
 	Title string `json:"title"`
 	// Desc is a one-line, plain-language explanation of what this whole group is
 	// for and when a user would touch it — shown under the section title so a
 	// non-developer knows whether this section is even relevant to them. Optional.
 	Desc string `json:"desc,omitempty"`
+	// Group is the settings tab this section lives under. The UI renders one tab
+	// per distinct group (in first-seen order) and shows only the active tab's
+	// sections, so a form with many sections stays tidy instead of one long scroll.
+	Group string `json:"group,omitempty"`
+	// VisibleWhen, when set, hides this section until another field's live value
+	// matches — e.g. opencode provider settings appear only once "사용할 AI" is
+	// opencode. A tab whose sections are all hidden hides its tab button too.
+	VisibleWhen *settingVisibility `json:"visibleWhen,omitempty"`
 	// Advanced marks sections that most users never need (runtime tuning, raw
-	// tool paths, legacy toggles). The UI collapses these under a single "고급
-	// 설정" disclosure so the default view shows only the everyday essentials.
+	// tool paths, legacy toggles). Retained for metadata; the tabbed UI groups by
+	// Group rather than collapsing a single "고급 설정" disclosure.
 	Advanced bool           `json:"advanced,omitempty"`
 	Fields   []settingField `json:"fields"`
 }
+
+// Settings tab (Group) names. Sections are bucketed into these tabs so the form
+// reads as a few tidy pages instead of one long scroll.
+const (
+	settingsGroupAI       = "AI 선택"
+	settingsGroupFreeAI   = "무료·로컬 AI"
+	settingsGroupLimits   = "동작·한도"
+	settingsGroupSecurity = "보안·원격"
+	settingsGroupNetwork  = "연결·기타"
+)
+
+// whenOpencode gates a section on the opencode backend being selected, so its
+// provider/model/vLLM settings stay hidden for claude/codex users.
+var whenOpencode = &settingVisibility{Key: "backend.default", Equals: "opencode"}
 
 // codexModelOptionsFor returns the live-detected codex model catalog for the
 // manager's active codex client, or nil if codex isn't configured/installed
@@ -212,18 +243,11 @@ func customProviderFields(cfg *Config) []settingField {
 // codexRunner.modelCatalog.
 func buildSettings(cfg *Config, codexModels []string) []settingSection {
 	return []settingSection{
-		// ── 기본(일상적으로 만지는 것) ─────────────────────────────────
-		{Title: "① 어떤 AI를 쓸까요", Desc: "봇이 답할 때 사용할 AI를 고릅니다. claude·codex는 각 프로그램이 설치돼 있어야 하고, opencode는 아래 '무료 AI 연결'에 키만 넣으면 무료로 쓸 수 있습니다. 채팅 중 !backend로도 바꿀 수 있어요.", Fields: []settingField{
-			{Key: "backend.default", Label: "사용할 AI", Desc: "claude = Claude Code, codex = OpenAI Codex, opencode = 무료/로컬 모델 연결용. 잘 모르겠으면 opencode를 고르고 아래 '무료 AI 연결'을 채우세요.", Type: "select", Value: cfg.DefaultBackend, Options: []string{"claude", "codex", "opencode"}},
+		// ── AI 선택 탭 ─────────────────────────────────────────────────
+		{Title: "① 어떤 AI를 쓸까요", Group: settingsGroupAI, Desc: "봇이 답할 때 사용할 AI를 고릅니다. claude·codex는 각 프로그램이 설치돼 있어야 하고, opencode는 아래 '무료 AI 연결'에 키만 넣으면 무료로 쓸 수 있습니다. 채팅 중 !backend로도 바꿀 수 있어요.", Fields: []settingField{
+			{Key: "backend.default", Label: "사용할 AI", Desc: "claude = Claude Code, codex = OpenAI Codex, opencode = 무료/로컬 모델 연결용. opencode를 고르면 아래 '무료·로컬 AI' 탭이 열립니다.", Type: "select", Value: cfg.DefaultBackend, Options: []string{"claude", "codex", "opencode"}},
 		}},
-		{Title: "② 무료 AI 연결 (opencode용)", Desc: "위에서 opencode를 골랐다면, 아래 서비스 중 하나에 가입해 받은 API 키를 붙여넣으세요. 키를 넣은 서비스만 '활성'이 됩니다. 그다음 ③에서 그 모델을 고르면 끝입니다.", Fields: freeProviderFields(cfg)},
-		{Title: "③ opencode 세부 (모델 선택)", Desc: "opencode 백엔드가 실제로 쓸 모델을 고릅니다. ②에서 키를 넣은 서비스를 'provider/model' 형태로 적으면 됩니다(예: gemini/gemini-flash-latest). 나머지 칸은 대부분 비워둬도 됩니다.", Fields: []settingField{
-			{Key: "opencode.model", Label: "사용할 모델", Desc: "형식은 'provider/모델'. 예: gemini/gemini-flash-latest, groq/llama-3.3-70b-versatile, cerebras/gpt-oss-120b, vllm/<모델>. ②에서 키를 넣은 서비스 이름을 앞에 씁니다. 비우면 opencode 기본값.", Type: "string", Value: cfg.OpencodeModel},
-			{Key: "opencode.manager_model", Label: "매니저 모델(선택)", Desc: "메시지 분배 판단에만 쓰는 가벼운 모델. 비우면 위 '사용할 모델'과 같은 걸 씁니다. 대부분 비워둡니다.", Type: "string", Value: cfg.OpencodeManagerModel},
-			{Key: "opencode.path", Label: "opencode 실행파일 경로(선택)", Desc: "보통 비워두면 자동으로 찾습니다. 특별한 위치에 설치했을 때만 지정. (변경 시 재시작 필요)", Type: "string", Value: cfg.OpencodePath},
-			{Key: "opencode.config_path", Label: "opencode.json 경로(선택)", Desc: "직접 만든 opencode 설정 파일이 있을 때만 지정. 비워두면 자동 처리됩니다.", Type: "string", Value: cfg.OpencodeConfigPath},
-		}},
-		{Title: "모델 (claude·codex용)", Desc: "claude나 codex를 쓸 때 어느 모델로 답할지 정합니다. 비워두면 각 백엔드의 기본값을 씁니다 — 잘 모르면 그대로 두세요.", Fields: []settingField{
+		{Title: "모델 (claude·codex용)", Group: settingsGroupAI, Desc: "claude나 codex를 쓸 때 어느 모델로 답할지 정합니다. 비워두면 각 백엔드의 기본값을 씁니다 — 잘 모르면 그대로 두세요.", Fields: []settingField{
 			modelField("models.manager", "매니저 모델", "메시지를 어디로 보낼지 판단하는 가벼운 모델. 비우면 기본값.", cfg.ManagerModel, claudeModelAliases),
 			modelField("models.worker", "작업 모델", "실제 답을 만드는 모델. 비우면 기본값.", cfg.WorkerModel, claudeModelAliases),
 			modelField("backend.codex_model", "Codex 작업 모델", "codex를 쓸 때의 작업 모델. 설치된 codex에서 실제 확인한 목록입니다.", cfg.CodexModel, codexModels),
@@ -231,37 +255,44 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "models.manager_always", Label: "항상 매니저 먼저", Desc: "켜면 모든 메시지를 매니저 모델이 먼저 훑어 분배합니다. 끄면 간단한 메시지는 바로 작업 모델로 갑니다.", Type: "bool", Value: cfg.ManagerAlways},
 		}},
 
-		// ── 고급(대부분 손대지 않아도 됨) ──────────────────────────────
-		{Title: "직접 추가한 AI 서비스", Advanced: true, Desc: "목록에 없는 OpenAI 호환 서비스를 직접 등록합니다. 여기에 id·주소·모델을 저장하면 위 '무료 AI 연결'에 그 서비스의 키 입력란이 생깁니다. 개발자용 고급 기능입니다.", Fields: customProviderFields(cfg)},
-		{Title: "내 서버의 AI (vLLM/로컬)", Advanced: true, Desc: "직접 운영하는 GPU 서버(vLLM 등)의 주소를 넣으면 opencode가 그 서버를 씁니다. 로컬 모델을 돌릴 때만 필요합니다.", Fields: []settingField{
+		// ── 무료·로컬 AI 탭 (opencode 선택 시에만 표시) ────────────────
+		{Title: "② 무료 AI 연결 (opencode용)", Group: settingsGroupFreeAI, VisibleWhen: whenOpencode, Desc: "opencode에 쓸 무료 서비스입니다. 아래 서비스 중 하나에 가입해 받은 API 키를 붙여넣으세요. 키를 넣은 서비스만 '활성'이 됩니다. 그다음 ③에서 그 모델을 고르면 끝입니다.", Fields: freeProviderFields(cfg)},
+		{Title: "③ opencode 세부 (모델 선택)", Group: settingsGroupFreeAI, VisibleWhen: whenOpencode, Desc: "opencode 백엔드가 실제로 쓸 모델을 고릅니다. ②에서 키를 넣은 서비스를 'provider/model' 형태로 적으면 됩니다(예: gemini/gemini-flash-latest). 나머지 칸은 대부분 비워둬도 됩니다.", Fields: []settingField{
+			{Key: "opencode.model", Label: "사용할 모델", Desc: "형식은 'provider/모델'. 예: gemini/gemini-flash-latest, groq/llama-3.3-70b-versatile, cerebras/gpt-oss-120b, vllm/<모델>. ②에서 키를 넣은 서비스 이름을 앞에 씁니다. 비우면 opencode 기본값.", Type: "string", Value: cfg.OpencodeModel},
+			{Key: "opencode.manager_model", Label: "매니저 모델(선택)", Desc: "메시지 분배 판단에만 쓰는 가벼운 모델. 비우면 위 '사용할 모델'과 같은 걸 씁니다. 대부분 비워둡니다.", Type: "string", Value: cfg.OpencodeManagerModel},
+			{Key: "opencode.path", Label: "opencode 실행파일 경로(선택)", Desc: "보통 비워두면 자동으로 찾습니다. 특별한 위치에 설치했을 때만 지정. (변경 시 재시작 필요)", Type: "string", Value: cfg.OpencodePath},
+			{Key: "opencode.config_path", Label: "opencode.json 경로(선택)", Desc: "직접 만든 opencode 설정 파일이 있을 때만 지정. 비워두면 자동 처리됩니다.", Type: "string", Value: cfg.OpencodeConfigPath},
+		}},
+		{Title: "직접 추가한 AI 서비스", Group: settingsGroupFreeAI, VisibleWhen: whenOpencode, Advanced: true, Desc: "목록에 없는 OpenAI 호환 서비스를 직접 등록합니다. 여기에 id·주소·모델을 저장하면 위 '무료 AI 연결'에 그 서비스의 키 입력란이 생깁니다. 개발자용 고급 기능입니다.", Fields: customProviderFields(cfg)},
+		{Title: "내 서버의 AI (vLLM/로컬)", Group: settingsGroupFreeAI, VisibleWhen: whenOpencode, Advanced: true, Desc: "직접 운영하는 GPU 서버(vLLM 등)의 주소를 넣으면 opencode가 그 서버를 씁니다. 로컬 모델을 돌릴 때만 필요합니다.", Fields: []settingField{
 			{Key: "vllm.primary_url", Label: "1번 서버 주소", Desc: "OpenAI 호환 엔드포인트. 예: http://10.0.0.5:8000/v1. 채우면 opencode가 자동으로 이 서버를 씁니다.", Type: "string", Value: vllmServerAt(cfg, 0).BaseURL},
 			{Key: "vllm.primary_model", Label: "1번 서버 모델", Desc: "이 서버가 서빙하는 모델 이름. 모델 참조는 vllm/<모델>.", Type: "string", Value: vllmServerAt(cfg, 0).Model},
 			{Key: "vllm.secondary_url", Label: "2번 서버 주소", Desc: "서버를 하나 더 붙일 때만. 참조 id는 vllm-2. 비우면 미사용.", Type: "string", Value: vllmServerAt(cfg, 1).BaseURL},
 			{Key: "vllm.secondary_model", Label: "2번 서버 모델", Desc: "2번 서버가 서빙하는 모델. 모델 참조는 vllm-2/<모델>.", Type: "string", Value: vllmServerAt(cfg, 1).Model},
 		}},
-		{Title: "외부 프로그램 경로", Advanced: true, Desc: "ssh 같은 외부 도구가 특별한 위치에 있을 때만 지정합니다. 보통은 비워두면 자동으로 찾습니다.", Fields: []settingField{
+		{Title: "외부 프로그램 경로", Group: settingsGroupSecurity, Advanced: true, Desc: "ssh 같은 외부 도구가 특별한 위치에 있을 때만 지정합니다. 보통은 비워두면 자동으로 찾습니다.", Fields: []settingField{
 			{Key: "tools.ssh", Label: "ssh 경로", Desc: "비우면 자동 탐지. 원격 제어(!ssh)에 사용.", Type: "string", Value: toolPathValue(cfg, "ssh")},
 			{Key: "tools.sshpass", Label: "sshpass 경로", Desc: "비밀번호 인증용. 예: C:\\cygwin\\bin\\sshpass.exe. 키 인증만 쓰면 불필요.", Type: "string", Value: toolPathValue(cfg, "sshpass")},
 		}},
-		{Title: "원격 제어(SSH)", Advanced: true, Desc: "봇이 !ssh 명령으로 다른 컴퓨터를 제어하게 허용합니다. 호스트 목록(주소·계정·비밀번호)은 원본 설정편집기의 ssh.hosts에서 관리합니다.", Fields: []settingField{
+		{Title: "원격 제어(SSH)", Group: settingsGroupSecurity, Advanced: true, Desc: "봇이 !ssh 명령으로 다른 컴퓨터를 제어하게 허용합니다. 호스트 목록(주소·계정·비밀번호)은 원본 설정편집기의 ssh.hosts에서 관리합니다.", Fields: []settingField{
 			{Key: "ssh.enabled", Label: "SSH 원격 제어 허용", Desc: "켜면 !ssh <호스트> <명령>으로 등록된 원격 호스트를 제어합니다.", Type: "bool", Value: cfg.SSHEnabled},
 		}},
-		{Title: "고급: 실험적 백엔드", Advanced: true, Desc: "일반 사용에는 필요 없는 실험적 기능입니다.", Fields: []settingField{
+		{Title: "고급: 실험적 백엔드", Group: settingsGroupNetwork, Advanced: true, Desc: "일반 사용에는 필요 없는 실험적 기능입니다.", Fields: []settingField{
 			{Key: "interactive_claude.enabled", Label: "Interactive Claude (실험적)", Desc: "상주 ConPTY 세션 백엔드. 대화별로 \"!interactive on\"으로 켜야 실제 사용됨. Windows 전용. (변경 시 재시작 필요)", Type: "bool", Value: cfg.InteractiveClaude},
 		}},
-		{Title: "동작 한도", Advanced: true, Desc: "봇이 얼마나 많이·오래 일할지 제한합니다. 기본값으로 두어도 잘 동작합니다.", Fields: []settingField{
+		{Title: "동작 한도", Group: settingsGroupLimits, Advanced: true, Desc: "봇이 얼마나 많이·오래 일할지 제한합니다. 기본값으로 두어도 잘 동작합니다.", Fields: []settingField{
 			{Key: "runtime.timeout_minutes", Label: "작업 제한 시간(분)", Desc: "한 작업이 이 시간을 넘기면 취소합니다.", Type: "int", Value: cfg.TimeoutMinutes},
 			{Key: "runtime.max_workers", Label: "동시 작업 수", Desc: "한 번에 돌릴 수 있는 작업 개수.", Type: "int", Value: cfg.MaxWorkers},
 			{Key: "runtime.rate_limit_per_min", Label: "분당 메시지 제한", Desc: "사용자당 1분에 허용하는 일반 메시지 수.", Type: "int", Value: cfg.RateLimitPerMin},
 			{Key: "runtime.conversation_ttl_days", Label: "대화 보관 기간(일)", Desc: "이 기간 동안 활동 없는 대화를 자동 정리. 0이면 정리 안 함.", Type: "int", Value: cfg.ConversationTTLDays},
 		}},
-		{Title: "보안 / 권한", Advanced: true, Desc: "봇에게 얼마나 큰 권한을 줄지 정합니다. 잘 모르면 끈 채로 두는 것이 안전합니다.", Fields: []settingField{
+		{Title: "보안 / 권한", Group: settingsGroupSecurity, Advanced: true, Desc: "봇에게 얼마나 큰 권한을 줄지 정합니다. 잘 모르면 끈 채로 두는 것이 안전합니다.", Fields: []settingField{
 			{Key: "scripts.allow", Label: "명령·스크립트 실행 허용", Desc: "봇이 컴퓨터에서 명령을 실행하도록 허용합니다. 신중히 켜세요.", Type: "bool", Value: cfg.AllowScripts},
 			{Key: "screen_control.enabled", Label: "화면 제어 허용", Desc: "봇이 스크린샷·마우스·키보드로 화면을 제어하게 합니다.", Type: "bool", Value: cfg.ScreenControl},
 			{Key: "screen_control.keep_awake", Label: "화면 잠금 방지", Desc: "화면 제어 중 화면보호기/잠금을 막습니다.", Type: "bool", Value: cfg.ScreenKeepAwake},
 			{Key: "screen_control.elevated", Label: "관리자 권한으로 화면 제어", Desc: "관리자 권한 창까지 제어해야 할 때만 켭니다.", Type: "bool", Value: cfg.ScreenElevated},
 		}},
-		{Title: "연결 / 네트워크", Advanced: true, Desc: "웹 화면·제어 API가 어느 주소에서 열릴지 정합니다. 기본값으로 두면 됩니다. (대부분 변경 시 재시작 필요)", Fields: []settingField{
+		{Title: "연결 / 네트워크", Group: settingsGroupNetwork, Advanced: true, Desc: "웹 화면·제어 API가 어느 주소에서 열릴지 정합니다. 기본값으로 두면 됩니다. (대부분 변경 시 재시작 필요)", Fields: []settingField{
 			{Key: "aglink_chat.enabled", Label: "웹 채팅 화면 사용", Desc: "aglink가 웹 채팅 프론트를 함께 띄웁니다.", Type: "bool", Value: cfg.AglinkChat},
 			{Key: "aglink_chat.addr", Label: "웹 채팅 주소", Desc: "예: 127.0.0.1:27271", Type: "string", Value: cfg.AglinkChatAddr},
 			{Key: "chat_control.enabled", Label: "제어 API 사용", Desc: "웹 화면이 설정을 읽고 쓰는 통로입니다.", Type: "bool", Value: cfg.ChatControl},

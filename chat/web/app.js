@@ -1066,6 +1066,18 @@
     if (section.desc) { const d = document.createElement("div"); d.className = "settings-section-desc"; d.textContent = section.desc; parent.appendChild(d); }
     for (const f of (section.fields || [])) parent.appendChild(buildSettingRow(f));
   }
+  // A section can be gated on another field's live value (section.visibleWhen)
+  // — e.g. opencode provider sections show only once "사용할 AI" is opencode.
+  // Read the controlling field straight from the live DOM so it re-evaluates as
+  // the user edits, before any save.
+  function sectionVisibleNow(section) {
+    const vw = section && section.visibleWhen;
+    if (!vw) return true;
+    const rec = settingsFields.find((r) => r.key === vw.key);
+    const cur = rec ? fieldValue(rec) : "";
+    return String(cur) === String(vw.equals);
+  }
+  let activeSettingsTab = "";
   async function loadSettingsForm() {
     if (!settingsForm) return;
     settingsForm.replaceChildren();
@@ -1074,25 +1086,61 @@
     let data = { sections: [] };
     try { const r = await fetch("/api/settings", { headers: authHeaders }); if (r.ok) data = await r.json(); } catch (e) { /* empty */ }
     const sections = data.sections || [];
-    const basic = sections.filter((s) => !s.advanced);
-    const advanced = sections.filter((s) => s.advanced);
-    for (const section of basic) renderSection(settingsForm, section);
-    // Advanced sections go under a single collapsed disclosure so the everyday
-    // view stays short. Their fields still register in settingsFields (built
-    // eagerly) so saving works whether or not the user expanded them.
-    if (advanced.length) {
-      const wrap = document.createElement("div"); wrap.className = "settings-advanced";
-      const toggle = document.createElement("button");
-      toggle.type = "button"; toggle.className = "settings-advanced-toggle";
-      const body = document.createElement("div"); body.className = "settings-advanced-body"; body.hidden = true;
-      const setLabel = () => { toggle.textContent = (body.hidden ? "▸" : "▾") + " 고급 설정 " + (body.hidden ? "보기" : "숨기기") + " (평소엔 건드릴 필요 없음)"; };
-      toggle.addEventListener("click", () => { body.hidden = !body.hidden; setLabel(); });
-      setLabel();
-      for (const section of advanced) renderSection(body, section);
-      wrap.append(toggle, body);
-      settingsForm.appendChild(wrap);
+
+    // Split into tabs by section.group. The tab bar sits above a content area
+    // holding every section (built eagerly so fields register in settingsFields
+    // and save regardless of which tab is shown); applyVisibility() then reveals
+    // only the active tab's currently-visible sections.
+    const tabBar = document.createElement("div"); tabBar.className = "settings-tabs";
+    const content = document.createElement("div"); content.className = "settings-tab-content";
+    settingsForm.append(tabBar, content);
+
+    const built = []; // { group, section, el }
+    for (const section of sections) {
+      const el = document.createElement("div"); el.className = "settings-section";
+      renderSection(el, section);
+      content.appendChild(el);
+      built.push({ group: section.group || "기타", section, el });
     }
+
+    const groups = [];
+    for (const b of built) if (!groups.includes(b.group)) groups.push(b.group);
+    const tabButtons = new Map();
+    for (const g of groups) {
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "settings-tab"; btn.textContent = g;
+      btn.addEventListener("click", () => { activeSettingsTab = g; applyVisibility(); });
+      tabBar.appendChild(btn);
+      tabButtons.set(g, btn);
+    }
+
+    function applyVisibility() {
+      const groupHasVisible = new Map();
+      for (const b of built) if (sectionVisibleNow(b.section)) groupHasVisible.set(b.group, true);
+      const shown = groups.filter((g) => groupHasVisible.get(g));
+      if (!shown.includes(activeSettingsTab)) activeSettingsTab = shown[0] || "";
+      for (const g of groups) {
+        const btn = tabButtons.get(g);
+        btn.hidden = !groupHasVisible.get(g);
+        btn.classList.toggle("active", g === activeSettingsTab);
+      }
+      for (const b of built) {
+        b.el.hidden = !(b.group === activeSettingsTab && sectionVisibleNow(b.section));
+      }
+    }
+
+    // Any field change may flip a section's visibility (the backend select
+    // drives the opencode-only tab), so re-evaluate on every edit.
+    for (const rec of settingsFields) {
+      rec.el.addEventListener("change", applyVisibility);
+      rec.el.addEventListener("input", applyVisibility);
+    }
+
+    activeSettingsTab = groups[0] || "";
+    applyVisibility();
+
     if (settingsFields.length === 0) {
+      tabBar.remove(); content.remove();
       const e = document.createElement("div"); e.className = "settings-desc"; e.textContent = "설정을 불러오지 못했습니다.";
       settingsForm.appendChild(e);
     }

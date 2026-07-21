@@ -1,6 +1,10 @@
 # Build output at the repo root (each module has its own .gitignore too)
 *.exe
 *.exe~
+*.exe.old
+*.exe.new
+*.old
+*.new
 aglink
 aglink-chat
 aglink-desktop

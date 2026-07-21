@@ -172,6 +172,12 @@ header .icon-button { background: transparent; border-color: rgba(255, 255, 255,
 .settings-advanced-toggle { font: inherit; font-size: 12px; font-weight: 600; color: #475569; background: none; border: none; padding: 4px 0; cursor: pointer; }
 .settings-advanced-toggle:hover { color: #0f172a; }
 .settings-advanced-body { margin-top: 8px; }
+.settings-tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid #e2e8f0; margin-bottom: 14px; }
+.settings-tab { font: inherit; font-size: 13px; font-weight: 600; color: #64748b; background: none; border: none; border-bottom: 2px solid transparent; padding: 8px 12px; margin-bottom: -1px; cursor: pointer; }
+.settings-tab:hover { color: #0f172a; }
+.settings-tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+.settings-tab[hidden], .settings-section[hidden] { display: none; }
+.settings-section .settings-section-title:first-child { margin-top: 0; }
 .settings-input { font: inherit; }
 input.settings-input, select.settings-input { min-width: 180px; max-width: 60%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
 input.settings-input[type="checkbox"] { min-width: 0; width: 18px; height: 18px; }

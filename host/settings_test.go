@@ -245,6 +245,44 @@ func TestBuildSettings_HasSectionsAndValues(t *testing.T) {
 	}
 }
 
+// TestBuildSettings_TabsAndVisibility guards the tabbed UI contract: every
+// section belongs to a tab (Group), the backend picker is always visible, and
+// the opencode provider sections are gated on the opencode backend so they stay
+// hidden for claude/codex users.
+func TestBuildSettings_TabsAndVisibility(t *testing.T) {
+	sections := buildSettings(&Config{DefaultBackend: "claude"}, nil)
+	byTitle := func(title string) *settingSection {
+		for i := range sections {
+			if sections[i].Title == title {
+				return &sections[i]
+			}
+		}
+		return nil
+	}
+	for _, s := range sections {
+		if s.Group == "" {
+			t.Errorf("section %q has no Group — every section must belong to a tab", s.Title)
+		}
+	}
+	// The section holding backend.default must never be gated (it's the control).
+	if ai := byTitle("① 어떤 AI를 쓸까요"); ai == nil || ai.VisibleWhen != nil {
+		t.Errorf("backend picker section must always be visible: %+v", ai)
+	}
+	// opencode-only sections are gated on backend.default == opencode.
+	for _, title := range []string{"② 무료 AI 연결 (opencode용)", "③ opencode 세부 (모델 선택)", "내 서버의 AI (vLLM/로컬)"} {
+		s := byTitle(title)
+		if s == nil {
+			t.Fatalf("missing section %q", title)
+		}
+		if s.VisibleWhen == nil || s.VisibleWhen.Key != "backend.default" || s.VisibleWhen.Equals != "opencode" {
+			t.Errorf("section %q should be gated on opencode backend: %+v", title, s.VisibleWhen)
+		}
+		if s.Group != settingsGroupFreeAI {
+			t.Errorf("section %q should live under the free-AI tab, got %q", title, s.Group)
+		}
+	}
+}
+
 func TestBuildSettings_CodexModelFallsBackToStringWhenUndetected(t *testing.T) {
 	cfg := &Config{CodexModel: "some-custom-model"}
 	sections := buildSettings(cfg, nil)

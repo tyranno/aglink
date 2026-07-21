@@ -122,8 +122,18 @@ async function dispatch(method, params) {
       return await getPageText(params);
     case "click":
       return await click(params);
+    case "double_click":
+      return await doubleClick(params);
     case "hover":
       return await hover(params);
+    case "drag":
+      return await drag(params);
+    case "get_html":
+      return await getHtml(params);
+    case "query_all":
+      return await queryAll(params);
+    case "eval":
+      return await evalExpression(params);
     case "get_attribute":
       return await getAttribute(params);
     case "list_elements":
@@ -313,6 +323,113 @@ async function hover(params) {
   return `ok: hovered <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`;
 }
 
+// doubleClick fires the full mousedown/mouseup/click ×2 + dblclick sequence a
+// page's own JS double-click handlers listen for (renaming a file, opening a
+// row, word-select). Same untrusted-event caveat as click's right/middle path:
+// JS handlers fire, but a browser-native default double-click action tied to
+// trusted input alone won't.
+async function doubleClick(params) {
+  const selector = params.selector;
+  if (!selector) throw new Error("double_click requires 'selector'");
+  const tabId = await activeTabId(params);
+  await ensureHelpers(tabId);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (sel) => {
+      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
+      if (!el) return { found: false };
+      el.scrollIntoView({ block: "center", inline: "center" });
+      const rect = el.getBoundingClientRect();
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      };
+      for (let i = 0; i < 2; i++) {
+        el.dispatchEvent(new MouseEvent("mousedown", opts));
+        el.dispatchEvent(new MouseEvent("mouseup", opts));
+        el.dispatchEvent(new MouseEvent("click", opts));
+      }
+      el.dispatchEvent(new MouseEvent("dblclick", { ...opts, detail: 2 }));
+      return { found: true, tag: el.tagName.toLowerCase(), text: (el.textContent || "").trim().slice(0, 80) };
+    },
+    args: [selector],
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
+  return `ok: double-clicked <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`;
+}
+
+// drag drags a source element onto a target (Playwright dragTo). It fires BOTH
+// a pointer sequence (pointerdown/mousemove/pointerup) and the HTML5 DnD
+// sequence (dragstart/dragenter/dragover/drop/dragend) sharing one DataTransfer,
+// so both JS-driven reorder handlers (sortable lists, kanban boards, which
+// usually listen for pointer/mouse events) and native draggable="true" drop
+// zones (which need the DnD events + dataTransfer) respond. Untrusted events, so
+// JS handlers fire but a browser-native OS drag won't — same category as the
+// other synthesized pointer tools.
+async function drag(params) {
+  const selector = params.selector;
+  const target = params.target;
+  if (!selector) throw new Error("drag requires 'selector' (the source)");
+  if (!target) throw new Error("drag requires 'target' (the destination)");
+  const tabId = await activeTabId(params);
+  await ensureHelpers(tabId);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (srcSel, dstSel) => {
+      const resolve = (s) => (globalThis.__aglink ? globalThis.__aglink.resolve(s) : document.querySelector(s));
+      const src = resolve(srcSel);
+      if (!src) return { found: false, which: "source", sel: srcSel };
+      const dst = resolve(dstSel);
+      if (!dst) return { found: false, which: "target", sel: dstSel };
+      src.scrollIntoView({ block: "center", inline: "center" });
+      const sr = src.getBoundingClientRect();
+      const dr = dst.getBoundingClientRect();
+      const at = (r) => ({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+      const sp = at(sr);
+      const dp = at(dr);
+      const dt = typeof DataTransfer === "function" ? new DataTransfer() : null;
+      const mouse = (type, el, p) =>
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: p.clientX, clientY: p.clientY }));
+      const dnd = (type, el, p) => {
+        let ev;
+        try {
+          ev = new DragEvent(type, { bubbles: true, cancelable: true, view: window, clientX: p.clientX, clientY: p.clientY, dataTransfer: dt });
+        } catch (e) {
+          // Some engines forbid passing dataTransfer to the constructor; fall
+          // back to a MouseEvent with dataTransfer patched on.
+          ev = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: p.clientX, clientY: p.clientY });
+          if (dt) try { Object.defineProperty(ev, "dataTransfer", { value: dt }); } catch (e2) {}
+        }
+        el.dispatchEvent(ev);
+      };
+      // Pointer/mouse path (JS reorder handlers).
+      mouse("pointerdown", src, sp);
+      mouse("mousedown", src, sp);
+      mouse("mousemove", src, sp);
+      mouse("mousemove", dst, dp);
+      // HTML5 DnD path (native drop zones).
+      dnd("dragstart", src, sp);
+      dnd("dragenter", dst, dp);
+      dnd("dragover", dst, dp);
+      dnd("drop", dst, dp);
+      dnd("dragend", src, dp);
+      // Release the pointer over the target.
+      mouse("mouseup", dst, dp);
+      mouse("pointerup", dst, dp);
+      return { found: true, srcTag: src.tagName.toLowerCase(), dstTag: dst.tagName.toLowerCase() };
+    },
+    args: [selector, target],
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r) throw new Error("drag failed");
+  if (!r.found) throw new Error(`no element matched ${r.which} selector: ${r.sel}`);
+  return `ok: dragged <${r.srcTag}> onto <${r.dstTag}>`;
+}
+
 // getAttribute reads a single attribute (or, for name "text", the element's
 // visible textContent) off the matched element — the read-side counterpart for
 // non-value state get_value can't reach: href on a link, aria-checked/
@@ -340,6 +457,134 @@ async function getAttribute(params) {
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
   if (!r.present) return `${name} = (not present) on <${r.tag}>`;
   return `${name} = ${JSON.stringify(r.value)}`;
+}
+
+// getHtml returns raw outerHTML — of the whole document (no selector) or of one
+// element's subtree (selector) — for scraping structured markup get_page_text's
+// innerText flattens away (tag structure, attributes, hrefs, hidden nodes). The
+// read-side counterpart to get_page_text for crawling.
+async function getHtml(params) {
+  const tabId = await activeTabId(params);
+  const maxChars = params.maxChars || DEFAULT_MAX_CHARS;
+  const selector = params.selector || null;
+  if (selector) await ensureHelpers(tabId);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (sel) => {
+      let el;
+      if (sel) {
+        el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
+        if (!el) return { found: false };
+      } else {
+        el = document.documentElement;
+      }
+      return { found: true, html: el.outerHTML || "" };
+    },
+    args: [selector],
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
+  let html = r.html || "";
+  if (html.length > maxChars) {
+    html = html.slice(0, maxChars) + `\n… [truncated at ${maxChars} chars]`;
+  }
+  return html;
+}
+
+// queryAll extracts a field set from EVERY element matching the selector in one
+// call — the crawling workhorse. Uses the shared resolveAll (semantic locators +
+// shadow piercing, visible-first). With no attrs, links auto-include href so
+// `query_all a[href]` harvests a page's links; pass attrs to pull specific
+// fields (href, data-*, aria-*), or "text" to force the textContent column.
+async function queryAll(params) {
+  const selector = params.selector;
+  if (!selector) throw new Error("query_all requires 'selector'");
+  const tabId = await activeTabId(params);
+  await ensureHelpers(tabId);
+  const max = params.max || 200;
+  const attrs = (params.attrs || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (sel, attrList, maxEls) => {
+      const helper = globalThis.__aglink;
+      const cands = helper ? helper.resolveAll(sel) : Array.from(document.querySelectorAll(sel));
+      const out = [];
+      for (const el of cands) {
+        if (out.length >= maxEls) break;
+        const rec = {
+          tag: el.tagName ? el.tagName.toLowerCase() : "",
+          text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200),
+          attrs: [],
+        };
+        for (const a of attrList) {
+          if (a === "text") continue; // text is already its own column
+          rec.attrs.push([a, el.getAttribute ? el.getAttribute(a) : null]);
+        }
+        // With no explicit attrs, surface href for links so link-harvesting works
+        // out of the box.
+        if (attrList.length === 0 && el.tagName === "A" && el.getAttribute && el.getAttribute("href") != null) {
+          rec.attrs.push(["href", el.getAttribute("href")]);
+        }
+        out.push(rec);
+      }
+      return out;
+    },
+    args: [selector, attrs, max],
+  });
+  const els = (results && results[0] && results[0].result) || [];
+  if (els.length === 0) return `(no elements matched selector: ${selector})`;
+  return els
+    .map((e, i) => {
+      const attrStr = e.attrs.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ");
+      return `${i} | ${e.tag} | ${JSON.stringify(e.text)}${attrStr ? " | " + attrStr : ""}`;
+    })
+    .join("\n");
+}
+
+// evalExpression runs a JS expression in the page's MAIN world (like
+// Playwright's page.evaluate) and returns the JSON-stringified value — the
+// escape hatch for extraction the structured tools don't cover (map over nodes,
+// read page globals/framework stores, compute a derived value). MAIN world so it
+// can see the page's own JS state, not just the DOM. Caveat: a strict page CSP
+// without 'unsafe-eval' blocks the in-page eval and this throws — get_html /
+// query_all / get_page_text still work there.
+async function evalExpression(params) {
+  const expression = params.expression;
+  if (!expression) throw new Error("eval requires 'expression'");
+  const tabId = await activeTabId(params);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: (expr) => {
+      try {
+        // Indirect eval so the expression evaluates in global scope; supports a
+        // bare expression or an IIFE.
+        const val = (0, eval)(expr);
+        let json;
+        if (val === undefined) {
+          json = "undefined";
+        } else {
+          try {
+            json = JSON.stringify(val, null, 2);
+          } catch (e) {
+            json = String(val); // circular / non-serializable → coerce to string
+          }
+          if (json === undefined) json = String(val); // JSON.stringify(fn) === undefined
+        }
+        return { ok: true, json };
+      } catch (e) {
+        return { ok: false, error: String(e && e.message ? e.message : e) };
+      }
+    },
+    args: [expression],
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r) throw new Error("eval returned no result (the page may block script injection)");
+  if (!r.ok) throw new Error(`eval error: ${r.error}`);
+  return r.json;
 }
 
 // AGLINK_ID_ATTR marks each element listElements returns with a fresh,

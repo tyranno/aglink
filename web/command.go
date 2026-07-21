@@ -69,6 +69,33 @@ var commands = []command{
 		},
 	},
 	{
+		name: "get_html",
+		desc: "Extract the raw HTML markup of a Chrome tab (outerHTML), for scraping/crawling structured content that document.body.innerText flattens away — tag structure, attributes, hrefs, data-* fields, hidden markup. Omit 'selector' for the whole document; give a CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=, pierces open Shadow DOM) to get just that element's subtree (e.g. one result card, a <table>). Long output is truncated. Prefer get_page_text when you only need readable text, query_all to pull the same field from many elements at once.",
+		args: []argSpec{
+			{name: "selector", typ: argString, desc: "Optional CSS selector or semantic locator for a subtree. Omit for the whole page's HTML."},
+			{name: "maxChars", typ: argInt, desc: "Optional cap on returned characters (default 20000)."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "query_all",
+		desc: "Scrape MANY elements at once: for every element matching the selector (CSS or semantic locator — pierces open Shadow DOM), return one line with its tag, visible text, and requested attributes. This is the crawling workhorse — pull a whole list of search results, product cards, table rows, or links in a single call instead of looping list_elements/get_attribute per element. With no 'attrs', links auto-include their href (so `query_all a[href]` is a link harvester for building a crawl frontier). Pass 'attrs' as a comma-separated list (e.g. 'href,data-id,aria-label') to pull specific fields; use 'text' in attrs to force the textContent column.",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator matching the set of elements to extract."},
+			{name: "attrs", typ: argString, desc: "Optional comma-separated attribute names to pull per element (e.g. 'href,data-id'). Omit to just get tag+text (+href for links)."},
+			{name: "max", typ: argInt, desc: "Maximum number of elements to return (default 200)."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "eval",
+		desc: "Evaluate a JavaScript expression in a Chrome tab's page (MAIN world, like Playwright's page.evaluate) and return the JSON-stringified result — the general escape hatch for crawling/extraction the structured tools don't cover: map over DOM nodes, read page globals (window.__DATA__, framework stores), compute a derived value. Pass either an expression ('document.querySelectorAll(\"h2\").length') or an IIFE ('(()=>{...; return x})()'). Caveat: runs in the page's own JS context, so a strict page Content-Security-Policy without 'unsafe-eval' will block it (throws) — use get_html/query_all/get_page_text on those sites. Non-JSON-serializable results are coerced to a string.",
+		args: []argSpec{
+			{name: "expression", typ: argString, required: true, desc: "JavaScript expression or IIFE to evaluate in the page. Its value (JSON-stringified) is returned."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
 		name: "click",
 		desc: "Click a DOM element in a Chrome tab. The selector is either a CSS selector (e.g. 'button.submit', '#login', 'a[href=\"/next\"]' — now also pierces open Shadow DOM) OR a semantic locator that targets by accessible role/name/text instead of fragile CSS: role=button, role=button[name=\"Save\"] (name is a substring; quote for exact), text=Login (text=\"Login\" for exact match), label=Email, placeholder=Search, testid=submit. Scrolls the element into view first. 'button' left (default) uses the real .click() method; right/middle synthesize mousedown+mouseup+contextmenu/auxclick instead — these reach a page's own JS context-menu/middle-click handler but will NOT open the browser's native right-click menu (that requires a real OS-trusted event). If 'tabId' is omitted, the active tab of the focused window is used.",
 		args: []argSpec{
@@ -78,10 +105,27 @@ var commands = []command{
 		},
 	},
 	{
+		name: "double_click",
+		desc: "Double-click a DOM element in a Chrome tab, matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=, same as click). Scrolls into view, then fires the full mousedown/mouseup/click ×2 + dblclick sequence a page's own JS double-click handlers listen for (renaming a file, opening a row, selecting a word). Like the other pointer tools these are synthesized (untrusted) events — JS handlers fire, but browser-native default double-click actions tied to trusted input alone won't. If 'tabId' is omitted, the active tab of the focused window is used.",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to double-click."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
 		name: "hover",
 		desc: "Hover the pointer over an element in a Chrome tab, matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=, same as click). Dispatches mouseover/mouseenter/mousemove so a page's own JS hover menus (dropdowns, tooltips, nav flyouts) open — use this to reveal a menu before clicking an item inside it. Note: these are synthesized (untrusted) events, so JS hover handlers fire but pure CSS :hover effects needing a real OS pointer won't. If 'tabId' is omitted, the active tab of the focused window is used.",
 		args: []argSpec{
 			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to hover."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "drag",
+		desc: "Drag one element onto another in a Chrome tab (Playwright dragTo equivalent) — both matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=). Synthesizes the pointer sequence (pointerdown/mousemove/pointerup) AND the HTML5 drag-and-drop sequence (dragstart/dragenter/dragover/drop/dragend) with a shared DataTransfer, so both JS-driven reorder handlers (sortable lists, kanban) and native draggable=\"true\" drop zones react. These are synthesized (untrusted) events — JS handlers fire but a browser-native OS drag won't. If 'tabId' is omitted, the active tab of the focused window is used.",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to drag (the source)."},
+			{name: "target", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to drop onto (the destination)."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
 		},
 	},

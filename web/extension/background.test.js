@@ -275,6 +275,123 @@ test("getAttribute reads an attribute, absence, and requires name", async () => 
   await assert.rejects(() => sb.getAttribute({ name: "href" }), /get_attribute requires 'selector'/);
 });
 
+test("doubleClick reports the element and needs a selector", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, tag: "div", text: "Row 1" } }] },
+    })
+  );
+  assert.strictEqual(await sb.doubleClick({ selector: "#row" }), 'ok: double-clicked <div> "Row 1"');
+  await assert.rejects(() => sb.doubleClick({}), /double_click requires 'selector'/);
+
+  const miss = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: false } }] },
+    })
+  );
+  await assert.rejects(() => miss.doubleClick({ selector: "#nope" }), /no element matched selector: #nope/);
+});
+
+test("drag reports source/target and validates both selectors", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, srcTag: "li", dstTag: "ul" } }] },
+    })
+  );
+  assert.strictEqual(await sb.drag({ selector: "#a", target: "#b" }), "ok: dragged <li> onto <ul>");
+  await assert.rejects(() => sb.drag({ target: "#b" }), /drag requires 'selector'/);
+  await assert.rejects(() => sb.drag({ selector: "#a" }), /drag requires 'target'/);
+
+  const miss = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: false, which: "target", sel: "#b" } }] },
+    })
+  );
+  await assert.rejects(() => miss.drag({ selector: "#a", target: "#b" }), /no element matched target selector: #b/);
+});
+
+test("getHtml returns markup and truncates at maxChars", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, html: "<div>hello</div>" } }] },
+    })
+  );
+  assert.strictEqual(await sb.getHtml({ selector: "#x" }), "<div>hello</div>");
+
+  const long = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, html: "abcdefghij" } }] },
+    })
+  );
+  const out = await long.getHtml({ maxChars: 4 });
+  assert.ok(out.startsWith("abcd"), "should keep the first maxChars");
+  assert.ok(out.includes("truncated at 4 chars"), "should note truncation");
+
+  const miss = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: false } }] },
+    })
+  );
+  await assert.rejects(() => miss.getHtml({ selector: "#nope" }), /no element matched selector: #nope/);
+});
+
+test("queryAll formats one line per element and needs a selector", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: {
+        executeScript: async () => [
+          {
+            result: [
+              { tag: "a", text: "First", attrs: [["href", "/1"]] },
+              { tag: "a", text: "Second", attrs: [["href", "/2"]] },
+            ],
+          },
+        ],
+      },
+    })
+  );
+  assert.strictEqual(
+    await sb.queryAll({ selector: "a[href]" }),
+    '0 | a | "First" | href="/1"\n1 | a | "Second" | href="/2"'
+  );
+  await assert.rejects(() => sb.queryAll({}), /query_all requires 'selector'/);
+
+  const empty = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: [] }] },
+    })
+  );
+  assert.strictEqual(await empty.queryAll({ selector: ".none" }), "(no elements matched selector: .none)");
+});
+
+test("evalExpression returns json, surfaces page errors, needs an expression", async () => {
+  const ok = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { ok: true, json: "42" } }] },
+    })
+  );
+  assert.strictEqual(await ok.evalExpression({ expression: "40 + 2" }), "42");
+  await assert.rejects(() => ok.evalExpression({}), /eval requires 'expression'/);
+
+  const bad = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { ok: false, error: "x is not defined" } }] },
+    })
+  );
+  await assert.rejects(() => bad.evalExpression({ expression: "x" }), /eval error: x is not defined/);
+});
+
 test("selector commands inject the shared resolver helper first", async () => {
   const calls = [];
   const sb = loadBackground(

@@ -229,6 +229,76 @@ test("click supports right/middle and rejects an unknown button", async () => {
   );
 });
 
+test("hover reports the hovered element", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, tag: "a", text: "Menu" } }] },
+    })
+  );
+  assert.strictEqual(await sb.hover({ selector: "role=link[name=Menu]" }), 'ok: hovered <a> "Menu"');
+});
+
+test("hover surfaces a missing element", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: false } }] },
+    })
+  );
+  await assert.rejects(() => sb.hover({ selector: "#nope" }), /no element matched selector: #nope/);
+  await assert.rejects(() => sb.hover({}), /hover requires 'selector'/);
+});
+
+test("getAttribute reads an attribute, absence, and requires name", async () => {
+  const present = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 2, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, tag: "a", present: true, value: "/next" } }] },
+    })
+  );
+  assert.strictEqual(await present.getAttribute({ selector: "a", name: "href" }), 'href = "/next"');
+
+  const absent = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 2, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, tag: "button", present: false, value: null } }] },
+    })
+  );
+  assert.strictEqual(
+    await absent.getAttribute({ selector: "button", name: "disabled" }),
+    "disabled = (not present) on <button>"
+  );
+
+  const sb = loadBackground(makeChrome({ tabs: { query: async () => [{ id: 2, active: true }] } }));
+  await assert.rejects(() => sb.getAttribute({ selector: "a" }), /get_attribute requires 'name'/);
+  await assert.rejects(() => sb.getAttribute({ name: "href" }), /get_attribute requires 'selector'/);
+});
+
+test("selector commands inject the shared resolver helper first", async () => {
+  const calls = [];
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 7, active: true }] },
+      scripting: {
+        executeScript: async (opts) => {
+          calls.push(opts);
+          return [{ result: { found: true, tag: "button", text: "" } }];
+        },
+      },
+    })
+  );
+  await sb.click({ selector: "role=button" });
+  assert.ok(calls.length >= 2, "expected a helper-injection call plus the action call");
+  // Compare element-wise: the array is built in the vm realm, so its prototype
+  // differs from this realm's Array and deepStrictEqual would reject it.
+  assert.ok(
+    calls[0].files && calls[0].files.length === 1 && calls[0].files[0] === "aglink-inject.js",
+    "first call must inject the resolver file"
+  );
+  assert.ok(!calls[1].files && typeof calls[1].func === "function", "second call runs the action func");
+});
+
 test("listElements formats rows and handles the empty case", async () => {
   const withEls = loadBackground(
     makeChrome({

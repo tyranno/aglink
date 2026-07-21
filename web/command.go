@@ -70,16 +70,24 @@ var commands = []command{
 	},
 	{
 		name: "click",
-		desc: "Click a DOM element in a Chrome tab, matched by CSS selector (e.g. 'button.submit', '#login', 'a[href=\"/next\"]'). Scrolls the element into view first. 'button' left (default) uses the real .click() method; right/middle synthesize mousedown+mouseup+contextmenu/auxclick instead — these reach a page's own JS context-menu/middle-click handler but will NOT open the browser's native right-click menu (that requires a real OS-trusted event). If 'tabId' is omitted, the active tab of the focused window is used.",
+		desc: "Click a DOM element in a Chrome tab. The selector is either a CSS selector (e.g. 'button.submit', '#login', 'a[href=\"/next\"]' — now also pierces open Shadow DOM) OR a semantic locator that targets by accessible role/name/text instead of fragile CSS: role=button, role=button[name=\"Save\"] (name is a substring; quote for exact), text=Login (text=\"Login\" for exact match), label=Email, placeholder=Search, testid=submit. Scrolls the element into view first. 'button' left (default) uses the real .click() method; right/middle synthesize mousedown+mouseup+contextmenu/auxclick instead — these reach a page's own JS context-menu/middle-click handler but will NOT open the browser's native right-click menu (that requires a real OS-trusted event). If 'tabId' is omitted, the active tab of the focused window is used.",
 		args: []argSpec{
-			{name: "selector", typ: argString, required: true, desc: "CSS selector for the element to click."},
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=) for the element to click."},
 			{name: "button", typ: argString, desc: "Mouse button: left (default), right, or middle."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
 		},
 	},
 	{
+		name: "hover",
+		desc: "Hover the pointer over an element in a Chrome tab, matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=, same as click). Dispatches mouseover/mouseenter/mousemove so a page's own JS hover menus (dropdowns, tooltips, nav flyouts) open — use this to reveal a menu before clicking an item inside it. Note: these are synthesized (untrusted) events, so JS hover handlers fire but pure CSS :hover effects needing a real OS pointer won't. If 'tabId' is omitted, the active tab of the focused window is used.",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to hover."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
 		name: "list_elements",
-		desc: "List currently visible interactive elements (links, buttons, inputs, ARIA controls) in a Chrome tab as 'index | tag[role] | \"label\" | selector=... | viewport(x,y)' lines. The reported selector (a freshly-assigned unique attribute) is guaranteed to match exactly that element — use it directly with click/type instead of guessing a CSS selector from the page's own classes/attributes, which can silently match the wrong element on complex pages. Re-call after the page changes: indices are reassigned every call. viewport(x,y) is the element's on-screen center in CSS pixels (informational only — not an absolute screen coordinate usable by aglink-screen).",
+		desc: "List currently visible interactive elements (links, buttons, inputs, ARIA controls — now including those inside open Shadow DOM / web components) in a Chrome tab as 'index | tag[role] | \"label\" | selector=... | viewport(x,y)' lines. The reported selector (a freshly-assigned unique attribute) is guaranteed to match exactly that element — use it directly with click/type instead of guessing a CSS selector from the page's own classes/attributes, which can silently match the wrong element on complex pages. Re-call after the page changes: indices are reassigned every call. viewport(x,y) is the element's on-screen center in CSS pixels (informational only — not an absolute screen coordinate usable by aglink-screen).",
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
 			{name: "max", typ: argInt, desc: "Maximum number of elements to return (default 200)."},
@@ -87,9 +95,9 @@ var commands = []command{
 	},
 	{
 		name: "wait_for_element",
-		desc: "Block until an element matching the CSS selector becomes visible in a Chrome tab, instead of polling list_elements/get_page_text in a manual loop — useful for SPA content that renders after navigation or a click settles. Fails with a timeout error after 'timeoutMs' (default 8000) if it never appears.",
+		desc: "Block until an element matching the selector becomes visible in a Chrome tab, instead of polling list_elements/get_page_text in a manual loop — useful for SPA content that renders after navigation or a click settles. The selector is a CSS selector (pierces open Shadow DOM) or a semantic locator (role=/text=/label=/placeholder=/testid=). Fails with a timeout error after 'timeoutMs' (default 8000) if it never appears.",
 		args: []argSpec{
-			{name: "selector", typ: argString, required: true, desc: "CSS selector to wait for."},
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator to wait for."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
 			{name: "timeoutMs", typ: argInt, desc: "Max time to wait in milliseconds (default 8000)."},
 		},
@@ -104,18 +112,27 @@ var commands = []command{
 	},
 	{
 		name: "type",
-		desc: "Type text into an input, textarea, or contenteditable element in a Chrome tab, matched by CSS selector. Replaces any existing value. Fires input/change events so JS-controlled forms notice. If 'tabId' is omitted, the active tab of the focused window is used. Pair with click to focus a field first if needed.",
+		desc: "Type text into an input, textarea, or contenteditable element in a Chrome tab, matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid= — e.g. label=Email or placeholder=Search to target a field by its label). Replaces any existing value. Fires input/change events so JS-controlled forms notice. If 'tabId' is omitted, the active tab of the focused window is used. Pair with click to focus a field first if needed.",
 		args: []argSpec{
-			{name: "selector", typ: argString, required: true, desc: "CSS selector for the input/textarea/contenteditable element."},
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the input/textarea/contenteditable element."},
 			{name: "text", typ: argString, required: true, desc: "Text to type."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
 		},
 	},
 	{
 		name: "get_value",
-		desc: "Read an element's CURRENT value/text (input/textarea's .value, or textContent for contenteditable), matched by CSS selector. The read-side counterpart to type/select_option — get_page_text can't see this, since an <input>'s value isn't part of document.body.innerText. Use this to confirm what a field actually holds now after page JS may have rewritten it (autocomplete, a calculated total, reformatting).",
+		desc: "Read an element's CURRENT value/text (input/textarea's .value, or textContent for contenteditable), matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=). The read-side counterpart to type/select_option — get_page_text can't see this, since an <input>'s value isn't part of document.body.innerText. Use this to confirm what a field actually holds now after page JS may have rewritten it (autocomplete, a calculated total, reformatting).",
 		args: []argSpec{
-			{name: "selector", typ: argString, required: true, desc: "CSS selector for the element to read."},
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to read."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+		},
+	},
+	{
+		name: "get_attribute",
+		desc: "Read one attribute of an element in a Chrome tab, matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=). Use name='text' to get the element's visible textContent instead of an attribute. The counterpart to get_value for non-value state get_value can't reach — href on a link, aria-checked/aria-expanded/aria-selected, disabled, class, or any data-* attribute — e.g. to confirm a page's JS toggled a control's state after a click. Returns '<name> = <value>', or '<name> = (not present)' if the attribute is absent.",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to read."},
+			{name: "name", typ: argString, required: true, desc: "Attribute name to read (e.g. 'href', 'aria-expanded', 'disabled', 'class', 'data-id'), or 'text' for the element's textContent."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
 		},
 	},

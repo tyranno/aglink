@@ -111,12 +111,17 @@ func killPreviousInstance() {
 
 	if b, err := os.ReadFile(pidFilePath()); err == nil {
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && pid != myPID {
-			// Tree kill, not a bare /F: Windows has no SIGTERM, so a plain kill of
-			// the parent leaves its supervised children (aglink-chat) running and
-			// still holding their port. The next instance would then respawn-loop
-			// forever against an address it can never bind.
-			if killTree(pid) == nil {
-				log.Printf("[main] killed previous instance tree via PID file (PID %d)", pid)
+			// Kill ONLY the old host, never its tree. A /T tree kill also reaps
+			// every descendant of pid — and when a restart spawns the incoming
+			// instance inside the outgoing one's process tree (a launcher/handoff
+			// that makes the new process a child of the old), /T takes the new
+			// instance down with the old. The swap then "only kills, never
+			// revives". The orphaned aglink-chat child a bare kill leaves behind
+			// is reaped separately, by PID, in killPreviousAglinkChat (see
+			// startAglinkChat) before the new child rebinds its port — so /T is
+			// both unnecessary here and the cause of the self-kill race.
+			if exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run() == nil {
+				log.Printf("[main] killed previous instance via PID file (PID %d)", pid)
 				killed = true
 			}
 		}

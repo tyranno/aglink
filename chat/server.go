@@ -28,6 +28,17 @@ import (
 //go:embed web
 var webFS embed.FS
 
+// WebSocket keepalive. A half-open socket (laptop sleep, network blip) leaves a
+// conn wedged with no error until TCP eventually times out — meanwhile the hub
+// keeps queueing frames into a dead send buffer and the browser never learns to
+// reconnect. We ping each browser on this interval; browsers answer WebSocket
+// pings transparently, so a pong missed within wsPongWait means the peer is gone
+// and we tear the conn down promptly.
+const (
+	wsPingInterval = 20 * time.Second
+	wsPongWait     = 10 * time.Second
+)
+
 // browserConn is one connected browser; frames go through a buffered channel
 // drained by a single writer (a full buffer drops the slow client).
 type browserConn struct {
@@ -154,12 +165,37 @@ func (s *browserServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// Keepalive pinger: prunes zombie server conns so the hub stops broadcasting
+	// into a dead buffer. The browser also runs an app-level ping (see app.js) to
+	// detect the same half-open state from its side, since JS can't send protocol
+	// pings — that inbound "ping" is answered with a "pong" in the read loop below.
+	go func() {
+		t := time.NewTicker(wsPingInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				pctx, pcancel := context.WithTimeout(ctx, wsPongWait)
+				perr := c.Ping(pctx)
+				pcancel()
+				if perr != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
 	for {
 		var m browserMsg
 		if rerr := wsjson.Read(ctx, c, &m); rerr != nil {
 			break
 		}
 		switch m.Type {
+		case "ping":
+			bc.push(wsFrame{Type: "pong"})
 		case "send":
 			s.forwardSend(m.Text, m.Target)
 		case "web_new":

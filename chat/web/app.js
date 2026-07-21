@@ -48,7 +48,7 @@
   const dialogFoot = document.getElementById("dialog-foot");
   const dialogClose = document.getElementById("dialog-close");
   const authHeaders = { Authorization: "Bearer " + token };
-  let ws, backoff = 500;
+  let ws, backoff = 500, reconnectTimer = null, hbTimer = null, pongTimer = null;
   // Which stream the composer currently targets: a specific web conversation,
   // or (only if explicitly picked) the single Telegram stream. Web starts with
   // no target until an active web conversation is found or the user picks one.
@@ -843,25 +843,66 @@
     }
   }
 
+  // Application-level heartbeat. The browser WebSocket API doesn't expose
+  // protocol ping/pong to JS, so a half-open socket (laptop sleep, network blip)
+  // stays readyState===OPEN forever: onclose never fires, connect() never
+  // re-runs, and frames the server pushed (e.g. a phone Telegram message) are
+  // lost with no catch-up — the exact "내 건 보이는데 폰 건 안 보인다" symptom.
+  // We ping the server on an interval; if no pong returns within the grace
+  // window we treat the socket as dead and close it, which fires onclose →
+  // reconnect → onopen re-fetches history and catches up.
+  const HEARTBEAT_MS = 20000, PONG_GRACE_MS = 10000;
+  function stopHeartbeat() {
+    if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
+    if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+  }
+  function startHeartbeat() {
+    stopHeartbeat();
+    hbTimer = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try { ws.send(JSON.stringify({ type: "ping" })); } catch { return; }
+      if (pongTimer) return; // a ping is already awaiting its pong
+      pongTimer = setTimeout(() => {
+        pongTimer = null;
+        try { ws.close(); } catch {} // no pong → zombie socket; onclose reconnects
+      }, PONG_GRACE_MS);
+    }, HEARTBEAT_MS);
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, backoff);
+    backoff = Math.min(backoff * 2, 10000);
+  }
+
   function connect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    stopHeartbeat();
+    // Drop any previous socket so we never run two in parallel — a zombie OPEN
+    // socket plus a fresh one would double every frame. Detaching the handlers
+    // first stops the old one from scheduling its own reconnect as it closes.
+    if (ws) { ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null; try { ws.close(); } catch {} }
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${scheme}://${location.host}/ws?token=${encodeURIComponent(token)}`);
     ws.onopen = () => {
       statusEl.textContent = "연결됨"; statusEl.className = "on"; backoff = 500;
+      startHeartbeat();
       if (currentTarget) selectTarget(currentTarget); else loadConversations();
       pollWorkers(true); // a turn may have started, finished, or both while we were away
     };
     ws.onclose = () => {
       statusEl.textContent = "연결 끊김"; statusEl.className = "off";
+      stopHeartbeat();
       // While disconnected we cannot know what is still running; the poll on
       // reconnect re-establishes the truth.
       working.clear();
       renderWorking();
-      setTimeout(connect, backoff);
-      backoff = Math.min(backoff * 2, 10000);
+      scheduleReconnect();
     };
     ws.onmessage = (ev) => {
       let f; try { f = JSON.parse(ev.data); } catch { return; }
+      // Heartbeat pong: the socket is alive, clear the watchdog and stop here.
+      if (f.type === "pong") { if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; } return; }
       const tgt = frameTarget(f);
       const key = targetKey(tgt);
 
@@ -1590,6 +1631,23 @@
     }
     connBody.appendChild(connNote("주소/포트 변경은 「설정」 탭에서 바꾼 뒤 저장하세요 (일부는 재시작 필요)."));
   }
+
+  // When the tab becomes visible, regains focus, or the network returns, verify
+  // the socket and catch up immediately instead of waiting for the next
+  // heartbeat tick. If the socket is a zombie or gone, reconnect now (resetting
+  // backoff); if it's genuinely OPEN, re-fetch the current conversation to pull
+  // anything a not-yet-detected dead socket may have dropped.
+  function catchUp() {
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      backoff = 500; connect();
+    } else if (ws.readyState === WebSocket.OPEN) {
+      if (currentTarget) selectTarget(currentTarget); else loadConversations();
+      pollWorkers(true);
+    }
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) catchUp(); });
+  window.addEventListener("focus", catchUp);
+  window.addEventListener("online", catchUp);
 
   resizeInput();
   bootstrapCapabilities();

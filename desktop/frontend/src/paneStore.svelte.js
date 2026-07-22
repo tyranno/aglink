@@ -30,6 +30,7 @@ export const chat = $state({
   telegram: null,
   webConvs: [],
   backendModels: {},
+  lightboxSrc: null, // when set, a full-screen image viewer overlays everything
   panes: [
     { id: "pane-0", target: null, attachments: [], composerText: "", commandMenuHidden: false, highlightedCommandIndex: 0 },
   ],
@@ -449,6 +450,15 @@ export function findWebConv(id) {
 
 export function backendLabel(backend) {
   return backend ? String(backend).toUpperCase() : "DEFAULT";
+}
+
+// openLightbox/closeLightbox drive the full-screen image viewer: a chat image is
+// clickable and pops up enlarged (fit-to-screen) so it can actually be read.
+export function openLightbox(src) {
+  chat.lightboxSrc = src;
+}
+export function closeLightbox() {
+  chat.lightboxSrc = null;
 }
 
 // backendModelLabel returns the worker model wired to a backend (from the last

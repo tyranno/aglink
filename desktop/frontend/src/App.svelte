@@ -38,6 +38,7 @@
     handleGroupDrop,
     UNGROUPED_DROP_ZONE,
     closeProgressPopup,
+    closeLightbox,
     closePaneBackendMenu,
     setTargetBackend,
     closePaneWorkDirMenu,
@@ -441,6 +442,7 @@
 
     const onEscape = (event) => {
       if (event.key !== "Escape") return;
+      if (chat.lightboxSrc) closeLightbox();
       if (promptState) resolvePrompt(null);
       if (confirmState) resolveConfirm(false);
       if (chat.progressPopupPaneId) closeProgressPopup();
@@ -1059,4 +1061,17 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if chat.lightboxSrc}
+  <!-- Full-screen image viewer: click anywhere (or Esc) to close. -->
+  <button
+    type="button"
+    class="fixed inset-0 z-[60] flex cursor-zoom-out items-center justify-center bg-slate-950/85 p-6"
+    onclick={closeLightbox}
+    aria-label="이미지 닫기 (Esc)"
+  >
+    <img src={chat.lightboxSrc} alt="" class="max-h-full max-w-full rounded-lg object-contain shadow-2xl" />
+    <span class="absolute right-5 top-5 grid h-9 w-9 place-items-center rounded-full bg-white/90 text-lg font-bold text-slate-800 shadow">✕</span>
+  </button>
 {/if}

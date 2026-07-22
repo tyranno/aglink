@@ -84,6 +84,26 @@ func main() {
 		if err := RunSetup(path); err != nil {
 			log.Fatalf("설정 마법사 중단: %v", err)
 		}
+	case "install":
+		if err := installTask(); err != nil {
+			log.Fatalf("자동시작 설치 실패: %v", err)
+		}
+	case "uninstall":
+		if err := uninstallTask(); err != nil {
+			log.Fatalf("자동시작 제거 실패: %v", err)
+		}
+	case "start":
+		if err := startTask(); err != nil {
+			log.Fatalf("시작 실패: %v", err)
+		}
+	case "stop":
+		if err := stopTask(); err != nil {
+			log.Fatalf("중지 실패: %v", err)
+		}
+	case "status":
+		if err := taskStatus(); err != nil {
+			log.Fatalf("상태 조회 실패: %v", err)
+		}
 	case "version", "--version", "-v":
 		line := "aglink " + runningVersion()
 		if buildCommit != "" {

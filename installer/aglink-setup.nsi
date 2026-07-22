@@ -93,6 +93,9 @@ Section "Install"
     DetailPrint "지금 시작..."
     nsExec::ExecToLog '"$INSTDIR\${PRODUCT_EXE}" start'
 
+    ; --- Desktop shortcut (launch the desktop app directly) ---
+    CreateShortcut "$DESKTOP\aglink.lnk" "$INSTDIR\aglink-desktop.exe" "" "$INSTDIR\aglink-desktop.exe" 0
+
     ; --- Start Menu shortcuts ---
     CreateDirectory "$SMPROGRAMS\aglink"
     CreateShortcut "$SMPROGRAMS\aglink\aglink 데스크톱.lnk" "$INSTDIR\aglink-desktop.exe"
@@ -134,6 +137,7 @@ Section "Uninstall"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
 
+    Delete "$DESKTOP\aglink.lnk"
     Delete "$SMPROGRAMS\aglink\aglink 데스크톱.lnk"
     Delete "$SMPROGRAMS\aglink\aglink 웹 UI.lnk"
     Delete "$SMPROGRAMS\aglink\제거.lnk"

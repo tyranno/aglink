@@ -42,6 +42,72 @@ func mgrFixture(t *testing.T, fc *fakeClaude) (*Manager, *fileStore, string) {
 	return NewManager(fc, nil, st, NewConfigHolder(cfg)), st, dir
 }
 
+// With interactive_claude enabled, a claude web conversation is interactive by
+// default (no per-conversation toggle needed); "!interactive off" explicitly
+// overrides that default and "!interactive on" restores it.
+func TestIsInteractive_DefaultOnForClaude(t *testing.T) {
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(&fakeClaude{}, nil, st, NewConfigHolder(&Config{DefaultBackend: "claude"}))
+	m.SetInteractiveClient(&fakeClaude{}) // interactive_claude enabled → runner present
+
+	c, err := st.NewWebConv("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Backend = "claude"
+	if err := st.UpdateWebConv(c); err != nil {
+		t.Fatal(err)
+	}
+	tgt := Target{Kind: TargetWeb, ID: c.ID}
+
+	if !m.IsInteractive(tgt) {
+		t.Fatal("claude web conv should default to interactive when interactive_claude is enabled")
+	}
+	if err := m.SetInteractive(tgt, false); err != nil {
+		t.Fatal(err)
+	}
+	if m.IsInteractive(tgt) {
+		t.Error("explicit !interactive off must override the default")
+	}
+	if err := m.SetInteractive(tgt, true); err != nil {
+		t.Fatal(err)
+	}
+	if !m.IsInteractive(tgt) {
+		t.Error("explicit !interactive on must be interactive")
+	}
+}
+
+// Interactive is claude-only and gated on the runner existing: a codex
+// conversation, or any conversation when interactive_claude is off, is never
+// interactive regardless of the default.
+func TestIsInteractive_OffForNonClaudeOrDisabled(t *testing.T) {
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	// Runner present but the conversation runs on codex → not interactive.
+	m := NewManager(&fakeClaude{}, &fakeClaude{}, st, NewConfigHolder(&Config{DefaultBackend: "claude"}))
+	m.SetInteractiveClient(&fakeClaude{})
+	c, _ := st.NewWebConv("codex-conv")
+	c.Backend = "codex"
+	_ = st.UpdateWebConv(c)
+	if m.IsInteractive(Target{Kind: TargetWeb, ID: c.ID}) {
+		t.Error("codex conversation must never be interactive")
+	}
+
+	// No interactive runner constructed (interactive_claude off) → always false.
+	m2 := NewManager(&fakeClaude{}, nil, st, NewConfigHolder(&Config{DefaultBackend: "claude"}))
+	c2, _ := st.NewWebConv("claude-conv")
+	c2.Backend = "claude"
+	_ = st.UpdateWebConv(c2)
+	if m2.IsInteractive(Target{Kind: TargetWeb, ID: c2.ID}) {
+		t.Error("interactive must be off when no interactive runner exists")
+	}
+}
+
 // Telegram no longer blocks when no projects are registered — the web-first
 // redesign runs the turn in the service home instead of prompting !project add.
 func TestManager_NoProjects_RunsInHome(t *testing.T) {

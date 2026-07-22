@@ -134,7 +134,8 @@ type Conversation struct {
 	Backend        string             `json:"backend,omitempty"`        // "claude"|"codex"|"" (""=claude)
 	Origin         string             `json:"origin,omitempty"`         // "telegram"|"web"|"" (""=telegram, back-compat)
 	WorkDir        string             `json:"workDir,omitempty"`        // per-conversation working directory; "" → service home
-	Interactive    bool               `json:"interactive,omitempty"`    // true → runs on the persistent ConPTY session (interactiveClaudeRunner) instead of a per-turn headless claude -p; claude backend only, toggled by "!interactive on|off"
+	Interactive    bool               `json:"interactive,omitempty"`    // per-conversation interactive override; only meaningful when InteractiveSet — see IsInteractive
+	InteractiveSet bool               `json:"interactiveSet,omitempty"` // true once "!interactive on|off" set Interactive explicitly; unset → follow the global default (on for claude when interactive_claude.enabled)
 }
 
 // Project is a registered directory holding multiple conversations.

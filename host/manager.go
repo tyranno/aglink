@@ -125,11 +125,28 @@ func (m *Manager) clientFor(backend string, interactive bool) ClaudeClient {
 // runTurn/finishTurn in bot.go and pendingTurn in runner_conpty_windows.go.
 // Always false for the telegram stream — see SetInteractive.
 func (m *Manager) IsInteractive(tgt Target) bool {
-	if !tgt.IsWeb() {
+	// No interactive runner (cfg.InteractiveClaude off or claude missing), or the
+	// telegram stream (serialized end-to-end) → never interactive.
+	if m.interactiveClient == nil || !tgt.IsWeb() {
 		return false
 	}
 	c, ok := m.store.GetWebConv(tgt.ID)
-	return ok && c.Interactive
+	if !ok {
+		return false
+	}
+	// Interactive is a claude-only ConPTY feature; a codex/opencode conversation
+	// must never be treated as interactive (clientFor would hand back the normal
+	// per-turn client and dispatch's steering would run two concurrent turns).
+	if m.effectiveBackend(c.Backend) != "claude" {
+		return false
+	}
+	// Explicit "!interactive on|off" wins; otherwise default ON — enabling
+	// interactive_claude makes every claude web conversation steerable without a
+	// per-conversation toggle.
+	if c.InteractiveSet {
+		return c.Interactive
+	}
+	return true
 }
 
 // SetInteractive toggles tgt's web conversation into or out of interactive
@@ -151,6 +168,7 @@ func (m *Manager) SetInteractive(tgt Target, on bool) error {
 		return fmt.Errorf("대화를 찾을 수 없습니다")
 	}
 	c.Interactive = on
+	c.InteractiveSet = true // explicit override — stops following the global default
 	return m.store.UpdateWebConv(c)
 }
 

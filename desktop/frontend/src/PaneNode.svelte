@@ -1,5 +1,6 @@
 <script>
   import PaneNode from "./PaneNode.svelte";
+  import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
   import {
     chat,
     pane,
@@ -272,8 +273,11 @@
                       alt=""
                       class="mt-2 max-h-[420px] w-auto max-w-full cursor-zoom-in rounded-lg border border-slate-200 transition hover:brightness-95"
                       src={`data:image/png;base64,${message.image}`}
-                      title="클릭하면 확대해서 봅니다"
-                      onclick={() => openLightbox(`data:image/png;base64,${message.image}`)}
+                      title="클릭하면 별도 창으로 크게 봅니다"
+                      onclick={() =>
+                        ControlService.OpenImage(message.image).catch(() =>
+                          openLightbox(`data:image/png;base64,${message.image}`),
+                        )}
                     />
                   {/if}
                 </div>

@@ -596,6 +596,11 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 		killByImageName("codex" + exeSuffix)
 		return killErr
 	}
+	// A tree kill only reaches processes still attached to the tree. Anything this
+	// turn started that was already orphaned (its spawner exited first) survives
+	// both the kill above and the ctx timeout, and keeps the inherited stdout/stderr
+	// handles open — which used to block cmd.Wait() forever. See workerWaitDelay.
+	cmd.WaitDelay = workerWaitDelay
 
 	// Tee stdout: buffer for return value + pipe for real-time logging
 	pr, pw := io.Pipe()
@@ -647,7 +652,7 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 		_, _ = io.Copy(io.Discard, pr)
 	}()
 
-	err = cmd.Wait()
+	err = ignoreWaitDelay(cmd.Wait(), "codex")
 	pw.Close() // signal EOF to logging goroutine
 	<-logDone  // wait for all events to be logged
 

@@ -325,6 +325,9 @@ func (r *opencodeRunner) exec(ctx context.Context, dir string, args []string, ow
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
+	// Don't let a process this turn spawned outlive opencode and pin Wait() on the
+	// inherited output pipes forever — see workerWaitDelay.
+	cmd.WaitDelay = workerWaitDelay
 
 	if startErr := cmd.Start(); startErr != nil {
 		return "", "", startErr
@@ -335,7 +338,7 @@ func (r *opencodeRunner) exec(ctx context.Context, dir string, args []string, ow
 	}
 	log.Printf("[opencode] started PID %d: %s %s", cmd.Process.Pid, r.opencodePath, strings.Join(shown, " "))
 
-	err = cmd.Wait()
+	err = ignoreWaitDelay(cmd.Wait(), "opencode")
 	if s := strings.TrimSpace(errBuf.String()); s != "" {
 		if len(s) > 500 {
 			s = s[:500] + "...(truncated)"

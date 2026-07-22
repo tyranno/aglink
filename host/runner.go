@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Design Ref: §4.2 — claude CLI contract. Infrastructure impl of ClaudeClient.
@@ -216,6 +219,35 @@ func workerCmdEnv(oauthToken, ownerLabel string) []string {
 	return append(os.Environ(), extra...)
 }
 
+// workerWaitDelay bounds how long cmd.Wait() keeps waiting on a worker's output
+// pipes after the worker process itself has exited.
+//
+// When cmd.Stdout/Stderr are io.Writers, os/exec copies the child's output through
+// pipes of its own and Wait() waits for those copier goroutines. A copier ends only
+// at EOF — once EVERY handle on the write end is closed, including the ones a
+// grandchild inherited. So a turn that starts a process outliving the CLI (an app it
+// just built, a server it launched) pins Wait() open indefinitely: the worker never
+// returns, the conversation never completes, and even !cancel cannot free it, because
+// the block is on the pipe rather than on the process. Seen in the field: a beacon.exe
+// a codex turn launched held stdout for 1h54m and wedged the whole bot — no further
+// message was processed — until it was killed by hand.
+//
+// WaitDelay makes Wait() give up on the pipes this long after the process exits, close
+// them and return, costing at most a truncated tail instead of the whole turn.
+const workerWaitDelay = 10 * time.Second
+
+// ignoreWaitDelay maps exec.ErrWaitDelay onto success. Wait returns it only when the
+// process itself exited cleanly and merely its inherited pipes were still open — i.e.
+// something the turn spawned outlived it. The turn's own output is already captured,
+// so that is not a failed turn.
+func ignoreWaitDelay(err error, tag string) error {
+	if errors.Is(err, exec.ErrWaitDelay) {
+		log.Printf("[%s] output pipes still held open by a process this turn spawned — using the output captured so far", tag)
+		return nil
+	}
+	return err
+}
+
 // exec runs the claude CLI with process-tree cancellation (Windows-aware).
 func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdin, ownerLabel string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
@@ -239,7 +271,8 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdi
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
-	err = cmd.Run()
+	cmd.WaitDelay = workerWaitDelay
+	err = ignoreWaitDelay(cmd.Run(), "claude")
 	return outBuf.String(), errBuf.String(), err
 }
 

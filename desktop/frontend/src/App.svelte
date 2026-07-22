@@ -46,10 +46,28 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
 
+  // Sidebar visibility/tab is a UI preference persisted (like the pane layout) so
+  // hiding the conversation list survives a restart instead of always reopening.
+  const SIDEBAR_STORAGE_KEY = "aglink-desktop:sidebar";
+  function loadSidebarPrefs() {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+      if (raw) return JSON.parse(raw) || {};
+    } catch {}
+    return {};
+  }
+  const sidebarPrefs = loadSidebarPrefs();
+
   let view = $state("chat");
   let settingsTab = $state("settings");
-  let sidebarTab = $state("chat"); // "chat" | "playbook" — 대화 목록 / 업무 관리
-  let sidebarCollapsed = $state(false);
+  let sidebarTab = $state(sidebarPrefs.tab === "playbook" ? "playbook" : "chat"); // 대화 목록 / 업무 관리
+  let sidebarCollapsed = $state(sidebarPrefs.collapsed === true);
+  $effect(() => {
+    // Re-runs whenever either changes → persists the current sidebar state.
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, JSON.stringify({ collapsed: sidebarCollapsed, tab: sidebarTab }));
+    } catch {}
+  });
   let versionInfo = $state({});
   let auxInfo = $state({ features: [] });
   let settingsSchema = $state([]);

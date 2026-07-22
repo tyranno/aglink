@@ -8,13 +8,15 @@ import (
 	"path/filepath"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
 func mainWindowOptions() application.WebviewWindowOptions {
-	return application.WebviewWindowOptions{
+	// Restore the saved size / maximised state over the defaults.
+	return applyWindowState(application.WebviewWindowOptions{
 		Title:            "aglink",
 		Width:            1100,
 		Height:           760,
@@ -22,7 +24,7 @@ func mainWindowOptions() application.WebviewWindowOptions {
 		MinHeight:        480,
 		BackgroundColour: application.NewRGB(238, 242, 255),
 		URL:              "/",
-	}
+	})
 }
 
 // webviewUserDataPath pins the WebView2 profile (localStorage, cookies, cache)
@@ -75,7 +77,14 @@ func main() {
 		},
 	})
 
-	app.Window.NewWithOptions(mainWindowOptions())
+	loadWindowState()
+	win := app.Window.NewWithOptions(mainWindowOptions())
+	// Persist the window size / maximised state so a large view is restored next
+	// launch. Save on resize and on close (close covers the case where the last
+	// change was a maximise/restore).
+	saveGeo := func(*application.WindowEvent) { captureWindowGeometry(win) }
+	win.OnWindowEvent(events.Common.WindowDidResize, saveGeo)
+	win.OnWindowEvent(events.Common.WindowClosing, saveGeo)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

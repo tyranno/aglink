@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"net/http"
 	"net/url"
@@ -255,8 +256,9 @@ func buildConversationsResponse(store StoreRepo) webConversationsResponse {
 }
 
 type historyTurn struct {
-	Role string `json:"role"` // "user" | "assistant"
-	Text string `json:"text"`
+	Role  string `json:"role"`            // "user" | "assistant"
+	Text  string `json:"text,omitempty"`  // message text (empty for an image-only entry)
+	Image string `json:"image,omitempty"` // base64 PNG for a persisted tool screenshot
 }
 type historyResponse struct {
 	Turns []historyTurn `json:"turns"`
@@ -277,6 +279,13 @@ func buildHistoryResponse(store StoreRepo, tgt Target) historyResponse {
 		}
 		if turn.Response != "" {
 			resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Text: turn.Response})
+		}
+		// Replay persisted tool screenshots after the response, so images survive a
+		// restart. Pruned/missing refs are skipped.
+		for _, ref := range turn.Images {
+			if png, ok := loadImageRef(ref); ok {
+				resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Image: base64.StdEncoding.EncodeToString(png)})
+			}
 		}
 	}
 	return resp

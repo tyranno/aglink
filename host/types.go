@@ -108,6 +108,10 @@ type ConversationTurn struct {
 	Timestamp time.Time `json:"timestamp"`
 	Prompt    string    `json:"prompt"`   // user input
 	Response  string    `json:"response"` // claude output
+	// Images are refs ("<convID>/<name>.png") to tool screenshots captured during
+	// this turn, saved on disk (not inline) so store.json stays small; the history
+	// API reloads them so images survive a restart. Missing refs (pruned) are skipped.
+	Images []string `json:"images,omitempty"`
 }
 
 // Conversation is one topic within a project; maps 1:1 to a claude session.

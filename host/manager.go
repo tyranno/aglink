@@ -969,8 +969,8 @@ func (m *Manager) validWorkDirOrHome(workDir string) string {
 // turn isn't duplicated. If that slot no longer holds the matching pending turn
 // (e.g. dropped by the history cap or shifted by a concurrent turn), it appends
 // a fresh completed turn instead.
-func recordCompletedTurn(history []ConversationTurn, pendingIdx int, prompt, response string, now time.Time) []ConversationTurn {
-	completed := ConversationTurn{Timestamp: now, Prompt: prompt, Response: response}
+func recordCompletedTurn(history []ConversationTurn, pendingIdx int, prompt, response string, images []string, now time.Time) []ConversationTurn {
+	completed := ConversationTurn{Timestamp: now, Prompt: prompt, Response: response, Images: images}
 	if pendingIdx >= 0 && pendingIdx < len(history) &&
 		history[pendingIdx].Response == "" && history[pendingIdx].Prompt == prompt {
 		history[pendingIdx] = completed
@@ -1022,12 +1022,23 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// the chat. Only when screen control is on (images come only from those tools)
 	// and the sender can send photos. Setting OnImage makes the worker stream NDJSON
 	// so tool_result image blocks can be recovered — the final envelope drops them.
+	// capturedImages collects the turn's tool screenshots for persistence (saved to
+	// disk at completion so they survive a restart). Appended only from the runner's
+	// streaming goroutine, read after Run() returns — no concurrent access.
+	var capturedImages [][]byte
 	var onImage func(png []byte, caption string)
 	if m.cfg().ScreenControl {
+		var live func([]byte, string)
 		if ps, ok := s.(interface {
 			SendPhoto(int64, []byte, string) error
 		}); ok {
-			onImage = func(png []byte, caption string) { _ = ps.SendPhoto(chatID, png, caption) }
+			live = func(png []byte, caption string) { _ = ps.SendPhoto(chatID, png, caption) }
+		}
+		onImage = func(png []byte, caption string) {
+			capturedImages = append(capturedImages, append([]byte(nil), png...))
+			if live != nil {
+				live(png, caption)
+			}
 		}
 	}
 
@@ -1322,7 +1333,8 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	const maxHistoryTurns = 200
 	// Fill in the response on the pending turn persisted before the run (update in
 	// place), or append a completed turn if that slot no longer holds it.
-	workConv.History = recordCompletedTurn(workConv.History, pendingIdx, text, res.Text, time.Now().UTC())
+	imageRefs := saveConvImages(workConv.ID, capturedImages)
+	workConv.History = recordCompletedTurn(workConv.History, pendingIdx, text, res.Text, imageRefs, time.Now().UTC())
 	if len(workConv.History) > maxHistoryTurns {
 		dropped := len(workConv.History) - maxHistoryTurns
 		workConv.History = workConv.History[dropped:]

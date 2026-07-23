@@ -8,21 +8,41 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// maxScreenshotLongEdge is the default cap (in px) for the longer edge of a full
-// `screenshot`, chosen to bound per-screenshot vision-token cost. Claude's vision
-// downscales anything over ~1568px on the long edge before tokenizing, so an
+// defaultScreenshotLongEdge is the fallback cap (in px) for the longer edge of a
+// full `screenshot`, chosen to bound per-screenshot vision-token cost. Claude's
+// vision downscales anything over ~1568px on the long edge before tokenizing, so an
 // uncapped 1080p/4K/multi-monitor grab all cost roughly the same; capping to 1280
 // cuts that meaningfully with no practical readability loss. Callers can still
 // request full resolution with scale=1.0. Clicking is unaffected — coordinates
 // come from win_controls/snapshot, and capture_window/capture_region stay
 // full-resolution for pixel-accurate mapping.
-const maxScreenshotLongEdge = 1280
+const defaultScreenshotLongEdge = 1280
+
+// maxScreenshotLongEdge is the active cap, overridable via AGLINK_SCREENSHOT_MAX_EDGE
+// (the host sets it from screen_control.max_screenshot_long_edge). A lower value
+// trades on-screen text legibility for fewer vision tokens per screenshot. Read once
+// at process start; the host spawns a fresh screen MCP process per worker turn, so a
+// config change takes effect on the next turn. Clamped so a stray value can't yield a
+// 1px or absurdly large grab.
+var maxScreenshotLongEdge = resolveScreenshotLongEdge()
+
+// resolveScreenshotLongEdge reads the env override, falling back to the default when
+// unset or out of the sane [320, 4096] range.
+func resolveScreenshotLongEdge() int {
+	if v := os.Getenv("AGLINK_SCREENSHOT_MAX_EDGE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 320 && n <= 4096 {
+			return n
+		}
+	}
+	return defaultScreenshotLongEdge
+}
 
 // controlCompleteMiddleware wraps every tool handler so that a tool call which
 // actually drove the screen is followed by the green "control complete" notice.

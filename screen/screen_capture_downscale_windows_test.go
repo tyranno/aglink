@@ -7,6 +7,32 @@ import (
 	"testing"
 )
 
+// resolveScreenshotLongEdge honors a sane AGLINK_SCREENSHOT_MAX_EDGE override and
+// falls back to the default when unset or out of range.
+func TestResolveScreenshotLongEdge(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want int
+	}{
+		{"unset → default", "", defaultScreenshotLongEdge},
+		{"valid override", "1024", 1024},
+		{"non-numeric → default", "abc", defaultScreenshotLongEdge},
+		{"too small → default", "100", defaultScreenshotLongEdge},
+		{"too large → default", "99999", defaultScreenshotLongEdge},
+		{"lower bound ok", "320", 320},
+		{"upper bound ok", "4096", 4096},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGLINK_SCREENSHOT_MAX_EDGE", tc.env) // "" reads back as unset
+			if got := resolveScreenshotLongEdge(); got != tc.want {
+				t.Errorf("env=%q: got %d, want %d", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCappedDims covers the screenshot cap policy: shrink only when the longer
 // edge exceeds the budget, preserve aspect ratio, and never upscale.
 func TestCappedDims(t *testing.T) {

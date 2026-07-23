@@ -52,11 +52,12 @@ type yamlConfig struct {
 		AllowedCommands []string `yaml:"allowed_commands"`
 	} `yaml:"scripts"`
 	ScreenControl struct {
-		Enabled     bool   `yaml:"enabled"`
-		PresetsFile string `yaml:"presets_file"`
-		Elevated    bool   `yaml:"elevated"`
-		KeepAwake   bool   `yaml:"keep_awake"`
-		BinaryPath  string `yaml:"binary_path"`
+		Enabled              bool   `yaml:"enabled"`
+		PresetsFile          string `yaml:"presets_file"`
+		Elevated             bool   `yaml:"elevated"`
+		KeepAwake            bool   `yaml:"keep_awake"`
+		BinaryPath           string `yaml:"binary_path"`
+		MaxScreenshotLongEdge int   `yaml:"max_screenshot_long_edge"`
 	} `yaml:"screen_control"`
 	WebControl struct {
 		Enabled    bool   `yaml:"enabled"`
@@ -164,6 +165,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.ScreenElevated = y.ScreenControl.Elevated
 	c.ScreenKeepAwake = y.ScreenControl.KeepAwake
 	c.ScreenBinaryPath = y.ScreenControl.BinaryPath
+	c.ScreenMaxScreenshotLongEdge = y.ScreenControl.MaxScreenshotLongEdge
 	c.WebControl = y.WebControl.Enabled
 	c.WebBinaryPath = y.WebControl.BinaryPath
 	c.WebChat = y.WebChat.Enabled
@@ -240,6 +242,7 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ScreenControl.Elevated = c.ScreenElevated
 	y.ScreenControl.KeepAwake = c.ScreenKeepAwake
 	y.ScreenControl.BinaryPath = c.ScreenBinaryPath
+	y.ScreenControl.MaxScreenshotLongEdge = c.ScreenMaxScreenshotLongEdge
 	y.WebControl.Enabled = c.WebControl
 	y.WebControl.BinaryPath = c.WebBinaryPath
 	y.WebChat.Enabled = c.WebChat

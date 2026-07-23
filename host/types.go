@@ -36,6 +36,7 @@ type Config struct {
 	ScreenElevated        bool     // 관리자 권한으로 실행해 관리자 대상 앱도 제어 (Windows UIPI 우회). 기본 false
 	ScreenKeepAwake       bool     // 화면 유휴 잠금/화면보호기 방지 (SetThreadExecutionState, Windows). 기본 false
 	ScreenBinaryPath      string   // aglink-screen 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
+	ScreenMaxScreenshotLongEdge int // 전체 screenshot 긴 변 최대 px (vision 토큰 절감용). 0 = 기본값(1280). 낮출수록 이미지 토큰↓·글자 가독성↓. capture_window/region은 영향 없음
 	WebControl            bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
 	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30

@@ -22,8 +22,8 @@ func screenSystemPrompt() string {
 		"2. (2순위) snapshot이 비어있거나 거의 없으면 win_controls(window)로 Win32 자식 컨트롤의 정확한 좌표를 얻어라. " +
 		"버튼/트리/리스트가 라벨과 함께 center(x,y) 좌표로 나온다. 라벨로 누르려면 click_control(window, text[, nth]), " +
 		"좌표로 누르려면 click(x,y)를 그 center 좌표로 호출하라. 이미지 추정이 아니라 OS가 준 정확한 좌표라 신뢰도가 높다.\n" +
-		"3. (3순위, 최후) snapshot도 win_controls도 안 되는 커스텀 렌더 영역만 screenshot으로 화면을 보고 click(x,y)/type/key/scroll. " +
-		"screenshot은 토큰이 크니 꼭 필요할 때만 쓴다.\n" +
+		"3. (3순위, 최후) snapshot도 win_controls도 안 돼서 화면을 눈으로 봐야 할 때는 전체 screenshot 대신 capture_window(창 하나)나 capture_region(필요한 사각형)을 우선 써라 — 픽셀이 적어 vision 토큰이 훨씬 적고 크롭돼 더 선명하다. 전체 screenshot은 여러 창을 한 번에 볼 때만. 본 뒤 click(x,y)/type/key/scroll." +
+		"캡처 이미지는 세션에 누적돼 매 턴 재전송되니(캐시로 할인되지만 0은 아님) 꼭 필요할 때만 최소 범위로 잡아라.\n" +
 		"4. 고정 좌표는 preset_save로 등록하고 preset_click/preset_list로 재사용하라.\n" +
 		"5. 속도: 화면 변화 감지는 screenshot(느림) 대신 win_controls를 다시 호출해 보이는 컨트롤 집합의 변화로 판단하라(수 ms). " +
 		"한 번의 답변에서 여러 클릭/감지를 묶어 처리해 LLM 왕복을 줄여라.\n" +

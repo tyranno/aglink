@@ -76,6 +76,26 @@ func TestWorkerBaseArgs_ScreenControlInjection(t *testing.T) {
 	}
 }
 
+// TestWorkerBaseArgs_ScreenshotCapEnv verifies the configurable full-screenshot cap
+// is passed to the screen MCP server via its scoped env (AGLINK_SCREENSHOT_MAX_EDGE)
+// only when set, so the screen binary can lower per-screenshot vision-token cost.
+func TestWorkerBaseArgs_ScreenshotCapEnv(t *testing.T) {
+	const screenBin = "C:\\t\\aglink-screen.exe"
+	req := RunRequest{Prompt: "hi", SessionID: "11111111-1111-1111-1111-111111111111"}
+
+	// Cap set → env present in the screen server's mcp-config entry.
+	withCap := workerBaseArgs(&Config{ScreenControl: true, ScreenMaxScreenshotLongEdge: 1024}, req, screenBin, "")
+	if c := mcpConfigContent(t, withCap); !strings.Contains(c, "AGLINK_SCREENSHOT_MAX_EDGE") || !strings.Contains(c, "1024") {
+		t.Errorf("cap set: mcp-config missing AGLINK_SCREENSHOT_MAX_EDGE=1024: %s", c)
+	}
+
+	// Cap unset (0) → no env key (screen binary keeps its built-in default).
+	noCap := workerBaseArgs(&Config{ScreenControl: true}, req, screenBin, "")
+	if c := mcpConfigContent(t, noCap); strings.Contains(c, "AGLINK_SCREENSHOT_MAX_EDGE") {
+		t.Errorf("cap unset: mcp-config should not set AGLINK_SCREENSHOT_MAX_EDGE: %s", c)
+	}
+}
+
 // TestWorkerBaseArgs_WebControlInjection mirrors the screen-control test for
 // aglink-web, and additionally verifies that when both plugins are enabled
 // they are merged into a single --mcp-config/--allowedTools pair rather than

@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // mcpServerSpec is one entry under mcpServers in an inline --mcp-config.
 type mcpServerSpec struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 // mcpConfig is the inline --mcp-config document shape.
@@ -34,7 +36,15 @@ func pluginWorkerArgs(cfg *Config, screenBin, webBin string) []string {
 	var prompts []string
 
 	if cfg.ScreenControl && screenBin != "" {
-		servers["screen"] = mcpServerSpec{Command: screenBin, Args: []string{"mcp"}}
+		spec := mcpServerSpec{Command: screenBin, Args: []string{"mcp"}}
+		// Pass the configurable full-screenshot cap to the screen MCP process (it
+		// reads AGLINK_SCREENSHOT_MAX_EDGE at startup). Scoped to this server's env,
+		// not the whole worker environment. 0 = leave the screen binary's built-in
+		// default (1280).
+		if cfg.ScreenMaxScreenshotLongEdge > 0 {
+			spec.Env = map[string]string{"AGLINK_SCREENSHOT_MAX_EDGE": strconv.Itoa(cfg.ScreenMaxScreenshotLongEdge)}
+		}
+		servers["screen"] = spec
 		allowed = append(allowed, "mcp__screen__*")
 		prompts = append(prompts, screenSystemPrompt())
 	}

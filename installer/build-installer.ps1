@@ -21,19 +21,25 @@ Write-Host ("  version: count=$count commit=$hash")
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "host build failed" }
 Pop-Location
 
-Write-Host "[2/3] staging binaries (flattened)..."
-$copies = @{
-  "chat\aglink-chat.exe"           = "aglink-chat.exe"
-  "desktop\bin\aglink-desktop.exe" = "aglink-desktop.exe"
-  "screen\aglink-screen.exe"       = "aglink-screen.exe"
-  "web\aglink-web.exe"             = "aglink-web.exe"
+Write-Host "[2/3] building helper binaries into stage..."
+function Build-GoHelper($relDir, $outName, $ldflags = "") {
+  Push-Location (Join-Path $root $relDir)
+  $out = Join-Path $stage $outName
+  if ($ldflags -ne "") {
+    & go build -ldflags $ldflags -o $out .
+  } else {
+    & go build -o $out .
+  }
+  if ($LASTEXITCODE -ne 0) { Pop-Location; throw "$outName build failed" }
+  Pop-Location
+  Write-Host ("  built " + $outName)
 }
-foreach ($src in $copies.Keys) {
-  $s = Join-Path $root $src
-  if (-not (Test-Path $s)) { throw "missing binary: $s" }
-  Copy-Item $s (Join-Path $stage $copies[$src]) -Force
-  Write-Host ("  staged " + $copies[$src])
-}
+
+$env:GOWORK = "off"
+Build-GoHelper "chat" "aglink-chat.exe"
+Build-GoHelper "screen" "aglink-screen.exe"
+Build-GoHelper "web" "aglink-web.exe"
+Build-GoHelper "desktop" "aglink-desktop.exe" "-H windowsgui -s -w"
 
 Write-Host "[3/3] makensis..."
 $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"

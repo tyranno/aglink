@@ -53,6 +53,8 @@ Section "Install"
     nsExec::ExecToLog 'taskkill /F /T /IM aglink.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-chat.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-desktop.exe'
+    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude.exe'
+    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude_new.exe'
     Sleep 1200
 
     ; --- Files (all binaries flattened into one dir; aglink resolves helpers as siblings) ---
@@ -126,6 +128,8 @@ Section "Uninstall"
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-desktop.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-screen.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-web.exe'
+    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude.exe'
+    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude_new.exe'
     Sleep 1000
 
     DetailPrint "파일 삭제..."

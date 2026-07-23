@@ -119,9 +119,9 @@ func TestReadProjectMemory_ReadsAglinkDir(t *testing.T) {
 	}
 }
 
-// dataDir keeps a pre-rename ~/.teleclaude install working in place rather than
-// creating an empty ~/.aglink beside it and losing config.yaml/store.json.
-func TestDataDir_PrefersLegacyWhenOnlyLegacyExists(t *testing.T) {
+// dataDir migrates a pre-rename ~/.teleclaude install into ~/.aglink without
+// losing config.yaml/store.json.
+func TestDataDir_MigratesLegacyToAglinkWhenOnlyLegacyExists(t *testing.T) {
 	home := t.TempDir()
 	setHomeEnv(t, home)
 
@@ -129,16 +129,67 @@ func TestDataDir_PrefersLegacyWhenOnlyLegacyExists(t *testing.T) {
 	if err := os.MkdirAll(legacy, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	legacyConfig := []byte(`
+telegram:
+    bot_token: t
+    allowed_user_ids:
+        - 1
+web_chat:
+    enabled: true
+    addr: 127.0.0.1:1717
+chat_control:
+    enabled: true
+    addr: 127.0.0.1:17170
+aglink_chat:
+    enabled: true
+    addr: 127.0.0.1:17171
+`)
+	if err := os.WriteFile(filepath.Join(legacy, "config.yaml"), legacyConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "store.json"), []byte(`{"conversations":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "chat_control.token"), []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, transient := range []string{"aglink.pid", "screen-control.lock", "aglink.log", "aglink-web.port"} {
+		if err := os.WriteFile(filepath.Join(legacy, transient), []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	got, err := dataDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != legacy {
-		t.Errorf("got %q, want %q", got, legacy)
+	want := filepath.Join(home, ".aglink")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".aglink")); !os.IsNotExist(err) {
-		t.Errorf(".aglink should not have been created alongside an existing legacy dir")
+	if _, err := os.Stat(filepath.Join(want, "store.json")); err != nil {
+		t.Errorf("store.json was not migrated: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(want, "chat_control.token")); err != nil {
+		t.Errorf("chat_control.token was not migrated: %v", err)
+	}
+	for _, transient := range []string{"aglink.pid", "screen-control.lock", "aglink.log", "aglink-web.port"} {
+		if _, err := os.Stat(filepath.Join(want, transient)); !os.IsNotExist(err) {
+			t.Errorf("%s should not be copied during migration", transient)
+		}
+	}
+	cfg, err := LoadConfig(filepath.Join(want, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ChatControl || cfg.ChatControlAddr != "127.0.0.1:27270" {
+		t.Errorf("chat control not normalized: enabled=%v addr=%q", cfg.ChatControl, cfg.ChatControlAddr)
+	}
+	if !cfg.AglinkChat || cfg.AglinkChatAddr != "127.0.0.1:27271" {
+		t.Errorf("aglink chat not normalized: enabled=%v addr=%q", cfg.AglinkChat, cfg.AglinkChatAddr)
+	}
+	if cfg.WebChat {
+		t.Errorf("legacy embedded web_chat should be disabled after migration")
 	}
 }
 

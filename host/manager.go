@@ -798,6 +798,20 @@ func isSessionNotFound(text string) bool {
 		strings.Contains(lower, "no rollout found")
 }
 
+// isSessionAlreadyInUse detects the inverse of isSessionNotFound: a fresh-session
+// turn ("--session-id <id>" with no --resume) rejected because that id already
+// exists in the CLI's store. The CLI exits non-zero with "Session ID <id> is
+// already in use." This happens when a restart lands between a first turn creating
+// the session and store.json recording Started=true — aglink reloads believing the
+// conversation never started, yet the CLI still holds the full session under that
+// id. The cure is to resume that session rather than re-create it (see the recovery
+// in the worker run path).
+func isSessionAlreadyInUse(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "already in use") &&
+		(strings.Contains(lower, "session id") || strings.Contains(lower, "session-id"))
+}
+
 // workerModelForBackend returns the right model string based on the active backend.
 func (m *Manager) workerModelForBackend() string {
 	return m.workerModelForBackendName(m.Backend())
@@ -1256,6 +1270,34 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				WorkDir:    workDir,
 				SessionID:  workConv.SessionID,
 				Resume:     false,
+				Model:      workerModel,
+				OnImage:    onImage,
+				OnProgress: onProgress,
+				OwnerLabel: screenOwnerLabel(chatID, workConv),
+			})
+			close(recoverDone)
+			elapsed = time.Since(startTime)
+		}
+		// Inverse of the recovery above: a fresh-session turn (resume=false,
+		// "--session-id <id>" with no --resume) can be rejected because that id
+		// already exists in the CLI's store. A restart between a first turn creating
+		// the session and store.json recording Started=true leaves aglink believing
+		// the conversation never started while the CLI still holds the full session
+		// under that id — so re-creating it fails "Session ID ... is already in use".
+		// The session is real and carries the actual context, so resume it instead of
+		// dead-ending. A successful resume falls through to Started=true below, so the
+		// desync self-heals and later turns resume normally. Internal; don't tell the user.
+		if err != nil && ctx.Err() == nil && !resume && isSessionAlreadyInUse(err.Error()) {
+			log.Printf("[worker] session id %q already in use — retrying once as --resume of the existing session", workConv.SessionID)
+			resumeHistory := historyForContext(workConv.History[:pendingIdx], true)
+			resumePrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, resumeHistory)
+			recoverDone := make(chan struct{})
+			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
+			res, err = client.Run(ctx, RunRequest{
+				Prompt:     resumePrompt,
+				WorkDir:    workDir,
+				SessionID:  workConv.SessionID,
+				Resume:     true,
 				Model:      workerModel,
 				OnImage:    onImage,
 				OnProgress: onProgress,

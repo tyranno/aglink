@@ -140,6 +140,14 @@ type Conversation struct {
 	WorkDir        string             `json:"workDir,omitempty"`        // per-conversation working directory; "" → service home
 	Interactive    bool               `json:"interactive,omitempty"`    // per-conversation interactive override; only meaningful when InteractiveSet — see IsInteractive
 	InteractiveSet bool               `json:"interactiveSet,omitempty"` // true once "!interactive on|off" set Interactive explicitly; unset → follow the global default (on for claude when interactive_claude.enabled)
+
+	// CodexContextTokens is the input-token size codex reported on this
+	// conversation's last worker turn (usage.input_tokens). Codex `exec resume`
+	// re-sends the whole server-side rollout each turn, so this grows unbounded on
+	// a long conversation; when it crosses codexContextResetTokens the manager
+	// starts a fresh codex thread instead of resuming. Only meaningful for the
+	// codex backend; 0 = unknown / not yet observed. See runWorker.
+	CodexContextTokens int `json:"codexContextTokens,omitempty"`
 }
 
 // Project is a registered directory holding multiple conversations.
@@ -316,6 +324,11 @@ type RunResult struct {
 	Text      string
 	IsError   bool
 	SessionID string // non-empty only on first codex turn (thread_id from JSONL)
+	// InputTokens is the total prompt tokens the backend processed this turn
+	// (codex usage.input_tokens from the final turn.completed). 0 when unknown.
+	// The manager tracks it per codex conversation to auto-reset a resumed thread
+	// once its rollout has ballooned — see codexContextResetTokens.
+	InputTokens int
 }
 
 // --- Interfaces (Design §4.1, Option C boundaries) ---

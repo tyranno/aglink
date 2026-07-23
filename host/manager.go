@@ -1144,13 +1144,29 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	heartbeatDone := make(chan struct{})
 	go runHeartbeat(s, chatID, "작업 진행 중", startTime, timeoutMinutes, heartbeatDone)
 
+	// Decide whether to resume the backend's server-side session. Normally we
+	// resume once the conversation has started. Codex is the exception: `exec
+	// resume` re-sends the whole rollout every turn, so once that context has
+	// ballooned (codexContextResetTokens) we start a fresh thread and re-inline
+	// recent stored history instead — otherwise per-turn input keeps growing and
+	// the turn slows to minutes. This is the same "no server-side session, inline
+	// more history" path the session-loss recovery below uses.
+	resume := workConv.Started
+	codexReset := false
+	if resume && backend == "codex" && codexContextTooLarge(workConv.CodexContextTokens) {
+		resume = false
+		codexReset = true
+		log.Printf("[worker] codex context %d tokens ≥ %d — resetting session for conv %s",
+			workConv.CodexContextTokens, codexContextResetTokens, workConv.ID)
+		_ = s.Send(chatID, fmt.Sprintf("♻️ codex 세션 컨텍스트가 커져서(약 %dk 토큰) 새 세션으로 정리했습니다 — 대화는 그대로 이어집니다.", workConv.CodexContextTokens/1000))
+	}
+
 	// Pass history in the prompt sized to whether the CLI carries the session.
 	// A resuming turn only needs a short trailing reminder (the CLI holds the
-	// rest); a non-resuming turn — a fresh conversation, or the session-loss
-	// recovery below — gets a much larger, char-bounded slice, because then the
-	// stored history is the only context there is. historyForContext(...,
-	// workConv.Started): Started is true exactly when a CLI session should exist.
-	historyForPrompt := historyForContext(workConv.History, workConv.Started)
+	// rest); a non-resuming turn — a fresh conversation, a codex context reset, or
+	// the session-loss recovery below — gets a much larger, char-bounded slice,
+	// because then the stored history is the only context there is.
+	historyForPrompt := historyForContext(workConv.History, resume)
 	globalMemory := readGlobalMemory()
 	projectMemory := ""
 	if pPath != "" {
@@ -1161,7 +1177,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 
 	workerModel := m.workerModelForBackendName(backend)
 	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
-		backend, workerModel, project, workConv.ID, workConv.Started, len(prompt))
+		backend, workerModel, project, workConv.ID, resume, len(prompt))
 
 	// sessionRecovered records that this turn ran as a fresh CLI session after the
 	// stored one turned out to be gone. The persistence guard below skips a
@@ -1190,7 +1206,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		Prompt:     prompt,
 		WorkDir:    workDir,
 		SessionID:  workConv.SessionID,
-		Resume:     workConv.Started,
+		Resume:     resume,
 		Model:      workerModel,
 		OnImage:    onImage,
 		OnProgress: onProgress,
@@ -1344,8 +1360,18 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		// next occurrence is visible in the server log instead of a surprise.
 		log.Printf("[manager] conv %s history capped at %d turns, dropped %d oldest", workConv.ID, maxHistoryTurns, dropped)
 	}
-	if res.SessionID != "" && (!wasStarted || sessionRecovered) {
+	// A fresh session id must replace the stored one whenever this turn ran
+	// without resume and got a new one: a brand-new conversation, a session-loss
+	// recovery, or a codex context reset (which deliberately abandons the old
+	// ballooned thread). Skip it on a plain resume, which returns none.
+	if res.SessionID != "" && (!wasStarted || sessionRecovered || codexReset) {
 		workConv.SessionID = res.SessionID
+	}
+	// Track the codex rollout size this turn reported so the next turn can decide
+	// whether to reset. A fresh/reset turn reports a small count, so this falls
+	// back below the threshold on its own. Only codex populates InputTokens.
+	if backend == "codex" {
+		workConv.CodexContextTokens = res.InputTokens
 	}
 
 	if err := sink.save(workConv); err != nil {
@@ -1496,7 +1522,24 @@ const (
 	// oversized prompt (see the past "Request too large" incident).
 	maxHistoryOnRecovery      = 40
 	maxHistoryCharsOnRecovery = 24000
+
+	// codexContextResetTokens is the codex rollout size (usage.input_tokens on the
+	// previous turn) at or above which aglink stops resuming the server-side codex
+	// thread and starts a fresh one, re-inlining recent stored history instead.
+	// Every `codex exec resume` re-sends the entire rollout — tool calls and
+	// outputs included — so a long codex conversation's per-turn input balloons and
+	// the turn slows dramatically: observed live ~13s at 29k tokens, 2m20s at
+	// ~540k, 14m at 4.8M, 21m at 9.8M. Resetting trades codex's server-side memory
+	// (which stored history reconstructs anyway) for a bounded prompt. Claude and
+	// opencode resume cheaply and are unaffected.
+	codexContextResetTokens = 200000
 )
+
+// codexContextTooLarge reports whether a codex thread's last observed input-token
+// size warrants starting a fresh session before the next turn.
+func codexContextTooLarge(lastInputTokens int) bool {
+	return lastInputTokens >= codexContextResetTokens
+}
 
 // historyForContext picks how much stored history to inline in a worker prompt.
 // resume=true (the CLI already holds the conversation) → a short reminder;

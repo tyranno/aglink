@@ -36,6 +36,24 @@ func TestHistoryForContext_ResumeVsRecovery(t *testing.T) {
 	}
 }
 
+// codexContextTooLarge gates codex session auto-reset: at or above the
+// threshold a resumed thread has ballooned enough to reset, below it we keep
+// resuming.
+func TestCodexContextTooLarge(t *testing.T) {
+	if codexContextTooLarge(0) {
+		t.Error("0 tokens (unknown) must not trigger a reset")
+	}
+	if codexContextTooLarge(codexContextResetTokens - 1) {
+		t.Error("just below threshold must not trigger a reset")
+	}
+	if !codexContextTooLarge(codexContextResetTokens) {
+		t.Error("at threshold must trigger a reset")
+	}
+	if !codexContextTooLarge(9_800_000) {
+		t.Error("a ballooned rollout must trigger a reset")
+	}
+}
+
 func TestTailTurns_CharBudget(t *testing.T) {
 	// 100 turns of 1000 chars each; a 24k budget admits ~24 of them.
 	h := make([]ConversationTurn, 100)

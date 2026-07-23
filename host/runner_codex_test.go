@@ -181,6 +181,28 @@ func TestExtractLastAgentMessageLegacyAgentMessageEvent(t *testing.T) {
 	}
 }
 
+// TestExtractCodexLastInputTokens covers the rollout-size signal that drives
+// codex session auto-reset: it returns the input_tokens of the FINAL
+// turn.completed event, and 0 when none is present.
+func TestExtractCodexLastInputTokens(t *testing.T) {
+	jsonl := `{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":12345,"cached_input_tokens":100,"output_tokens":50}}
+{"type":"turn.completed","usage":{"input_tokens":540000,"cached_input_tokens":0,"output_tokens":80}}`
+
+	if got := extractCodexLastInputTokens(jsonl); got != 540000 {
+		t.Errorf("extractCodexLastInputTokens() = %d, want 540000 (last turn)", got)
+	}
+	// No usage → 0.
+	if got := extractCodexLastInputTokens(`{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.completed","usage":{}}`); got != 0 {
+		t.Errorf("extractCodexLastInputTokens(no input_tokens) = %d, want 0", got)
+	}
+	if got := extractCodexLastInputTokens(""); got != 0 {
+		t.Errorf("extractCodexLastInputTokens(\"\") = %d, want 0", got)
+	}
+}
+
 // TestParseCodexVersion covers the version-token extraction used by the codex
 // readiness notice: it must survive both `codex --version` and `codex exec
 // --version` label forms and return "" when no version is present.

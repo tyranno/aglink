@@ -504,6 +504,37 @@ func extractLastAgentMessage(jsonl string) string {
 	return strings.TrimSpace(last)
 }
 
+// extractCodexLastInputTokens scans codex --json NDJSON for the final
+// turn.completed event and returns its usage.input_tokens — the total prompt
+// tokens codex processed that turn, i.e. the size of the resumed rollout plus
+// the new prompt. Returns 0 when no usage was reported (older CLI / parse
+// failure). This is the signal the manager uses to decide when a resumed codex
+// thread has grown large enough that continuing to `exec resume` it is slower
+// than starting fresh (see codexContextTooLarge). usage sits at the top level
+// of the turn.completed event, same shape logCodexEvent already reads.
+func extractCodexLastInputTokens(ndjson string) int {
+	last := 0
+	for _, line := range strings.Split(ndjson, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			Type  string `json:"type"`
+			Usage *struct {
+				InputTokens int `json:"input_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		if ev.Type == "turn.completed" && ev.Usage != nil {
+			last = ev.Usage.InputTokens
+		}
+	}
+	return last
+}
+
 // parseCodexRouteDecision parses a RouteDecision from the codex output string.
 func parseCodexRouteDecision(s string) (RouteDecision, error) {
 	if dec, ok := unmarshalDecision(s); ok {
@@ -881,9 +912,10 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	} else {
 		text = extractLastAgentMessage(stdout)
 	}
-	log.Printf("[codex] run done: output=%d bytes session=%s", len(text), threadID)
+	inputTokens := extractCodexLastInputTokens(stdout)
+	log.Printf("[codex] run done: output=%d bytes session=%s input_tokens=%d", len(text), threadID, inputTokens)
 
-	result := RunResult{Text: text}
+	result := RunResult{Text: text, InputTokens: inputTokens}
 	if !req.Resume && threadID != "" {
 		result.SessionID = threadID
 	}

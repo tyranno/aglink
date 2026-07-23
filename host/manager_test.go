@@ -129,23 +129,26 @@ func TestManager_NoProjects_RunsInHome(t *testing.T) {
 	}
 }
 
-// Auto-continuation still fires on the telegram stream: a large history triggers
-// an in-place series reset via the telegram sink (same "telegram" record, fresh
-// CLI session), carrying the prior summary into the next prompt — without ever
-// forking a project topic.
-func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
+// A long claude conversation must NOT be pre-emptively split into a new series:
+// splitting resets the CLI session and discards the prompt cache for no benefit
+// (claude resumes cheaply and auto-compacts its own window). The turn stays on the
+// same conversation and resumes the existing session, so the cache survives. The
+// reactive context-overflow path is the only splitter for claude now.
+func TestManager_LargeHistory_KeepsClaudeSession(t *testing.T) {
 	fc := &fakeClaude{runRes: RunResult{Text: "더 많은 작업 완료"}}
 	m, st, _ := tgManager(t, fc)
 
-	// Seed the global telegram conversation with a large history + summary.
+	// Seed the global telegram conversation with a large (well past the old 40k
+	// threshold) history + an already-established CLI session.
 	c := st.TelegramConversation()
 	c.Started = true
 	c.Summary = "이전에 많은 작업을 했습니다"
+	c.SessionID = "sess-existing"
 	oldSession := c.SessionID
 
 	longPrompt := "여기는 매우 긴 프롬프트입니다. "
 	longResponse := "여기는 매우 긴 응답입니다. "
-	for range 5000 { // ~70k tokens with multiplier
+	for range 5000 { // ~70k tokens with multiplier — would have tripped the old split
 		longPrompt += "긴 텍스트를 반복합니다. "
 		longResponse += "긴 응답을 반복합니다. "
 	}
@@ -158,22 +161,39 @@ func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
 	if fc.runCalls != 1 {
 		t.Fatalf("expected one worker run, got %d", fc.runCalls)
 	}
-	// In-place continuation: still exactly the single telegram record, no project fork.
+	// Still exactly the single telegram record; no continuation series, no fork.
 	tc := st.TelegramConversation()
 	if tc.ID != "telegram" {
 		t.Errorf("telegram record must stay one conversation, got id %q", tc.ID)
 	}
+	if tc.ChildID != "" {
+		t.Errorf("no continuation series should be created, got childID %q", tc.ChildID)
+	}
 	p, _ := st.GetProject("myapp")
 	if len(p.Conversations) != 0 {
-		t.Fatalf("auto-continuation must not fork a project topic, got %d", len(p.Conversations))
+		t.Fatalf("large history must not fork a project topic, got %d", len(p.Conversations))
 	}
-	// Session was reset for the fresh series.
-	if tc.SessionID == oldSession {
-		t.Errorf("continuation should reset the CLI session, still %q", oldSession)
+	// Session was NOT reset — the CLI keeps its context and prompt cache.
+	if tc.SessionID != oldSession {
+		t.Errorf("session must be preserved for cache reuse, was %q now %q", oldSession, tc.SessionID)
 	}
-	// The carried summary made it into the worker prompt.
-	if !contains(fc.lastRun.Prompt, "이전에 많은 작업을 했습니다") {
-		t.Errorf("continuation prompt should include parent summary, got: %q", fc.lastRun.Prompt)
+	// The turn resumed the existing session rather than starting fresh.
+	if !fc.lastRun.Resume {
+		t.Errorf("large claude history should resume, not reset the session")
+	}
+}
+
+// proactiveContinuationThreshold encodes the per-backend policy: our real backends
+// never pre-emptively split (claude/opencode keep their cache alive, codex uses its
+// own 200k reset), while an unknown backend falls back to a conservative split.
+func TestProactiveContinuationThreshold(t *testing.T) {
+	for _, b := range []string{"claude", "opencode", "codex"} {
+		if got := proactiveContinuationThreshold(b); got != 0 {
+			t.Errorf("backend %q should never proactively split, got %d", b, got)
+		}
+	}
+	if got := proactiveContinuationThreshold("someFutureBackend"); got <= 0 {
+		t.Errorf("unknown backend should keep a conservative split, got %d", got)
 	}
 }
 

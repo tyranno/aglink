@@ -1054,35 +1054,43 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		onProgress = func(msg string) { ps.Progress(chatID, msg) }
 	}
 
-	// Check if context is growing too large; auto-create continuation if needed.
-	// Threshold: ~40k tokens (conservative estimate for claude-haiku).
-	const contextThreshold = 40000
+	// Maybe pre-emptively split a long conversation into a fresh continuation
+	// series. This RESETS the CLI session, which throws away the backend's prompt
+	// cache and forces a full-price re-send next turn — a trade that only pays off
+	// for a backend whose per-turn cost grows with session length. None of our
+	// current backends want it (see proactiveContinuationThreshold): claude/
+	// opencode resume cheaply and the CLI auto-compacts its own window, so keeping
+	// the session alive is a pure prompt-cache win; codex does grow per resume but
+	// is handled precisely by the codexContextResetTokens reset below, which keeps
+	// the SAME conversation instead of forking a series. If a hard context-overflow
+	// error ever does surface, the reactive path further down still splits + retries.
 	parentSummary := ""
 	workConv := c
 
-	historyTokens := 0
-	for _, turn := range c.History {
-		historyTokens += estimateTokens(turn.Prompt)
-		historyTokens += estimateTokens(turn.Response)
-	}
-	currentTokens := estimateTokens(text)
-	totalTokens := historyTokens + currentTokens
-
-	if totalTokens > contextThreshold {
-		summary := c.Summary
-		if summary == "" {
-			summary = "이전 대화 내용을 참고해 주세요."
+	if threshold := proactiveContinuationThreshold(backend); threshold > 0 {
+		historyTokens := 0
+		for _, turn := range c.History {
+			historyTokens += estimateTokens(turn.Prompt)
+			historyTokens += estimateTokens(turn.Response)
 		}
-		if newC, err := sink.makeContinuation(c); err != nil {
-			log.Printf("[manager] auto-continuation failed: %v", err)
-		} else {
-			newC.Backend = backend
-			parentSummary = summary
-			workConv = newC
-			// Internal context-length split: the conversation continues seamlessly
-			// (summary carried forward), so don't expose the series boundary to the
-			// user — just log it for debugging.
-			log.Printf("[manager] context length → new series (conv %s → %s)", c.ID, newC.ID)
+		totalTokens := historyTokens + estimateTokens(text)
+
+		if totalTokens > threshold {
+			summary := c.Summary
+			if summary == "" {
+				summary = "이전 대화 내용을 참고해 주세요."
+			}
+			if newC, err := sink.makeContinuation(c); err != nil {
+				log.Printf("[manager] auto-continuation failed: %v", err)
+			} else {
+				newC.Backend = backend
+				parentSummary = summary
+				workConv = newC
+				// Internal context-length split: the conversation continues seamlessly
+				// (summary carried forward), so don't expose the series boundary to the
+				// user — just log it for debugging.
+				log.Printf("[manager] context length → new series (conv %s → %s)", c.ID, newC.ID)
+			}
 		}
 	}
 
@@ -1539,6 +1547,33 @@ const (
 // size warrants starting a fresh session before the next turn.
 func codexContextTooLarge(lastInputTokens int) bool {
 	return lastInputTokens >= codexContextResetTokens
+}
+
+// proactiveContinuationThreshold returns the stored-history token size at which a
+// backend should be pre-emptively split into a fresh continuation series, or 0 to
+// never split proactively. Splitting resets the CLI session and so discards the
+// prompt cache, so it's only worthwhile for a backend whose per-turn cost grows
+// with session length AND that has no cheaper reset of its own.
+//
+// All current backends return 0:
+//   - claude / opencode resume cheaply and the CLI auto-compacts its own context
+//     window; keeping the session (and its prompt cache) alive is a pure win.
+//     Earlier this fired at 40k estimated tokens and reset every long claude
+//     conversation each turn, defeating prompt caching for no benefit.
+//   - codex does grow per resume, but the dedicated codexContextResetTokens (200k)
+//     reset handles it while keeping the same conversation — a better trade than
+//     forking a new series.
+//
+// The reactive context-overflow path (isContextOverflow) remains the backstop for
+// any backend if a hard limit is ever hit. A future backend with no context
+// management of its own falls through to a conservative proactive split.
+func proactiveContinuationThreshold(backend string) int {
+	switch backend {
+	case "claude", "opencode", "codex":
+		return 0
+	default:
+		return 40000
+	}
 }
 
 // historyForContext picks how much stored history to inline in a worker prompt.

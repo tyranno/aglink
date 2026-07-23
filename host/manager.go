@@ -1439,6 +1439,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// selectTarget/replaceChildren).
 	_ = sendChunked(s, chatID, res.Text)
 
+	// Compact per-turn cache/cost footer (claude only; codex/opencode report no
+	// usage so this stays empty for them). Sent as its own short line, not folded
+	// into res.Text, so it never pollutes saved history or the next prompt.
+	if line := formatUsageLine(res); line != "" {
+		_ = s.Send(chatID, line)
+	}
+
 	// Append to date-based history log for !history command. When there's no
 	// project scope (project==""), which would make WriteHistory write to the
 	// history root, fall back to the sink's channel label ("telegram" or "web")
@@ -1589,6 +1596,38 @@ const (
 // size warrants starting a fresh session before the next turn.
 func codexContextTooLarge(lastInputTokens int) bool {
 	return lastInputTokens >= codexContextResetTokens
+}
+
+// formatUsageLine renders a compact per-turn cache/cost footer from a claude turn's
+// usage, or "" when the turn errored or the backend reported none (codex/opencode).
+// Cache-hit % = cache_read / (input + cache_read + cache_creation): the share of the
+// processed prompt served from the prompt cache (~10% price) instead of full price —
+// high on a resumed session, which is what makes long claude conversations cheap.
+func formatUsageLine(res RunResult) string {
+	if res.IsError {
+		return ""
+	}
+	billedInput := res.InputTokens + res.CacheReadTokens + res.CacheCreationTokens
+	if billedInput == 0 && res.CostUSD == 0 {
+		return "" // no usage reported (non-claude backend)
+	}
+	hit := 0.0
+	if billedInput > 0 {
+		hit = float64(res.CacheReadTokens) / float64(billedInput) * 100
+	}
+	return fmt.Sprintf("📊 $%.4f · 캐시적중 %.1f%% (read %s · write %s · out %s)",
+		res.CostUSD, hit,
+		compactTokens(res.CacheReadTokens),
+		compactTokens(res.CacheCreationTokens),
+		compactTokens(res.OutputTokens))
+}
+
+// compactTokens formats a token count tersely for the usage footer ("31.7k", "590").
+func compactTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // proactiveContinuationThreshold returns the stored-history token size at which a

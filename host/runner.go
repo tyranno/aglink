@@ -40,6 +40,33 @@ type claudeEnvelope struct {
 	IsError          bool            `json:"is_error"`
 	SessionID        string          `json:"session_id"`
 	StructuredOutput json.RawMessage `json:"structured_output"`
+	// Usage/cost for the turn. Present on the terminal result envelope of both the
+	// "json" and "stream-json" formats — the same response aglink already parses,
+	// so reading these adds no extra CLI call or round-trip. cache_read_input_tokens
+	// is the prefix served from Anthropic's prompt cache (~10% price); a resumed
+	// session keeps it high (see proactiveContinuationThreshold), which is what
+	// makes long conversations cheap.
+	Usage struct {
+		InputTokens              int `json:"input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+	} `json:"usage"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+}
+
+// runResultWithUsage builds a RunResult from a decoded envelope, copying the
+// usage/cost fields both the json and stream-json result paths share.
+func runResultWithUsage(env claudeEnvelope) RunResult {
+	return RunResult{
+		Text:                strings.TrimSpace(env.Result),
+		IsError:             env.IsError,
+		InputTokens:         env.Usage.InputTokens,
+		CacheReadTokens:     env.Usage.CacheReadInputTokens,
+		CacheCreationTokens: env.Usage.CacheCreationInputTokens,
+		OutputTokens:        env.Usage.OutputTokens,
+		CostUSD:             env.TotalCostUSD,
+	}
 }
 
 const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify","status","schedule"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"},"scheduleType":{"type":"string","enum":["remind","cron"]},"scheduleInterval":{"type":"string"},"scheduleTask":{"type":"string"},"scheduleIsTask":{"type":"boolean"}},"required":["action"]}`
@@ -351,7 +378,7 @@ func parseStreamResult(stdout string) (RunResult, error) {
 		if err := json.Unmarshal([]byte(line), &env); err != nil {
 			return RunResult{}, fmt.Errorf("claude stream-json 결과 파싱 실패: %w", err)
 		}
-		return RunResult{Text: strings.TrimSpace(env.Result), IsError: env.IsError}, nil
+		return runResultWithUsage(env), nil
 	}
 	return RunResult{}, fmt.Errorf("claude stream-json: result 라인을 찾지 못함")
 }
@@ -496,7 +523,7 @@ func parseRunResult(stdout string) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	return RunResult{Text: strings.TrimSpace(env.Result), IsError: env.IsError}, nil
+	return runResultWithUsage(env), nil
 }
 
 // parseRouteDecision extracts a RouteDecision from the manager's json output.

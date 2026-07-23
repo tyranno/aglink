@@ -183,6 +183,31 @@ func TestManager_LargeHistory_KeepsClaudeSession(t *testing.T) {
 	}
 }
 
+// formatUsageLine shows a compact cache/cost footer for a claude turn (high cache
+// hit on a resumed session), and nothing for an errored turn or a backend that
+// reports no usage (codex/opencode).
+func TestFormatUsageLine(t *testing.T) {
+	// Resumed claude turn: almost all input served from cache.
+	res := RunResult{InputTokens: 2, CacheReadTokens: 31705, CacheCreationTokens: 59, OutputTokens: 15, CostUSD: 0.0168}
+	line := formatUsageLine(res)
+	if line == "" {
+		t.Fatal("expected a usage footer for a claude turn with usage")
+	}
+	for _, want := range []string{"$0.0168", "31.7k", "99.8%"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("usage footer %q missing %q", line, want)
+		}
+	}
+	// No usage reported (codex/opencode) → no footer.
+	if got := formatUsageLine(RunResult{Text: "done"}); got != "" {
+		t.Errorf("expected no footer without usage, got %q", got)
+	}
+	// Errored turn → no footer even if usage present.
+	if got := formatUsageLine(RunResult{IsError: true, CostUSD: 0.5}); got != "" {
+		t.Errorf("expected no footer on error, got %q", got)
+	}
+}
+
 // proactiveContinuationThreshold encodes the per-backend policy: our real backends
 // never pre-emptively split (claude/opencode keep their cache alive, codex uses its
 // own 200k reset), while an unknown backend falls back to a conservative split.

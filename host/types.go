@@ -329,6 +329,16 @@ type RunResult struct {
 	// The manager tracks it per codex conversation to auto-reset a resumed thread
 	// once its rollout has ballooned — see codexContextResetTokens.
 	InputTokens int
+
+	// Cache/cost telemetry for the turn, populated by claudeRunner from the result
+	// envelope's usage (0/0.0 for backends that don't report it). CacheReadTokens is
+	// the prompt-cache hit — high on a resumed claude session — and CostUSD is the
+	// CLI's own billed cost. Surfaced to the user as a compact per-turn footer; not
+	// persisted into history.
+	CacheReadTokens     int
+	CacheCreationTokens int
+	OutputTokens        int
+	CostUSD             float64
 }
 
 // --- Interfaces (Design §4.1, Option C boundaries) ---

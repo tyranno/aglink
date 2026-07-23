@@ -14,6 +14,16 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// maxScreenshotLongEdge is the default cap (in px) for the longer edge of a full
+// `screenshot`, chosen to bound per-screenshot vision-token cost. Claude's vision
+// downscales anything over ~1568px on the long edge before tokenizing, so an
+// uncapped 1080p/4K/multi-monitor grab all cost roughly the same; capping to 1280
+// cuts that meaningfully with no practical readability loss. Callers can still
+// request full resolution with scale=1.0. Clicking is unaffected — coordinates
+// come from win_controls/snapshot, and capture_window/capture_region stay
+// full-resolution for pixel-accurate mapping.
+const maxScreenshotLongEdge = 1280
+
 // controlCompleteMiddleware wraps every tool handler so that a tool call which
 // actually drove the screen is followed by the green "control complete" notice.
 // It snapshots syntheticInputCount around the handler: control ops funnel through
@@ -297,20 +307,35 @@ func RunMCPScreen() error {
 	)
 
 	// screenshot — capture the full virtual screen and return it as an image so
-	// Claude's vision can read it. Optional 'scale' (0.1–1.0) downscales output.
+	// Claude's vision can read it. By DEFAULT the image is downscaled so its longer
+	// edge is at most maxScreenshotLongEdge px, which bounds the per-screenshot
+	// vision-token cost (Claude already downscales anything over ~1568px, so an
+	// uncapped grab costs the same ~1800 tokens regardless of monitor size). Pass
+	// scale=1.0 to force full resolution, or an explicit 0.1–1.0 factor.
 	s.AddTool(
 		mcp.NewTool("screenshot",
-			mcp.WithDescription("Capture the entire screen and return it as a PNG image. Use this to see what is currently on screen. Optional 'scale' (0.1–1.0) downscales the image to save tokens."),
+			mcp.WithDescription(fmt.Sprintf("Capture the entire screen and return it as a PNG image. Use this to see what is currently on screen. To SAVE TOKENS the image is downscaled by default to at most %dpx on its longer edge (readable, and clicking is unaffected — click coordinates come from win_controls/snapshot, not this image). Pass scale=1.0 for full resolution, or an explicit 0.1–1.0 downscale factor.", maxScreenshotLongEdge)),
 			mcp.WithNumber("scale",
-				mcp.Description("Optional downscale factor between 0.1 and 1.0. Omit or 1.0 for full resolution."),
+				mcp.Description("Optional downscale factor between 0.1 and 1.0. Omit for the default token-saving downscale; pass 1.0 for full resolution."),
 			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			scale := req.GetFloat("scale", 1.0)
+			// scale omitted → default capped capture (token-bounded). scale given →
+			// honor it exactly (1.0 = full resolution). GetFloat returns 0 when the
+			// arg is absent, which we treat as "use the default cap".
+			scale := req.GetFloat("scale", 0)
 			if scale != 0 && (scale < 0.1 || scale > 1.0) {
 				return mcp.NewToolResultError("scale must be between 0.1 and 1.0"), nil
 			}
-			png, err := captureScreenScaled(scale)
+			var (
+				png []byte
+				err error
+			)
+			if scale == 0 {
+				png, err = captureScreenCapped(maxScreenshotLongEdge)
+			} else {
+				png, err = captureScreenScaled(scale)
+			}
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("screenshot failed", err), nil
 			}

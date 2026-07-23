@@ -258,6 +258,34 @@ func captureRegion(srcX, srcY int32, width, height int) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// downscaleNearest returns a dw×dh nearest-neighbor-scaled copy of src. Shared by
+// the screenshot downscale paths (captureScreenScaled / captureScreenCapped).
+// Nearest-neighbor keeps it dependency-free and fast; Claude's vision reads the
+// result fine for "what's on screen" purposes.
+func downscaleNearest(src image.Image, dw, dh int) *image.RGBA {
+	sb := src.Bounds()
+	fx := float64(sb.Dx()) / float64(dw)
+	fy := float64(sb.Dy()) / float64(dh)
+	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
+	for dy := 0; dy < dh; dy++ {
+		sy := sb.Min.Y + int(float64(dy)*fy)
+		for dx := 0; dx < dw; dx++ {
+			sx := sb.Min.X + int(float64(dx)*fx)
+			dst.Set(dx, dy, src.At(sx, sy))
+		}
+	}
+	return dst
+}
+
+// encodePNG PNG-encodes img to bytes.
+func encodePNG(img image.Image) ([]byte, error) {
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		return nil, fmt.Errorf("png encode: %w", err)
+	}
+	return out.Bytes(), nil
+}
+
 // captureScreenScaled captures the screen and, when 0 < scale < 1, downscales
 // the image with nearest-neighbor sampling before PNG-encoding. scale values
 // outside (0,1) (or >=1) return the full-resolution capture.
@@ -281,19 +309,59 @@ func captureScreenScaled(scale float64) ([]byte, error) {
 	if dw < 1 || dh < 1 {
 		return full, nil
 	}
+	return encodePNG(downscaleNearest(src, dw, dh))
+}
 
-	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
-	for dy := 0; dy < dh; dy++ {
-		sy := sb.Min.Y + int(float64(dy)/scale)
-		for dx := 0; dx < dw; dx++ {
-			sx := sb.Min.X + int(float64(dx)/scale)
-			dst.Set(dx, dy, src.At(sx, sy))
-		}
+// captureScreenCapped captures the screen and, when its longer edge exceeds
+// maxLong px, downscales it so the longer edge equals maxLong (never upscales).
+// This is the screenshot tool's default: Claude's vision already downscales
+// anything over ~1568px on the long edge, so an uncapped 1080p/4K/multi-monitor
+// grab all cost roughly the same ~1800 vision tokens — capping lower makes the
+// per-screenshot token cost bounded and predictable. Clicking is unaffected:
+// click coordinates come from win_controls/snapshot (OS pixels), and the full
+// screenshot never promised a 1:1 image→screen pixel mapping (capture_window /
+// capture_region stay full-resolution for that). maxLong<=0 or an already-small
+// capture returns full resolution.
+func captureScreenCapped(maxLong int) ([]byte, error) {
+	full, err := captureScreen()
+	if err != nil {
+		return nil, err
 	}
+	if maxLong <= 0 {
+		return full, nil
+	}
+	src, err := png.Decode(bytes.NewReader(full))
+	if err != nil {
+		return nil, fmt.Errorf("captureScreenCapped: decode: %w", err)
+	}
+	sb := src.Bounds()
+	dw, dh, doScale := cappedDims(sb.Dx(), sb.Dy(), maxLong)
+	if !doScale {
+		return full, nil // already within budget — no quality loss
+	}
+	return encodePNG(downscaleNearest(src, dw, dh))
+}
 
-	var out bytes.Buffer
-	if err := png.Encode(&out, dst); err != nil {
-		return nil, fmt.Errorf("captureScreenScaled: encode: %w", err)
+// cappedDims computes the target dimensions for capping an w×h image so its
+// longer edge is at most maxLong, preserving aspect ratio. doScale is false when
+// the image already fits (or the inputs are degenerate), meaning "leave as-is".
+// Pure (no image data) so the cap policy is unit-testable without a real screen.
+func cappedDims(w, h, maxLong int) (dw, dh int, doScale bool) {
+	if w <= 0 || h <= 0 || maxLong <= 0 {
+		return w, h, false
 	}
-	return out.Bytes(), nil
+	longEdge := w
+	if h > longEdge {
+		longEdge = h
+	}
+	if longEdge <= maxLong {
+		return w, h, false
+	}
+	scale := float64(maxLong) / float64(longEdge)
+	dw = int(float64(w) * scale)
+	dh = int(float64(h) * scale)
+	if dw < 1 || dh < 1 {
+		return w, h, false
+	}
+	return dw, dh, true
 }

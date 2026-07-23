@@ -9,10 +9,15 @@ $root = Split-Path -Parent $here
 $stage = Join-Path $here "stage"
 if (-not (Test-Path $stage)) { New-Item -ItemType Directory -Path $stage | Out-Null }
 
-Write-Host "[1/3] building host (GOWORK=off)..."
+Write-Host "[1/3] building host (GOWORK=off, version-stamped)..."
 $env:GOWORK = "off"
 Push-Location (Join-Path $root "host")
-& go build -o (Join-Path $stage "aglink.exe") .
+$count = ((& git rev-list --count HEAD) | Out-String).Trim()
+$hash = ((& git rev-parse --short HEAD) | Out-String).Trim()
+$time = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+$ld = "-X main.buildCommitCount=$count -X main.buildCommit=$hash -X main.buildTime=$time"
+Write-Host ("  version: count=$count commit=$hash")
+& go build -ldflags $ld -o (Join-Path $stage "aglink.exe") .
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "host build failed" }
 Pop-Location
 

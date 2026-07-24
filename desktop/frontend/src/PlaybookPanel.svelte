@@ -12,6 +12,8 @@
   // Editor modal state. editing === null → closed. A routine is now a "skill":
   // name + description(when to use) + a free-form natural-language instructions body.
   let editing = $state(null); // { id, name, groupId, description, workDir, backend, instructions }
+  let editorError = $state(""); // in-modal save error; keeps the editor open so input isn't lost
+  let saving = $state(false);   // save in flight — guards against a double-submit
   // Generic small prompt/confirm modal.
   let ask = $state(null); // { kind:"text"|"confirm"|"menu", title, ... , resolve }
 
@@ -67,13 +69,20 @@
   function resolveAsk(val) { const a = ask; ask = null; if (a) a.resolve(val); }
 
   // --- mutations ---
+  // Returns {ok, err} so callers can react to the real outcome. Critically the
+  // editor uses this to keep itself open (input preserved) when a save fails —
+  // e.g. the control link briefly drops when the host restarts, which otherwise
+  // silently ate the routine and looked like "저장 버튼이 아무것도 안 함".
   async function afterMutate(rawPromise) {
+    let ok = true, err = "";
     try {
       const raw = await rawPromise;
       const j = JSON.parse(raw || "{}");
-      if (j && j.ok === false) loadError = j.error || "요청 실패";
-    } catch (e) { loadError = "요청 실패"; }
+      if (j && j.ok === false) { ok = false; err = j.error || "요청 실패"; }
+    } catch (e) { ok = false; err = "연결이 끊겨 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."; }
+    if (!ok) loadError = err;
     await load();
+    return { ok, err };
   }
   const saveGroup = (g) => afterMutate(ControlService.SavePlaybookGroup(JSON.stringify(g)));
   const savePlaybook = (p) => afterMutate(ControlService.SavePlaybook(JSON.stringify(p)));
@@ -148,6 +157,8 @@
     } else {
       editing = { id: "", name: "", groupId: presetGroupId || "", description: "", workDir: "", backend: "", instructions: "" };
     }
+    editorError = "";
+    saving = false;
   }
   // Surface a legacy structured routine (steps/delivery) as editable natural-language
   // text so pre-skill routines aren't lost the moment they're opened for editing.
@@ -168,12 +179,19 @@
   }
   async function saveEditor() {
     const name = editing.name.trim();
-    if (!name) return;
+    if (!name || saving) return;
     // steps/delivery are intentionally omitted → the store clears any legacy
     // structured fields, so the natural-language body is now the single source.
     const payload = { id: editing.id, name, groupId: editing.groupId, description: editing.description.trim(), workDir: editing.workDir.trim(), backend: editing.backend, instructions: editing.instructions };
-    editing = null;
-    await savePlaybook(payload);
+    saving = true;
+    editorError = "";
+    // Close only AFTER a confirmed save — otherwise a transient control-link drop
+    // (e.g. host restart) silently loses the routine. On failure keep the editor
+    // open with its input intact so the user can just click 저장 again.
+    const { ok, err } = await savePlaybook(payload);
+    saving = false;
+    if (ok) editing = null;
+    else editorError = err || "저장에 실패했습니다. 연결 상태를 확인하고 다시 시도해 주세요.";
   }
   async function pickWorkDir() {
     try { const p = await ControlService.PickFolder(); if (p) editing.workDir = p; } catch (e) { /* cancelled */ }
@@ -253,9 +271,12 @@
           <span class="mt-1 block text-[11px] text-slate-400">AI가 이 내용을 하나의 '스킬'처럼 이해해 스스로 단계를 나눠 실행합니다.</span>
         </label>
       </div>
+      {#if editorError}
+        <div class="border-t border-rose-100 bg-rose-50 px-4 py-2 text-xs text-rose-700">{editorError}</div>
+      {/if}
       <div class="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
         <button class="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100" onclick={() => (editing = null)}>취소</button>
-        <button class="rounded bg-blue-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50" disabled={!editing.name.trim()} onclick={saveEditor}>저장</button>
+        <button class="rounded bg-blue-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50" disabled={!editing.name.trim() || saving} onclick={saveEditor}>{saving ? "저장 중…" : "저장"}</button>
       </div>
     </div>
   </div>

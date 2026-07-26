@@ -1541,6 +1541,13 @@ func formatCompletion(elapsed time.Duration) string {
 // can freely update this file to persist decisions specific to this
 // conversation — it is not shared with other conversations in the same
 // project (see conversationMemoryPath).
+// maxMemoryChars bounds each memory layer (global + per-conversation) inlined
+// into every worker prompt. Memory is re-sent every turn, including resume turns
+// the CLI already carries, so an unbounded file would make every turn's input
+// grow linearly as memory accumulates. Kept generous — most memory files are far
+// smaller — but caps the tail so a runaway file can't balloon all prompts.
+const maxMemoryChars = 8000
+
 func readProjectMemory(projectPath, convID string) string {
 	if convID == "" {
 		return ""
@@ -1550,7 +1557,7 @@ func readProjectMemory(projectPath, convID string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	return truncate(strings.TrimSpace(string(b)), maxMemoryChars)
 }
 
 // readGlobalMemory reads <data dir>/global-memory.md for cross-project long-term memory.
@@ -1563,7 +1570,7 @@ func readGlobalMemory() string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	return truncate(strings.TrimSpace(string(b)), maxMemoryChars)
 }
 
 const (
@@ -1725,10 +1732,13 @@ func buildContextPrompt(currentPrompt, parentSummary, globalMemory, projectMemor
 	if len(history) > 0 {
 		sb.WriteString("## 최근 대화 기록\n\n")
 		for i, turn := range history {
-			// Truncate response to 300 chars — enough for context, avoids token bloat
-			// when --resume also carries the full session.
+			// Truncate both sides — enough for context, avoids token bloat when
+			// --resume also carries the full session. The prompt was previously
+			// inlined in full, so a large paste re-cost every turn until it fell
+			// out of the history window; bound it like the response (a bit larger,
+			// since the request carries more intent than a summarized reply).
 			fmt.Fprintf(&sb, "**Turn %d** (%s)\n**요청:** %s\n**응답:** %s\n\n",
-				i+1, turn.Timestamp.Format("2006-01-02 15:04"), turn.Prompt, truncate(turn.Response, 300))
+				i+1, turn.Timestamp.Format("2006-01-02 15:04"), truncate(turn.Prompt, 500), truncate(turn.Response, 300))
 		}
 		sb.WriteString("---\n\n")
 	}

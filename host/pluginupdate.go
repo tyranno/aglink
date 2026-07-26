@@ -10,31 +10,41 @@ import (
 	"time"
 )
 
-// pluginNames are the aglink-* sibling repos !update also rebuilds and
-// deploys alongside aglink itself, so one command keeps the whole set
-// (aglink + its Windows plugins) in sync instead of hand-building each
-// repo and copying the binary over after every change.
+// pluginBuilds maps each aglink-* plugin to the MERGED sub-directory that now
+// holds its source (screen/, web/, chat/ under aglink's own srcDir) and the
+// binary name it produces. The five repos were merged into aglink (see README),
+// and config.yaml points each plugin's binary_path at its sub-dir build
+// (aglink/<subdir>/<name>.exe) — so !update must rebuild THOSE, not the stale
+// standalone sibling checkouts (../aglink-screen, ...) that predate the merge.
+// Building the siblings dropped the binary at aglink/<name>.exe, a path nothing
+// runs, so plugin changes silently never deployed — the swap looked to succeed
+// yet shipped nothing.
+var pluginBuilds = []struct{ subdir, exe string }{
+	{"screen", "aglink-screen"},
+	{"web", "aglink-web"},
+	{"chat", "aglink-chat"},
+}
+
+// pluginNames is the plugin binary-name list used by the setup/aux-status flows
+// (setup_plugins_windows.go, auxfeatures.go). Kept in sync with pluginBuilds.
 var pluginNames = []string{"aglink-screen", "aglink-web", "aglink-chat"}
 
-// updatePlugins rebuilds each plugin in pluginNames from its sibling source
-// directory (../<name> relative to aglink's own source dir, srcDir) and
-// drops the resulting binary directly into srcDir under <name>+exeSuffix —
-// the exact layout resolveScreenBinaryPath/resolveWebBinaryPath auto-discover.
-// A plugin whose sibling directory isn't checked out is silently skipped:
-// most deployments (e.g. a headless NanoPi) don't have these Windows-only
-// screen/browser-control plugins at all, and that must not block updating
-// aglink itself. Returns a short per-plugin report for the Telegram
-// progress message, or an error that aborts the whole !update (a broken
-// plugin build shouldn't be silently deployed).
+// updatePlugins rebuilds each merged plugin from its sub-directory under srcDir
+// and writes the binary to that sub-dir (aglink/<subdir>/<name>+exeSuffix) — the
+// exact path config.yaml's binary_path names and the host spawns from. A plugin
+// whose sub-dir isn't present is silently skipped: a headless deployment without
+// the Windows-only screen/browser plugins must not block updating aglink itself.
+// Returns a short per-plugin report for the Telegram progress message, or an
+// error that aborts the whole !update (a broken plugin build shouldn't ship).
 func updatePlugins(srcDir string) ([]string, error) {
-	parent := filepath.Dir(srcDir)
 	var report []string
-	for _, name := range pluginNames {
-		pluginDir := filepath.Join(parent, name)
-		if _, statErr := os.Stat(pluginDir); statErr != nil {
+	for _, pb := range pluginBuilds {
+		pluginDir := filepath.Join(srcDir, pb.subdir)
+		if _, statErr := os.Stat(filepath.Join(pluginDir, "go.mod")); statErr != nil {
 			continue
 		}
-		target := filepath.Join(srcDir, name+exeSuffix)
+		name := pb.exe
+		target := filepath.Join(pluginDir, name+exeSuffix)
 		// aglink-chat runs as a supervised child; kill it (release the exe lock)
 		// and pause the supervisor's respawn while we rebuild. The next aglink
 		// respawns it from the fresh binary.

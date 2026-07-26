@@ -181,7 +181,7 @@ func RunMCPScreen() error {
 	// snapshot-polling loop.
 	s.AddTool(
 		mcp.NewTool("wait_for_control",
-			mcp.WithDescription("Block until an element (by Name or AutomationId, as reported by snapshot) appears in the foreground window's UI Automation tree, instead of calling snapshot in a manual polling loop. Fails with a timeout error after 'timeout_ms' (default 8000) if it never appears. Caveat: this checks tree EXISTENCE, not visual visibility — some apps (e.g. modern WinUI/XAML flyouts like Notepad's Find bar) keep an element mounted-but-hidden after it's been shown once, so a second wait for the same element can return immediately even though it isn't currently on screen. Confirmed reliable for an element's first-ever appearance."),
+			mcp.WithDescription("Block until an element (by Name or AutomationId from snapshot) appears in the foreground window's UIA tree; times out after 'timeout_ms' (default 8000). Checks tree existence, not visual visibility, so a re-shown WinUI/XAML flyout may return immediately."),
 			mcp.WithString("name", mcp.Description("The element Name or AutomationId to wait for."), mcp.Required()),
 			mcp.WithNumber("timeout_ms", mcp.Description("Max time to wait in milliseconds (default 8000).")),
 		),
@@ -295,7 +295,7 @@ func RunMCPScreen() error {
 	// new one) — ambiguous alt+f4 targeting has caused real data loss.
 	s.AddTool(
 		mcp.NewTool("close_window",
-			mcp.WithDescription("Close a specific window by title substring or hwnd (sends WM_CLOSE — the same signal its own X button sends, so the app's own \"save changes?\" prompt still fires normally; use confirm_dialogs right after if you want that handled automatically). Prefer this over key(\"alt+f4\") whenever you know the target window: alt+f4 acts on whatever the OS currently considers foreground, which can shift unexpectedly (e.g. launch_app on an already-running single-instance app activates its existing window instead of opening a new one) — this targets the exact window by handle regardless of what currently has focus."),
+			mcp.WithDescription("Close a specific window by title substring or hwnd (WM_CLOSE — the app's own \"save changes?\" prompt still fires; follow with confirm_dialogs to auto-handle it). Prefer over key(\"alt+f4\") when you know the target: alt+f4 hits whatever is currently foreground, this targets the exact window by handle."),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -443,7 +443,7 @@ func RunMCPScreen() error {
 	// docs/control-ownership.md §4.2. Does not acquire the lease.
 	s.AddTool(
 		mcp.NewTool("control_status",
-			mcp.WithDescription("Report who currently holds screen-control ownership across concurrent teleclaude sessions (each conversation runs its own aglink-screen process driving the same screen). Read-only: does NOT take control. Returns one of: 'control: free', 'control: held by me (...)', or 'control: held by another (owner_pid=.., ...)'. Use this before driving the screen to avoid colliding with another session; a control tool (click/type/...) will itself return a 'SCREEN_BUSY: ...' error if another session owns the screen."),
+			mcp.WithDescription("Report who holds screen-control ownership across concurrent sessions: 'control: free' / 'control: held by me (...)' / 'control: held by another (...)'. Read-only, does NOT take control. Check before driving the screen to avoid a SCREEN_BUSY collision (a click/type would otherwise return that error)."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultText(controlStatusText()), nil
@@ -756,9 +756,10 @@ func RunMCPScreen() error {
 	// more reliable than screenshot+vision for clicking by label.
 	s.AddTool(
 		mcp.NewTool("win_controls",
-			mcp.WithDescription("List a window's Win32 child controls with EXACT screen coordinates: 'class | \"label\" | center(x,y) | WxH'. Use the reported center as click(x,y), or use click_control to click by label. Works for native apps (buttons, SysTreeView32, SysListView32, Edit) even when snapshot/UIA returns nothing. By default only currently-visible controls are listed; set include_hidden=true to see controls on inactive panels/tabs."),
+			mcp.WithDescription("List a window's Win32 child controls with EXACT screen coordinates: 'class | \"label\" | center(x,y) | WxH'. Use the reported center as click(x,y), or click_control to click by label. Works for native apps even when snapshot/UIA is empty. Only visible controls unless include_hidden=true. Large trees are capped by 'max' (default 400)."),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd (e.g. 'NetGuard')."), mcp.Required()),
 			mcp.WithBoolean("include_hidden", mcp.Description("Include controls that are not currently visible (other tabs/panels). Default false.")),
+			mcp.WithNumber("max", mcp.Description("Max controls to return (default 400); a big list/tree is truncated with a note. Symmetry with snapshot's cap so a huge tree can't flood the prompt.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			window, err := req.RequireString("window")
@@ -766,12 +767,21 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultError("missing required argument 'window'"), nil
 			}
 			includeHidden := req.GetBool("include_hidden", false)
+			maxControls := req.GetInt("max", 400)
 			ctrls, err := listControls(window, includeHidden)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("win_controls failed", err), nil
 			}
 			if len(ctrls) == 0 {
 				return mcp.NewToolResultText("(no child controls found)"), nil
+			}
+			// Cap the count so a SysListView32/SysTreeView32 with thousands of rows
+			// can't dump its whole tree into the prompt. snapshot already caps its
+			// element count; this closes the same gap for win_controls.
+			note := ""
+			if maxControls > 0 && len(ctrls) > maxControls {
+				note = fmt.Sprintf("\n… [%d of %d controls shown; raise 'max' or narrow the window]", maxControls, len(ctrls))
+				ctrls = ctrls[:maxControls]
 			}
 			var b strings.Builder
 			for _, c := range ctrls {
@@ -783,7 +793,7 @@ func RunMCPScreen() error {
 					c.Class, c.Text, c.CenterX(), c.CenterY(),
 					c.Right-c.Left, c.Bottom-c.Top, vis)
 			}
-			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
+			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n") + note), nil
 		},
 	)
 
@@ -980,7 +990,7 @@ func RunMCPScreen() error {
 	// or may not appear) belong outside the batch, split at that point.
 	s.AddTool(
 		mcp.NewTool("run_sequence",
-			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one tool round-trip per step. Supported actions (same params as each action's own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name}, set_value{name,text}, click_control{window,text,nth?}, wait_for_control{name,timeout_ms?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}. Stops at the first failed step and reports exactly how far it got (never silently partial). Use this ONLY for a sequence whose targets you already know (e.g. from a prior snapshot) — a step that depends on reacting to something unpredictable (a popup that may or may not appear) belongs outside the batch; split the sequence there and inspect state before continuing. Deliberately exclude a final destructive/committing action (send, delete, confirm) from the batch — verify state after the batch completes, then issue that as its own separate call.`),
+			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name}, set_value{name,text}, click_control{window,text,nth?}, wait_for_control{name,timeout_ms?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state.`),
 			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -989,7 +999,9 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultError("missing required argument 'steps'"), nil
 			}
 			results, rerr := runSequence(stepsJSON)
-			b, _ := json.MarshalIndent(results, "", "  ")
+			// Compact (not indented) JSON: this is machine-read step output, so the
+			// pretty-print newlines/spaces were pure token overhead every call.
+			b, _ := json.Marshal(results)
 			if rerr != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("run_sequence stopped early: %v\n%s", rerr, string(b))), nil
 			}

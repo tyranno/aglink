@@ -855,8 +855,24 @@ func uiaGetValue(name string) (string, error) {
 		}
 		s := ole.BstrToString(bstr)
 		ole.SysFreeString((*int16)(unsafe.Pointer(bstr)))
-		return s, nil
+		return clampFieldValue(s), nil
 	})
+}
+
+// maxFieldValueChars bounds a single UIA field value returned by get_value. The
+// element COUNT is already capped (snapshot max=200), but a single control — a
+// text editor, a document, a huge read-only box — could return its entire
+// contents (tens of thousands of tokens) in one read. This is the missing
+// per-element length cap; the value is trimmed with a marker so the caller knows
+// it was cut.
+const maxFieldValueChars = 2000
+
+func clampFieldValue(s string) string {
+	r := []rune(s)
+	if len(r) <= maxFieldValueChars {
+		return s
+	}
+	return string(r[:maxFieldValueChars]) + fmt.Sprintf("… [truncated, %d chars total]", len(r))
 }
 
 // ---- wait_for_control ----

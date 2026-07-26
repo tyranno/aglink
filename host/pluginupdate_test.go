@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestUpdatePlugins_SkipsMissingSibling(t *testing.T) {
-	orig := pluginNames
-	defer func() { pluginNames = orig }()
-	pluginNames = []string{"nonexistent-plugin"}
+func TestUpdatePlugins_SkipsMissingSubdir(t *testing.T) {
+	orig := pluginBuilds
+	defer func() { pluginBuilds = orig }()
+	pluginBuilds = []struct{ subdir, exe string }{{"nonexistent", "nonexistent-plugin"}}
 
 	aglinkDir := t.TempDir()
 	report, err := updatePlugins(aglinkDir)
@@ -22,29 +22,29 @@ func TestUpdatePlugins_SkipsMissingSibling(t *testing.T) {
 	}
 }
 
-func TestUpdatePlugins_BuildsSiblingAndReportsIt(t *testing.T) {
+func TestUpdatePlugins_BuildsSubdirAndReportsIt(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
-	orig := pluginNames
-	defer func() { pluginNames = orig }()
-	pluginNames = []string{"okplugin"}
+	orig := pluginBuilds
+	defer func() { pluginBuilds = orig }()
+	pluginBuilds = []struct{ subdir, exe string }{{"okplugin", "okbin"}}
 
-	parent := t.TempDir()
-	aglinkDir := filepath.Join(parent, "aglink")
-	mustMkdir(t, aglinkDir)
-	pluginDir := filepath.Join(parent, "okplugin")
+	// The merged layout: the plugin source lives in a sub-dir of aglink's srcDir,
+	// and its binary is written back into that same sub-dir (the configured path).
+	aglinkDir := t.TempDir()
+	pluginDir := filepath.Join(aglinkDir, "okplugin")
 	mustMkdir(t, pluginDir)
-	writeMinimalGoModule(t, pluginDir, "okplugin")
+	writeMinimalGoModule(t, pluginDir, "okbin")
 
 	report, err := updatePlugins(aglinkDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(report) != 1 || report[0] != "okplugin" {
-		t.Errorf("report = %v, want [okplugin]", report)
+	if len(report) != 1 || report[0] != "okbin" {
+		t.Errorf("report = %v, want [okbin]", report)
 	}
-	binPath := filepath.Join(aglinkDir, "okplugin"+exeSuffix)
+	binPath := filepath.Join(pluginDir, "okbin"+exeSuffix)
 	if _, statErr := os.Stat(binPath); statErr != nil {
 		t.Errorf("expected binary at %s: %v", binPath, statErr)
 	}
@@ -54,16 +54,14 @@ func TestUpdatePlugins_BuildFailureAborts(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
-	orig := pluginNames
-	defer func() { pluginNames = orig }()
-	pluginNames = []string{"brokenplugin"}
+	orig := pluginBuilds
+	defer func() { pluginBuilds = orig }()
+	pluginBuilds = []struct{ subdir, exe string }{{"brokenplugin", "brokenbin"}}
 
-	parent := t.TempDir()
-	aglinkDir := filepath.Join(parent, "aglink")
-	mustMkdir(t, aglinkDir)
-	pluginDir := filepath.Join(parent, "brokenplugin")
+	aglinkDir := t.TempDir()
+	pluginDir := filepath.Join(aglinkDir, "brokenplugin")
 	mustMkdir(t, pluginDir)
-	if err := os.WriteFile(filepath.Join(pluginDir, "go.mod"), []byte("module brokenplugin\n\ngo 1.21\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(pluginDir, "go.mod"), []byte("module brokenbin\n\ngo 1.21\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(pluginDir, "main.go"), []byte("package main\n\nfunc main() { this is not valid go }\n"), 0o644); err != nil {

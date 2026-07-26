@@ -1526,9 +1526,30 @@ function appendProgress(key, text) {
   chat.progressByKey = new Map(chat.progressByKey).set(key, [...trimmed, text]);
 }
 
+// Guard so a turn's worth of frames for an unseen conversation triggers one
+// list reload rather than one per frame.
+let unknownConvReloadPending = false;
+
+// reloadForUnknownConversation pulls the conversation list when a frame arrives
+// for a web conversation this client has never heard of. Nothing in the frame
+// protocol announces a conversation the *other* clients created (the web chat,
+// a second desktop window), and the list is otherwise only refetched off this
+// client's own actions — so such a conversation stayed invisible in the sidebar
+// until the next restart, even while its turns were streaming in.
+function reloadForUnknownConversation(target) {
+  if (target?.kind !== "web" || !target.id) return;
+  if (chat.webConvs.some((c) => c.id === target.id)) return;
+  if (unknownConvReloadPending) return;
+  unknownConvReloadPending = true;
+  void loadConversations().finally(() => {
+    unknownConvReloadPending = false;
+  });
+}
+
 export function handleFrame(frame) {
   const target = frameTarget(frame);
   const key = targetKey(target);
+  reloadForUnknownConversation(target);
 
   if (frame.type === "typing") {
     startWorking(key);

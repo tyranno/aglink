@@ -122,9 +122,10 @@ func TestApplySettingsUpdate_NoInPlaceMutation(t *testing.T) {
 // (not a fake) — it exercises the exact request path a real aglink-desktop
 // settings load takes: chatControlServer.handleInbound → buildSettings →
 // codexModelOptionsFor → the real codexRunner.modelCatalog() → a real `codex
-// debug models` subprocess. Skips (doesn't fail) when codex isn't installed,
-// since that's expected on machines/CI without it. This runs against a
-// throwaway in-test Manager/Bot, never the live aglink process.
+// debug models` subprocess. Skips (doesn't fail) when codex isn't installed
+// or is too old to have a catalog, since both are expected on real machines
+// and on CI. This runs against a throwaway in-test Manager/Bot, never the
+// live aglink process.
 func TestGetSettings_CodexModelSelect_RealCLI(t *testing.T) {
 	codexPath, err := findCodex("")
 	if err != nil || codexPath == "" {
@@ -132,6 +133,15 @@ func TestGetSettings_CodexModelSelect_RealCLI(t *testing.T) {
 	}
 	cfgh := NewConfigHolder(&Config{})
 	codex := NewCodexRunner(codexPath, cfgh)
+	// "installed" is not the same as "supports `debug models`" — codex-cli
+	// 0.36 has only `debug seatbelt|landlock`, so the catalog comes back
+	// empty and the field correctly stays a free-text string (see
+	// codexModelOptionsFor). Nothing to assert about a select in that case.
+	// modelCatalog() memoizes, so this probe is also the one the request
+	// path below reuses rather than a second subprocess.
+	if len(codex.modelCatalog()) == 0 {
+		t.Skip("installed codex-cli has no `debug models` catalog — skipping select assertions")
+	}
 	m := NewManager(nil, codex, NewFileStore(filepath.Join(t.TempDir(), "store.json")), cfgh)
 	b := &Bot{manager: m, cfgh: cfgh}
 	s := &chatControlServer{bot: b}

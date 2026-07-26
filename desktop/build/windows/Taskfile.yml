@@ -55,6 +55,8 @@ tasks:
       GOOS: windows
       CGO_ENABLED: '{{.CGO_ENABLED | default "0"}}'
       GOARCH: '{{.ARCH | default ARCH}}'
+      # desktop/ is outside the repo's go.work — see build/Taskfile.yml.
+      GOWORK: off
 
   build:docker:
     summary: Cross-compiles for Windows using Docker with Zig (for CGO builds on non-Windows)

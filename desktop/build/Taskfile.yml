@@ -1,11 +1,19 @@
 version: '3'
 
 tasks:
+  # GOWORK: off on every task that shells out to go — desktop/ is deliberately
+  # excluded from the repo's go.work (it needs the local wails/v3 checkout
+  # outside the repo), so with the workspace active `go mod tidy` rewrites
+  # go.mod against the wrong module set and `wails3 generate bindings` resolves
+  # zero services, which then fails the frontend build on an unresolved
+  # ../bindings import. See desktop/README.md.
   go:mod:tidy:
     summary: Runs `go mod tidy`
     internal: true
     cmds:
       - go mod tidy
+    env:
+      GOWORK: off
 
   install:frontend:deps:
     summary: Install frontend dependencies
@@ -96,6 +104,8 @@ tasks:
       - frontend/bindings/**/*
     cmds:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true
+    env:
+      GOWORK: off
 
   generate:icons:
     summary: Generates Windows `.ico` and Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
@@ -138,6 +148,8 @@ tasks:
       - go build -tags server {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.APP_NAME}}-server{{exeExt}}
     vars:
       BUILD_FLAGS: "{{.BUILD_FLAGS}}"
+    env:
+      GOWORK: off
 
   run:server:
     summary: Builds and runs the application in server mode

@@ -277,6 +277,34 @@ func downscaleNearest(src image.Image, dw, dh int) *image.RGBA {
 	return dst
 }
 
+// scaleReadingPNG downscales a PNG by an explicit factor in (0,1) for READING a
+// window's content cheaply (fewer vision tokens), returning the new bytes and
+// dimensions. scale<=0 or >=1 returns the input unchanged with its original
+// dimensions. Distinct from the full-screenshot cap: capture_window/region stay
+// full-resolution by default because their caption promises a 1:1 image→screen
+// click mapping — downscaling breaks that, so a scaled capture is for reading
+// only and its caller must NOT offer image-pixel click coordinates.
+func scaleReadingPNG(pngBytes []byte, scale float64) (out []byte, w, h int, err error) {
+	src, derr := png.Decode(bytes.NewReader(pngBytes))
+	if derr != nil {
+		return nil, 0, 0, fmt.Errorf("scaleReadingPNG: decode: %w", derr)
+	}
+	sb := src.Bounds()
+	if scale <= 0 || scale >= 1 {
+		return pngBytes, sb.Dx(), sb.Dy(), nil
+	}
+	dw := int(float64(sb.Dx()) * scale)
+	dh := int(float64(sb.Dy()) * scale)
+	if dw < 1 || dh < 1 {
+		return pngBytes, sb.Dx(), sb.Dy(), nil
+	}
+	enc, eerr := encodePNG(downscaleNearest(src, dw, dh))
+	if eerr != nil {
+		return nil, 0, 0, eerr
+	}
+	return enc, dw, dh, nil
+}
+
 // encodePNG PNG-encodes img to bytes.
 func encodePNG(img image.Image) ([]byte, error) {
 	var out bytes.Buffer

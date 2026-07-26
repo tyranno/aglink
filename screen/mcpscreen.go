@@ -369,22 +369,40 @@ func RunMCPScreen() error {
 	// returned caption gives the origin to map image pixels to screen coords.
 	s.AddTool(
 		mcp.NewTool("capture_window",
-			mcp.WithDescription("Capture ONLY the given window (cropped to its rectangle) as a PNG. Prefer this over the full screenshot: a single window is usually small enough to avoid vision downscaling, so it is sharp and its pixels map exactly to screen coordinates. The caption reports the window's screen origin so an in-image pixel (ix,iy) maps to click(x=left+ix, y=top+iy)."),
+			mcp.WithDescription("Capture ONLY the given window (cropped to its rectangle) as a PNG. Prefer this over the full screenshot: a single window is usually small enough to avoid vision downscaling, so it is sharp and its pixels map exactly to screen coordinates. The caption reports the window's screen origin so an in-image pixel (ix,iy) maps to click(x=left+ix, y=top+iy). To READ a large/maximized window's content cheaply (not to click), pass scale (0.1–1.0) to downscale — a maximized window is often 1080p+ and costs the full ~1800 vision tokens otherwise; a scaled capture is for reading only (do not compute clicks from it)."),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
+			mcp.WithNumber("scale", mcp.Description("Optional downscale factor 0.1–1.0 for READING only (fewer vision tokens). Omit for full resolution with exact click mapping.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			window, err := req.RequireString("window")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'window'"), nil
 			}
+			scale := req.GetFloat("scale", 0)
+			if scale != 0 && (scale < 0.1 || scale > 1.0) {
+				return mcp.NewToolResultError("scale must be between 0.1 and 1.0"), nil
+			}
 			png, left, top, w, h, err := captureWindow(window)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("capture_window failed", err), nil
 			}
-			b64 := base64.StdEncoding.EncodeToString(png)
+			// Full resolution (default): keep the exact 1:1 image→screen click mapping.
 			caption := fmt.Sprintf("Window %q. Screen origin (left=%d, top=%d), size %dx%d. "+
 				"To click an element at image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).",
 				window, left, top, w, h, left, top)
+			if scale != 0 && scale < 1.0 {
+				var iw, ih int
+				png, iw, ih, err = scaleReadingPNG(png, scale)
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("capture_window downscale failed", err), nil
+				}
+				// Downscaled: the 1:1 mapping no longer holds, so steer clicks to the
+				// reliable path instead of offering error-prone scaled arithmetic.
+				caption = fmt.Sprintf("Window %q, downscaled to %dx%d for reading (from %dx%d). "+
+					"Read-only: do NOT compute click coordinates from this image — use snapshot/win_controls, "+
+					"or re-capture without scale for pixel-accurate clicking.", window, iw, ih, w, h)
+			}
+			b64 := base64.StdEncoding.EncodeToString(png)
 			return mcp.NewToolResultImage(caption, b64, "image/png"), nil
 		},
 	)

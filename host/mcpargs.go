@@ -57,6 +57,16 @@ func pluginWorkerArgs(cfg *Config, screenBin, webBin string) []string {
 		return nil
 	}
 
+	// When BOTH plugins are active the worker has two ways to touch a browser, and
+	// the per-plugin prompts each only say "prefer me" — which in the field still
+	// let a worker research the web by capturing ~3MB browser-window screenshots
+	// dozens of times (huge vision cost, re-sent every --resume turn) instead of
+	// reading get_page_text. Lead with one decisive arbitration rule so the browser
+	// case is unambiguous. Prepended so it's the first thing the worker reads.
+	if cfg.ScreenControl && screenBin != "" && cfg.WebControl && webBin != "" {
+		prompts = append([]string{screenWebArbitrationPrompt()}, prompts...)
+	}
+
 	inline, err := json.Marshal(mcpConfig{McpServers: servers})
 	if err != nil {
 		// servers is a fixed, marshalable shape; this can't realistically fail.

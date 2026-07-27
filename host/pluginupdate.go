@@ -55,6 +55,10 @@ func updatePlugins(srcDir string) ([]string, error) {
 		buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", target, ".")
 		buildCmd.Dir = pluginDir
+		// Build each plugin module alone via its own go.mod. With the monorepo
+		// go.work active, `go build` runs in workspace mode (which also rejects the
+		// module-mode -mod flag), so pin it off — matches the host build above.
+		buildCmd.Env = append(os.Environ(), "GOWORK=off")
 		out, buildErr := buildCmd.CombinedOutput()
 		cancel()
 		if name == "aglink-chat" {

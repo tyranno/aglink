@@ -1258,10 +1258,21 @@ func (b *Bot) handleUpdate(reply replySender, chatID int64) {
 	newExe := filepath.Join(srcDir, "aglink_new"+exeSuffix)
 	readyFile := filepath.Join(os.TempDir(), fmt.Sprintf(".aglink_ready_%d", os.Getpid()))
 
-	// Verify source code exists in srcDir (fix: exe copied to different dir would silently fail)
-	if _, serr := os.Stat(filepath.Join(srcDir, "main.go")); serr != nil {
-		_ = reply.Send(chatID, "⚠️ 소스 코드를 찾을 수 없습니다 ("+srcDir+")\nexe와 소스 코드가 같은 디렉터리에 있어야 !update가 작동합니다.")
-		return
+	// Locate the host source directory. Two layouts are supported:
+	//   - flat (pre-monorepo): main.go sits beside the exe (buildDir = srcDir).
+	//   - monorepo: the exe is deployed at the repo root while the host source
+	//     moved to <root>/host, so exe-dir no longer holds main.go — build from
+	//     srcDir/host instead. newExe stays beside the running exe either way, so
+	//     the handoff self-rename still swaps the file that's actually running.
+	buildDir := srcDir
+	if _, serr := os.Stat(filepath.Join(buildDir, "main.go")); serr != nil {
+		hostDir := filepath.Join(srcDir, "host")
+		if _, herr := os.Stat(filepath.Join(hostDir, "main.go")); herr == nil {
+			buildDir = hostDir
+		} else {
+			_ = reply.Send(chatID, "⚠️ 소스 코드를 찾을 수 없습니다 ("+srcDir+" / "+hostDir+")\nexe가 있는 폴더나 그 아래 host/ 에 main.go가 있어야 !update가 작동합니다.")
+			return
+		}
 	}
 
 	// If we're already running as aglink_new.exe, the self-rename from the previous
@@ -1293,15 +1304,20 @@ func (b *Bot) handleUpdate(reply replySender, chatID int64) {
 	// time). Best-effort: git absent / not a repo → omit ldflags and the binary
 	// renders v<major>.<minor>.dev.
 	buildArgs := []string{"build", "-o", newExe}
-	if count := gitCommitCount(srcDir); count != "" {
+	if count := gitCommitCount(buildDir); count != "" {
 		buildArgs = append(buildArgs, "-ldflags",
 			"-X main.buildCommitCount="+count+
-				" -X main.buildCommit="+gitShortCommit(srcDir)+
+				" -X main.buildCommit="+gitShortCommit(buildDir)+
 				" -X main.buildTime="+time.Now().UTC().Format(time.RFC3339))
 	}
 	buildArgs = append(buildArgs, ".")
 	buildCmd := exec.CommandContext(buildCtx, "go", buildArgs...)
-	buildCmd.Dir = srcDir
+	buildCmd.Dir = buildDir
+	// GOWORK=off: build the host module alone via its own go.mod. With the
+	// monorepo go.work active, `go build` runs in workspace mode (which also
+	// rejects the module-mode -mod flag), so pin it off — every other go step in
+	// this repo builds the same way.
+	buildCmd.Env = append(os.Environ(), "GOWORK=off")
 	if out, berr := buildCmd.CombinedOutput(); berr != nil {
 		_ = reply.Send(chatID, "⚠️ 빌드 실패:\n"+strings.TrimSpace(string(out)))
 		return

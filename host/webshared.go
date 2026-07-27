@@ -267,13 +267,47 @@ type historyResponse struct {
 // buildHistoryResponse expands a conversation's stored turns into a flat
 // user/assistant sequence for the web log. Used by the control-API get_history
 // request.
+// maxHistoryImageBytes bounds the total base64 image payload inlined into one
+// get_history reply. The control clients (desktop, aglink-chat) cap their
+// websocket read at 8 MiB; a conversation full of tool screenshots easily blew
+// past that in a single reply, and the client then silently dropped the
+// connection and reconnect-looped forever (seen live: the desktop churning
+// "message too big: read limited at 8388609 bytes" every 10s, never rendering).
+// 5 MiB of images leaves comfortable room for the reply's text turns + JSON
+// framing under the 8 MiB limit.
+const maxHistoryImageBytes = 5 << 20
+
 func buildHistoryResponse(store StoreRepo, tgt Target) historyResponse {
 	resp := historyResponse{Turns: []historyTurn{}}
 	// Take a copy of the history under the store lock instead of reaching into
 	// a live *Conversation — a worker may concurrently be appending to (and
 	// reslicing) the same conversation's History slice.
 	turns := store.HistorySnapshot(tgt)
-	for _, turn := range turns {
+
+	// Pre-select which persisted screenshots to inline, newest-first, within a
+	// byte budget so the reply can't exceed the client's websocket read limit.
+	// Recent images (the ones a user is most likely looking at) are kept; older
+	// images beyond the budget are dropped from the replay. Loaded bytes are
+	// cached so the emit pass below doesn't re-read them from disk.
+	type imgKey struct{ turn, idx int }
+	keep := map[imgKey][]byte{}
+	budget := maxHistoryImageBytes
+	for ti := len(turns) - 1; ti >= 0; ti-- {
+		for ii := len(turns[ti].Images) - 1; ii >= 0; ii-- {
+			png, ok := loadImageRef(turns[ti].Images[ii])
+			if !ok {
+				continue // pruned/missing ref
+			}
+			if enc := base64.StdEncoding.EncodedLen(len(png)); enc <= budget {
+				budget -= enc
+				keep[imgKey{ti, ii}] = png
+			}
+			// else: doesn't fit — skip it but keep scanning; an older, smaller
+			// image may still fit the remaining budget.
+		}
+	}
+
+	for ti, turn := range turns {
 		if turn.Prompt != "" {
 			resp.Turns = append(resp.Turns, historyTurn{Role: "user", Text: turn.Prompt})
 		}
@@ -281,9 +315,9 @@ func buildHistoryResponse(store StoreRepo, tgt Target) historyResponse {
 			resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Text: turn.Response})
 		}
 		// Replay persisted tool screenshots after the response, so images survive a
-		// restart. Pruned/missing refs are skipped.
-		for _, ref := range turn.Images {
-			if png, ok := loadImageRef(ref); ok {
+		// restart. Pruned/missing refs and any dropped to fit the budget are skipped.
+		for ii := range turn.Images {
+			if png, ok := keep[imgKey{ti, ii}]; ok {
 				resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Image: base64.StdEncoding.EncodeToString(png)})
 			}
 		}

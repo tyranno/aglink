@@ -129,9 +129,17 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin string) []str
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
-	if req.Resume {
+	// An empty session id must never reach the CLI: `--resume ""` is rejected
+	// outright ("--resume requires a valid session ID"), and `--session-id ""` is
+	// equally invalid. Callers normally guarantee a real id (see manager's resume
+	// decision), but as a backstop, omit both flags when it's empty — the CLI then
+	// starts a fresh session with an id of its own rather than crashing the turn.
+	switch {
+	case strings.TrimSpace(req.SessionID) == "":
+		// no session flag — let the CLI generate one
+	case req.Resume:
 		args = append(args, "--resume", req.SessionID)
-	} else {
+	default:
 		args = append(args, "--session-id", req.SessionID)
 	}
 	args = append(args, pluginWorkerArgs(cfg, screenBin, webBin)...)

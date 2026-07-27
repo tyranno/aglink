@@ -1173,6 +1173,19 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// recent stored history instead — otherwise per-turn input keeps growing and
 	// the turn slows to minutes. This is the same "no server-side session, inline
 	// more history" path the session-loss recovery below uses.
+	// A resume/create needs a real session id. If the stored one is empty while the
+	// conversation is marked Started — a desync: a backend turn returned no
+	// session_id, or a series split / reset cleared the id but not the flag — then
+	// resuming emits `claude -p --resume ""`, which the CLI rejects ("--resume
+	// requires a valid session ID"), failing every following turn on the conversation.
+	// Mint a fresh id and create a new session instead of resuming a non-existent
+	// one. The turn's prompt already carries recent history, so the conversation
+	// continues; the id we mint is persisted below and reused by later resumes, so
+	// this self-heals even if the backend keeps returning an empty session_id.
+	if strings.TrimSpace(workConv.SessionID) == "" {
+		workConv.SessionID = newUUID()
+		workConv.Started = false
+	}
 	resume := workConv.Started
 	codexReset := false
 	if resume && backend == "codex" && codexContextTooLarge(workConv.CodexContextTokens) {

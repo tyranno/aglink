@@ -876,7 +876,7 @@ func RunMCPScreen() error {
 	// snapshot — read the foreground window's UIA element tree as text.
 	s.AddTool(
 		mcp.NewTool("snapshot",
-			mcp.WithDescription("Read the foreground window's UI Automation element tree as compact text: control type, name, automation id, and capabilities ([invokable]/[editable]/[disabled]). Prefer this over screenshot — it is cheap and reliable for native apps. Optional 'max' caps the number of elements (default 200)."),
+			mcp.WithDescription("Read the foreground window's UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Optional 'max' caps the number of elements (default 200)."),
 			mcp.WithNumber("max",
 				mcp.Description("Maximum number of elements to return (default 200)."),
 			),
@@ -991,6 +991,32 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("%q = %q", name, value)), nil
+		},
+	)
+
+	// get_text — read a control's (or the whole foreground window's) textual
+	// content by handle, so a worker reads documents/editors/read-only panes as
+	// TEXT instead of capturing them as a screenshot (10–100× cheaper, exact, and
+	// not re-billed every turn as a retained image). Uses the UIA Text pattern with
+	// a Value fallback — the read path for content-heavy controls that snapshot
+	// only previews and get_value (Value-only) used to reject.
+	s.AddTool(
+		mcp.NewTool("get_text",
+			mcp.WithDescription(fmt.Sprintf("Read a window/control's full TEXT content by handle (UIA Text pattern, Value fallback) — use this to READ a document, editor, log pane, article, or read-only text area instead of a screenshot. Give 'name' (element Name/AutomationId from snapshot) to read one element; omit it to read the foreground window's document text. Returns up to %d chars (bounded). Prefer this and snapshot over capture_window for reading text; capture only for genuinely visual content.", maxTextChars)),
+			mcp.WithString("name",
+				mcp.Description("Optional element Name/AutomationId to read. Omit to read the foreground window's own text content."),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name := req.GetString("name", "")
+			text, err := uiaGetText(name)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("get_text failed", err), nil
+			}
+			if strings.TrimSpace(text) == "" {
+				return mcp.NewToolResultText("(no text content)"), nil
+			}
+			return mcp.NewToolResultText(text), nil
 		},
 	)
 

@@ -18,7 +18,9 @@ func screenSystemPrompt() string {
 	return "" +
 		"You can control this Windows desktop via the `screen` MCP tools. Prefer cheap, coordinate-free methods; use vision only as a last resort.\n" +
 		"0. 앱은 launch_app(name)으로 실행하고, 대상 앱을 조작하기 전에 먼저 focus_window로 창을 앞으로 가져와라.\n" +
-		"1. (1순위) snapshot(UIA)로 요소를 확인하고 invoke/set_value(이름)로 조작하라 — 가장 싸고 정확하다.\n" +
+		"1. (1순위) snapshot(UIA)로 요소를 확인하고 invoke/set_value(이름)로 조작하라 — 가장 싸고 정확하다. " +
+		"snapshot은 각 요소의 능력([invokable]/[editable]/[text])과 함께 내용 미리보기(= \"…\")도 보여준다. " +
+		"창 '내용을 읽어야' 할 때(문서/에디터/로그/기사/읽기전용 텍스트)는 스크린샷이 아니라 get_text(이름 생략 시 전경 창 전체, 이름 주면 그 요소)로 텍스트를 그대로 읽어라 — 한 필드 값 확인은 get_value. 내용 읽기에 스크린샷을 쓰지 마라.\n" +
 		"2. (2순위) snapshot이 비어있거나 거의 없으면 win_controls(window)로 Win32 자식 컨트롤의 정확한 좌표를 얻어라. " +
 		"버튼/트리/리스트가 라벨과 함께 center(x,y) 좌표로 나온다. 라벨로 누르려면 click_control(window, text[, nth]), " +
 		"좌표로 누르려면 click(x,y)를 그 center 좌표로 호출하라. 이미지 추정이 아니라 OS가 준 정확한 좌표라 신뢰도가 높다.\n" +

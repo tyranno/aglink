@@ -19,6 +19,7 @@ type yamlConfig struct {
 	Models struct {
 		Manager       string `yaml:"manager"`
 		Worker        string `yaml:"worker"`
+		WorkerLight   string `yaml:"worker_light"`
 		ManagerAlways *bool  `yaml:"manager_always"`
 	} `yaml:"models"`
 	Claude struct {
@@ -129,6 +130,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 		c.ManagerModel = y.Models.Manager
 	}
 	c.WorkerModel = y.Models.Worker
+	c.WorkerModelLight = y.Models.WorkerLight
 	if y.Models.ManagerAlways != nil {
 		c.ManagerAlways = *y.Models.ManagerAlways
 	}
@@ -218,6 +220,7 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Telegram.AllowedUsernames = c.AllowedUsernames
 	y.Models.Manager = c.ManagerModel
 	y.Models.Worker = c.WorkerModel
+	y.Models.WorkerLight = c.WorkerModelLight
 	ma := c.ManagerAlways
 	y.Models.ManagerAlways = &ma
 	y.Claude.Path = c.ClaudePath

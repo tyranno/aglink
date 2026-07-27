@@ -831,6 +831,74 @@ func (m *Manager) workerModelForBackendName(backend string) string {
 	}
 }
 
+// dynamicWorkerModel picks the claude worker model per turn to cut cost: the
+// premium WorkerModel (opus) is used for anything that looks like real work
+// (coding, debugging, multi-step tasks), and the cheaper WorkerModelLight (sonnet)
+// for trivial conversational turns. Only applies to the claude backend and only
+// when WorkerModelLight is configured — otherwise it is exactly
+// workerModelForBackendName (behavior unchanged). Classification is a local,
+// zero-cost heuristic (see classifyWorkerTier); telegram deliberately does no
+// per-message router LLM call, so an LLM judgment here would re-introduce the
+// latency that was removed. It is quality-biased: any doubt resolves to the heavy
+// model, because there is no per-conversation model override to escalate with.
+func (m *Manager) dynamicWorkerModel(backend, text string) string {
+	if backend != "claude" {
+		return m.workerModelForBackendName(backend)
+	}
+	light := strings.TrimSpace(m.cfg().WorkerModelLight)
+	if light == "" {
+		return m.cfg().WorkerModel // dynamic selection disabled
+	}
+	if classifyWorkerTier(text) == "light" {
+		return light
+	}
+	return m.cfg().WorkerModel
+}
+
+// workTierKeywords mark a turn as real work (→ heavy model). Kept broad and
+// bilingual: a false "heavy" only costs money, while a false "light" would put a
+// genuine coding turn on the weaker model with no way to escalate — so err heavy.
+var workTierKeywords = []string{
+	// EN
+	"code", "build", "compile", "run", "test", "debug", "error", "bug", "fix",
+	"implement", "refactor", "function", "class", "commit", "merge", "deploy",
+	"install", "stack", "exception", "traceback", "api", "config", "script",
+	"analyze", "review", "generate", "create", "write", "edit", "screen", "click",
+	// KO
+	"코드", "빌드", "컴파일", "실행", "테스트", "디버그", "에러", "오류", "버그",
+	"고쳐", "수정", "구현", "리팩", "함수", "클래스", "커밋", "머지", "배포",
+	"설치", "분석", "리뷰", "만들", "작성", "수정해", "짜줘", "화면", "클릭",
+	"확인해", "조사", "찾아", "정리해",
+}
+
+// classifyWorkerTier returns "light" for a trivial conversational turn or "heavy"
+// for anything work-like. Pure and testable. Heavy on: a long message, a code
+// fence, a file path/extension, or any work keyword; light otherwise.
+func classifyWorkerTier(text string) string {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return "light"
+	}
+	if len([]rune(t)) > 300 {
+		return "heavy"
+	}
+	if strings.Contains(t, "```") || strings.Contains(t, "/") || strings.Contains(t, "\\") {
+		return "heavy"
+	}
+	lower := strings.ToLower(t)
+	for _, ext := range []string{".go", ".js", ".ts", ".py", ".json", ".yaml", ".yml", ".md", ".sh", ".ps1", ".exe"} {
+		if strings.Contains(lower, ext) {
+			return "heavy"
+		}
+	}
+	for _, kw := range workTierKeywords {
+		if strings.Contains(lower, strings.ToLower(kw)) {
+			return "heavy"
+		}
+	}
+	return "light"
+}
+
 // BackendModels returns the resolved worker model for each selectable backend,
 // keyed by backend name, so clients can show which LLM a conversation's backend
 // is wired to next to its badge. The "default" key resolves to whichever backend
@@ -1210,7 +1278,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	memPath := conversationMemoryPath(pPath, workConv.ID)
 	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, historyForPrompt)
 
-	workerModel := m.workerModelForBackendName(backend)
+	workerModel := m.dynamicWorkerModel(backend, text)
 	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
 		backend, workerModel, project, workConv.ID, resume, len(prompt))
 
@@ -1557,9 +1625,11 @@ func formatCompletion(elapsed time.Duration) string {
 // maxMemoryChars bounds each memory layer (global + per-conversation) inlined
 // into every worker prompt. Memory is re-sent every turn, including resume turns
 // the CLI already carries, so an unbounded file would make every turn's input
-// grow linearly as memory accumulates. Kept generous — most memory files are far
-// smaller — but caps the tail so a runaway file can't balloon all prompts.
-const maxMemoryChars = 8000
+// grow linearly as memory accumulates. Tightened from 8000 to 4000: memory is
+// part of the fixed per-turn prefix re-read on every turn (measured ~25k-token
+// prefix), so a smaller cap directly trims the recurring cost; a memory file that
+// needs more than ~4k chars of context per turn is better split per conversation.
+const maxMemoryChars = 4000
 
 func readProjectMemory(projectPath, convID string) string {
 	if convID == "" {
@@ -1588,9 +1658,15 @@ func readGlobalMemory() string {
 
 const (
 	// maxHistoryInPromptResume: when the CLI session carries the full
-	// conversation server-side (a --resume / codex-resume turn), only a short
-	// trailing reminder is inlined, so the prompt doesn't grow every turn.
-	maxHistoryInPromptResume = 3
+	// conversation server-side (a --resume / codex-resume turn), the inlined
+	// recap is pure duplication — the CLI replays the whole transcript to the
+	// (stateless) API on every request anyway, so the recap is re-billed on each
+	// one. Measured on a 394-request session: 35 recap blocks, 46,467 chars, but
+	// 10.8M chars actually re-sent (~5M-7.5M tokens, 3.5-5.4% of all input).
+	// Hence 0 — inline nothing while the CLI holds the session. Session loss is
+	// still covered: the isSessionNotFound path below rebuilds the prompt with
+	// maxHistoryOnRecovery turns and retries.
+	maxHistoryInPromptResume = 0
 	// maxHistoryOnRecovery / maxHistoryCharsOnRecovery: when there is NO
 	// server-side session — a fresh run, or a session-loss recovery after the
 	// CLI's rollout was pruned / expired / a bot restart / a backend switch —

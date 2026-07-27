@@ -12,7 +12,8 @@ type Config struct {
 	TelegramBotToken      string
 	AllowedUserIDs        []int64
 	ManagerModel          string   // default "haiku"
-	WorkerModel           string   // "" = claude default
+	WorkerModel           string   // "" = claude default (the "heavy" model for complex/coding turns)
+	WorkerModelLight      string   // cheaper claude model for trivial conversational turns; "" = disabled (always WorkerModel). See classifyWorkerTier.
 	ClaudePath            string   // "" = auto-detect
 	ClaudeOauthToken      string   // CLAUDE_CODE_OAUTH_TOKEN injected into worker env ("" = use claude's own login)
 	TimeoutMinutes        int      // default 10

@@ -24,10 +24,9 @@ func screenSystemPrompt() string {
 		"2. (2순위) snapshot이 비어있거나 거의 없으면 win_controls(window)로 Win32 자식 컨트롤의 정확한 좌표를 얻어라. " +
 		"버튼/트리/리스트가 라벨과 함께 center(x,y) 좌표로 나온다. 라벨로 누르려면 click_control(window, text[, nth]), " +
 		"좌표로 누르려면 click(x,y)를 그 center 좌표로 호출하라. 이미지 추정이 아니라 OS가 준 정확한 좌표라 신뢰도가 높다.\n" +
-		"3. (3순위, 최후) snapshot도 win_controls도 안 돼서 화면을 눈으로 봐야 할 때는 전체 screenshot 대신 capture_window(창 하나)나 capture_region(필요한 사각형)을 우선 써라 — 픽셀이 적어 vision 토큰이 훨씬 적고 크롭돼 더 선명하다. 전체 screenshot은 여러 창을 한 번에 볼 때만. 본 뒤 click(x,y)/type/key/scroll." +
-		"캡처 이미지는 세션에 누적돼 매 턴 재전송되니(캐시로 할인되지만 0은 아님) 꼭 필요할 때만 최소 범위로 잡아라. " +
-		"창 '내용을 읽기만' 할 때(클릭 아님)는 텍스트 도구(snapshot/win_controls/get_value)를 먼저 시도하고, 그래도 이미지가 필요하면 " +
-		"최대화된 큰 창은 capture_window에 scale(예: 0.5)을 줘서 축소해 읽어라 — 풀해상도 프레임을 매 턴 재전송하는 비용을 줄인다(클릭할 땐 scale 없이).\n" +
+		"3. (3순위, 최후) 눈으로 봐야만 할 때만 캡처한다. **캡처 1장은 세션에 남아 이후 모든 턴에 계속 재과금된다.** " +
+		"읽는 게 목적이면 캡처하지 말고 get_text/snapshot을 써라. 불가피하면 좁게: capture_region(필요한 사각형) > capture_window > 전체 screenshot(여러 창 볼 때만). " +
+		"클릭이 아니라 읽기용이면 scale(예: 0.5)로 축소하고, 같은 화면을 반복 캡처하지 마라(클릭할 땐 scale 없이).\n" +
 		"4. 고정 좌표는 preset_save로 등록하고 preset_click/preset_list로 재사용하라.\n" +
 		"5. 속도: 화면 변화 감지는 screenshot(느림) 대신 win_controls를 다시 호출해 보이는 컨트롤 집합의 변화로 판단하라(수 ms). " +
 		"한 번의 답변에서 여러 클릭/감지를 묶어 처리해 LLM 왕복을 줄여라.\n" +

@@ -65,6 +65,60 @@ func TestCappedDims(t *testing.T) {
 	}
 }
 
+// solidPNG encodes a w×h opaque image, so the cap can be exercised without a screen.
+func solidPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := 3; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 0xFF
+	}
+	b, err := encodePNG(img)
+	if err != nil {
+		t.Fatalf("encodePNG(%dx%d): %v", w, h, err)
+	}
+	return b
+}
+
+// capVisionLongEdge shrinks only what exceeds the cap, and leaves anything that
+// already fits byte-identical so capture_window/region keep their 1:1 click mapping.
+func TestCapVisionLongEdge(t *testing.T) {
+	// The size a real window capture came back at — must be capped.
+	big := solidPNG(t, 1758, 1026)
+	out, w, h, capped, err := capVisionLongEdge(big)
+	if err != nil {
+		t.Fatalf("capVisionLongEdge: %v", err)
+	}
+	if !capped {
+		t.Fatalf("1758x1026 must be capped at %d", visionLongEdgeCap)
+	}
+	if w != visionLongEdgeCap || h != 915 {
+		t.Errorf("capped to %dx%d, want %dx915 (aspect preserved)", w, h, visionLongEdgeCap)
+	}
+	if len(out) >= len(big) {
+		t.Errorf("capped PNG (%d bytes) is not smaller than the original (%d)", len(out), len(big))
+	}
+
+	// At and below the cap: untouched, and the same bytes back (no re-encode).
+	for _, dim := range [][2]int{{visionLongEdgeCap, 900}, {800, 600}} {
+		in := solidPNG(t, dim[0], dim[1])
+		out, w, h, capped, err := capVisionLongEdge(in)
+		if err != nil {
+			t.Fatalf("capVisionLongEdge(%dx%d): %v", dim[0], dim[1], err)
+		}
+		if capped || w != dim[0] || h != dim[1] {
+			t.Errorf("%dx%d: capped=%v size=%dx%d, want untouched", dim[0], dim[1], capped, w, h)
+		}
+		if &out[0] != &in[0] {
+			t.Errorf("%dx%d: fitting image must be returned as-is, not re-encoded", dim[0], dim[1])
+		}
+	}
+
+	// Portrait caps on height.
+	if _, w, h, capped, err := capVisionLongEdge(solidPNG(t, 1000, 2000)); err != nil || !capped || h != visionLongEdgeCap || w != 784 {
+		t.Errorf("portrait 1000x2000 → %dx%d capped=%v err=%v, want 784x%d capped", w, h, capped, err, visionLongEdgeCap)
+	}
+}
+
 // TestDownscaleNearest verifies the shared scaler produces the requested target
 // size and samples source pixels (a 2x2 solid-quadrant image halved keeps one
 // pixel per quadrant color).

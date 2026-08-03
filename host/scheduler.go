@@ -212,8 +212,14 @@ func (s *Scheduler) fire(taskID string) bool {
 			return true // consumed the turn; cron will fire again on next tick
 		}
 		if len(data) > 0 {
-			b, _ := json.Marshal(data)
-			prompt = prompt + "\n\n[Script data]: " + string(b)
+			if msg, ok := data["message"].(string); ok && msg != "" {
+				// Pre-formatted human-readable text (e.g. from a script's own summarization)
+				// reads far better in a 🔔-style literal notification than a raw JSON dump.
+				prompt = prompt + "\n\n" + msg
+			} else {
+				b, _ := json.Marshal(data)
+				prompt = prompt + "\n\n[Script data]: " + string(b)
+			}
 		}
 	}
 
@@ -326,6 +332,91 @@ func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string, dependsOn []
 			return err
 		}
 	}
+	return s.save()
+}
+
+// UpsertTask creates a new task (in.ID == "") or replaces the editable fields of
+// an existing one, re-registering it with the cron runner if it was active.
+// Status/CreatedAt/LastFired of an existing task are preserved; a new task
+// always starts "pending". Returns the saved task (with its assigned ID).
+func (s *Scheduler) UpsertTask(in *Task) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if in.ID == "" {
+		t := &Task{
+			ID:        newTaskID(),
+			ChatID:    in.ChatID,
+			Project:   in.Project,
+			Prompt:    in.Prompt,
+			Script:    in.Script,
+			CronExpr:  in.CronExpr,
+			FireAt:    in.FireAt,
+			Status:    "pending",
+			IsTask:    in.IsTask,
+			Label:     in.Label,
+			DependsOn: in.DependsOn,
+			CreatedAt: time.Now(),
+		}
+		if err := s.register(t); err != nil {
+			return nil, err
+		}
+		s.tasks = append(s.tasks, t)
+		if err := s.save(); err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
+
+	t := s.findByID(in.ID)
+	if t == nil {
+		return nil, fmt.Errorf("작업 %q 없음", in.ID)
+	}
+	wasActive := t.Status == "pending"
+	old := *t
+	if wasActive {
+		s.deregister(in.ID)
+	}
+	// ChatID/Project/DependsOn fall back to the existing value when the caller
+	// doesn't specify one — editors (desktop/web) that don't expose these fields
+	// must not silently wipe them on an otherwise-unrelated edit.
+	if in.ChatID != 0 {
+		t.ChatID = in.ChatID
+	}
+	if in.Project != "" {
+		t.Project = in.Project
+	}
+	if in.DependsOn != nil {
+		t.DependsOn = in.DependsOn
+	}
+	t.Prompt = in.Prompt
+	t.Script = in.Script
+	t.CronExpr = in.CronExpr
+	t.FireAt = in.FireAt
+	t.IsTask = in.IsTask
+	t.Label = in.Label
+	if wasActive {
+		if err := s.register(t); err != nil {
+			*t = old
+			_ = s.register(t)
+			return nil, err
+		}
+	}
+	if err := s.save(); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// DeleteTask permanently removes a task (any status) from tasks.json, unlike
+// CancelTask which keeps a "cancelled" record around for history.
+func (s *Scheduler) DeleteTask(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.findByID(id) == nil {
+		return fmt.Errorf("작업 %q 없음", id)
+	}
+	s.removeByID(id)
 	return s.save()
 }
 

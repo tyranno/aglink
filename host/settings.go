@@ -291,6 +291,7 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "screen_control.enabled", Label: "화면 제어 허용", Desc: "봇이 스크린샷·마우스·키보드로 화면을 제어하게 합니다.", Type: "bool", Value: cfg.ScreenControl},
 			{Key: "screen_control.keep_awake", Label: "화면 잠금 방지", Desc: "화면 제어 중 화면보호기/잠금을 막습니다.", Type: "bool", Value: cfg.ScreenKeepAwake},
 			{Key: "screen_control.elevated", Label: "관리자 권한으로 화면 제어", Desc: "관리자 권한 창까지 제어해야 할 때만 켭니다.", Type: "bool", Value: cfg.ScreenElevated},
+			{Key: "notion_control.enabled", Label: "Notion 연동 허용", Desc: "봇이 Notion MCP로 페이지를 읽고 쓰게 합니다. 토큰은 설정 파일(notion_control.token)에 직접 넣어야 합니다.", Type: "bool", Value: cfg.NotionControl},
 		}},
 		{Title: "연결 / 네트워크", Group: settingsGroupNetwork, Advanced: true, Desc: "웹 화면·제어 API가 어느 주소에서 열릴지 정합니다. 기본값으로 두면 됩니다. (대부분 변경 시 재시작 필요)", Fields: []settingField{
 			{Key: "aglink_chat.enabled", Label: "웹 채팅 화면 사용", Desc: "aglink가 웹 채팅 프론트를 함께 띄웁니다.", Type: "bool", Value: cfg.AglinkChat},
@@ -374,6 +375,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.ScreenKeepAwake = asBool(v)
 		case "screen_control.elevated":
 			cfg.ScreenElevated = asBool(v)
+		case "notion_control.enabled":
+			cfg.NotionControl = asBool(v)
 		case "web_chat.enabled":
 			cfg.WebChat = asBool(v)
 		case "web_chat.addr":

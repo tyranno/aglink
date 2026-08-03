@@ -54,6 +54,25 @@ func TestCodexContextTooLarge(t *testing.T) {
 	}
 }
 
+// claudeContextTooLarge mirrors codexContextTooLarge for the claude backend: at
+// or above claudeContextResetTokens a resumed session has gone expensive enough
+// (see claudeContextResetTokens for why a single turn's billed total can spike)
+// to reset before the next turn compounds it, below it we keep resuming.
+func TestClaudeContextTooLarge(t *testing.T) {
+	if claudeContextTooLarge(0) {
+		t.Error("0 tokens (unknown) must not trigger a reset")
+	}
+	if claudeContextTooLarge(claudeContextResetTokens - 1) {
+		t.Error("just below threshold must not trigger a reset")
+	}
+	if !claudeContextTooLarge(claudeContextResetTokens) {
+		t.Error("at threshold must trigger a reset")
+	}
+	if !claudeContextTooLarge(969_100) {
+		t.Error("a turn as expensive as the live 969.1k incident must trigger a reset")
+	}
+}
+
 func TestTailTurns_CharBudget(t *testing.T) {
 	// 100 turns of 1000 chars each; a 24k budget admits ~24 of them.
 	h := make([]ConversationTurn, 100)

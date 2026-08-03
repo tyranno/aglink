@@ -64,6 +64,10 @@ type yamlConfig struct {
 		Enabled    bool   `yaml:"enabled"`
 		BinaryPath string `yaml:"binary_path"`
 	} `yaml:"web_control"`
+	NotionControl struct {
+		Enabled bool   `yaml:"enabled"`
+		Token   string `yaml:"token"`
+	} `yaml:"notion_control"`
 	WebChat struct {
 		Enabled     bool   `yaml:"enabled"`
 		Addr        string `yaml:"addr"`
@@ -170,6 +174,8 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.ScreenMaxScreenshotLongEdge = y.ScreenControl.MaxScreenshotLongEdge
 	c.WebControl = y.WebControl.Enabled
 	c.WebBinaryPath = y.WebControl.BinaryPath
+	c.NotionControl = y.NotionControl.Enabled
+	c.NotionToken = y.NotionControl.Token
 	c.WebChat = y.WebChat.Enabled
 	c.WebChatAddr = y.WebChat.Addr
 	if c.WebChatAddr == "" {
@@ -248,6 +254,8 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ScreenControl.MaxScreenshotLongEdge = c.ScreenMaxScreenshotLongEdge
 	y.WebControl.Enabled = c.WebControl
 	y.WebControl.BinaryPath = c.WebBinaryPath
+	y.NotionControl.Enabled = c.NotionControl
+	y.NotionControl.Token = c.NotionToken
 	y.WebChat.Enabled = c.WebChat
 	y.WebChat.Addr = c.WebChatAddr
 	y.WebChat.Token = c.WebChatToken

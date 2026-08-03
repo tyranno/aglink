@@ -280,10 +280,10 @@ func downscaleNearest(src image.Image, dw, dh int) *image.RGBA {
 // scaleReadingPNG downscales a PNG by an explicit factor in (0,1) for READING a
 // window's content cheaply (fewer vision tokens), returning the new bytes and
 // dimensions. scale<=0 or >=1 returns the input unchanged with its original
-// dimensions. Distinct from the full-screenshot cap: capture_window/region stay
-// full-resolution by default because their caption promises a 1:1 image→screen
-// click mapping — downscaling breaks that, so a scaled capture is for reading
-// only and its caller must NOT offer image-pixel click coordinates.
+// dimensions. This is the caller-requested downscale, below the automatic
+// visionLongEdgeCap that capture_window/region already apply; either way the 1:1
+// image→screen click mapping is broken, so a scaled capture is for reading only
+// and its caller must NOT offer image-pixel click coordinates.
 func scaleReadingPNG(pngBytes []byte, scale float64) (out []byte, w, h int, err error) {
 	src, derr := png.Decode(bytes.NewReader(pngBytes))
 	if derr != nil {
@@ -368,6 +368,29 @@ func captureScreenCapped(maxLong int) ([]byte, error) {
 		return full, nil // already within budget — no quality loss
 	}
 	return encodePNG(downscaleNearest(src, dw, dh))
+}
+
+// capVisionLongEdge shrinks a PNG so its longer edge is at most visionLongEdgeCap,
+// reporting whether it actually did. Unlike scaleReadingPNG (an explicit caller
+// request) this is the automatic default for capture_window/capture_region: past
+// the cap the vision layer downscales anyway, so the extra pixels buy nothing and
+// only inflate the transcript. capped=false means the image already fit and is
+// returned untouched, so the caller keeps its exact 1:1 click-mapping caption.
+func capVisionLongEdge(pngBytes []byte) (out []byte, w, h int, capped bool, err error) {
+	src, derr := png.Decode(bytes.NewReader(pngBytes))
+	if derr != nil {
+		return nil, 0, 0, false, fmt.Errorf("capVisionLongEdge: decode: %w", derr)
+	}
+	sb := src.Bounds()
+	dw, dh, doScale := cappedDims(sb.Dx(), sb.Dy(), visionLongEdgeCap)
+	if !doScale {
+		return pngBytes, sb.Dx(), sb.Dy(), false, nil
+	}
+	enc, eerr := encodePNG(downscaleNearest(src, dw, dh))
+	if eerr != nil {
+		return nil, 0, 0, false, eerr
+	}
+	return enc, dw, dh, true, nil
 }
 
 // cappedDims computes the target dimensions for capping an w×h image so its

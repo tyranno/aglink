@@ -53,6 +53,18 @@ func pluginWorkerArgs(cfg *Config, screenBin, webBin string) []string {
 		allowed = append(allowed, "mcp__web__*")
 		prompts = append(prompts, webSystemPrompt())
 	}
+	if cfg.NotionControl && cfg.NotionToken != "" {
+		// Official Notion-maintained MCP server, run via npx rather than a bundled
+		// binary (unlike screen/web there's no OS-level control surface to
+		// implement, so there's nothing custom to build). npx caches the package
+		// after the first fetch, so steady-state startup is fast.
+		servers["notion"] = mcpServerSpec{
+			Command: "npx",
+			Args:    []string{"-y", "@notionhq/notion-mcp-server"},
+			Env:     map[string]string{"NOTION_TOKEN": cfg.NotionToken},
+		}
+		allowed = append(allowed, "mcp__notion__*")
+	}
 	if len(servers) == 0 {
 		return nil
 	}

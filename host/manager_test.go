@@ -183,28 +183,59 @@ func TestManager_LargeHistory_KeepsClaudeSession(t *testing.T) {
 	}
 }
 
-// formatUsageLine shows a compact cache/cost footer for a claude turn (high cache
-// hit on a resumed session), and nothing for an errored turn or a backend that
-// reports no usage (codex/opencode).
+// formatUsageLine leads with THIS turn's own tokens (res's usage as-is — never a
+// delta against a stored baseline; see the runWorker call site for why) and keeps
+// the conversation's running total as a trailing figure. Nothing is shown for an
+// errored turn or a backend that reports no usage (codex/opencode).
 func TestFormatUsageLine(t *testing.T) {
-	// Resumed claude turn: almost all input served from cache.
-	res := RunResult{InputTokens: 2, CacheReadTokens: 31705, CacheCreationTokens: 59, OutputTokens: 15, CostUSD: 0.0168}
-	line := formatUsageLine(res)
+	turn := CumUsage{Input: 2, Read: 31705, Write: 59, Output: 15, Cost: 0.0168}
+	cum := CumUsage{Input: 40, Read: 2434132, Write: 113400, Output: 13841, Cost: 1.6184}
+	line := formatUsageLine(turn, cum, false)
 	if line == "" {
 		t.Fatal("expected a usage footer for a claude turn with usage")
 	}
-	for _, want := range []string{"$0.0168", "31.7k", "99.8%"} {
+	// Turn total is additive over the parts shown: 2+31705+59+15 = 31.8k.
+	for _, want := range []string{"이번 턴 31.8k", "캐시 31.7k", "출력 15", "누적 2.6M", "$0.0168"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("usage footer %q missing %q", line, want)
 		}
 	}
+	// The old footer's cache-hit % is gone — it flattered a bloated context.
+	if strings.Contains(line, "%") {
+		t.Errorf("usage footer should not show a cache-hit %%: %q", line)
+	}
 	// No usage reported (codex/opencode) → no footer.
-	if got := formatUsageLine(RunResult{Text: "done"}); got != "" {
+	if got := formatUsageLine(CumUsage{}, CumUsage{}, false); got != "" {
 		t.Errorf("expected no footer without usage, got %q", got)
 	}
 	// Errored turn → no footer even if usage present.
-	if got := formatUsageLine(RunResult{IsError: true, CostUSD: 0.5}); got != "" {
+	if got := formatUsageLine(turn, cum, true); got != "" {
 		t.Errorf("expected no footer on error, got %q", got)
+	}
+	// A large turn (several internal tool round-trips, each re-sending the grown
+	// conversation) must show in full — it is real usage, not something to net
+	// against a baseline and hide. This is the case that regressed: a turn this
+	// size used to get treated as "first use of this model" and shown once, then
+	// silently subtracted away (hidden) on every later turn of the same size.
+	big := CumUsage{Read: 961960, Write: 4258, Output: 2874, Input: 10, Cost: 0.5955}
+	if got := formatUsageLine(big, big, false); !strings.Contains(got, "969.1k") {
+		t.Errorf("a genuinely large turn must be shown in full, got %q", got)
+	}
+}
+
+// CumUsage.add must fold turns together without ever discarding an earlier one —
+// this is how Conversation.UsageTotal accumulates across a conversation's whole
+// lifetime (and across model switches, since dynamicWorkerModel can change the
+// worker model turn to turn and the total must not reset when it does).
+func TestCumUsageAdd(t *testing.T) {
+	total := CumUsage{}
+	total = total.add(CumUsage{Read: 2434132, Write: 113400, Output: 13841, Cost: 1.6184}) // a sonnet turn
+	total = total.add(CumUsage{Read: 25485, Write: 124019, Output: 2872, Cost: 1.3247})    // an opus turn
+	if want := 2434132 + 113400 + 13841 + 25485 + 124019 + 2872; total.Total() != want {
+		t.Errorf("total = %d, want %d", total.Total(), want)
+	}
+	if total.Cost < 2.94 || total.Cost > 2.95 {
+		t.Errorf("cost = %v, want ~2.943", total.Cost)
 	}
 }
 

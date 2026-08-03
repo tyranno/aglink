@@ -5,6 +5,7 @@
   import PaneNode from "./PaneNode.svelte";
   import GroupNode from "./GroupNode.svelte";
   import PlaybookPanel from "./PlaybookPanel.svelte";
+  import ReservationPanel from "./ReservationPanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import {
     chat,
@@ -60,7 +61,9 @@
 
   let view = $state("chat");
   let settingsTab = $state("settings");
-  let sidebarTab = $state(sidebarPrefs.tab === "playbook" ? "playbook" : "chat"); // 대화 목록 / 업무 관리
+  let sidebarTab = $state(
+    sidebarPrefs.tab === "playbook" || sidebarPrefs.tab === "reservation" ? sidebarPrefs.tab : "chat",
+  ); // 대화 목록 / 업무 관리 / 예약
   let sidebarCollapsed = $state(sidebarPrefs.collapsed === true);
   $effect(() => {
     // Re-runs whenever either changes → persists the current sidebar state.
@@ -550,6 +553,10 @@
                 class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "playbook" ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "playbook")}
               >업무 관리</button>
+              <button
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "reservation" ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-900"}`}
+                onclick={() => (sidebarTab = "reservation")}
+              >예약</button>
             </div>
             {#if sidebarTab === "chat"}
             <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 px-3">
@@ -750,8 +757,10 @@
                 </div>
               </div>
             </div>
-            {:else}
+            {:else if sidebarTab === "playbook"}
               <PlaybookPanel />
+            {:else}
+              <ReservationPanel />
             {/if}
           </aside>
         {:else}

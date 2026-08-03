@@ -50,6 +50,7 @@ type controlIn struct {
 	Title   string          `json:"title,omitempty"`
 	Backend string          `json:"backend,omitempty"`
 	Body    string          `json:"body,omitempty"`
+	Filter  string          `json:"filter,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Target  json.RawMessage `json:"target,omitempty"`
 }
@@ -477,6 +478,47 @@ func (c *ControlService) DeletePlaybookGroup(id string) (string, error) {
 // dispatches it. Returns {ok, conversationId} as JSON.
 func (c *ControlService) RunPlaybook(id string) (string, error) {
 	data, err := c.request(controlIn{Type: "playbook_run", ID: id})
+	return string(data), err
+}
+
+// --- Tasks (예약) -----------------------------------------------------------
+// Reminders and recurring jobs scheduled via !task / the AI, persisted
+// server-side by the Scheduler. Relayed opaquely, same as playbooks.
+
+// ListTasks returns tasks matching a status filter ("pending"|"paused"|"cancelled"|"all")
+// as a JSON string.
+func (c *ControlService) ListTasks(filter string) (string, error) {
+	data, err := c.request(controlIn{Type: "task_list", Filter: filter})
+	return string(data), err
+}
+
+// PauseTask pauses a pending task by id.
+func (c *ControlService) PauseTask(id string) (string, error) {
+	data, err := c.request(controlIn{Type: "task_pause", ID: id})
+	return string(data), err
+}
+
+// ResumeTask re-activates a paused task by id.
+func (c *ControlService) ResumeTask(id string) (string, error) {
+	data, err := c.request(controlIn{Type: "task_resume", ID: id})
+	return string(data), err
+}
+
+// CancelTask permanently cancels a task by id.
+func (c *ControlService) CancelTask(id string) (string, error) {
+	data, err := c.request(controlIn{Type: "task_cancel", ID: id})
+	return string(data), err
+}
+
+// SaveTask upserts a reminder/recurring job from its JSON and returns the saved entity.
+func (c *ControlService) SaveTask(payload string) (string, error) {
+	data, err := c.request(controlIn{Type: "task_save", Payload: json.RawMessage(payload)})
+	return string(data), err
+}
+
+// DeleteTask permanently removes a task (any status) by id.
+func (c *ControlService) DeleteTask(id string) (string, error) {
+	data, err := c.request(controlIn{Type: "task_delete", ID: id})
 	return string(data), err
 }
 

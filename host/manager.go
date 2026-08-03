@@ -1140,12 +1140,14 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// series. This RESETS the CLI session, which throws away the backend's prompt
 	// cache and forces a full-price re-send next turn — a trade that only pays off
 	// for a backend whose per-turn cost grows with session length. None of our
-	// current backends want it (see proactiveContinuationThreshold): claude/
-	// opencode resume cheaply and the CLI auto-compacts its own window, so keeping
-	// the session alive is a pure prompt-cache win; codex does grow per resume but
-	// is handled precisely by the codexContextResetTokens reset below, which keeps
-	// the SAME conversation instead of forking a series. If a hard context-overflow
-	// error ever does surface, the reactive path further down still splits + retries.
+	// current backends want THIS mechanism (see proactiveContinuationThreshold):
+	// opencode resumes cheaply; codex and claude both do grow per resume, but each
+	// is handled precisely — codex by the codexContextResetTokens reset below,
+	// claude by the claudeContextResetTokens reset below — which keep the SAME
+	// conversation instead of forking a series. (The old claim that claude's CLI
+	// "auto-compacts its own window" was wrong — see claudeContextResetTokens.) If
+	// a hard context-overflow error ever does surface, the reactive path further
+	// down still splits + retries.
 	parentSummary := ""
 	workConv := c
 
@@ -1262,6 +1264,20 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		log.Printf("[worker] codex context %d tokens ≥ %d — resetting session for conv %s",
 			workConv.CodexContextTokens, codexContextResetTokens, workConv.ID)
 		_ = s.Send(chatID, fmt.Sprintf("♻️ codex 세션 컨텍스트가 커져서(약 %dk 토큰) 새 세션으로 정리했습니다 — 대화는 그대로 이어집니다.", workConv.CodexContextTokens/1000))
+	}
+	claudeReset := false
+	if resume && backend == "claude" && claudeContextTooLarge(workConv.ClaudeContextTokens) {
+		resume = false
+		claudeReset = true
+		// Unlike the codex reset, claude's CLI identifies a session by SessionID —
+		// `--resume` vs `--session-id` both take it (see runner.go's isolationArgs) —
+		// so starting fresh with the SAME id would collide with the transcript that
+		// id already has on disk. Mint a new one, exactly like the empty-SessionID
+		// self-heal branch above.
+		workConv.SessionID = newUUID()
+		log.Printf("[worker] claude context %d tokens ≥ %d — resetting session for conv %s",
+			workConv.ClaudeContextTokens, claudeContextResetTokens, workConv.ID)
+		_ = s.Send(chatID, fmt.Sprintf("♻️ claude 세션 컨텍스트가 커져서(약 %dk 토큰) 새 세션으로 정리했습니다 — 대화는 그대로 이어집니다.", workConv.ClaudeContextTokens/1000))
 	}
 
 	// Pass history in the prompt sized to whether the CLI carries the session.
@@ -1493,9 +1509,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	}
 	// A fresh session id must replace the stored one whenever this turn ran
 	// without resume and got a new one: a brand-new conversation, a session-loss
-	// recovery, or a codex context reset (which deliberately abandons the old
-	// ballooned thread). Skip it on a plain resume, which returns none.
-	if res.SessionID != "" && (!wasStarted || sessionRecovered || codexReset) {
+	// recovery, or a codex/claude context reset (which deliberately abandons the
+	// old ballooned session). Skip it on a plain resume, which returns none.
+	if res.SessionID != "" && (!wasStarted || sessionRecovered || codexReset || claudeReset) {
 		workConv.SessionID = res.SessionID
 	}
 	// Track the codex rollout size this turn reported so the next turn can decide
@@ -1504,6 +1520,32 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	if backend == "codex" {
 		workConv.CodexContextTokens = res.InputTokens
 	}
+
+	// res's usage IS this turn's own real usage already — not a session-wide
+	// counter to diff against a previous value (an earlier version of this code
+	// wrongly assumed that; see git history). It can legitimately be large: a turn
+	// that makes several internal tool round-trips re-sends the whole grown
+	// conversation on EACH round-trip, and the CLI's reported usage for the turn is
+	// the sum over those round-trips. That is the real cost of the turn, not an
+	// artifact — so it's added straight into the conversation's running total.
+	var turnUsage CumUsage
+	if !res.IsError && (res.CacheReadTokens > 0 || res.CacheCreationTokens > 0 || res.OutputTokens > 0) {
+		turnUsage = CumUsage{
+			Input:  res.InputTokens,
+			Read:   res.CacheReadTokens,
+			Write:  res.CacheCreationTokens,
+			Output: res.OutputTokens,
+			Cost:   res.CostUSD,
+		}
+		workConv.UsageTotal = workConv.UsageTotal.add(turnUsage)
+		// Track this turn's cost so the NEXT turn can decide whether to reset the
+		// claude session (see claudeContextResetTokens). A fresh/reset turn reports
+		// a small count on its own, so this self-corrects without extra logic.
+		if backend == "claude" {
+			workConv.ClaudeContextTokens = turnUsage.Total()
+		}
+	}
+	convUsage := workConv.UsageTotal
 
 	if err := sink.save(workConv); err != nil {
 		log.Printf("[manager] update conversation: %v", err)
@@ -1523,7 +1565,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// Compact per-turn cache/cost footer (claude only; codex/opencode report no
 	// usage so this stays empty for them). Sent as its own short line, not folded
 	// into res.Text, so it never pollutes saved history or the next prompt.
-	if line := formatUsageLine(res); line != "" {
+	if line := formatUsageLine(turnUsage, convUsage, res.IsError); line != "" {
 		_ = s.Send(chatID, line)
 	}
 
@@ -1683,9 +1725,36 @@ const (
 	// outputs included — so a long codex conversation's per-turn input balloons and
 	// the turn slows dramatically: observed live ~13s at 29k tokens, 2m20s at
 	// ~540k, 14m at 4.8M, 21m at 9.8M. Resetting trades codex's server-side memory
-	// (which stored history reconstructs anyway) for a bounded prompt. Claude and
-	// opencode resume cheaply and are unaffected.
+	// (which stored history reconstructs anyway) for a bounded prompt.
 	codexContextResetTokens = 200000
+
+	// claudeContextResetTokens is the claude turn size (ClaudeContextTokens — the
+	// PREVIOUS turn's total billed usage; see runWorker) at or above which aglink
+	// stops resuming the claude CLI session and starts a fresh one instead,
+	// re-inlining recent stored history — the same trade codexContextResetTokens
+	// makes for codex.
+	//
+	// This used to be unconditionally 0 for claude (see the old
+	// proactiveContinuationThreshold comment this replaces): the claimed reason was
+	// "the CLI auto-compacts its own window". A live turn disproved that — a turn
+	// needing several internal tool round-trips re-sends the whole grown
+	// conversation on EACH round-trip, and nothing in the CLI capped it: one turn's
+	// reported usage hit 969k tokens with no auto-compaction in sight (see the
+	// aglink token-usage conversation, 2026-07-27). That number is the SUM over that
+	// turn's round-trips, not "current context size" — it can spike well above the
+	// true context — but a turn that expensive is still a legitimate signal to reset
+	// before the NEXT turn resumes the same bloated session and compounds it again.
+	//
+	// A prior attempt at proactively splitting claude conversations used a 40k
+	// threshold on stored-history size and fired on nearly every turn, defeating
+	// prompt caching for no benefit (see proactiveContinuationThreshold). This is a
+	// different signal (a single turn's actual billed cost, not an estimate of
+	// accumulated text) and a much higher bar, chosen to fire only once a turn has
+	// clearly gone expensive rather than on ordinary growth — but the right number
+	// depends on the worker model's context window (200k for sonnet) and is a
+	// judgment call pending more data; tune via measurement if it fires too often or
+	// too rarely.
+	claudeContextResetTokens = 150000
 )
 
 // codexContextTooLarge reports whether a codex thread's last observed input-token
@@ -1694,36 +1763,52 @@ func codexContextTooLarge(lastInputTokens int) bool {
 	return lastInputTokens >= codexContextResetTokens
 }
 
-// formatUsageLine renders a compact per-turn cache/cost footer from a claude turn's
-// usage, or "" when the turn errored or the backend reported none (codex/opencode).
-// Cache-hit % = cache_read / (input + cache_read + cache_creation): the share of the
-// processed prompt served from the prompt cache (~10% price) instead of full price —
-// high on a resumed session, which is what makes long claude conversations cheap.
-func formatUsageLine(res RunResult) string {
-	if res.IsError {
-		return ""
-	}
-	billedInput := res.InputTokens + res.CacheReadTokens + res.CacheCreationTokens
-	if billedInput == 0 && res.CostUSD == 0 {
-		return "" // no usage reported (non-claude backend)
-	}
-	hit := 0.0
-	if billedInput > 0 {
-		hit = float64(res.CacheReadTokens) / float64(billedInput) * 100
-	}
-	return fmt.Sprintf("📊 $%.4f · 캐시적중 %.1f%% (read %s · write %s · out %s)",
-		res.CostUSD, hit,
-		compactTokens(res.CacheReadTokens),
-		compactTokens(res.CacheCreationTokens),
-		compactTokens(res.OutputTokens))
+// claudeContextTooLarge reports whether the claude conversation's last observed
+// turn cost warrants starting a fresh CLI session before the next turn. See
+// claudeContextResetTokens.
+func claudeContextTooLarge(lastTurnTokens int) bool {
+	return lastTurnTokens >= claudeContextResetTokens
 }
 
-// compactTokens formats a token count tersely for the usage footer ("31.7k", "590").
-func compactTokens(n int) string {
-	if n >= 1000 {
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
+// formatUsageLine renders the token footer for a finished turn, or "" when the turn
+// errored or the backend reported no usage (codex/opencode). turn is res's usage
+// as-is (see the runWorker call site) — already scoped to this turn, not a
+// session-wide counter needing a delta. It can legitimately be large: a turn that
+// makes several internal tool round-trips re-sends the whole grown conversation on
+// EACH round-trip, and the CLI's reported usage for the turn sums over those
+// round-trips — that is the real cost of the turn, not an artifact to smooth away.
+// cum is the conversation's running total (turn added onto the previous total, see
+// runWorker), so context growth over the conversation's lifetime stays visible too.
+// The parts are additive: turn total = 캐시 + 새 + 출력.
+//
+// Cache-hit % was deliberately dropped. A high rate only means a bloated context is
+// being re-read efficiently, which reads as good news when it is the opposite; the
+// figures worth watching are the turn's own tokens and how fast the total grows.
+func formatUsageLine(turn, cum CumUsage, isError bool) string {
+	if isError || cum.Total() == 0 {
+		return ""
 	}
-	return fmt.Sprintf("%d", n)
+	return fmt.Sprintf("📊 이번 턴 %s (캐시 %s · 새 %s · 출력 %s) · 누적 %s · $%.4f",
+		compactTokens(turn.Total()),
+		compactTokens(turn.Read),
+		compactTokens(turn.Input+turn.Write),
+		compactTokens(turn.Output),
+		compactTokens(cum.Total()),
+		turn.Cost)
+}
+
+// compactTokens formats a token count tersely for the usage footer ("2.5M", "31.7k",
+// "590"). The M tier matters: a long conversation's total runs into the millions,
+// and "2523.4k" is unreadable at a glance.
+func compactTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // proactiveContinuationThreshold returns the stored-history token size at which a
@@ -1733,13 +1818,17 @@ func compactTokens(n int) string {
 // with session length AND that has no cheaper reset of its own.
 //
 // All current backends return 0:
-//   - claude / opencode resume cheaply and the CLI auto-compacts its own context
-//     window; keeping the session (and its prompt cache) alive is a pure win.
-//     Earlier this fired at 40k estimated tokens and reset every long claude
-//     conversation each turn, defeating prompt caching for no benefit.
-//   - codex does grow per resume, but the dedicated codexContextResetTokens (200k)
-//     reset handles it while keeping the same conversation — a better trade than
-//     forking a new series.
+//   - opencode resumes cheaply; keeping the session (and its prompt cache) alive
+//     is a pure win.
+//   - claude and codex both grow per resume, but each has a dedicated, cheaper
+//     reset that keeps the SAME conversation instead of forking a new series:
+//     codexContextResetTokens (200k) and claudeContextResetTokens (150k). Earlier,
+//     THIS mechanism was tried for claude at a 40k stored-history estimate and
+//     fired on nearly every turn, defeating prompt caching for no benefit — the
+//     claim then was that claude's CLI "auto-compacts its own window" on its own,
+//     which turned out to be false (see claudeContextResetTokens), but forking a
+//     whole new conversation series was still the wrong fix; resetting just the
+//     CLI session was.
 //
 // The reactive context-overflow path (isContextOverflow) remains the backstop for
 // any backend if a hard limit is ever hit. A future backend with no context

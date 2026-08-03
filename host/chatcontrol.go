@@ -33,7 +33,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -45,6 +45,7 @@ type controlIn struct {
 	Title   string  `json:"title,omitempty"`
 	Backend string  `json:"backend,omitempty"`
 	Body    string  `json:"body,omitempty"`    // set_config: edited config.yaml text
+	Filter  string  `json:"filter,omitempty"`  // task_list: status filter ("pending"|"paused"|"cancelled"|"all")
 	Payload json.RawMessage `json:"payload,omitempty"` // playbook_save/pbgroup_save: the Playbook/PlaybookGroup JSON
 }
 
@@ -342,6 +343,27 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		}
 		data, _ := json.Marshal(out)
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "task_list":
+		filter := m.Filter
+		if filter == "" {
+			filter = "all"
+		}
+		data, err := json.Marshal(buildTasksResponse(s.bot, filter))
+		if err != nil {
+			log.Printf("[chatcontrol] task_list marshal: %v", err)
+			return
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "task_save":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.saveTask(m.Payload, chatID)})
+	case "task_delete":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.deleteTask(m.ID)})
+	case "task_pause":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.pauseTask(m.ID)})
+	case "task_resume":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.resumeTask(m.ID)})
+	case "task_cancel":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.cancelTask(m.ID)})
 	default:
 		log.Printf("[chatcontrol] unknown control message type %q", m.Type)
 	}

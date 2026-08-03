@@ -21,9 +21,21 @@ import (
 // uncapped 1080p/4K/multi-monitor grab all cost roughly the same; capping to 1280
 // cuts that meaningfully with no practical readability loss. Callers can still
 // request full resolution with scale=1.0. Clicking is unaffected — coordinates
-// come from win_controls/snapshot, and capture_window/capture_region stay
-// full-resolution for pixel-accurate mapping.
+// come from win_controls/snapshot.
 const defaultScreenshotLongEdge = 1280
+
+// visionLongEdgeCap is the long edge (px) past which Claude's vision downscales an
+// image before tokenizing. Pixels beyond it cost no extra vision tokens — they only
+// inflate the PNG on the wire and, worse, in the stored transcript, which is replayed
+// to the API on every later request. So capture_window/capture_region cap themselves
+// here by default instead of returning the raw grab (measured: window captures came
+// back 1758x1026 and the vision layer downscaled them to ~1568x915 regardless).
+//
+// A capped image no longer maps 1:1 to screen pixels, so its caption drops the
+// click(left+ix) promise. That promise was already unreliable above this cap for the
+// same reason — the model was reading vision-downscaled pixels while being told they
+// were raw screen pixels. Callers who genuinely need the raw grab pass scale=1.0.
+const visionLongEdgeCap = 1568
 
 // maxScreenshotLongEdge is the active cap, overridable via AGLINK_SCREENSHOT_MAX_EDGE
 // (the host sets it from screen_control.max_screenshot_long_edge). A lower value
@@ -369,9 +381,9 @@ func RunMCPScreen() error {
 	// returned caption gives the origin to map image pixels to screen coords.
 	s.AddTool(
 		mcp.NewTool("capture_window",
-			mcp.WithDescription("Capture ONLY the given window (cropped to its rectangle) as a PNG. Prefer this over the full screenshot: a single window is usually small enough to avoid vision downscaling, so it is sharp and its pixels map exactly to screen coordinates. The caption reports the window's screen origin so an in-image pixel (ix,iy) maps to click(x=left+ix, y=top+iy). To READ a large/maximized window's content cheaply (not to click), pass scale (0.1–1.0) to downscale — a maximized window is often 1080p+ and costs the full ~1800 vision tokens otherwise; a scaled capture is for reading only (do not compute clicks from it)."),
+			mcp.WithDescription(fmt.Sprintf("Capture ONLY the given window (cropped to its rectangle) as a PNG. Prefer this over the full screenshot. A window under %dpx on its longer edge comes back untouched — sharp, and its pixels map exactly to screen coordinates, so the caption gives the origin and an in-image pixel (ix,iy) maps to click(x=left+ix, y=top+iy). A bigger window is capped to %dpx (the vision layer would downscale it anyway); the caption then says so and the click mapping does NOT hold. To READ content even more cheaply, pass scale (0.1–1.0) — reading only, do not compute clicks from it. Even a capped window still costs ~1800 vision tokens and is re-sent on every later request, so reach for snapshot/get_text first.", visionLongEdgeCap, visionLongEdgeCap)),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
-			mcp.WithNumber("scale", mcp.Description("Optional downscale factor 0.1–1.0 for READING only (fewer vision tokens). Omit for full resolution with exact click mapping.")),
+			mcp.WithNumber("scale", mcp.Description(fmt.Sprintf("Optional downscale factor 0.1–1.0 for READING only (fewer vision tokens). Omit for the default %dpx long-edge cap; pass 1.0 to force the raw grab with exact click mapping.", visionLongEdgeCap))),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			window, err := req.RequireString("window")
@@ -390,7 +402,8 @@ func RunMCPScreen() error {
 			caption := fmt.Sprintf("Window %q. Screen origin (left=%d, top=%d), size %dx%d. "+
 				"To click an element at image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).",
 				window, left, top, w, h, left, top)
-			if scale != 0 && scale < 1.0 {
+			switch {
+			case scale != 0 && scale < 1.0:
 				var iw, ih int
 				png, iw, ih, err = scaleReadingPNG(png, scale)
 				if err != nil {
@@ -401,6 +414,21 @@ func RunMCPScreen() error {
 				caption = fmt.Sprintf("Window %q, downscaled to %dx%d for reading (from %dx%d). "+
 					"Read-only: do NOT compute click coordinates from this image — use snapshot/win_controls, "+
 					"or re-capture without scale for pixel-accurate clicking.", window, iw, ih, w, h)
+			case scale == 0:
+				// Default: cap the long edge. scale=1.0 skips this and returns the raw grab.
+				var iw, ih int
+				var capped bool
+				png, iw, ih, capped, err = capVisionLongEdge(png)
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("capture_window cap failed", err), nil
+				}
+				if capped {
+					caption = fmt.Sprintf("Window %q, capped to %dx%d (from %dx%d) — past %dpx the vision layer "+
+						"downscales anyway, so the extra pixels only cost transcript bytes. "+
+						"The 1:1 click mapping does NOT hold here: take coordinates from snapshot/win_controls, "+
+						"capture_region a sub-rectangle for an exact-mapping image, or pass scale=1.0 for the raw grab.",
+						window, iw, ih, w, h, visionLongEdgeCap)
+				}
 			}
 			b64 := base64.StdEncoding.EncodeToString(png)
 			return mcp.NewToolResultImage(caption, b64, "image/png"), nil
@@ -412,12 +440,13 @@ func RunMCPScreen() error {
 	// given (which also switches to that window's virtual desktop first).
 	s.AddTool(
 		mcp.NewTool("capture_region",
-			mcp.WithDescription("Capture an arbitrary rectangle as a PNG — useful to zoom into just part of a screen or window. (x,y) is the top-left; width and height the size. By default (x,y) are ABSOLUTE screen pixels. If 'window' is given, (x,y) are RELATIVE to that window's top-left (and we switch to its virtual desktop first if needed). The caption reports the rectangle's absolute screen origin so an in-image pixel (ix,iy) maps to click(x=origin+ix, y=origin+iy)."),
+			mcp.WithDescription(fmt.Sprintf("Capture an arbitrary rectangle as a PNG — the cheapest way to look at just the part you need. (x,y) is the top-left; width/height the size. (x,y) are ABSOLUTE screen pixels, or RELATIVE to 'window' when given (switches to its desktop first). A rectangle under %dpx on its longer edge is returned untouched and the caption reports the absolute origin, so image pixel (ix,iy) maps to click(x=origin+ix, y=origin+iy); a bigger one is capped to %dpx and loses that mapping (the caption says so). Pass scale (0.1–1.0) to downscale further for READING only, or scale=1.0 to force the raw grab.", visionLongEdgeCap, visionLongEdgeCap)),
 			mcp.WithNumber("x", mcp.Description("Left of the rectangle: absolute screen X, or window-relative X if 'window' is set."), mcp.Required()),
 			mcp.WithNumber("y", mcp.Description("Top of the rectangle: absolute screen Y, or window-relative Y if 'window' is set."), mcp.Required()),
 			mcp.WithNumber("width", mcp.Description("Rectangle width in pixels (>0)."), mcp.Required()),
 			mcp.WithNumber("height", mcp.Description("Rectangle height in pixels (>0)."), mcp.Required()),
 			mcp.WithString("window", mcp.Description("Optional target window (title substring or hwnd). When set, x/y are relative to this window's top-left.")),
+			mcp.WithNumber("scale", mcp.Description(fmt.Sprintf("Optional downscale factor 0.1–1.0 for READING only (fewer vision tokens). Omit for the default %dpx long-edge cap; pass 1.0 to force the raw grab with exact click mapping.", visionLongEdgeCap))),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			x, err := req.RequireInt("x")
@@ -437,11 +466,14 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultError("missing required argument 'height'"), nil
 			}
 			window := req.GetString("window", "")
+			scale := req.GetFloat("scale", 0)
+			if scale != 0 && (scale < 0.1 || scale > 1.0) {
+				return mcp.NewToolResultError("scale must be between 0.1 and 1.0"), nil
+			}
 			png, absX, absY, err := captureRegionAt(window, x, y, w, h)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("capture_region failed", err), nil
 			}
-			b64 := base64.StdEncoding.EncodeToString(png)
 			var caption string
 			if strings.TrimSpace(window) != "" {
 				caption = fmt.Sprintf("Region of window %q at window-relative (%d,%d), size %dx%d — screen origin (%d,%d). "+
@@ -450,6 +482,35 @@ func RunMCPScreen() error {
 				caption = fmt.Sprintf("Screen region at (%d,%d), size %dx%d. "+
 					"To click image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).", absX, absY, w, h, absX, absY)
 			}
+			// Downscaled: same rule as capture_window — the 1:1 image→screen mapping is
+			// gone, so send clicks back through the reliable path instead of scaled math.
+			switch {
+			case scale != 0 && scale < 1.0:
+				var iw, ih int
+				png, iw, ih, err = scaleReadingPNG(png, scale)
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("capture_region downscale failed", err), nil
+				}
+				caption = fmt.Sprintf("Region at screen origin (%d,%d), downscaled to %dx%d for reading (from %dx%d). "+
+					"Read-only: do NOT compute click coordinates from this image — use snapshot/win_controls, "+
+					"or re-capture without scale for pixel-accurate clicking.", absX, absY, iw, ih, w, h)
+			case scale == 0:
+				// Default: cap the long edge. scale=1.0 skips this and returns the raw grab.
+				var iw, ih int
+				var capped bool
+				png, iw, ih, capped, err = capVisionLongEdge(png)
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("capture_region cap failed", err), nil
+				}
+				if capped {
+					caption = fmt.Sprintf("Region at screen origin (%d,%d), capped to %dx%d (from %dx%d) — past %dpx the "+
+						"vision layer downscales anyway, so the extra pixels only cost transcript bytes. "+
+						"The 1:1 click mapping does NOT hold here: take coordinates from snapshot/win_controls, "+
+						"re-capture a smaller rectangle for an exact-mapping image, or pass scale=1.0 for the raw grab.",
+						absX, absY, iw, ih, w, h, visionLongEdgeCap)
+				}
+			}
+			b64 := base64.StdEncoding.EncodeToString(png)
 			return mcp.NewToolResultImage(caption, b64, "image/png"), nil
 		},
 	)

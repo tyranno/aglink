@@ -40,6 +40,8 @@ type Config struct {
 	ScreenMaxScreenshotLongEdge int // 전체 screenshot 긴 변 최대 px (vision 토큰 절감용). 0 = 기본값(1280). 낮출수록 이미지 토큰↓·글자 가독성↓. capture_window/region은 영향 없음
 	WebControl            bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
 	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
+	NotionControl         bool     // Notion MCP(@notionhq/notion-mcp-server, npx로 실행) 활성화. 기본 false
+	NotionToken           string   // Notion internal integration token (ntn_...). 비어있으면 비활성
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 	WebChat               bool     // local web chat transport enabled
 	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:27271
@@ -150,6 +152,51 @@ type Conversation struct {
 	// starts a fresh codex thread instead of resuming. Only meaningful for the
 	// codex backend; 0 = unknown / not yet observed. See runWorker.
 	CodexContextTokens int `json:"codexContextTokens,omitempty"`
+
+	// ClaudeContextTokens is the total billed usage (turnUsage.Total() — input +
+	// cache read + cache write + output) the claude CLI reported on this
+	// conversation's last worker turn. A turn that makes several internal tool
+	// round-trips re-sends the whole grown conversation on EACH round-trip, so
+	// this can spike well above "current context size" within a single turn; when
+	// it crosses claudeContextResetTokens the manager starts a fresh claude
+	// session (same conversation, same history, new CLI session) instead of
+	// resuming. Only meaningful for the claude backend; 0 = unknown / not yet
+	// observed. See runWorker.
+	ClaudeContextTokens int `json:"claudeContextTokens,omitempty"`
+
+	// UsageTotal is the running sum of every turn's token usage this conversation
+	// has ever reported (across every worker model it has used — dynamicWorkerModel
+	// can switch models turn to turn, and this is the one number that answers "how
+	// much has this conversation used in total" regardless of which model ran).
+	// Each turn's own usage (res's usage as-is — see runWorker) is added onto it,
+	// never replaced, so it survives model switches and host restarts. Zero-value
+	// for a conversation that predates this field or a backend that reports no
+	// usage (codex/opencode).
+	UsageTotal CumUsage `json:"usageTotal,omitempty"`
+}
+
+// CumUsage is a token usage counter (and cost) — either one turn's own usage or a
+// conversation's running total. See Conversation.UsageTotal.
+type CumUsage struct {
+	Input  int     `json:"input,omitempty"`
+	Read   int     `json:"read,omitempty"`
+	Write  int     `json:"write,omitempty"`
+	Output int     `json:"output,omitempty"`
+	Cost   float64 `json:"cost,omitempty"`
+}
+
+// Total is every billed token in the bucket — the one number that answers "how
+// much did this use", which read/write/out separately do not.
+func (c CumUsage) Total() int { return c.Input + c.Read + c.Write + c.Output }
+
+// add folds another turn's usage into a running total (see Conversation.UsageTotal).
+func (c CumUsage) add(o CumUsage) CumUsage {
+	c.Input += o.Input
+	c.Read += o.Read
+	c.Write += o.Write
+	c.Output += o.Output
+	c.Cost += o.Cost
+	return c
 }
 
 // Project is a registered directory holding multiple conversations.

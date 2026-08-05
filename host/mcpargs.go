@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -27,46 +26,30 @@ type mcpConfig struct {
 // active plugin into one of each rather than the caller appending them
 // separately (which would silently make the last one win). Returns nil when
 // no plugin is active.
-func pluginWorkerArgs(cfg *Config, screenBin, webBin string) []string {
+func pluginWorkerArgs(cfg *Config, screenBin, webBin, goonoBin string) []string {
 	if cfg == nil {
+		return nil
+	}
+	list := buildMCPServerList(cfg, screenBin, webBin, goonoBin)
+	if len(list) == 0 {
 		return nil
 	}
 	servers := map[string]mcpServerSpec{}
 	var allowed []string
 	var prompts []string
-
-	if cfg.ScreenControl && screenBin != "" {
-		spec := mcpServerSpec{Command: screenBin, Args: []string{"mcp"}}
-		// Pass the configurable full-screenshot cap to the screen MCP process (it
-		// reads AGLINK_SCREENSHOT_MAX_EDGE at startup). Scoped to this server's env,
-		// not the whole worker environment. 0 = leave the screen binary's built-in
-		// default (1280).
-		if cfg.ScreenMaxScreenshotLongEdge > 0 {
-			spec.Env = map[string]string{"AGLINK_SCREENSHOT_MAX_EDGE": strconv.Itoa(cfg.ScreenMaxScreenshotLongEdge)}
+	hasScreen, hasWeb := false, false
+	for _, d := range list {
+		servers[d.Name] = mcpServerSpec{Command: d.Command, Args: d.Args, Env: d.Env}
+		allowed = append(allowed, "mcp__"+d.Name+"__*")
+		if d.SystemPrompt != "" {
+			prompts = append(prompts, d.SystemPrompt)
 		}
-		servers["screen"] = spec
-		allowed = append(allowed, "mcp__screen__*")
-		prompts = append(prompts, screenSystemPrompt())
-	}
-	if cfg.WebControl && webBin != "" {
-		servers["web"] = mcpServerSpec{Command: webBin, Args: []string{"mcp"}}
-		allowed = append(allowed, "mcp__web__*")
-		prompts = append(prompts, webSystemPrompt())
-	}
-	if cfg.NotionControl && cfg.NotionToken != "" {
-		// Official Notion-maintained MCP server, run via npx rather than a bundled
-		// binary (unlike screen/web there's no OS-level control surface to
-		// implement, so there's nothing custom to build). npx caches the package
-		// after the first fetch, so steady-state startup is fast.
-		servers["notion"] = mcpServerSpec{
-			Command: "npx",
-			Args:    []string{"-y", "@notionhq/notion-mcp-server"},
-			Env:     map[string]string{"NOTION_TOKEN": cfg.NotionToken},
+		switch d.Name {
+		case "screen":
+			hasScreen = true
+		case "web":
+			hasWeb = true
 		}
-		allowed = append(allowed, "mcp__notion__*")
-	}
-	if len(servers) == 0 {
-		return nil
 	}
 
 	// When BOTH plugins are active the worker has two ways to touch a browser, and
@@ -75,7 +58,7 @@ func pluginWorkerArgs(cfg *Config, screenBin, webBin string) []string {
 	// dozens of times (huge vision cost, re-sent every --resume turn) instead of
 	// reading get_page_text. Lead with one decisive arbitration rule so the browser
 	// case is unambiguous. Prepended so it's the first thing the worker reads.
-	if cfg.ScreenControl && screenBin != "" && cfg.WebControl && webBin != "" {
+	if hasScreen && hasWeb {
 		prompts = append([]string{screenWebArbitrationPrompt()}, prompts...)
 	}
 

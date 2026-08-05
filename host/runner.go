@@ -110,7 +110,7 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 // screenBin/webBin are the resolved paths to the aglink-screen/aglink-web
 // executables (see resolveScreenBinaryPath/resolveWebBinaryPath). An empty
 // path skips that plugin (we don't know where its MCP server binary is).
-func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin string) []string {
+func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin, goonoBin string) []string {
 	// The prompt is piped to claude via stdin (see Run/exec), NOT passed as a
 	// command-line arg. Large prompts (full history + memory + MCP config) would
 	// otherwise blow past the Windows command-line length limit (~32767 chars),
@@ -142,7 +142,7 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin string) []str
 	default:
 		args = append(args, "--session-id", req.SessionID)
 	}
-	args = append(args, pluginWorkerArgs(cfg, screenBin, webBin)...)
+	args = append(args, pluginWorkerArgs(cfg, screenBin, webBin, goonoBin)...)
 	return args
 }
 
@@ -154,7 +154,8 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 	selfExe, _ := os.Executable()
 	screenBin := resolveScreenBinaryPath(r.cfg(), selfExe)
 	webBin := resolveWebBinaryPath(r.cfg(), selfExe)
-	args := workerBaseArgs(r.cfg(), req, screenBin, webBin)
+	goonoBin := resolveGoonoBinaryPath(r.cfg(), selfExe)
+	args := workerBaseArgs(r.cfg(), req, screenBin, webBin, goonoBin)
 
 	if req.OnProgress != nil || req.OnImage != nil {
 		// Deliver progress text and images on a dedicated consumer goroutine (via

@@ -12,7 +12,7 @@ import (
 func TestWorkerBaseArgs_PromptNotInArgv(t *testing.T) {
 	huge := strings.Repeat("x", 40000)
 	req := RunRequest{Prompt: huge, SessionID: "sess-1"}
-	args := workerBaseArgs(&Config{}, req, "", "")
+	args := workerBaseArgs(&Config{}, req, "", "", "")
 
 	if len(args) == 0 || args[0] != "-p" {
 		t.Fatalf("expected -p as first arg (prompt via stdin), got %v", args)

@@ -42,6 +42,16 @@ type Config struct {
 	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 	NotionControl         bool     // Notion MCP(@notionhq/notion-mcp-server, npx로 실행) 활성화. 기본 false
 	NotionToken           string   // Notion internal integration token (ntn_...). 비어있으면 비활성
+	GoonoControl          bool     // 구노(goono) 문서 업로드/검색 MCP(goono-mcp) 활성화. 기본 false
+	GoonoBinaryPath       string   // goono-mcp 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
+
+	// MCPServers is a generic, config-driven registry of additional stdio MCP
+	// servers (config.yaml `mcp_servers:` — name/command/args/env/system_prompt).
+	// Adding one here needs no Go code or rebuild, unlike screen/web/goono/notion
+	// above which each need bespoke binary resolution. See MCPServerDef /
+	// buildMCPServerList.
+	MCPServers []MCPServerDef
+
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 	WebChat               bool     // local web chat transport enabled
 	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:27271

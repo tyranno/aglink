@@ -12,7 +12,7 @@ import (
 
 func TestWorkerBaseArgs_EmptySessionOmitsSessionFlags(t *testing.T) {
 	for _, resume := range []bool{true, false} {
-		args := workerBaseArgs(&Config{}, RunRequest{SessionID: "", Resume: resume}, "", "")
+		args := workerBaseArgs(&Config{}, RunRequest{SessionID: "", Resume: resume}, "", "", "")
 		if i := slices.Index(args, "--resume"); i != -1 {
 			t.Errorf("resume=%v: --resume must not be emitted for an empty session id: %v", resume, args)
 		}
@@ -25,7 +25,7 @@ func TestWorkerBaseArgs_EmptySessionOmitsSessionFlags(t *testing.T) {
 func TestWorkerBaseArgs_NonEmptySessionEmitsCorrectFlag(t *testing.T) {
 	sid := "1c638281-7c9e-41ca-8e6a-910536b16445"
 
-	resumeArgs := workerBaseArgs(&Config{}, RunRequest{SessionID: sid, Resume: true}, "", "")
+	resumeArgs := workerBaseArgs(&Config{}, RunRequest{SessionID: sid, Resume: true}, "", "", "")
 	if i := slices.Index(resumeArgs, "--resume"); i == -1 || i+1 >= len(resumeArgs) || resumeArgs[i+1] != sid {
 		t.Errorf("resume turn should emit --resume %s, got %v", sid, resumeArgs)
 	}
@@ -33,7 +33,7 @@ func TestWorkerBaseArgs_NonEmptySessionEmitsCorrectFlag(t *testing.T) {
 		t.Errorf("resume turn must not also emit --session-id: %v", resumeArgs)
 	}
 
-	freshArgs := workerBaseArgs(&Config{}, RunRequest{SessionID: sid, Resume: false}, "", "")
+	freshArgs := workerBaseArgs(&Config{}, RunRequest{SessionID: sid, Resume: false}, "", "", "")
 	if i := slices.Index(freshArgs, "--session-id"); i == -1 || i+1 >= len(freshArgs) || freshArgs[i+1] != sid {
 		t.Errorf("fresh turn should emit --session-id %s, got %v", sid, freshArgs)
 	}

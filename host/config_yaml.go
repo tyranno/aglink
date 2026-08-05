@@ -68,6 +68,14 @@ type yamlConfig struct {
 		Enabled bool   `yaml:"enabled"`
 		Token   string `yaml:"token"`
 	} `yaml:"notion_control"`
+	GoonoControl struct {
+		Enabled    bool   `yaml:"enabled"`
+		BinaryPath string `yaml:"binary_path"`
+	} `yaml:"goono_control"`
+	// MCPServers is the generic MCP server registry — add any stdio MCP server
+	// (npx package, prebuilt binary, …) here without touching Go code. See
+	// MCPServerDef / buildMCPServerList.
+	MCPServers []MCPServerDef `yaml:"mcp_servers,omitempty"`
 	WebChat struct {
 		Enabled     bool   `yaml:"enabled"`
 		Addr        string `yaml:"addr"`
@@ -176,6 +184,9 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.WebBinaryPath = y.WebControl.BinaryPath
 	c.NotionControl = y.NotionControl.Enabled
 	c.NotionToken = y.NotionControl.Token
+	c.GoonoControl = y.GoonoControl.Enabled
+	c.GoonoBinaryPath = y.GoonoControl.BinaryPath
+	c.MCPServers = y.MCPServers
 	c.WebChat = y.WebChat.Enabled
 	c.WebChatAddr = y.WebChat.Addr
 	if c.WebChatAddr == "" {
@@ -256,6 +267,9 @@ func configToYAML(c *Config) *yamlConfig {
 	y.WebControl.BinaryPath = c.WebBinaryPath
 	y.NotionControl.Enabled = c.NotionControl
 	y.NotionControl.Token = c.NotionToken
+	y.GoonoControl.Enabled = c.GoonoControl
+	y.GoonoControl.BinaryPath = c.GoonoBinaryPath
+	y.MCPServers = c.MCPServers
 	y.WebChat.Enabled = c.WebChat
 	y.WebChat.Addr = c.WebChatAddr
 	y.WebChat.Token = c.WebChatToken

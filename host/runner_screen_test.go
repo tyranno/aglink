@@ -33,7 +33,7 @@ func TestWorkerBaseArgs_ScreenControlInjection(t *testing.T) {
 	req := RunRequest{Prompt: "hi", SessionID: "11111111-1111-1111-1111-111111111111"}
 
 	// ScreenControl ON → screen MCP args present.
-	on := workerBaseArgs(&Config{ScreenControl: true}, req, screenBin, "")
+	on := workerBaseArgs(&Config{ScreenControl: true}, req, screenBin, "", "")
 	if !slices.Contains(on, "--mcp-config") {
 		t.Errorf("ScreenControl=true: missing --mcp-config in %v", on)
 	}
@@ -50,7 +50,7 @@ func TestWorkerBaseArgs_ScreenControlInjection(t *testing.T) {
 	}
 
 	// ScreenControl OFF → no screen MCP args.
-	off := workerBaseArgs(&Config{ScreenControl: false}, req, screenBin, "")
+	off := workerBaseArgs(&Config{ScreenControl: false}, req, screenBin, "", "")
 	if slices.Contains(off, "--mcp-config") {
 		t.Errorf("ScreenControl=false: unexpected --mcp-config in %v", off)
 	}
@@ -63,7 +63,7 @@ func TestWorkerBaseArgs_ScreenControlInjection(t *testing.T) {
 
 	// Even with ScreenControl on, an empty resolved binary path skips injection
 	// (we don't know where the screen MCP server binary is).
-	noBin := workerBaseArgs(&Config{ScreenControl: true}, req, "", "")
+	noBin := workerBaseArgs(&Config{ScreenControl: true}, req, "", "", "")
 	if slices.Contains(noBin, "--mcp-config") {
 		t.Errorf("empty screenBin: unexpected --mcp-config in %v", noBin)
 	}
@@ -84,13 +84,13 @@ func TestWorkerBaseArgs_ScreenshotCapEnv(t *testing.T) {
 	req := RunRequest{Prompt: "hi", SessionID: "11111111-1111-1111-1111-111111111111"}
 
 	// Cap set → env present in the screen server's mcp-config entry.
-	withCap := workerBaseArgs(&Config{ScreenControl: true, ScreenMaxScreenshotLongEdge: 1024}, req, screenBin, "")
+	withCap := workerBaseArgs(&Config{ScreenControl: true, ScreenMaxScreenshotLongEdge: 1024}, req, screenBin, "", "")
 	if c := mcpConfigContent(t, withCap); !strings.Contains(c, "AGLINK_SCREENSHOT_MAX_EDGE") || !strings.Contains(c, "1024") {
 		t.Errorf("cap set: mcp-config missing AGLINK_SCREENSHOT_MAX_EDGE=1024: %s", c)
 	}
 
 	// Cap unset (0) → no env key (screen binary keeps its built-in default).
-	noCap := workerBaseArgs(&Config{ScreenControl: true}, req, screenBin, "")
+	noCap := workerBaseArgs(&Config{ScreenControl: true}, req, screenBin, "", "")
 	if c := mcpConfigContent(t, noCap); strings.Contains(c, "AGLINK_SCREENSHOT_MAX_EDGE") {
 		t.Errorf("cap unset: mcp-config should not set AGLINK_SCREENSHOT_MAX_EDGE: %s", c)
 	}
@@ -106,7 +106,7 @@ func TestWorkerBaseArgs_WebControlInjection(t *testing.T) {
 	req := RunRequest{Prompt: "hi", SessionID: "11111111-1111-1111-1111-111111111111"}
 
 	// WebControl ON (screen off) → web MCP args present, screen absent.
-	webOnly := workerBaseArgs(&Config{WebControl: true}, req, "", webBin)
+	webOnly := workerBaseArgs(&Config{WebControl: true}, req, "", webBin, "")
 	if !slices.Contains(webOnly, "mcp__web__*") {
 		t.Errorf("WebControl=true: missing allowedTools mcp__web__* in %v", webOnly)
 	}
@@ -115,14 +115,14 @@ func TestWorkerBaseArgs_WebControlInjection(t *testing.T) {
 	}
 
 	// WebControl OFF → no web MCP args even with a resolved binary.
-	off := workerBaseArgs(&Config{WebControl: false}, req, "", webBin)
+	off := workerBaseArgs(&Config{WebControl: false}, req, "", webBin, "")
 	if strings.Contains(strings.Join(off, " "), "mcp__web__") {
 		t.Errorf("WebControl=false: unexpected mcp__web__ token in %v", off)
 	}
 
 	// Both enabled → exactly one --mcp-config/--allowedTools pair covering both
 	// server keys (not two competing flags where the last one wins).
-	both := workerBaseArgs(&Config{ScreenControl: true, WebControl: true}, req, screenBin, webBin)
+	both := workerBaseArgs(&Config{ScreenControl: true, WebControl: true}, req, screenBin, webBin, "")
 	if n := slices.Index(both, "--mcp-config"); n < 0 || slices.Index(both[n+2:], "--mcp-config") >= 0 {
 		t.Errorf("both enabled: expected exactly one --mcp-config in %v", both)
 	}
@@ -136,5 +136,33 @@ func TestWorkerBaseArgs_WebControlInjection(t *testing.T) {
 	allowed := both[idx+1]
 	if !strings.Contains(allowed, "mcp__screen__*") || !strings.Contains(allowed, "mcp__web__*") {
 		t.Errorf("both enabled: --allowedTools missing a plugin: %q", allowed)
+	}
+}
+
+// TestWorkerBaseArgs_GoonoControlInjection mirrors the web-control test for
+// goono-mcp (구노 문서 업로드/검색).
+func TestWorkerBaseArgs_GoonoControlInjection(t *testing.T) {
+	const goonoBin = "C:\\t\\goono-mcp.exe"
+	req := RunRequest{Prompt: "hi", SessionID: "11111111-1111-1111-1111-111111111111"}
+
+	// GoonoControl ON → goono MCP args present.
+	on := workerBaseArgs(&Config{GoonoControl: true}, req, "", "", goonoBin)
+	if !slices.Contains(on, "mcp__goono__*") {
+		t.Errorf("GoonoControl=true: missing allowedTools mcp__goono__* in %v", on)
+	}
+	if c := mcpConfigContent(t, on); !strings.Contains(c, "goono-mcp") {
+		t.Errorf("GoonoControl=true: mcp-config missing goono-mcp path: %s", c)
+	}
+
+	// GoonoControl OFF → no goono MCP args even with a resolved binary.
+	off := workerBaseArgs(&Config{GoonoControl: false}, req, "", "", goonoBin)
+	if strings.Contains(strings.Join(off, " "), "mcp__goono__") {
+		t.Errorf("GoonoControl=false: unexpected mcp__goono__ token in %v", off)
+	}
+
+	// Even with GoonoControl on, an empty resolved binary path skips injection.
+	noBin := workerBaseArgs(&Config{GoonoControl: true}, req, "", "", "")
+	if slices.Contains(noBin, "--mcp-config") {
+		t.Errorf("empty goonoBin: unexpected --mcp-config in %v", noBin)
 	}
 }

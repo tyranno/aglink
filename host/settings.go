@@ -40,6 +40,12 @@ func applySettingsUpdate(cfgPath string, cfg *Config, body []byte) json.RawMessa
 	if len(cfg.CustomProviders) > 0 {
 		newCfg.CustomProviders = append([]FreeProvider(nil), cfg.CustomProviders...)
 	}
+	// applySettings also grows/rewrites MCPServers in place (setMCPServerField),
+	// which the shallow copy shares — clone it too so a rejected save leaves the
+	// live one (and its running worker connections) intact.
+	if len(cfg.MCPServers) > 0 {
+		newCfg.MCPServers = append([]MCPServerDef(nil), cfg.MCPServers...)
+	}
 	if err := applySettings(&newCfg, updates); err != nil {
 		return fail(err.Error())
 	}
@@ -292,7 +298,9 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "screen_control.keep_awake", Label: "화면 잠금 방지", Desc: "화면 제어 중 화면보호기/잠금을 막습니다.", Type: "bool", Value: cfg.ScreenKeepAwake},
 			{Key: "screen_control.elevated", Label: "관리자 권한으로 화면 제어", Desc: "관리자 권한 창까지 제어해야 할 때만 켭니다.", Type: "bool", Value: cfg.ScreenElevated},
 			{Key: "notion_control.enabled", Label: "Notion 연동 허용", Desc: "봇이 Notion MCP로 페이지를 읽고 쓰게 합니다. 토큰은 설정 파일(notion_control.token)에 직접 넣어야 합니다.", Type: "bool", Value: cfg.NotionControl},
+			{Key: "goono_control.enabled", Label: "구노(goono) 문서 연동 허용", Desc: "봇이 구노 MCP로 문서를 검색·업로드하게 합니다. 실행파일 경로는 설정 파일(goono_control.binary_path)에서 지정합니다.", Type: "bool", Value: cfg.GoonoControl},
 		}},
+		{Title: "사용자 정의 MCP 서버", Group: settingsGroupSecurity, Advanced: true, Desc: "screen/web/goono/notion 외에 추가로 붙이고 싶은 MCP 서버를 등록합니다. npx 패키지나 실행파일 등 stdio로 동작하는 MCP라면 됩니다. 이름·명령을 채우고 '사용'을 켠 뒤 저장하면 다음 대화부터 연결됩니다.", Fields: mcpServerFields(cfg)},
 		{Title: "연결 / 네트워크", Group: settingsGroupNetwork, Advanced: true, Desc: "웹 화면·제어 API가 어느 주소에서 열릴지 정합니다. 기본값으로 두면 됩니다. (대부분 변경 시 재시작 필요)", Fields: []settingField{
 			{Key: "aglink_chat.enabled", Label: "웹 채팅 화면 사용", Desc: "aglink가 웹 채팅 프론트를 함께 띄웁니다.", Type: "bool", Value: cfg.AglinkChat},
 			{Key: "aglink_chat.addr", Label: "웹 채팅 주소", Desc: "예: 127.0.0.1:27271", Type: "string", Value: cfg.AglinkChatAddr},
@@ -320,6 +328,12 @@ func applySettings(cfg *Config, updates map[string]any) error {
 		// (custom_provider.<n>.<field>) a fixed switch can't enumerate.
 		if strings.HasPrefix(k, "custom_provider.") {
 			applyCustomProviderSetting(cfg, k, asString(v))
+			continue
+		}
+		// User-defined MCP server slots (mcp_server.<n>.<field>) include a bool
+		// field ("enabled"), so route the raw value rather than pre-stringifying it.
+		if strings.HasPrefix(k, "mcp_server.") {
+			applyMCPServerSetting(cfg, k, v)
 			continue
 		}
 		switch k {
@@ -377,6 +391,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.ScreenElevated = asBool(v)
 		case "notion_control.enabled":
 			cfg.NotionControl = asBool(v)
+		case "goono_control.enabled":
+			cfg.GoonoControl = asBool(v)
 		case "web_chat.enabled":
 			cfg.WebChat = asBool(v)
 		case "web_chat.addr":
@@ -398,6 +414,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 	normalizeVLLMServers(cfg)
 	// Same for trailing all-blank custom-provider slots.
 	normalizeCustomProviders(cfg)
+	// Same for trailing all-blank user-defined MCP server slots.
+	normalizeMCPServers(cfg)
 	return nil
 }
 

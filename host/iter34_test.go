@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// ---- codexScreenArgs ----
+// ---- codexMCPServerArgs ----
 
-func TestCodexScreenArgs(t *testing.T) {
+func TestCodexMCPServerArgsScreen(t *testing.T) {
 	const bin = "C:\\t\\aglink-screen.exe"
-	args := codexScreenArgs(bin)
+	args := codexMCPServerArgs(&Config{ScreenControl: true}, bin, "", "")
 
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "mcp_servers.screen.command=") {
@@ -50,11 +50,9 @@ func TestCodexScreenArgs(t *testing.T) {
 	}
 }
 
-// ---- codexWebArgs ----
-
-func TestCodexWebArgs(t *testing.T) {
+func TestCodexMCPServerArgsWeb(t *testing.T) {
 	const bin = "C:\\t\\aglink-web.exe"
-	args := codexWebArgs(bin)
+	args := codexMCPServerArgs(&Config{WebControl: true}, "", bin, "")
 
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "mcp_servers.web.command=") {
@@ -76,6 +74,25 @@ func TestCodexWebArgs(t *testing.T) {
 	}
 	if gotPath != bin {
 		t.Errorf("command path = %q, want %q", gotPath, bin)
+	}
+}
+
+// A user-defined generic server (config.yaml mcp_servers: entry) flows through
+// the same codex -c mcp_servers.* mechanism as the built-in plugins, including
+// its env vars — this is the whole point of the generic registry: no
+// codex<Name>Args function needed to wire a new server into codex.
+func TestCodexMCPServerArgsCustom(t *testing.T) {
+	cfg := &Config{MCPServers: []MCPServerDef{
+		{Name: "myserver", Enabled: true, Command: "npx", Args: []string{"-y", "some-mcp-pkg"}, Env: map[string]string{"API_KEY": "secret"}},
+	}}
+	args := codexMCPServerArgs(cfg, "", "", "")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"mcp_servers.myserver.command=", "mcp_servers.myserver.args=", "mcp_servers.myserver.env.API_KEY=",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in %v", want, args)
+		}
 	}
 }
 

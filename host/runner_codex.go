@@ -316,54 +316,6 @@ func codexWorkerModel(cfg *Config) string {
 	return cfg.CodexModel
 }
 
-// codexScreenArgs returns the codex `-c` config overrides that inject the
-// aglink-screen MCP server inline (the Codex analogue of Claude's
-// pluginWorkerArgs / --mcp-config). Codex has no inline-JSON flag; instead it
-// takes dotted-path TOML overrides via `-c key=value`. Combined with the
-// existing --ignore-user-config, this needs no static config.toml file:
-//
-//	-c mcp_servers.screen.command="<path>"
-//	-c mcp_servers.screen.args=["mcp"]
-//
-// The values are produced with encoding/json so a Windows path's backslashes are
-// escaped correctly inside the TOML string/array literal (JSON string/array
-// syntax is a valid TOML basic-string / array literal here) — no manual concat.
-func codexScreenArgs(screenBinaryPath string) []string {
-	cmdVal, err := json.Marshal(screenBinaryPath)
-	if err != nil {
-		return nil
-	}
-	argsVal, err := json.Marshal([]string{"mcp"})
-	if err != nil {
-		return nil
-	}
-	return []string{
-		"-c", "mcp_servers.screen.command=" + string(cmdVal),
-		"-c", "mcp_servers.screen.args=" + string(argsVal),
-	}
-}
-
-// codexWebArgs is the aglink-web analogue of codexScreenArgs: it injects the
-// "web" MCP server (list_tabs/navigate/get_page_text over the user's real
-// Chrome) via the same `-c mcp_servers.<key>.*` mechanism. Unlike Claude's
-// single --mcp-config JSON blob, codex's `-c` overrides are independent
-// per-key flags, so this can simply be appended alongside codexScreenArgs
-// without any merging.
-func codexWebArgs(webBinaryPath string) []string {
-	cmdVal, err := json.Marshal(webBinaryPath)
-	if err != nil {
-		return nil
-	}
-	argsVal, err := json.Marshal([]string{"mcp"})
-	if err != nil {
-		return nil
-	}
-	return []string{
-		"-c", "mcp_servers.web.command=" + string(cmdVal),
-		"-c", "mcp_servers.web.args=" + string(argsVal),
-	}
-}
-
 // extractCodexToolResultImages pulls decoded images out of codex's --json NDJSON
 // stream (the Codex analogue of Claude's extractToolResultImages). Screen MCP
 // images arrive in an "item.completed" event whose item.type == "mcp_tool_call",
@@ -852,15 +804,15 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	if model != "" {
 		args = append(args, "-m", model)
 	}
-	// Inject the aglink-screen/aglink-web MCP servers inline (same gating as the
-	// Claude path) so codex-backed workers can drive the screen / real Chrome too.
+	// Inject every enabled MCP server (aglink-screen/aglink-web/goono-mcp/notion
+	// plus any user-defined cfg.MCPServers entry) inline, mirroring the Claude
+	// path's pluginWorkerArgs — see buildMCPServerList/codexMCPServerArgs.
 	selfExe, _ := os.Executable()
-	if screenBin := resolveScreenBinaryPath(r.cfg(), selfExe); r.cfg().ScreenControl && screenBin != "" {
-		args = append(args, codexScreenArgs(screenBin)...)
-	}
-	if webBin := resolveWebBinaryPath(r.cfg(), selfExe); r.cfg().WebControl && webBin != "" {
-		args = append(args, codexWebArgs(webBin)...)
-	}
+	cfgv := r.cfg()
+	screenBin := resolveScreenBinaryPath(cfgv, selfExe)
+	webBin := resolveWebBinaryPath(cfgv, selfExe)
+	goonoBin := resolveGoonoBinaryPath(cfgv, selfExe)
+	args = append(args, codexMCPServerArgs(cfgv, screenBin, webBin, goonoBin)...)
 	args = append(args, req.Prompt)
 
 	log.Printf("[codex] run: model=%q session=%s resume=%v dir=%s prompt=%d chars",

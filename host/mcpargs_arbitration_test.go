@@ -23,7 +23,7 @@ func appendSystemPrompt(args []string) string {
 
 func TestArbitrationPresentWhenBothPluginsActive(t *testing.T) {
 	cfg := &Config{ScreenControl: true, WebControl: true}
-	args := pluginWorkerArgs(cfg, "screen.exe", "web.exe")
+	args := pluginWorkerArgs(cfg, "screen.exe", "web.exe", "")
 	sp := appendSystemPrompt(args)
 	if sp == "" {
 		t.Fatal("expected an --append-system-prompt with both plugins active")
@@ -42,19 +42,19 @@ func TestArbitrationPresentWhenBothPluginsActive(t *testing.T) {
 
 func TestNoArbitrationWithOnlyOnePlugin(t *testing.T) {
 	// Screen only.
-	sp := appendSystemPrompt(pluginWorkerArgs(&Config{ScreenControl: true}, "screen.exe", ""))
+	sp := appendSystemPrompt(pluginWorkerArgs(&Config{ScreenControl: true}, "screen.exe", "", ""))
 	if strings.Contains(sp, "TOOL CHOICE") {
 		t.Error("screen-only: should not inject browser-vs-desktop arbitration")
 	}
 	// Web only.
-	sp = appendSystemPrompt(pluginWorkerArgs(&Config{WebControl: true}, "", "web.exe"))
+	sp = appendSystemPrompt(pluginWorkerArgs(&Config{WebControl: true}, "", "web.exe", ""))
 	if strings.Contains(sp, "TOOL CHOICE") {
 		t.Error("web-only: should not inject browser-vs-desktop arbitration")
 	}
 }
 
 func TestNoPluginArgsWhenAllOff(t *testing.T) {
-	if args := pluginWorkerArgs(&Config{}, "", ""); args != nil {
+	if args := pluginWorkerArgs(&Config{}, "", "", ""); args != nil {
 		t.Errorf("no plugins active should yield nil args, got %v", args)
 	}
 }

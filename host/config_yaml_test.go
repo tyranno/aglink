@@ -26,6 +26,8 @@ func TestYAMLRoundTrip(t *testing.T) {
 		ScreenBinaryPath:    "C:\\tools\\aglink-screen.exe",
 		WebControl:          true,
 		WebBinaryPath:       "C:\\tools\\aglink-web.exe",
+		GoonoControl:        true,
+		GoonoBinaryPath:     "C:\\tools\\goono-mcp.exe",
 		ConversationTTLDays: 45,
 		WebChat:             true,
 		WebChatAddr:         "127.0.0.1:27271",
@@ -49,6 +51,7 @@ func TestYAMLRoundTrip(t *testing.T) {
 		got.ScreenElevated != true || got.ScreenKeepAwake != true ||
 		got.ScreenBinaryPath != "C:\\tools\\aglink-screen.exe" ||
 		got.WebControl != true || got.WebBinaryPath != "C:\\tools\\aglink-web.exe" ||
+		got.GoonoControl != true || got.GoonoBinaryPath != "C:\\tools\\goono-mcp.exe" ||
 		got.ConversationTTLDays != 45 ||
 		got.WebChat != true || got.WebChatAddr != "127.0.0.1:27271" ||
 		got.WebChatToken != "tok-abc" || got.WebChatOwnerChatID != 6723802240 {
@@ -91,6 +94,36 @@ func TestConfigDefaultWebChatAddr(t *testing.T) {
 	}
 	if got2.WebChatAddr != "0.0.0.0:9999" {
 		t.Errorf("expected explicit addr to survive, got %q", got2.WebChatAddr)
+	}
+}
+
+// TestYAMLRoundTrip_GenericMCPServers verifies a user-defined mcp_servers
+// entry (the config-driven way to add a new MCP server without touching Go
+// code) round-trips through YAML intact, including its env map.
+func TestYAMLRoundTrip_GenericMCPServers(t *testing.T) {
+	c := &Config{
+		TelegramBotToken: "123:ABC",
+		AllowedUserIDs:   []int64{111},
+		MCPServers: []MCPServerDef{
+			{Name: "myserver", Enabled: true, Command: "npx", Args: []string{"-y", "some-mcp-pkg"}, Env: map[string]string{"API_KEY": "secret"}, SystemPrompt: "Use myserver for X."},
+		},
+	}
+	b, err := marshalConfigYAML(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := unmarshalConfigYAML(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.MCPServers) != 1 {
+		t.Fatalf("expected 1 mcp server, got %d: %+v", len(got.MCPServers), got.MCPServers)
+	}
+	d := got.MCPServers[0]
+	if d.Name != "myserver" || !d.Enabled || d.Command != "npx" ||
+		len(d.Args) != 2 || d.Args[1] != "some-mcp-pkg" ||
+		d.Env["API_KEY"] != "secret" || d.SystemPrompt != "Use myserver for X." {
+		t.Errorf("round-trip mismatch: %+v", d)
 	}
 }
 

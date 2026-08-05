@@ -84,6 +84,22 @@ func controlCompleteMiddleware(next server.ToolHandlerFunc) server.ToolHandlerFu
 // This is the Windows implementation. Tools start with list_windows and
 // focus_window (more added in later tasks: snapshot/screenshot/click/...).
 func RunMCPScreen() error {
+	// Best-effort safety net: if the worker's turn ends (stdio closes, this
+	// process is about to exit) without the LLM ever calling return_desktop,
+	// switch back to the desktop the user was on before any cross-desktop
+	// focus/capture happened. No-op if no switch occurred. This must not be
+	// the ONLY mechanism (the LLM should still call return_desktop once it is
+	// done driving the other-desktop window, so the user isn't stranded there
+	// mid-turn) but it guarantees the user is never left parked on a desktop
+	// they didn't choose just because the model forgot the explicit call.
+	defer func() {
+		if msg, err := returnToOriginDesktop(); err != nil {
+			fmt.Fprintf(os.Stderr, "aglink-screen: warning: return_desktop on exit failed: %v\n", err)
+		} else if msg != "" {
+			fmt.Fprintf(os.Stderr, "aglink-screen: %s\n", msg)
+		}
+	}()
+
 	s := server.NewMCPServer(
 		"screen",
 		"0.1.0",

@@ -224,6 +224,15 @@ var commands = []command{
 		},
 	},
 	{
+		name: "get_network_requests",
+		desc: "Read recent AJAX calls (fetch and XMLHttpRequest) made by the page — method, URL, status, duration, and truncated request/response bodies — captured from a tab since it loaded. The tool for reverse-engineering a web app's own API: what endpoint does clicking a button actually call, with what payload, and what does it return. get_page_text/get_html/eval can't see this, since it never touches the rendered DOM. Binary responses (images, blobs) are recorded without a body preview. Use 'filter' to narrow a busy page down to the one call you care about.",
+		args: []argSpec{
+			{name: "tabId", typ: argInt, desc: "Optional tab id (from list_tabs). Omit for the active tab."},
+			{name: "max", typ: argInt, desc: "Maximum number of recent requests to return (default 50)."},
+			{name: "filter", typ: argString, desc: "Optional case-insensitive substring to filter by URL (e.g. 'approve' or '/api/')."},
+		},
+	},
+	{
 		name: "reload_extension",
 		desc: "Dev-workflow convenience: reload the aglink-web extension itself (chrome.runtime.reload()) so a background.js/manifest.json edit takes effect, instead of manually navigating to chrome://extensions and clicking reload. Not useful for driving a user's own browsing — only relevant when developing this extension.",
 	},

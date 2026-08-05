@@ -156,6 +156,8 @@ async function dispatch(method, params) {
       return await activateTab(params);
     case "get_console_logs":
       return await getConsoleLogs(params);
+    case "get_network_requests":
+      return await getNetworkRequests(params);
     case "reload_extension":
       return await reloadExtension();
     case "close_tab":
@@ -1042,6 +1044,45 @@ async function getConsoleLogs(params) {
   const logs = (results && results[0] && results[0].result) || [];
   if (logs.length === 0) return "(no console messages captured)";
   return logs.map((l) => `[${l.level}] ${l.text}`).join("\n");
+}
+
+// getNetworkRequests reads the buffer network-capture.js maintains on the
+// page's own window (MAIN world — same rationale as getConsoleLogs: an
+// isolated-world script has its own separate window and never sees the
+// page's own fetch/XHR calls). The primary tool for reverse-engineering a web
+// app's own AJAX API — what endpoint a button actually calls, with what
+// payload, and what it returns — which get_page_text/get_html/eval can't see
+// since it never touches the rendered DOM.
+async function getNetworkRequests(params) {
+  let tabId = params.tabId;
+  if (!tabId) {
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!active) throw new Error("no active tab");
+    tabId = active.id;
+  }
+  const max = params.max || 50;
+  const filter = (params.filter || "").toLowerCase();
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: (n, f) => {
+      const all = window.__aglinkNetwork || [];
+      const matched = f ? all.filter((e) => (e.url || "").toLowerCase().includes(f)) : all;
+      return matched.slice(-n);
+    },
+    args: [max, filter],
+  });
+  const entries = (results && results[0] && results[0].result) || [];
+  if (entries.length === 0) return "(no network requests captured)";
+  return entries
+    .map((e, i) => {
+      const parts = [`${i} | ${e.type} | ${e.method} ${e.url}`];
+      parts.push(e.error ? `ERROR: ${e.error}` : `-> ${e.status} (${e.durationMs}ms)`);
+      if (e.requestBody) parts.push(`req=${JSON.stringify(e.requestBody)}`);
+      if (e.responseBody) parts.push(`resp=${JSON.stringify(e.responseBody)}`);
+      return parts.join(" | ");
+    })
+    .join("\n");
 }
 
 // reloadExtension restarts the extension itself (chrome.runtime.reload()) —

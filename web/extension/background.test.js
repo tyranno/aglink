@@ -526,6 +526,32 @@ test("getConsoleLogs formats captured messages and handles the empty case", asyn
   assert.strictEqual(await empty.getConsoleLogs({}), "(no console messages captured)");
 });
 
+test("getNetworkRequests formats captured requests, applies filter, and handles the empty case", async () => {
+  const entries = [
+    { type: "fetch", method: "GET", url: "https://example.com/api/list", status: 200, durationMs: 12, responseBody: '{"ok":true}' },
+    { type: "xhr", method: "POST", url: "https://example.com/api/approve", status: 500, durationMs: 34, requestBody: '{"id":1}', error: undefined },
+  ];
+  const withReqs = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 4, active: true }] },
+      scripting: { executeScript: async () => [{ result: entries }] },
+    })
+  );
+  assert.strictEqual(
+    await withReqs.getNetworkRequests({}),
+    '0 | fetch | GET https://example.com/api/list | -> 200 (12ms) | resp="{\\"ok\\":true}"\n' +
+      '1 | xhr | POST https://example.com/api/approve | -> 500 (34ms) | req="{\\"id\\":1}"'
+  );
+
+  const empty = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 4, active: true }] },
+      scripting: { executeScript: async () => [{ result: [] }] },
+    })
+  );
+  assert.strictEqual(await empty.getNetworkRequests({}), "(no network requests captured)");
+});
+
 test("keyCombo requires a combo", async () => {
   const sb = loadBackground(makeChrome());
   await assert.rejects(() => sb.keyCombo({}), /key requires 'combo'/);

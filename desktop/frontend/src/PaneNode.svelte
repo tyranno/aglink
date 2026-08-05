@@ -124,7 +124,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <main
-      class={`relative flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden ${color ? `border ${chat.panes.length > 1 && p.id === chat.focusedPaneId ? "border-blue-400 dark:border-blue-500" : color.border}` : ""}`}
+      class={`relative flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden ${color ? `border ${chat.panes.length > 1 && p.id === chat.focusedPaneId ? "border-blue-200 dark:border-blue-800/40" : color.border}` : ""}`}
       onclick={() => focusPane(p.id)}
       ondragover={(event) => handlePaneDragOver(event, p.id)}
       ondragleave={() => handlePaneDragLeave(p.id)}

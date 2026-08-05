@@ -47,11 +47,10 @@ func TestOpencodeSettingsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestVLLMToolSSHSettingsRoundTrip verifies the new vLLM/tool-path/SSH settings
-// flow through applySettings, persist to their own YAML sections, and load back
-// unchanged — and that applySettings never mutates shared map/slice fields of the
-// source config in place (the invalid-save-must-not-corrupt-live-config guard).
-func TestVLLMToolSSHSettingsRoundTrip(t *testing.T) {
+// TestVLLMSSHSettingsRoundTrip verifies the vLLM/SSH settings flow through
+// applySettings and persist to their own YAML sections, then load back
+// unchanged.
+func TestVLLMSSHSettingsRoundTrip(t *testing.T) {
 	base := &Config{
 		TelegramBotToken: "t",
 		AllowedUserIDs:   []int64{1},
@@ -61,8 +60,6 @@ func TestVLLMToolSSHSettingsRoundTrip(t *testing.T) {
 		"vllm.primary_model":   "qwen2.5-coder",
 		"vllm.secondary_url":   "http://10.0.0.6:8000/v1",
 		"vllm.secondary_model": "llama-3.3",
-		"tools.ssh":            `C:\Program Files\Git\usr\bin\ssh.exe`,
-		"tools.sshpass":        `C:\cygwin\bin\sshpass.exe`,
 		"ssh.enabled":          true,
 	}
 	cfg := *base
@@ -81,8 +78,8 @@ func TestVLLMToolSSHSettingsRoundTrip(t *testing.T) {
 		got.VLLMServers[1].Model != "llama-3.3" {
 		t.Fatalf("vLLM servers did not round-trip: %+v", got.VLLMServers)
 	}
-	if got.ToolPaths["sshpass"] != `C:\cygwin\bin\sshpass.exe` || !got.SSHEnabled {
-		t.Fatalf("tool paths / ssh flag did not round-trip: %+v enabled=%v", got.ToolPaths, got.SSHEnabled)
+	if !got.SSHEnabled {
+		t.Fatalf("ssh.enabled did not round-trip: %+v", got.SSHEnabled)
 	}
 }
 
@@ -94,12 +91,12 @@ func TestApplySettingsUpdate_NoInPlaceMutation(t *testing.T) {
 	live := &Config{
 		TelegramBotToken: "t",
 		AllowedUserIDs:   []int64{1},
-		ToolPaths:        map[string]string{"ssh": `C:\old\ssh.exe`},
+		Providers:        map[string]ProviderCred{"gemini": {APIKey: "old-key"}},
 		VLLMServers:      []VLLMServer{{BaseURL: "http://old"}},
 	}
 	body, _ := json.Marshal(map[string]any{
-		"tools.ssh":        `C:\new\ssh.exe`,
-		"vllm.primary_url": "http://new",
+		"provider.gemini.key": "new-key",
+		"vllm.primary_url":    "http://new",
 	})
 	reply := applySettingsUpdate(cfgPath, live, body)
 	var res struct {
@@ -109,8 +106,8 @@ func TestApplySettingsUpdate_NoInPlaceMutation(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("save failed: %s", reply)
 	}
-	if live.ToolPaths["ssh"] != `C:\old\ssh.exe` {
-		t.Errorf("live ToolPaths mutated in place: %v", live.ToolPaths)
+	if live.Providers["gemini"].APIKey != "old-key" {
+		t.Errorf("live Providers mutated in place: %v", live.Providers)
 	}
 	if live.VLLMServers[0].BaseURL != "http://old" {
 		t.Errorf("live VLLMServers mutated in place: %v", live.VLLMServers)

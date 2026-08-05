@@ -80,12 +80,6 @@ type Config struct {
 	// so an unset config leaves behavior byte-for-byte identical to before.
 	InteractiveClaude bool
 
-	// ToolPaths is a generic registry of external tool executables keyed by tool
-	// name (e.g. "ssh", "sshpass"). Empty/absent → resolve from PATH. Lets an
-	// install place a tool in a non-PATH location (e.g. C:\cygwin\bin\sshpass.exe)
-	// and point aglink at it without editing the system PATH. See resolveToolPath.
-	ToolPaths map[string]string
-
 	// VLLMServers are OpenAI-compatible local inference endpoints. The first is
 	// primary; more are added later as GPU capacity grows (also the failover
 	// order). When the opencode backend has no explicit opencode.json, these are

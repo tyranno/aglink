@@ -876,7 +876,7 @@ func (b *Bot) handleSSH(reply replySender, chatID int64, fields []string) {
 		return
 	}
 	if len(fields) < 2 {
-		_ = reply.Send(chatID, "사용법: !ssh list | !ssh <호스트> <명령...> | !ssh test <호스트>")
+		_ = reply.Send(chatID, "사용법: !ssh list | !ssh <호스트> <명령...> | !ssh test <호스트> | !ssh put/get <호스트> <경로1> <경로2>")
 		return
 	}
 	switch fields[1] {
@@ -908,6 +908,20 @@ func (b *Bot) handleSSH(reply replySender, chatID int64, fields []string) {
 			return
 		}
 		b.runSSHReply(reply, chatID, fields[2], "echo aglink-ssh-ok")
+		return
+	case "put":
+		if len(fields) < 5 {
+			_ = reply.Send(chatID, "사용법: !ssh put <호스트> <로컬경로> <원격경로>")
+			return
+		}
+		b.transferSSHFile(reply, chatID, fields[2], fields[3], fields[4], true)
+		return
+	case "get":
+		if len(fields) < 5 {
+			_ = reply.Send(chatID, "사용법: !ssh get <호스트> <원격경로> <로컬경로>")
+			return
+		}
+		b.transferSSHFile(reply, chatID, fields[2], fields[3], fields[4], false)
 		return
 	default:
 		host := fields[1]
@@ -943,6 +957,30 @@ func (b *Bot) runSSHReply(reply replySender, chatID int64, host, remote string) 
 		out = "(출력 없음)"
 	}
 	_ = reply.Send(chatID, "🔐 "+host+":\n"+out)
+}
+
+// transferSSHFile runs !ssh put/get: a file copy to/from the named host over
+// SFTP (the pure-Go replacement for scp), bounded by a longer timeout than a
+// plain command since transfers can take a while.
+func (b *Bot) transferSSHFile(reply replySender, chatID int64, host, pathA, pathB string, upload bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	var n int64
+	var err error
+	if upload {
+		n, err = uploadSSHFile(ctx, b.cfg(), host, pathA, pathB)
+	} else {
+		n, err = downloadSSHFile(ctx, b.cfg(), host, pathA, pathB)
+	}
+	if err != nil {
+		_ = reply.Send(chatID, "❌ SSH 전송 실패: "+err.Error())
+		return
+	}
+	dir := "→"
+	if !upload {
+		dir = "←"
+	}
+	_ = reply.Send(chatID, fmt.Sprintf("🔐 %s %s %s (%d bytes)", host, dir, pathB, n))
 }
 
 // cancel stops only the running worker(s) in the caller's own lane (key),
@@ -2590,10 +2628,12 @@ func helpText() string {
 !screen preset save <이름>    현재 커서 위치를 프리셋으로 저장
 !screen click <프리셋이름>     저장한 프리셋 좌표 클릭 (즉시)
 
-원격 제어 (SSH):
+원격 제어 (SSH, 내장 순수 Go 클라이언트 — 외부 프로그램 불필요):
 !ssh list                    등록된 원격 호스트 목록
 !ssh <호스트> <명령...>        원격 호스트에서 명령 실행 (예: !ssh gpu1 nvidia-smi)
 !ssh test <호스트>            원격 접속 확인
+!ssh put <호스트> <로컬> <원격>  로컬 파일을 원격으로 전송 (scp 대체)
+!ssh get <호스트> <원격> <로컬>  원격 파일을 로컬로 전송 (scp 대체)
 
 기타:
 !remind <시간> <메시지>      일회성 알림 (구버전 호환)

@@ -23,13 +23,13 @@ func applySettingsUpdate(cfgPath string, cfg *Config, body []byte) json.RawMessa
 		return fail("잘못된 요청: " + err.Error())
 	}
 	newCfg := *cfg // shallow copy
-	// applySettings now also edits the ToolPaths map and VLLMServers slice, which a
-	// shallow copy shares with the live cfg. Clone them so a rejected/invalid save
-	// never mutates the running config in place (the other fields are scalars).
-	if cfg.ToolPaths != nil {
-		newCfg.ToolPaths = make(map[string]string, len(cfg.ToolPaths))
-		for k, v := range cfg.ToolPaths {
-			newCfg.ToolPaths[k] = v
+	// applySettings edits the Providers map and VLLMServers slice, which a shallow
+	// copy shares with the live cfg. Clone them so a rejected/invalid save never
+	// mutates the running config in place (the other fields are scalars).
+	if cfg.Providers != nil {
+		newCfg.Providers = make(map[string]ProviderCred, len(cfg.Providers))
+		for k, v := range cfg.Providers {
+			newCfg.Providers[k] = v
 		}
 	}
 	if len(cfg.VLLMServers) > 0 {
@@ -276,11 +276,7 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "vllm.secondary_url", Label: "2번 서버 주소", Desc: "서버를 하나 더 붙일 때만. 참조 id는 vllm-2. 비우면 미사용.", Type: "string", Value: vllmServerAt(cfg, 1).BaseURL},
 			{Key: "vllm.secondary_model", Label: "2번 서버 모델", Desc: "2번 서버가 서빙하는 모델. 모델 참조는 vllm-2/<모델>.", Type: "string", Value: vllmServerAt(cfg, 1).Model},
 		}},
-		{Title: "외부 프로그램 경로", Group: settingsGroupSecurity, Advanced: true, Desc: "ssh 같은 외부 도구가 특별한 위치에 있을 때만 지정합니다. 보통은 비워두면 자동으로 찾습니다.", Fields: []settingField{
-			{Key: "tools.ssh", Label: "ssh 경로", Desc: "비우면 자동 탐지. 원격 제어(!ssh)에 사용.", Type: "string", Value: toolPathValue(cfg, "ssh")},
-			{Key: "tools.sshpass", Label: "sshpass 경로", Desc: "비밀번호 인증용. 예: C:\\cygwin\\bin\\sshpass.exe. 키 인증만 쓰면 불필요.", Type: "string", Value: toolPathValue(cfg, "sshpass")},
-		}},
-		{Title: "원격 제어(SSH)", Group: settingsGroupSecurity, Advanced: true, Desc: "봇이 !ssh 명령으로 다른 컴퓨터를 제어하게 허용합니다. 호스트 목록(주소·계정·비밀번호)은 원본 설정편집기의 ssh.hosts에서 관리합니다.", Fields: []settingField{
+		{Title: "원격 제어(SSH)", Group: settingsGroupSecurity, Advanced: true, Desc: "봇이 !ssh 명령으로 다른 컴퓨터를 제어하게 허용합니다(내장된 순수 Go SSH/SFTP 클라이언트 사용, 외부 프로그램 불필요). 호스트 목록(주소·계정·비밀번호)은 원본 설정편집기의 ssh.hosts에서 관리합니다.", Fields: []settingField{
 			{Key: "ssh.enabled", Label: "SSH 원격 제어 허용", Desc: "켜면 !ssh <호스트> <명령>으로 등록된 원격 호스트를 제어합니다.", Type: "bool", Value: cfg.SSHEnabled},
 		}},
 		{Title: "고급: 실험적 백엔드", Group: settingsGroupNetwork, Advanced: true, Desc: "일반 사용에는 필요 없는 실험적 기능입니다.", Fields: []settingField{
@@ -367,10 +363,6 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			setVLLMField(cfg, 1, "url", asString(v))
 		case "vllm.secondary_model":
 			setVLLMField(cfg, 1, "model", asString(v))
-		case "tools.ssh":
-			setToolPath(cfg, "ssh", asString(v))
-		case "tools.sshpass":
-			setToolPath(cfg, "sshpass", asString(v))
 		case "ssh.enabled":
 			cfg.SSHEnabled = asBool(v)
 		case "runtime.timeout_minutes":
@@ -457,29 +449,6 @@ func applyProviderSetting(cfg *Config, key, val string) {
 		return
 	}
 	setProviderCredField(cfg, id, field, val)
-}
-
-// toolPathValue reads a tool's configured path for display in the settings UI
-// ("" when unset → resolved from PATH at runtime).
-func toolPathValue(cfg *Config, name string) string {
-	if cfg == nil || cfg.ToolPaths == nil {
-		return ""
-	}
-	return cfg.ToolPaths[name]
-}
-
-// setToolPath sets (or clears) a tool's path in the registry, allocating the map
-// on first use. A blank value clears the entry so it falls back to PATH lookup.
-func setToolPath(cfg *Config, name, val string) {
-	val = strings.TrimSpace(val)
-	if val == "" {
-		delete(cfg.ToolPaths, name)
-		return
-	}
-	if cfg.ToolPaths == nil {
-		cfg.ToolPaths = map[string]string{}
-	}
-	cfg.ToolPaths[name] = val
 }
 
 func asString(v any) string {

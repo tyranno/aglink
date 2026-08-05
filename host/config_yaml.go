@@ -97,9 +97,6 @@ type yamlConfig struct {
 	InteractiveClaude struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"interactive_claude"`
-	// Tools is a name→path registry for external executables (ssh, sshpass, …).
-	// Empty/absent → resolve from PATH. See resolveToolPath.
-	Tools map[string]string `yaml:"tools,omitempty"`
 	// VLLM lists OpenAI-compatible local inference servers; the first is primary,
 	// the rest are added as capacity grows. See renderVLLMOpencodeConfig.
 	VLLM struct {
@@ -216,9 +213,6 @@ func yamlToConfig(y *yamlConfig) *Config {
 		c.ChatControl = true
 	}
 	c.InteractiveClaude = y.InteractiveClaude.Enabled
-	if len(y.Tools) > 0 {
-		c.ToolPaths = y.Tools
-	}
 	c.VLLMServers = y.VLLM.Servers
 	if len(y.Providers) > 0 {
 		c.Providers = y.Providers
@@ -283,9 +277,6 @@ func configToYAML(c *Config) *yamlConfig {
 	y.AglinkChat.BinaryPath = c.AglinkChatBinaryPath
 	y.AglinkChat.Token = c.AglinkChatToken
 	y.InteractiveClaude.Enabled = c.InteractiveClaude
-	if len(c.ToolPaths) > 0 {
-		y.Tools = c.ToolPaths
-	}
 	y.VLLM.Servers = c.VLLMServers
 	if len(c.Providers) > 0 {
 		y.Providers = c.Providers

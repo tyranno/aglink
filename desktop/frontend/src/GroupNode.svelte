@@ -23,7 +23,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class={`rounded-md ${chat.dragOverGroupId === group.id ? "ring-2 ring-blue-400 bg-blue-50" : ""} ${chat.dragOverGroupReorder === group.id && chat.dragOverGroupZone === "into" ? "ring-2 ring-amber-400 bg-amber-50" : ""} ${chat.draggingGroupId === group.id ? "opacity-50" : ""}`}
+  class={`rounded-md ${chat.dragOverGroupId === group.id ? "ring-2 ring-blue-400 bg-blue-50 dark:bg-blue-950/40" : ""} ${chat.dragOverGroupReorder === group.id && chat.dragOverGroupZone === "into" ? "ring-2 ring-amber-400 bg-amber-50 dark:bg-amber-950/40" : ""} ${chat.draggingGroupId === group.id ? "opacity-50" : ""}`}
   ondragenter={(event) => handleGroupDragOver(event, group.id)}
   ondragover={(event) => handleGroupDragOver(event, group.id)}
   ondragleave={() => handleGroupDragLeave(group.id)}
@@ -31,7 +31,7 @@
 >
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class={`relative flex h-9 cursor-grab items-center gap-1 rounded-md px-1 hover:bg-slate-100 active:cursor-grabbing ${chat.dragOverGroupReorder === group.id && chat.dragOverGroupZone === "before" ? "border-t-2 border-amber-400" : ""} ${chat.dragOverGroupReorder === group.id && chat.dragOverGroupZone === "after" ? "border-b-2 border-amber-400" : ""}`}
+    class={`relative flex h-9 cursor-grab items-center gap-1 rounded-md px-1 hover:bg-slate-100 dark:hover:bg-slate-700 active:cursor-grabbing ${chat.dragOverGroupReorder === group.id && chat.dragOverGroupZone === "before" ? "border-t-2 border-amber-400 dark:border-amber-500" : ""} ${chat.dragOverGroupReorder === group.id && chat.dragOverGroupZone === "after" ? "border-b-2 border-amber-400 dark:border-amber-500" : ""}`}
     data-conv-menu
     draggable="true"
     ondragstart={(event) => handleGroupHeaderDragStart(event, group.id)}
@@ -43,17 +43,17 @@
     title="드래그해서 순서 변경(가장자리) 또는 다른 그룹의 하위로 이동(가운데)"
   >
     <button
-      class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 hover:bg-slate-200"
+      class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"
       onclick={() => toggleWebGroupCollapsed(group.id)}
       title={group.collapsed ? "그룹 펼치기" : "그룹 접기"}
       aria-label={group.collapsed ? "그룹 펼치기" : "그룹 접기"}
     >
       {group.collapsed ? "▸" : "▾"}
     </button>
-    <div class="min-w-0 flex-1 truncate text-sm font-bold text-slate-800">{group.name}</div>
-    <span class="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">{groupConvs.length}</span>
+    <div class="min-w-0 flex-1 truncate text-sm font-bold text-slate-800 dark:text-slate-200">{group.name}</div>
+    <span class="shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-600 dark:text-slate-400">{groupConvs.length}</span>
     <button
-      class="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-500 hover:bg-slate-200"
+      class="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"
       onclick={() => (openMenuId = openMenuId === group.id ? "" : group.id)}
       title="그룹 관리"
       aria-label="그룹 관리"
@@ -61,23 +61,23 @@
       ⋯
     </button>
     {#if openMenuId === group.id}
-      <div class="absolute right-0 top-8 z-20 w-40 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
-        <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; onRename(group); }}>
+      <div class="absolute right-0 top-8 z-20 w-40 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 shadow-xl">
+        <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; onRename(group); }}>
           이름 변경
         </button>
-        <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50" onclick={() => { openMenuId = ""; onDelete(group); }}>
+        <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40" onclick={() => { openMenuId = ""; onDelete(group); }}>
           그룹 삭제
         </button>
       </div>
     {/if}
   </div>
   {#if !group.collapsed}
-    <div class="ml-2 space-y-1 border-l border-slate-200 pl-2">
+    <div class="ml-2 space-y-1 border-l border-slate-200 dark:border-slate-700 pl-2">
       {#each childGroups as child (child.id)}
         <GroupNode group={child} bind:openMenuId {webConvRow} {onRename} {onDelete} />
       {/each}
       {#if groupConvs.length === 0 && childGroups.length === 0}
-        <div class="px-2 py-1.5 text-[11px] text-slate-400">비어 있음</div>
+        <div class="px-2 py-1.5 text-[11px] text-slate-400 dark:text-slate-500">비어 있음</div>
       {/if}
       {#each groupConvs as conv (conv.id)}
         {@render webConvRow(conv)}

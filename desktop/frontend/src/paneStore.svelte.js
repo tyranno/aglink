@@ -643,12 +643,12 @@ export function focusedPane() {
 // top-to-bottom position in the layout tree (not its id), so the first split
 // is always the same color, the second is always the next color, etc.
 const PANE_COLORS = [
-  { border: "border-sky-300", headerBg: "bg-sky-50/80", dot: "bg-sky-400" },
-  { border: "border-violet-300", headerBg: "bg-violet-50/80", dot: "bg-violet-400" },
-  { border: "border-amber-300", headerBg: "bg-amber-50/80", dot: "bg-amber-400" },
-  { border: "border-emerald-300", headerBg: "bg-emerald-50/80", dot: "bg-emerald-400" },
-  { border: "border-rose-300", headerBg: "bg-rose-50/80", dot: "bg-rose-400" },
-  { border: "border-cyan-300", headerBg: "bg-cyan-50/80", dot: "bg-cyan-400" },
+  { border: "border-sky-300 dark:border-sky-800/70", headerBg: "bg-sky-50/80 dark:bg-sky-900/20", dot: "bg-sky-400 dark:bg-sky-600" },
+  { border: "border-violet-300 dark:border-violet-800/70", headerBg: "bg-violet-50/80 dark:bg-violet-900/20", dot: "bg-violet-400 dark:bg-violet-600" },
+  { border: "border-amber-300 dark:border-amber-800/70", headerBg: "bg-amber-50/80 dark:bg-amber-900/20", dot: "bg-amber-400 dark:bg-amber-600" },
+  { border: "border-emerald-300 dark:border-emerald-800/70", headerBg: "bg-emerald-50/80 dark:bg-emerald-900/20", dot: "bg-emerald-400 dark:bg-emerald-600" },
+  { border: "border-rose-300 dark:border-rose-800/70", headerBg: "bg-rose-50/80 dark:bg-rose-900/20", dot: "bg-rose-400 dark:bg-rose-600" },
+  { border: "border-cyan-300 dark:border-cyan-800/70", headerBg: "bg-cyan-50/80 dark:bg-cyan-900/20", dot: "bg-cyan-400 dark:bg-cyan-600" },
 ];
 
 export function paneColor(paneId) {

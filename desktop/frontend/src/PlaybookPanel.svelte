@@ -199,36 +199,36 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-  <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 px-3">
-    <div class="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">업무 루틴</div>
-    <button class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100" onclick={newGroup} title="새 그룹" aria-label="새 그룹">📁</button>
+  <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 dark:border-slate-700 px-3">
+    <div class="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900 dark:text-slate-100">업무 루틴</div>
+    <button class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={newGroup} title="새 그룹" aria-label="새 그룹">📁</button>
     <button class="grid h-8 w-8 place-items-center rounded-md bg-blue-600 text-base font-semibold text-white hover:bg-blue-700" onclick={() => openEditor(null, "")} title="새 업무 루틴" aria-label="새 루틴">＋</button>
-    <button class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100" onclick={load} title="새로고침" aria-label="새로고침">↻</button>
+    <button class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={load} title="새로고침" aria-label="새로고침">↻</button>
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
     {#if loadError}
-      <div class="mb-2 rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">{loadError}</div>
+      <div class="mb-2 rounded bg-rose-50 dark:bg-rose-950/40 px-2 py-1 text-xs text-rose-700 dark:text-rose-300">{loadError}</div>
     {/if}
     {#if rows.length === 0}
-      <div class="px-2 py-3 text-sm text-slate-500">＋로 업무 루틴을, 📁로 그룹을 만들어 보세요.</div>
+      <div class="px-2 py-3 text-sm text-slate-500 dark:text-slate-400">＋로 업무 루틴을, 📁로 그룹을 만들어 보세요.</div>
     {/if}
     {#each rows as row (row.type + (row.group?.id || row.book?.id))}
       {#if row.type === "group"}
-        <div class="flex items-center gap-1 py-1.5 text-xs font-bold text-slate-600" style={`padding-left:${8 + row.depth * 14}px`}>
+        <div class="flex items-center gap-1 py-1.5 text-xs font-bold text-slate-600 dark:text-slate-400" style={`padding-left:${8 + row.depth * 14}px`}>
           <span class="min-w-0 flex-1 truncate">📁 {row.group.name}{countIn(row.group.id) ? ` (${countIn(row.group.id)})` : ""}</span>
-          <button class="grid h-6 w-6 place-items-center rounded hover:bg-slate-200" onclick={() => groupMenu(row.group)} aria-label="그룹 메뉴">⋯</button>
+          <button class="grid h-6 w-6 place-items-center rounded hover:bg-slate-200 dark:hover:bg-slate-600" onclick={() => groupMenu(row.group)} aria-label="그룹 메뉴">⋯</button>
         </div>
       {:else}
-        <div class="group flex items-center gap-1.5 rounded-md py-1 pr-1 hover:bg-slate-100" style={`padding-left:${8 + row.depth * 14}px`}>
-          <button class="grid h-6 w-6 shrink-0 place-items-center rounded border border-emerald-200 text-xs text-emerald-600 hover:bg-emerald-50" onclick={() => runPlaybook(row.book)} title="실행" aria-label="실행">▶</button>
-          <button class="min-w-0 flex-1 truncate text-left text-sm text-slate-800" onclick={() => openEditor(row.book)} title={row.book.description || row.book.name}>
+        <div class="group flex items-center gap-1.5 rounded-md py-1 pr-1 hover:bg-slate-100 dark:hover:bg-slate-700" style={`padding-left:${8 + row.depth * 14}px`}>
+          <button class="grid h-6 w-6 shrink-0 place-items-center rounded border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50" onclick={() => runPlaybook(row.book)} title="실행" aria-label="실행">▶</button>
+          <button class="min-w-0 flex-1 truncate text-left text-sm text-slate-800 dark:text-slate-200" onclick={() => openEditor(row.book)} title={row.book.description || row.book.name}>
             {row.book.name}
-            <span class="text-[11px] text-slate-400">
+            <span class="text-[11px] text-slate-400 dark:text-slate-500">
               {#if row.book.runCount}· 실행 {row.book.runCount}{/if}
             </span>
           </button>
-          <button class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 hover:bg-slate-200" onclick={() => rowMenu(row.book)} aria-label="루틴 메뉴">⋯</button>
+          <button class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600" onclick={() => rowMenu(row.book)} aria-label="루틴 메뉴">⋯</button>
         </div>
       {/if}
     {/each}
@@ -239,43 +239,43 @@
 {#if editing}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onclick={(e) => { if (e.target === e.currentTarget) editing = null; }}>
-    <div class="flex max-h-[88vh] w-[560px] max-w-full flex-col overflow-hidden rounded-lg bg-white shadow-xl">
-      <div class="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-900">{editing.id ? "업무 편집" : "새 업무 루틴"}</div>
+    <div class="flex max-h-[88vh] w-[560px] max-w-full flex-col overflow-hidden rounded-lg bg-white dark:bg-slate-900 shadow-xl">
+      <div class="border-b border-slate-200 dark:border-slate-700 px-4 py-3 text-sm font-semibold text-slate-900 dark:text-slate-100">{editing.id ? "업무 편집" : "새 업무 루틴"}</div>
       <div class="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-left">
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">이름</span>
-          <input class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" bind:value={editing.name} placeholder="예: 릴리스 점검" />
+          <span class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">이름</span>
+          <input class="w-full rounded border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-sm" bind:value={editing.name} placeholder="예: 릴리스 점검" />
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">언제 사용 / 설명 (선택)</span>
-          <textarea class="w-full resize-y rounded border border-slate-300 px-2 py-1.5 text-sm" rows="2" bind:value={editing.description} placeholder="예: 특정 프로젝트의 정기 릴리스를 낼 때"></textarea>
+          <span class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">언제 사용 / 설명 (선택)</span>
+          <textarea class="w-full resize-y rounded border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-sm" rows="2" bind:value={editing.description} placeholder="예: 특정 프로젝트의 정기 릴리스를 낼 때"></textarea>
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">작업 폴더 (선택)</span>
+          <span class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">작업 폴더 (선택)</span>
           <div class="flex gap-2">
-            <input class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" bind:value={editing.workDir} placeholder="예: C:\proj" />
-            <button class="shrink-0 rounded border border-slate-300 px-2 text-sm hover:bg-slate-100" onclick={pickWorkDir}>찾기…</button>
+            <input class="w-full rounded border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-sm" bind:value={editing.workDir} placeholder="예: C:\proj" />
+            <button class="shrink-0 rounded border border-slate-300 dark:border-slate-600 px-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700" onclick={pickWorkDir}>찾기…</button>
           </div>
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">실행 백엔드</span>
-          <select class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" bind:value={editing.backend}>
+          <span class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">실행 백엔드</span>
+          <select class="w-full rounded border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-sm" bind:value={editing.backend}>
             {#each backends as be}
               <option value={be}>{be === "" ? "기본 백엔드" : be}</option>
             {/each}
           </select>
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-600">업무 내용 (자연어)</span>
-          <textarea class="w-full resize-y rounded border border-slate-300 px-2 py-1.5 text-sm leading-relaxed" rows="10" bind:value={editing.instructions} placeholder={"이 업무에서 무엇을 어떻게 하는지 평소 말로 설명하듯 적어 주세요.\n\n예)\n- main 최신화 후 빌드·테스트를 돌린다\n- 실패하면 원인을 요약해서 알려준다\n- 통과하면 결과물을 \\\\share\\rel 폴더에 복사하고 팀에 메일로 알린다"}></textarea>
-          <span class="mt-1 block text-[11px] text-slate-400">AI가 이 내용을 하나의 '스킬'처럼 이해해 스스로 단계를 나눠 실행합니다.</span>
+          <span class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">업무 내용 (자연어)</span>
+          <textarea class="w-full resize-y rounded border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-sm leading-relaxed" rows="10" bind:value={editing.instructions} placeholder={"이 업무에서 무엇을 어떻게 하는지 평소 말로 설명하듯 적어 주세요.\n\n예)\n- main 최신화 후 빌드·테스트를 돌린다\n- 실패하면 원인을 요약해서 알려준다\n- 통과하면 결과물을 \\\\share\\rel 폴더에 복사하고 팀에 메일로 알린다"}></textarea>
+          <span class="mt-1 block text-[11px] text-slate-400 dark:text-slate-500">AI가 이 내용을 하나의 '스킬'처럼 이해해 스스로 단계를 나눠 실행합니다.</span>
         </label>
       </div>
       {#if editorError}
-        <div class="border-t border-rose-100 bg-rose-50 px-4 py-2 text-xs text-rose-700">{editorError}</div>
+        <div class="border-t border-rose-100 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 px-4 py-2 text-xs text-rose-700 dark:text-rose-300">{editorError}</div>
       {/if}
-      <div class="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
-        <button class="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100" onclick={() => (editing = null)}>취소</button>
+      <div class="flex justify-end gap-2 border-t border-slate-200 dark:border-slate-700 px-4 py-3">
+        <button class="rounded border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => (editing = null)}>취소</button>
         <button class="rounded bg-blue-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50" disabled={!editing.name.trim() || saving} onclick={saveEditor}>{saving ? "저장 중…" : "저장"}</button>
       </div>
     </div>
@@ -286,29 +286,29 @@
 {#if ask}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onclick={(e) => { if (e.target === e.currentTarget) resolveAsk(ask.kind === "confirm" ? false : ask.kind === "menu" ? null : ""); }}>
-    <div class="w-[360px] max-w-full rounded-lg bg-white p-4 shadow-xl">
-      <div class="mb-3 text-sm font-semibold text-slate-900">{ask.title}</div>
+    <div class="w-[360px] max-w-full rounded-lg bg-white dark:bg-slate-900 p-4 shadow-xl">
+      <div class="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">{ask.title}</div>
       {#if ask.kind === "text"}
-        {#if ask.label}<div class="mb-1 text-xs text-slate-600">{ask.label}</div>{/if}
+        {#if ask.label}<div class="mb-1 text-xs text-slate-600 dark:text-slate-400">{ask.label}</div>{/if}
         <!-- svelte-ignore a11y_autofocus -->
-        <input class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm" bind:value={ask.value} autofocus
+        <input class="w-full rounded border border-slate-300 dark:border-slate-600 px-2 py-1.5 text-sm" bind:value={ask.value} autofocus
           onkeydown={(e) => { if (e.key === "Enter") resolveAsk(ask.value); if (e.key === "Escape") resolveAsk(""); }} />
         <div class="mt-3 flex justify-end gap-2">
-          <button class="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100" onclick={() => resolveAsk("")}>취소</button>
+          <button class="rounded border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => resolveAsk("")}>취소</button>
           <button class="rounded bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700" onclick={() => resolveAsk(ask.value)}>확인</button>
         </div>
       {:else if ask.kind === "confirm"}
-        <div class="mb-3 text-sm text-slate-700">{ask.message}</div>
+        <div class="mb-3 text-sm text-slate-700 dark:text-slate-300">{ask.message}</div>
         <div class="flex justify-end gap-2">
-          <button class="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100" onclick={() => resolveAsk(false)}>취소</button>
+          <button class="rounded border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => resolveAsk(false)}>취소</button>
           <button class={`rounded px-3 py-1.5 text-sm font-semibold text-white ${ask.danger ? "bg-rose-600 hover:bg-rose-700" : "bg-blue-600 hover:bg-blue-700"}`} onclick={() => resolveAsk(true)}>{ask.danger ? "삭제" : "확인"}</button>
         </div>
       {:else if ask.kind === "menu"}
         <div class="space-y-1.5">
           {#each ask.options as opt}
-            <button class={`w-full rounded border px-3 py-2 text-left text-sm ${opt.danger ? "border-rose-200 text-rose-700 hover:bg-rose-50" : "border-slate-200 text-slate-700 hover:bg-slate-100"}`} onclick={() => resolveAsk(opt.value)}>{opt.label}</button>
+            <button class={`w-full rounded border px-3 py-2 text-left text-sm ${opt.danger ? "border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40" : "border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`} onclick={() => resolveAsk(opt.value)}>{opt.label}</button>
           {/each}
-          <button class="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100" onclick={() => resolveAsk(null)}>취소</button>
+          <button class="mt-1 w-full rounded border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => resolveAsk(null)}>취소</button>
         </div>
       {/if}
     </div>

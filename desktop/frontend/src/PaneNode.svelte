@@ -107,8 +107,8 @@
         >
           <div
             class={node.direction === "column"
-              ? "pointer-events-none absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-200 group-hover:bg-blue-300"
-              : "pointer-events-none absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-slate-200 group-hover:bg-blue-300"}
+              ? "pointer-events-none absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-200 dark:bg-slate-700 group-hover:bg-blue-300"
+              : "pointer-events-none absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-slate-200 dark:bg-slate-700 group-hover:bg-blue-300"}
           ></div>
         </div>
       {/if}
@@ -124,7 +124,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <main
-      class={`relative flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden ${color ? `border ${color.border}` : ""} ${chat.panes.length > 1 && p.id === chat.focusedPaneId ? "ring-2 ring-inset ring-blue-400" : ""}`}
+      class={`relative flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden ${color ? `border ${chat.panes.length > 1 && p.id === chat.focusedPaneId ? "border-blue-400 dark:border-blue-500" : color.border}` : ""}`}
       onclick={() => focusPane(p.id)}
       ondragover={(event) => handlePaneDragOver(event, p.id)}
       ondragleave={() => handlePaneDragLeave(p.id)}
@@ -132,7 +132,7 @@
     >
       {#if chat.overPaneId === p.id}
         <div
-          class="pointer-events-none absolute z-30 rounded-md border-2 border-blue-500 bg-blue-400/25"
+          class="pointer-events-none absolute z-30 rounded-md border-2 border-blue-500 dark:border-blue-400 bg-blue-400/25"
           style={dockOverlayStyle(chat.overZone)}
         ></div>
       {/if}
@@ -140,7 +140,7 @@
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
-        class={`relative z-30 flex h-10 shrink-0 cursor-grab items-center gap-2 border-b border-slate-200 px-4 backdrop-blur active:cursor-grabbing ${color ? color.headerBg : "bg-white/75"}`}
+        class={`relative z-30 flex h-10 shrink-0 cursor-grab items-center gap-2 border-b border-slate-200 dark:border-slate-700 px-4 backdrop-blur active:cursor-grabbing ${color ? color.headerBg : "bg-white/75 dark:bg-slate-900/75"}`}
         draggable="true"
         ondragstart={(event) => handlePaneDragStart(event, p.id)}
         ondragend={handlePaneDragEnd}
@@ -150,17 +150,17 @@
           <span class={`h-2 w-2 shrink-0 rounded-full ${color.dot}`}></span>
         {/if}
         {#if paneConversationMeta(p.target)}
-          <span class={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${paneConversationMeta(p.target).kind === "web" ? "bg-blue-100 text-blue-700" : "bg-sky-100 text-sky-700"}`}>
+          <span class={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${paneConversationMeta(p.target).kind === "web" ? "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300" : "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"}`}>
             {paneConversationMeta(p.target).kind === "web" ? "로컬" : "텔레그램"}
           </span>
           <div class="flex min-w-0 flex-1 items-center gap-2">
-            <div class="min-w-0 truncate text-sm font-semibold text-slate-900">{paneConversationMeta(p.target).title}</div>
-            <span class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-600">#{paneConversationMeta(p.target).id}</span>
+            <div class="min-w-0 truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{paneConversationMeta(p.target).title}</div>
+            <span class="shrink-0 rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 font-mono text-[11px] text-slate-600 dark:text-slate-400">#{paneConversationMeta(p.target).id}</span>
             <div class="relative shrink-0" data-pane-backend-menu>
               <button
                 type="button"
                 draggable="false"
-                class="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-300"
+                class="rounded-full bg-slate-200 dark:bg-slate-700 px-2 py-0.5 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600"
                 onmousedown={(event) => { event.preventDefault(); event.stopPropagation(); togglePaneBackendMenu(p.id); }}
                 onclick={(event) => event.stopPropagation()}
                 onkeydown={(event) => {
@@ -175,17 +175,17 @@
                 {backendLabel(paneConversationMeta(p.target).backend)}
               </button>
               {#if chat.backendMenuPaneId === p.id}
-                <div class="absolute left-0 top-6 z-40 w-32 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "default"); }}>Default</button>
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "claude"); }}>Claude</button>
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "codex"); }}>Codex</button>
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "opencode"); }}>OpenCode</button>
+                <div class="absolute left-0 top-6 z-40 w-32 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 shadow-xl">
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "default"); }}>Default</button>
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "claude"); }}>Claude</button>
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "codex"); }}>Codex</button>
+                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "opencode"); }}>OpenCode</button>
                 </div>
               {/if}
             </div>
             {#if backendModelLabel(paneConversationMeta(p.target).backend)}
               <span
-                class="shrink-0 truncate font-mono text-[11px] text-slate-400"
+                class="shrink-0 truncate font-mono text-[11px] text-slate-400 dark:text-slate-500"
                 title={`연결된 LLM: ${backendModelLabel(paneConversationMeta(p.target).backend)}`}
               >
                 {backendModelLabel(paneConversationMeta(p.target).backend)}
@@ -196,7 +196,7 @@
                 <button
                   type="button"
                   draggable="false"
-                  class={`block max-w-[260px] truncate rounded-full px-2 py-0.5 text-left text-[11px] ${paneConversationMeta(p.target).workDir ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                  class={`block max-w-[260px] truncate rounded-full px-2 py-0.5 text-left text-[11px] ${paneConversationMeta(p.target).workDir ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"}`}
                   onmousedown={(event) => { event.preventDefault(); event.stopPropagation(); togglePaneWorkDirMenu(p.id); }}
                   onclick={(event) => event.stopPropagation()}
                   onkeydown={(event) => {
@@ -211,13 +211,13 @@
                   {paneConversationMeta(p.target).workDir || "작업 폴더 미지정"}
                 </button>
                 {#if chat.workDirMenuPaneId === p.id}
-                  <div class="absolute left-0 top-6 z-40 w-80 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
-                    <div class="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">작업 폴더</div>
-                    <div class="max-h-28 overflow-y-auto break-all rounded-md bg-slate-50 px-2 py-2 text-xs leading-5 text-slate-700">
+                  <div class="absolute left-0 top-6 z-40 w-80 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 shadow-xl">
+                    <div class="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">작업 폴더</div>
+                    <div class="max-h-28 overflow-y-auto break-all rounded-md bg-slate-50 dark:bg-slate-800 px-2 py-2 text-xs leading-5 text-slate-700 dark:text-slate-300">
                       {paneConversationMeta(p.target).workDir || "설정되지 않음"}
                     </div>
                     <button
-                      class="mt-1 block w-full rounded-md px-2 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
+                      class="mt-1 block w-full rounded-md px-2 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
                       onclick={(event) => { event.stopPropagation(); void setTargetWorkDir(p.target); }}
                     >
                       작업 폴더 선택...
@@ -228,11 +228,11 @@
             {/if}
           </div>
         {:else}
-          <div class="min-w-0 flex-1 text-sm text-slate-500">대화를 선택하세요.</div>
+          <div class="min-w-0 flex-1 text-sm text-slate-500 dark:text-slate-400">대화를 선택하세요.</div>
         {/if}
         {#if chat.panes.length > 1}
           <button
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-100"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
             onclick={(event) => { event.stopPropagation(); closePane(p.id); }}
             title="분할 닫기"
             aria-label="분할 닫기"
@@ -246,7 +246,7 @@
         <div use:registerPaneLog={p.id} onscroll={handleLogScroll} class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
           <div class="flex min-h-full w-full flex-col gap-2">
             {#if messagesForPane(p.target).length === 0}
-              <div class="rounded-lg border border-dashed border-slate-300 bg-white/60 px-6 py-10 text-center text-sm text-slate-500">
+              <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-white/60 dark:bg-slate-900/60 px-6 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
                 메시지가 없습니다. 첫 요청을 보내 보세요.
               </div>
             {/if}
@@ -255,10 +255,10 @@
               <div class={`flex w-full ${message.role === "user" ? "justify-end" : message.role === "system" ? "justify-center" : "justify-start"}`}>
                 <div class={`min-w-0 max-w-[92%] overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
                   message.role === "user"
-                    ? "bg-blue-50 text-blue-950 ring-blue-200"
+                    ? "bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-300 ring-blue-200 dark:ring-blue-900/40"
                     : message.role === "system"
-                      ? "bg-amber-50 text-amber-900 ring-amber-200"
-                      : "bg-white/95 text-slate-900 ring-slate-200"
+                      ? "bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 ring-amber-200 dark:ring-amber-800"
+                      : "bg-white/95 dark:bg-slate-900/95 text-slate-900 dark:text-slate-300 ring-slate-200 dark:ring-slate-700"
                 }`}>
                   {#if message.text}
                     {#if message.role === "user"}
@@ -270,7 +270,7 @@
                   {#if message.image}
                     <img
                       alt=""
-                      class="mt-2 max-h-[420px] w-auto max-w-full cursor-zoom-in rounded-lg border border-slate-200 transition hover:brightness-95"
+                      class="mt-2 max-h-[420px] w-auto max-w-full cursor-zoom-in rounded-lg border border-slate-200 dark:border-slate-700 transition hover:brightness-95"
                       src={`data:image/png;base64,${message.image}`}
                       title="클릭하면 창으로 크게 봅니다 (이동·크기조절 가능)"
                       onclick={() => openLightbox(`data:image/png;base64,${message.image}`)}
@@ -283,7 +283,7 @@
         </div>
         {#if !atBottom && messagesForPane(p.target).length > 0}
           <button
-            class="absolute bottom-3 right-4 grid h-8 w-8 place-items-center rounded-full border border-slate-200 bg-white text-sm text-slate-600 shadow-md hover:bg-slate-50"
+            class="absolute bottom-3 right-4 grid h-8 w-8 place-items-center rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm text-slate-600 dark:text-slate-400 shadow-md hover:bg-slate-50 dark:hover:bg-slate-700"
             onclick={() => scrollPaneLogToBottom(p.id)}
             title="마지막 메시지로 이동"
             aria-label="마지막 메시지로 이동"
@@ -298,20 +298,20 @@
           {#if chat.progressPopupPaneId === p.id}
             <div
               bind:this={progressLogEl}
-              class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-[12px] leading-5 text-slate-100 shadow-lg"
+              class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-950 p-3 font-mono text-[12px] leading-5 text-slate-100 shadow-lg"
             >
               {#each progressForTarget(p.target) as line, index (index)}
                 <div class="whitespace-pre-wrap break-words">{line}</div>
               {/each}
               {#if progressForTarget(p.target).length === 0}
-                <div class="text-slate-400">아직 진행 메시지가 없습니다.</div>
+                <div class="text-slate-400 dark:text-slate-500">아직 진행 메시지가 없습니다.</div>
               {/if}
             </div>
           {/if}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="flex cursor-pointer items-center gap-2 border-t border-slate-200/80 bg-white/80 px-4 py-1 text-xs text-slate-600 backdrop-blur hover:bg-slate-100"
+            class="flex cursor-pointer items-center gap-2 border-t border-slate-200/80 dark:border-slate-700/80 bg-white/80 dark:bg-slate-900/80 px-4 py-1 text-xs text-slate-600 dark:text-slate-400 backdrop-blur hover:bg-slate-100 dark:hover:bg-slate-700"
             onclick={() => toggleProgressPopup(p.id)}
             title="클릭하면 진행 메시지 보기"
           >
@@ -322,7 +322,7 @@
             </div>
             <span>{paneWorkingText(p.target)}</span>
             <select
-              class="ml-auto shrink-0 cursor-pointer rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-slate-400"
+              class="ml-auto shrink-0 cursor-pointer rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-1.5 py-0.5 text-[11px] text-slate-600 dark:text-slate-400 hover:border-slate-400"
               title="이 작업의 제한 시간만 조절합니다 (기본 설정값 미만으로는 줄지 않습니다)"
               onclick={(e) => e.stopPropagation()}
               onchange={(e) => {
@@ -345,7 +345,7 @@
               <option value="reset">기본값으로</option>
             </select>
             {#if progressForTarget(p.target).length > 0}
-              <span class="shrink-0 text-[11px] font-semibold text-blue-600">
+              <span class="shrink-0 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
                 진행 메시지 {progressForTarget(p.target).length}건 {chat.progressPopupPaneId === p.id ? "▾" : "▸"}
               </span>
             {/if}
@@ -353,23 +353,23 @@
         </div>
       {/if}
 
-      <div class="shrink-0 border-t border-slate-200/80 bg-white/92 px-4 py-1.5 backdrop-blur relative">
+      <div class="shrink-0 border-t border-slate-200/80 dark:border-slate-700/80 bg-white/92 dark:bg-slate-900/92 px-4 py-1.5 backdrop-blur relative">
         {#if showCommandMenuForPane(p)}
           <div
-            class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
+            class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg"
             role="listbox"
           >
             {#each commandCandidatesForPane(p) as command, cIndex (command.cmd)}
               <button
                 type="button"
-                class={`flex w-full items-baseline gap-3 px-3 py-2 text-left ${cIndex === p.highlightedCommandIndex ? "bg-blue-50" : "hover:bg-slate-50"}`}
+                class={`flex w-full items-baseline gap-3 px-3 py-2 text-left ${cIndex === p.highlightedCommandIndex ? "bg-blue-50 dark:bg-blue-950/40" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
                 role="option"
                 aria-selected={cIndex === p.highlightedCommandIndex}
                 onmouseenter={() => updatePane(p.id, { highlightedCommandIndex: cIndex })}
                 onclick={() => selectCommandForPane(p.id, command)}
               >
-                <span class="shrink-0 font-mono text-[13px] font-semibold text-blue-700">{command.cmd}</span>
-                <span class="min-w-0 flex-1 truncate text-[12px] text-slate-500">{command.desc}</span>
+                <span class="shrink-0 font-mono text-[13px] font-semibold text-blue-700 dark:text-blue-300">{command.cmd}</span>
+                <span class="min-w-0 flex-1 truncate text-[12px] text-slate-500 dark:text-slate-400">{command.desc}</span>
               </button>
             {/each}
           </div>
@@ -377,7 +377,7 @@
 
         <div class="flex w-full items-end gap-2">
           <button
-            class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
             onclick={() => pickAttachment(p.id)}
             disabled={!p.target}
             title="파일 첨부"
@@ -390,18 +390,18 @@
             {#if attachment.previewURL}
               <img
                 alt=""
-                class="h-8 w-8 shrink-0 self-center rounded-md border border-slate-300 object-cover"
+                class="h-8 w-8 shrink-0 self-center rounded-md border border-slate-300 dark:border-slate-600 object-cover"
                 src={attachment.previewURL}
               />
             {/if}
             <span
-              class="max-w-[160px] shrink-0 self-center truncate rounded-full bg-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600"
+              class="max-w-[160px] shrink-0 self-center truncate rounded-full bg-slate-200 dark:bg-slate-700 px-2 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-400"
               title={attachment.name}
             >
               {attachment.name}
             </span>
             <button
-              class="grid h-6 w-6 shrink-0 place-items-center self-center rounded-full border border-slate-300 bg-white text-[11px] font-semibold text-slate-600 hover:bg-slate-100"
+              class="grid h-6 w-6 shrink-0 place-items-center self-center rounded-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-[11px] font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
               onclick={() => clearPaneAttachment(p.id, aIndex)}
               title="첨부 취소"
               aria-label="첨부 취소"
@@ -412,7 +412,7 @@
 
           <textarea
             use:registerPaneTextarea={p.id}
-            class="min-h-[34px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm leading-5 text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+            class="min-h-[34px] flex-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-sm leading-5 text-slate-900 dark:text-slate-100 shadow-sm outline-none placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-900/30 disabled:bg-slate-100 dark:disabled:bg-slate-800"
             placeholder={p.target ? "메시지 또는 !명령을 입력하세요" : "먼저 대화를 선택하세요"}
             value={p.composerText}
             disabled={!p.target}
@@ -424,7 +424,7 @@
           ></textarea>
 
           <button
-            class="grid h-[34px] w-[40px] shrink-0 place-items-center rounded-md bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            class="grid h-[34px] w-[40px] shrink-0 place-items-center rounded-md bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
             onclick={() => sendFromPane(p.id)}
             disabled={(p.attachments.length === 0 && !canSendPane(p)) || !chat.connected}
             title={p.attachments.length > 0 ? "업로드" : "전송"}
@@ -527,14 +527,37 @@
     margin: 0 0 6px;
     padding: 8px 10px;
     border-radius: 6px;
-    background: #0f172a;
+    background: #1e1e1e;
     overflow-x: auto;
   }
   :global(.markdown-body pre code) {
     display: block;
     padding: 0;
     background: transparent;
-    color: #e2e8f0;
+    color: #d4d4d4;
     white-space: pre;
+  }
+
+  :global(.dark .markdown-body blockquote) {
+    border-left-color: #4d4d4d;
+    color: #9d9d9d;
+  }
+  :global(.dark .markdown-body hr) {
+    border-top-color: #3c3c3c;
+  }
+  :global(.dark .markdown-body th),
+  :global(.dark .markdown-body td) {
+    border-color: #3c3c3c;
+  }
+  :global(.dark .markdown-body th) {
+    background: #252526;
+    color: #cccccc;
+  }
+  :global(.dark .markdown-body a) {
+    color: #3794ff;
+  }
+  :global(.dark .markdown-body code) {
+    background: #252526;
+    color: #d4d4d4;
   }
 </style>

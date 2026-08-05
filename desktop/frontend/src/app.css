@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* Manual (class-based) dark mode: `dark:` utilities apply once <html> carries
+   the "dark" class, which themeStore.svelte.js toggles based on the user's
+   light/dark/system preference — not just a live prefers-color-scheme query. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: "Inter", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
 }
@@ -20,6 +25,78 @@ body {
     radial-gradient(circle at top right, rgba(196, 236, 224, 0.9), transparent 30%),
     linear-gradient(180deg, #e8eef9 0%, #f8fafc 42%, #eef2ff 100%);
   color: #0f172a;
+}
+
+/* VS Code "Dark+" palette. Tailwind v4 compiles every slate-* utility (incl.
+   the /NN opacity variants, via color-mix) to var(--color-slate-*), so
+   re-pointing those custom properties here reskins every dark:bg|text|border-
+   slate-* utility across the app to VS Code's editor/sideBar/foreground
+   colors without having to touch each component's class list. */
+html.dark {
+  --color-slate-50: #f3f3f3;
+  --color-slate-100: #f0f0f0;
+  --color-slate-200: #e0e0e0;
+  --color-slate-300: #cccccc;
+  --color-slate-400: #9d9d9d;
+  --color-slate-500: #8a8a8a;
+  --color-slate-600: #4d4d4d;
+  --color-slate-700: #3c3c3c;
+  --color-slate-800: #252526;
+  --color-slate-900: #1e1e1e;
+  --color-slate-950: #181818;
+}
+
+html.dark body {
+  background: #1e1e1e;
+  color: #cccccc;
+}
+
+/* Without this, WebView2 (Chromium) keeps rendering native form controls and
+   scrollbars with the light palette even while .dark is applied, since it
+   only reads prefers-color-scheme by default — not our manual class toggle. */
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+html.dark * {
+  scrollbar-color: rgba(121, 121, 121, 0.4) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.45);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.65);
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background-color: rgba(121, 121, 121, 0.4);
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(121, 121, 121, 0.7);
 }
 
 button,

@@ -46,6 +46,7 @@
     closePaneWorkDirMenu,
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
+  import { theme, setTheme } from "./themeStore.svelte.js";
 
   // Sidebar visibility/tab is a UI preference persisted (like the pane layout) so
   // hiding the conversation list survives a restart instead of always reopening.
@@ -89,6 +90,24 @@
 
   function conversationLabel(conv) {
     return conv?.title || conv?.id || "이름 없는 대화";
+  }
+
+  // Cycles system → light → dark → system on click; the icon always reflects
+  // the currently *selected* mode (not the resolved light/dark), so "system"
+  // stays visible even while it happens to resolve to a dark-looking icon.
+  const THEME_ORDER = ["system", "light", "dark"];
+  function cycleTheme() {
+    setTheme(THEME_ORDER[(THEME_ORDER.indexOf(theme.mode) + 1) % THEME_ORDER.length]);
+  }
+  function themeIcon() {
+    if (theme.mode === "light") return "☀";
+    if (theme.mode === "dark") return "🌙";
+    return "🖥";
+  }
+  function themeLabel() {
+    if (theme.mode === "light") return "라이트";
+    if (theme.mode === "dark") return "다크";
+    return "시스템 설정";
   }
 
   async function setChannelBackend(target, backend) {
@@ -418,9 +437,9 @@
   }
 
   function auxStateTone(state) {
-    if (state === "running") return "bg-emerald-100 text-emerald-700";
-    if (state === "idle") return "bg-slate-200 text-slate-600";
-    return "bg-rose-100 text-rose-700";
+    if (state === "running") return "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300";
+    if (state === "idle") return "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-400";
+    return "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300";
   }
 
   onMount(() => {
@@ -487,7 +506,7 @@
   });
 </script>
 
-<div class="flex h-full min-h-0 w-full overflow-hidden text-[13px] text-slate-900">
+<div class="flex h-full min-h-0 w-full overflow-hidden text-[13px] text-slate-900 dark:text-slate-100">
   <div class="flex h-full w-full flex-col overflow-hidden">
     <header class="flex h-12 shrink-0 items-center gap-2 border-b border-slate-800 bg-slate-900 px-3 text-white shadow-sm">
       <span class={`inline-flex shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold ${chat.connected ? "bg-emerald-500 text-white" : "bg-rose-500 text-white"}`}>
@@ -506,6 +525,14 @@
         {versionBadgeText()}
       </span>
       <div class="ml-auto flex items-center gap-2">
+        <button
+          class="grid h-8 w-8 place-items-center rounded-md border border-white/20 bg-white/5 text-sm text-slate-100 hover:bg-white/10"
+          onclick={cycleTheme}
+          title={`테마: ${themeLabel()} (클릭하여 전환)`}
+          aria-label="테마 전환"
+        >
+          {themeIcon()}
+        </button>
         <button
           class="grid h-8 w-8 place-items-center rounded-md border border-white/20 bg-white/5 text-sm text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
           onclick={addPane}
@@ -537,31 +564,31 @@
     {#if view === "chat"}
       <div class="flex min-h-0 flex-1 overflow-hidden">
         {#if !sidebarCollapsed}
-          <aside class="flex h-full w-[296px] shrink-0 flex-col border-r border-slate-200 bg-slate-50/90 backdrop-blur">
-            <div class="flex h-9 shrink-0 items-center border-b border-slate-200 bg-slate-100/60">
+          <aside class="flex h-full w-[296px] shrink-0 flex-col border-r border-slate-200 dark:border-slate-700 bg-slate-50/90 dark:bg-slate-800/90 backdrop-blur">
+            <div class="flex h-9 shrink-0 items-center border-b border-slate-200 dark:border-slate-700 bg-slate-100/60 dark:bg-slate-800/60">
               <button
-                class="grid h-full w-8 shrink-0 place-items-center text-sm text-slate-500 hover:bg-slate-200"
+                class="grid h-full w-8 shrink-0 place-items-center text-sm text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"
                 onclick={() => (sidebarCollapsed = true)}
                 title="사이드바 숨기기"
                 aria-label="사이드바 숨기기"
               >«</button>
               <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "chat" ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-900"}`}
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "chat" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "chat")}
               >대화</button>
               <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "playbook" ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-900"}`}
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "playbook" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "playbook")}
               >업무 관리</button>
               <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "reservation" ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-900"}`}
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "reservation" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "reservation")}
               >예약</button>
             </div>
             {#if sidebarTab === "chat"}
-            <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 px-3">
+            <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 dark:border-slate-700 px-3">
               <button
-                class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100"
+                class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
                 onclick={() => (sidebarCollapsed = true)}
                 title="대화 목록 숨기기"
                 aria-label="대화 목록 숨기기"
@@ -569,10 +596,10 @@
                 «
               </button>
               <div class="min-w-0 flex-1">
-                <div class="truncate text-sm font-semibold text-slate-900">대화 목록</div>
+                <div class="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">대화 목록</div>
               </div>
               <button
-                class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100"
+                class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
                 onclick={() => loadConversations({ forceReloadCurrent: true })}
                 title="대화 목록 새로고침"
                 aria-label="대화 목록 새로고침"
@@ -591,15 +618,15 @@
 
             <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
               <div class="mb-4">
-                <div class="mb-2 px-1 text-[11px] font-bold tracking-[0.04em] text-slate-500">텔레그램 채널</div>
-                <div class="border-l-2 border-slate-200 pl-2">
+                <div class="mb-2 px-1 text-[11px] font-bold tracking-[0.04em] text-slate-500 dark:text-slate-400">텔레그램 채널</div>
+                <div class="border-l-2 border-slate-200 dark:border-slate-700 pl-2">
                   {#if chat.telegram}
                     <div
-                      class={`relative flex h-9 w-full items-center gap-1 rounded-md px-1.5 transition ${isFocusedTarget({ kind: "telegram" }) ? "bg-blue-50 text-blue-950 ring-1 ring-blue-200" : "hover:bg-slate-100"}`}
+                      class={`relative flex h-9 w-full items-center gap-1 rounded-md px-1.5 transition ${isFocusedTarget({ kind: "telegram" }) ? "bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-200 ring-1 ring-blue-200 dark:ring-blue-900/40" : "hover:bg-slate-100 dark:hover:bg-slate-700"}`}
                       data-conv-menu
                     >
                       <button
-                        class="min-w-0 flex flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition hover:bg-slate-100/70"
+                        class="min-w-0 flex flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition hover:bg-slate-100/70 dark:hover:bg-slate-700/50"
                         draggable="true"
                         ondragstart={(event) => handleConversationDragStart(event, { kind: "telegram" })}
                         ondragend={handleConversationDragEnd}
@@ -610,13 +637,13 @@
                         <span class="min-w-0 flex-1 truncate text-sm font-semibold">
                           {chat.telegram.title || "텔레그램"}
                         </span>
-                        <span class="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">{backendLabel(chat.telegram.backend)}</span>
+                        <span class="shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:text-slate-300">{backendLabel(chat.telegram.backend)}</span>
                         {#if chat.unread.has("telegram")}
                           <span class="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">NEW</span>
                         {/if}
                       </button>
                       <button
-                        class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 bg-white/80 text-base leading-none text-slate-600 hover:bg-slate-100"
+                        class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 text-base leading-none text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
                         onclick={() => (openMenuId = openMenuId === "telegram" ? "" : "telegram")}
                         title="채널 설정"
                         aria-label="채널 설정"
@@ -624,17 +651,17 @@
                         ⋯
                       </button>
                       {#if openMenuId === "telegram"}
-                        <div class="absolute right-0 top-8 z-20 w-40 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
-                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">AI backend</div>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "default")}>Default</button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "claude")}>Claude</button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "codex")}>Codex</button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "telegram" }, "opencode")}>OpenCode</button>
+                        <div class="absolute right-0 top-8 z-20 w-40 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 shadow-xl">
+                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">AI backend</div>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "telegram" }, "default")}>Default</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "telegram" }, "claude")}>Claude</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "telegram" }, "codex")}>Codex</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "telegram" }, "opencode")}>OpenCode</button>
                         </div>
                       {/if}
                     </div>
                   {:else}
-                    <div class="rounded-md px-2 py-3 text-sm text-slate-500">텔레그램 대화를 찾지 못했습니다.</div>
+                    <div class="rounded-md px-2 py-3 text-sm text-slate-500 dark:text-slate-400">텔레그램 대화를 찾지 못했습니다.</div>
                   {/if}
                 </div>
               </div>
@@ -642,20 +669,20 @@
               <div>
                 {#snippet webConvRow(conv)}
                   <div
-                    class={`relative flex h-10 items-center gap-1 rounded-md border px-1.5 shadow-sm ${isFocusedTarget({ kind: "web", id: conv.id }) ? "border-blue-200 bg-blue-50 text-blue-950" : "border-slate-200 bg-white/85 text-slate-900"}`}
+                    class={`relative flex h-10 items-center gap-1 rounded-md border px-1.5 shadow-sm ${isFocusedTarget({ kind: "web", id: conv.id }) ? "border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-200" : "border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-900/85 text-slate-900 dark:text-slate-100"}`}
                     data-conv-menu
                     title={conv.workDir ? `${conversationLabel(conv)} · ${conv.workDir}` : conversationLabel(conv)}
                   >
                       <button
-                        class="min-w-0 flex flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition hover:bg-slate-100/70"
+                        class="min-w-0 flex flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition hover:bg-slate-100/70 dark:hover:bg-slate-700/50"
                         draggable="true"
                         ondragstart={(event) => handleConversationDragStart(event, { kind: "web", id: conv.id })}
                         ondragend={handleConversationDragEnd}
                         onclick={() => selectTargetFromSidebar({ kind: "web", id: conv.id })}
                       >
                         <span class="min-w-0 flex-1 truncate text-sm font-semibold">{conversationLabel(conv)}</span>
-                        <span class="shrink-0 font-mono text-[11px] text-slate-400">#{conv.id}</span>
-                        <span class="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">{backendLabel(conv.backend)}</span>
+                        <span class="shrink-0 font-mono text-[11px] text-slate-400 dark:text-slate-500">#{conv.id}</span>
+                        <span class="shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:text-slate-300">{backendLabel(conv.backend)}</span>
                         {#if isFocusedTarget({ kind: "web", id: conv.id })}
                           <span class="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">현재</span>
                         {/if}
@@ -665,7 +692,7 @@
                       </button>
 
                       <button
-                        class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 bg-white/80 text-base leading-none text-slate-600 hover:bg-slate-100"
+                        class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 text-base leading-none text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
                         onclick={() => (openMenuId = openMenuId === conv.id ? "" : conv.id)}
                         title="대화 관리"
                         aria-label="대화 관리"
@@ -674,37 +701,37 @@
                       </button>
 
                       {#if openMenuId === conv.id}
-                        <div class="absolute right-0 top-9 z-20 w-48 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
-                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">AI backend</div>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "default")}>Default</button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "claude")}>Claude</button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "codex")}>Codex</button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "opencode")}>OpenCode</button>
-                          <div class="my-1 h-px bg-slate-100"></div>
-                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">그룹</div>
+                        <div class="absolute right-0 top-9 z-20 w-48 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 shadow-xl">
+                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">AI backend</div>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "default")}>Default</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "claude")}>Claude</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "codex")}>Codex</button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => setChannelBackend({ kind: "web", id: conv.id }, "opencode")}>OpenCode</button>
+                          <div class="my-1 h-px bg-slate-100 dark:bg-slate-800"></div>
+                          <div class="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">그룹</div>
                           {#if chat.webGroupOf.get(conv.id)}
-                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; setConversationGroup(conv.id, null); }}>
+                            <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; setConversationGroup(conv.id, null); }}>
                               그룹에서 빼기
                             </button>
                           {/if}
                           {#each chat.webGroups as group (group.id)}
                             {#if chat.webGroupOf.get(conv.id) !== group.id}
-                              <button class="block w-full truncate rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; setConversationGroup(conv.id, group.id); }}>
+                              <button class="block w-full truncate rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; setConversationGroup(conv.id, group.id); }}>
                                 {groupPathLabel(group.id)}로 이동
                               </button>
                             {/if}
                           {/each}
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; moveConversationToNewGroup(conv); }}>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; moveConversationToNewGroup(conv); }}>
                             새 그룹으로 이동...
                           </button>
-                          <div class="my-1 h-px bg-slate-100"></div>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; renameWebConversation(conv); }}>
+                          <div class="my-1 h-px bg-slate-100 dark:bg-slate-800"></div>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; renameWebConversation(conv); }}>
                             이름 변경
                           </button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100" onclick={() => { openMenuId = ""; changeWebDirectory(conv); }}>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; changeWebDirectory(conv); }}>
                             작업 폴더 변경
                           </button>
-                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50" onclick={() => { openMenuId = ""; deleteWebConversation(conv); }}>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40" onclick={() => { openMenuId = ""; deleteWebConversation(conv); }}>
                             삭제
                           </button>
                         </div>
@@ -714,16 +741,16 @@
 
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  class={`mb-2 flex items-center gap-1 rounded-md px-1 ${chat.dragOverGroupId === UNGROUPED_DROP_ZONE ? "ring-2 ring-blue-400 bg-blue-50" : ""}`}
+                  class={`mb-2 flex items-center gap-1 rounded-md px-1 ${chat.dragOverGroupId === UNGROUPED_DROP_ZONE ? "ring-2 ring-blue-400 bg-blue-50 dark:bg-blue-950/40" : ""}`}
                   ondragenter={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
                   ondragover={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
                   ondragleave={() => handleGroupDragLeave(UNGROUPED_DROP_ZONE)}
                   ondrop={(event) => handleGroupDrop(event, UNGROUPED_DROP_ZONE)}
                   title="대화를 여기로 드래그하면 그룹에서 빠집니다"
                 >
-                  <div class="flex-1 text-[11px] font-bold tracking-[0.04em] text-slate-500">로컬 채널</div>
+                  <div class="flex-1 text-[11px] font-bold tracking-[0.04em] text-slate-500 dark:text-slate-400">로컬 채널</div>
                   <button
-                    class="grid h-5 w-5 shrink-0 place-items-center rounded text-[13px] font-bold leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                    class="grid h-5 w-5 shrink-0 place-items-center rounded text-[13px] font-bold leading-none text-slate-400 dark:text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600 hover:text-slate-700"
                     onclick={newWebGroup}
                     title="새 그룹"
                     aria-label="새 그룹"
@@ -731,9 +758,9 @@
                     ⊕
                   </button>
                 </div>
-                <div class="space-y-1 border-l-2 border-slate-200 pl-2">
+                <div class="space-y-1 border-l-2 border-slate-200 dark:border-slate-700 pl-2">
                   {#if chat.webConvs.length === 0}
-                    <div class="rounded-md border border-dashed border-slate-300 bg-white/70 px-3 py-4 text-sm text-slate-500">
+                    <div class="rounded-md border border-dashed border-slate-300 dark:border-slate-600 bg-white/70 dark:bg-slate-900/70 px-3 py-4 text-sm text-slate-500 dark:text-slate-400">
                       아직 로컬 대화가 없습니다. "새 대화"로 시작하세요.
                     </div>
                   {/if}
@@ -744,7 +771,7 @@
 
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <div
-                    class={`space-y-1 rounded-md ${chat.dragOverGroupId === UNGROUPED_DROP_ZONE ? "ring-2 ring-blue-400 bg-blue-50" : ""}`}
+                    class={`space-y-1 rounded-md ${chat.dragOverGroupId === UNGROUPED_DROP_ZONE ? "ring-2 ring-blue-400 bg-blue-50 dark:bg-blue-950/40" : ""}`}
                     ondragenter={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
                     ondragover={(event) => handleGroupDragOver(event, UNGROUPED_DROP_ZONE)}
                     ondragleave={() => handleGroupDragLeave(UNGROUPED_DROP_ZONE)}
@@ -764,9 +791,9 @@
             {/if}
           </aside>
         {:else}
-          <div class="flex h-full w-7 shrink-0 flex-col items-center border-r border-slate-200 bg-slate-50/90 pt-2 backdrop-blur">
+          <div class="flex h-full w-7 shrink-0 flex-col items-center border-r border-slate-200 dark:border-slate-700 bg-slate-50/90 dark:bg-slate-800/90 pt-2 backdrop-blur">
             <button
-              class="grid h-8 w-6 place-items-center rounded-md border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-100"
+              class="grid h-8 w-6 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
               onclick={() => (sidebarCollapsed = false)}
               title="대화 목록 보이기"
               aria-label="대화 목록 보이기"
@@ -778,7 +805,7 @@
 
         <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
           {#if chat.statusNote}
-            <div class="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">{chat.statusNote}</div>
+            <div class="shrink-0 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-4 py-2 text-xs text-amber-800 dark:text-amber-300">{chat.statusNote}</div>
           {/if}
 
           <div class="flex min-h-0 flex-1 overflow-hidden">
@@ -788,25 +815,25 @@
       </div>
     {:else}
       <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div class="flex h-11 shrink-0 items-center gap-3 border-b border-slate-200/80 bg-white/75 px-4 backdrop-blur">
+        <div class="flex h-11 shrink-0 items-center gap-3 border-b border-slate-200/80 dark:border-slate-700/80 bg-white/75 dark:bg-slate-900/75 px-4 backdrop-blur">
           <button
-            class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-100"
+            class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
             onclick={backToChat}
             title="채팅으로"
             aria-label="채팅으로"
           >
             ←
           </button>
-          <div class="text-sm font-semibold text-slate-900">설정</div>
+          <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">설정</div>
           <div class="ml-auto flex gap-2">
             <button
-              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "settings" ? "bg-blue-600 text-white" : "border border-slate-300 bg-white text-slate-700"}`}
+              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "settings" ? "bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
               onclick={() => loadSettingsTab("settings")}
             >
               설정
             </button>
             <button
-              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "connection" ? "bg-blue-600 text-white" : "border border-slate-300 bg-white text-slate-700"}`}
+              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "connection" ? "bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
               onclick={() => loadSettingsTab("connection")}
             >
               연결 / aglink
@@ -819,25 +846,25 @@
             {#if settingsTab === "settings"}
               {#snippet settingSection(section)}
                 <div>
-                  <div class="mb-1 text-sm font-bold text-slate-800">{section.title}</div>
+                  <div class="mb-1 text-sm font-bold text-slate-800 dark:text-slate-200">{section.title}</div>
                   {#if section.desc}
-                    <div class="mb-3 max-w-3xl whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">{section.desc}</div>
+                    <div class="mb-3 max-w-3xl whitespace-pre-wrap break-words text-xs leading-5 text-slate-500 dark:text-slate-400">{section.desc}</div>
                   {/if}
                   <div class="space-y-3">
                     {#each section.fields || [] as field}
-                      <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
+                      <div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4">
                         <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                           <div class="min-w-0 md:max-w-[60%]">
-                            <div class="text-sm font-semibold text-slate-900">{field.label}</div>
+                            <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">{field.label}</div>
                             {#if field.desc}
-                              <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">{field.desc}</div>
+                              <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-500 dark:text-slate-400">{field.desc}</div>
                             {/if}
                           </div>
                           <div class="md:min-w-[220px]">
                             {#if field.type === "bool"}
-                              <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+                              <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
                                 <input
-                                  class="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                  class="h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 dark:text-blue-400 focus:ring-blue-500"
                                   type="checkbox"
                                   checked={!!settingsValues[field.key]}
                                   onchange={(event) => updateSettingValue(field.key, event.currentTarget.checked)}
@@ -846,7 +873,7 @@
                               </label>
                             {:else if field.type === "select"}
                               <select
-                                class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                class="w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30"
                                 value={settingsValues[field.key] ?? ""}
                                 onchange={(event) => updateSettingValue(field.key, event.currentTarget.value)}
                               >
@@ -856,7 +883,7 @@
                               </select>
                             {:else}
                               <input
-                                class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                class="w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30"
                                 type={field.type === "int" ? "number" : "text"}
                                 value={settingsValues[field.key] ?? ""}
                                 oninput={(event) =>
@@ -878,24 +905,24 @@
                 </div>
               {/snippet}
 
-              <section class="rounded-lg border border-slate-200 bg-white/90 p-5 shadow-sm">
+              <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">
-                  <div class="text-sm font-semibold text-slate-900">설정</div>
-                  <div class="mt-1 text-xs text-slate-500">번호(①②③) 순서대로 채우면 AI가 연결됩니다. 잘 모르는 칸은 비워두거나 기본값 그대로 두세요.</div>
+                  <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">설정</div>
+                  <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">번호(①②③) 순서대로 채우면 AI가 연결됩니다. 잘 모르는 칸은 비워두거나 기본값 그대로 두세요.</div>
                 </div>
 
                 {#if settingsSchema.length === 0}
-                  <div class="rounded-lg border border-dashed border-slate-300 px-4 py-5 text-sm text-slate-500">
+                  <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 px-4 py-5 text-sm text-slate-500 dark:text-slate-400">
                     {settingsMsg || "표시할 설정이 없습니다."}
                   </div>
                 {:else}
-                  <div class="mb-5 flex flex-wrap gap-1 border-b border-slate-200">
+                  <div class="mb-5 flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-700">
                     {#each settingsGroups as group}
                       <button
                         class="-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition-colors {activeSettingsGroup ===
                         group
-                          ? 'border-blue-600 text-blue-700'
-                          : 'border-transparent text-slate-500 hover:text-slate-800'}"
+                          ? 'border-blue-600 dark:border-blue-400 text-blue-700 dark:text-blue-300'
+                          : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800'}"
                         onclick={() => (activeSettingsGroup = group)}
                       >
                         {group}
@@ -914,18 +941,18 @@
                     설정 저장
                   </button>
                   {#if settingsMsg}
-                    <span class="text-xs text-slate-500">{settingsMsg}</span>
+                    <span class="text-xs text-slate-500 dark:text-slate-400">{settingsMsg}</span>
                   {/if}
                 </div>
               </section>
 
-              <section class="rounded-lg border border-slate-200 bg-white/90 p-5 shadow-sm">
+              <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">
-                  <div class="text-sm font-semibold text-slate-900">전문가용: 설정 파일 직접 편집</div>
-                  <div class="mt-1 text-xs text-slate-500">위 항목으로 안 되는 세부 설정(예: SSH 호스트 목록)만 여기서 직접 고칩니다. 형식이 틀리면 저장되지 않으니 익숙하지 않으면 건드리지 마세요.</div>
+                  <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">전문가용: 설정 파일 직접 편집</div>
+                  <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">위 항목으로 안 되는 세부 설정(예: SSH 호스트 목록)만 여기서 직접 고칩니다. 형식이 틀리면 저장되지 않으니 익숙하지 않으면 건드리지 마세요.</div>
                 </div>
                 <textarea
-                  class="min-h-[320px] w-full rounded-lg border border-slate-300 bg-slate-950 px-4 py-3 font-mono text-[12px] leading-6 text-slate-100 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                  class="min-h-[320px] w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-950 px-4 py-3 font-mono text-[12px] leading-6 text-slate-100 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30"
                   spellcheck="false"
                   value={configText}
                   oninput={(event) => (configText = event.currentTarget.value)}
@@ -935,98 +962,98 @@
                     raw 저장
                   </button>
                   {#if configMsg}
-                    <span class="text-xs text-slate-500">{configMsg}</span>
+                    <span class="text-xs text-slate-500 dark:text-slate-400">{configMsg}</span>
                   {/if}
                 </div>
               </section>
             {:else}
-              <section class="rounded-lg border border-slate-200 bg-white/90 p-5 shadow-sm">
+              <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">
-                  <div class="text-sm font-semibold text-slate-900">버전 / 백엔드</div>
-                  <div class="mt-1 text-xs text-slate-500">웹판의 `/api/status`, `/api/version`, `/api/aux` 정보를 데스크톱 상태와 함께 요약합니다.</div>
+                  <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">버전 / 백엔드</div>
+                  <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">웹판의 `/api/status`, `/api/version`, `/api/aux` 정보를 데스크톱 상태와 함께 요약합니다.</div>
                 </div>
 
                 <div class="grid gap-4 md:grid-cols-2">
-                  <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
-                    <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">aglink</div>
-                    <div class="space-y-2 text-sm text-slate-700">
+                  <div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4">
+                    <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">aglink</div>
+                    <div class="space-y-2 text-sm text-slate-700 dark:text-slate-300">
                       <div class="flex items-center justify-between gap-3">
                         <span>현재 백엔드</span>
-                        <span class="rounded-full bg-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700">{backendBadgeText() || "-"}</span>
+                        <span class="rounded-full bg-slate-200 dark:bg-slate-700 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-300">{backendBadgeText() || "-"}</span>
                       </div>
                       <div class="flex items-center justify-between gap-3">
                         <span>실행 버전</span>
-                        <span class="font-mono text-xs text-slate-600">{versionInfo.version || "-"}</span>
+                        <span class="font-mono text-xs text-slate-600 dark:text-slate-400">{versionInfo.version || "-"}</span>
                       </div>
                       <div class="flex items-center justify-between gap-3">
                         <span>최신 버전</span>
-                        <span class="font-mono text-xs text-slate-600">{versionInfo.latestVersion || "-"}</span>
+                        <span class="font-mono text-xs text-slate-600 dark:text-slate-400">{versionInfo.latestVersion || "-"}</span>
                       </div>
                       <div class="flex items-center justify-between gap-3">
                         <span>업데이트 상태</span>
-                        <span class={`rounded-full px-2.5 py-1 text-xs font-semibold ${versionInfo.updateAvailable ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-700"}`}>
+                        <span class={`rounded-full px-2.5 py-1 text-xs font-semibold ${versionInfo.updateAvailable ? "bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300" : "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"}`}>
                           {versionInfo.updateAvailable ? "업데이트 필요" : "최신"}
                         </span>
                       </div>
                       {#if versionInfo.opencodeInstalled}
-                        <div class="flex items-center justify-between gap-3 border-t border-slate-200 pt-2">
+                        <div class="flex items-center justify-between gap-3 border-t border-slate-200 dark:border-slate-700 pt-2">
                           <span>opencode</span>
-                          <span class="font-mono text-xs text-slate-600" title={versionInfo.opencodeLatest ? `최신: ${versionInfo.opencodeLatest}` : ""}>
+                          <span class="font-mono text-xs text-slate-600 dark:text-slate-400" title={versionInfo.opencodeLatest ? `최신: ${versionInfo.opencodeLatest}` : ""}>
                             {versionInfo.opencodeInstalled}
                             {#if versionInfo.opencodeUpdateAvailable}
-                              <span class="ml-1 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">▲ {versionInfo.opencodeLatest} 있음</span>
+                              <span class="ml-1 rounded-full bg-amber-100 dark:bg-amber-900/40 px-2 py-0.5 font-semibold text-amber-800 dark:text-amber-300">▲ {versionInfo.opencodeLatest} 있음</span>
                             {/if}
                           </span>
                         </div>
                         {#if versionInfo.opencodeUpdateAvailable}
-                          <div class="text-[11px] text-amber-700">터미널에서 <code class="rounded bg-amber-50 px-1">opencode upgrade</code> 로 업데이트하세요.</div>
+                          <div class="text-[11px] text-amber-700 dark:text-amber-300">터미널에서 <code class="rounded bg-amber-50 dark:bg-amber-950/40 px-1">opencode upgrade</code> 로 업데이트하세요.</div>
                         {/if}
                       {/if}
                     </div>
                   </div>
 
-                  <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
-                    <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">desktop control</div>
-                    <div class="space-y-2 text-sm text-slate-700">
+                  <div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4">
+                    <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">desktop control</div>
+                    <div class="space-y-2 text-sm text-slate-700 dark:text-slate-300">
                       <div class="flex items-center justify-between gap-3">
                         <span>연결 상태</span>
-                        <span class={`rounded-full px-2.5 py-1 text-xs font-semibold ${chat.connected ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                        <span class={`rounded-full px-2.5 py-1 text-xs font-semibold ${chat.connected ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300" : "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300"}`}>
                           {chat.connected ? "connected" : "disconnected"}
                         </span>
                       </div>
                       <div class="flex items-center justify-between gap-3">
                         <span>running commit</span>
-                        <span class="truncate font-mono text-xs text-slate-600">{versionInfo.commit || "-"}</span>
+                        <span class="truncate font-mono text-xs text-slate-600 dark:text-slate-400">{versionInfo.commit || "-"}</span>
                       </div>
                       <div class="flex items-center justify-between gap-3">
                         <span>latest commit</span>
-                        <span class="truncate font-mono text-xs text-slate-600">{versionInfo.latestCommit || "-"}</span>
+                        <span class="truncate font-mono text-xs text-slate-600 dark:text-slate-400">{versionInfo.latestCommit || "-"}</span>
                       </div>
                       <div class="flex items-center justify-between gap-3">
                         <span>build time</span>
-                        <span class="truncate font-mono text-xs text-slate-600">{versionInfo.buildTime || "-"}</span>
+                        <span class="truncate font-mono text-xs text-slate-600 dark:text-slate-400">{versionInfo.buildTime || "-"}</span>
                       </div>
                     </div>
                   </div>
                 </div>
 
                 <div class="mt-6">
-                  <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">aglink 보조 기능</div>
+                  <div class="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">aglink 보조 기능</div>
                   <div class="space-y-3">
                     {#if (auxInfo.features || []).length === 0}
-                      <div class="rounded-lg border border-dashed border-slate-300 px-4 py-4 text-sm text-slate-500">
+                      <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 px-4 py-4 text-sm text-slate-500 dark:text-slate-400">
                         get_aux 응답이 비어 있습니다.
                       </div>
                     {:else}
                       {#each auxInfo.features || [] as feature}
-                        <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
+                        <div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4">
                           <div class="flex flex-wrap items-center gap-3">
                             <div class="min-w-0 flex-1">
-                              <div class="text-sm font-semibold text-slate-900">
-                                {feature.label}{#if feature.version} <span class="font-mono text-xs text-slate-500">({feature.version})</span>{/if}
+                              <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                {feature.label}{#if feature.version} <span class="font-mono text-xs text-slate-500 dark:text-slate-400">({feature.version})</span>{/if}
                               </div>
                               {#if feature.detail}
-                                <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-500">{feature.detail}</div>
+                                <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-500 dark:text-slate-400">{feature.detail}</div>
                               {/if}
                             </div>
                             <span class={`rounded-full px-2.5 py-1 text-xs font-semibold ${auxStateTone(feature.state)}`}>
@@ -1049,13 +1076,13 @@
 
 {#if promptState}
   <div class="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/35 px-4">
-    <div class="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-2xl">
-      <div class="text-lg font-semibold text-slate-900">{promptState.title}</div>
+    <div class="w-full max-w-md rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5 shadow-2xl">
+      <div class="text-lg font-semibold text-slate-900 dark:text-slate-100">{promptState.title}</div>
       {#if promptState.label}
-        <div class="mt-2 text-sm text-slate-500">{promptState.label}</div>
+        <div class="mt-2 text-sm text-slate-500 dark:text-slate-400">{promptState.label}</div>
       {/if}
       <input
-        class="mt-4 w-full rounded-md border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+        class="mt-4 w-full rounded-md border border-slate-300 dark:border-slate-600 px-4 py-3 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30"
         value={promptState.value}
         oninput={(event) => (promptState = { ...promptState, value: event.currentTarget.value })}
         onkeydown={(event) => {
@@ -1063,7 +1090,7 @@
         }}
       />
       <div class="mt-5 flex justify-end gap-2">
-        <button class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100" onclick={() => resolvePrompt(null)}>
+        <button class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => resolvePrompt(null)}>
           취소
         </button>
         <button class="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700" onclick={() => resolvePrompt(promptState.value)}>
@@ -1076,11 +1103,11 @@
 
 {#if confirmState}
   <div class="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/35 px-4">
-    <div class="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-2xl">
-      <div class="text-lg font-semibold text-slate-900">{confirmState.title}</div>
-      <div class="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-600">{confirmState.message}</div>
+    <div class="w-full max-w-md rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5 shadow-2xl">
+      <div class="text-lg font-semibold text-slate-900 dark:text-slate-100">{confirmState.title}</div>
+      <div class="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-600 dark:text-slate-400">{confirmState.message}</div>
       <div class="mt-5 flex justify-end gap-2">
-        <button class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100" onclick={() => resolveConfirm(false)}>
+        <button class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => resolveConfirm(false)}>
           취소
         </button>
         <button class="rounded-md bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700" onclick={() => resolveConfirm(true)}>

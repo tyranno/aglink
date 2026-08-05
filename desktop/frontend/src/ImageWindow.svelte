@@ -95,7 +95,7 @@
 
 {#if chat.lightboxSrc}
   <div
-    class="fixed z-[60] flex flex-col overflow-hidden rounded-lg border border-slate-300 bg-white shadow-2xl"
+    class="fixed z-[60] flex flex-col overflow-hidden rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 shadow-2xl"
     style={`left:${win.x}px; top:${win.y}px; width:${win.w}px; height:${win.h}px;`}
   >
     <!-- title bar: drag to move window; zoom controls on the right -->
@@ -122,7 +122,7 @@
     <div
       bind:this={scrollEl}
       use:ctrlWheelZoom
-      class={`min-h-0 flex-1 overflow-auto bg-slate-100 ${panning ? "cursor-grabbing" : "cursor-grab"}`}
+      class={`min-h-0 flex-1 overflow-auto bg-slate-100 dark:bg-slate-800 ${panning ? "cursor-grabbing" : "cursor-grab"}`}
       onpointerdown={panStart}
       onpointermove={panMove}
       onpointerup={panEnd}
@@ -149,7 +149,7 @@
       role="separator"
       aria-label="크기 조절"
     >
-      <div class="absolute bottom-1 right-1 h-2 w-2 border-b-2 border-r-2 border-slate-400"></div>
+      <div class="absolute bottom-1 right-1 h-2 w-2 border-b-2 border-r-2 border-slate-400 dark:border-slate-500"></div>
     </div>
   </div>
 {/if}

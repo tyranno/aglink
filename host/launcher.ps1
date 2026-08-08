@@ -1,4 +1,4 @@
-# aglink launcher
+﻿# aglink launcher
 # aglink.exe가 exit code 42로 종료하면 aglink_new.exe로 교체 후 재시작.
 # 사용법: .\launcher.ps1
 

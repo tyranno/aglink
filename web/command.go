@@ -49,6 +49,10 @@ type command struct {
 
 var commands = []command{
 	{
+		name: "list_profiles",
+		desc: "List the Chrome profiles currently connected to aglink-web, as 'account | connected Xs ago | default' lines, oldest first. The first line is where a call with no 'profile' goes. Pass any of these accounts — or a unique prefix such as \"doowon.lab.02\" — as 'profile' on another tool to drive that browser instead.",
+	},
+	{
 		name: "list_tabs",
 		desc: "List the open tabs in the user's Chrome browser as 'tabId | [active] title | url' lines. Use a tabId with navigate or get_page_text to target a specific tab.",
 	},
@@ -325,6 +329,14 @@ func (c command) parseCLIArgs(args []string) (map[string]any, error) {
 	return params, nil
 }
 
+// profileArg is injected into every tool rather than declared per command: it
+// selects which browser runs the command, not what the command does. Adding it
+// in the builder keeps the ~40-entry table free of a field every entry would
+// repeat identically.
+const profileArg = "profile"
+
+const profileArgDesc = "Target Chrome profile, given as its signed-in Google account email or a unique prefix of it (e.g. \"doowon.lab.02\"). Omit to use the account pinned by the project's .aglink-web/config, or the longest-connected profile when nothing is pinned. Call list_profiles to see what is connected."
+
 // mcpTool builds the MCP tool definition from the command's arg specs.
 func (c command) mcpTool() mcp.Tool {
 	opts := []mcp.ToolOption{mcp.WithDescription(c.desc)}
@@ -340,6 +352,7 @@ func (c command) mcpTool() mcp.Tool {
 			opts = append(opts, mcp.WithString(a.name, props...))
 		}
 	}
+	opts = append(opts, mcp.WithString(profileArg, mcp.Description(profileArgDesc)))
 	return mcp.NewTool(c.name, opts...)
 }
 
@@ -379,7 +392,7 @@ func (c command) mcpHandler() func(context.Context, mcp.CallToolRequest) (*mcp.C
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		r := callDaemon(c.name, params)
+		r := callDaemon(c.name, params, req.GetString(profileArg, ""))
 		if c.image {
 			if r.Error != "" {
 				return mcp.NewToolResultError(r.Error), nil

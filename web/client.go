@@ -22,12 +22,22 @@ func expectedExtID() string {
 // callDaemon is used by the MCP bridge and the `cmd` fast-path. It ensures the
 // daemon is running (auto-spawning it detached if not), then POSTs the command
 // to /call and returns the result.
-func callDaemon(method string, params map[string]any) CallResult {
+//
+// profile is the caller's explicit override. When empty we fall back to the
+// account pinned by the nearest .aglink-web/config, so a project directory
+// decides which browser it drives without every call having to name it. Empty
+// from both means "the daemon's default profile".
+func callDaemon(method string, params map[string]any, profile string) CallResult {
 	if err := ensureDaemon(); err != nil {
 		return CallResult{Error: err.Error()}
 	}
+	if profile == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			profile = findProjectAccount(cwd)
+		}
+	}
 	port := readPort()
-	body, _ := json.Marshal(callRequest{Method: method, Params: params})
+	body, _ := json.Marshal(callRequest{Method: method, Params: params, Profile: profile})
 	resp, err := http.Post(daemonBaseURL(port)+"/call", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return CallResult{Error: fmt.Sprintf("browser daemon unavailable: %v", err)}

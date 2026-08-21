@@ -37,4 +37,9 @@ type CallResult struct {
 type callRequest struct {
 	Method string         `json:"method"`
 	Params map[string]any `json:"params,omitempty"`
+	// Profile names the Chrome profile to route to: an account email, a unique
+	// prefix of one, or "" for the daemon's default. Kept out of Params because
+	// Params is forwarded verbatim to the extension, which knows nothing about
+	// profiles — routing ends at the daemon.
+	Profile string `json:"profile,omitempty"`
 }

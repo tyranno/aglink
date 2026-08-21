@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // cmdResult is the JSON shape printed to stdout by `aglink-web cmd`, matching
@@ -27,6 +28,8 @@ type cmdResult struct {
 //	aglink-web cmd type <selector> <text> [tabId]
 //	aglink-web cmd close_tab [tabId]
 func runCmd(args []string) {
+	profile, args := extractProfileFlag(args)
+
 	if len(args) == 0 {
 		emitCmd(cmdResult{Error: "cmd requires a subcommand (" + commandNames() + ")"})
 		os.Exit(2)
@@ -44,12 +47,30 @@ func runCmd(args []string) {
 		os.Exit(2)
 	}
 
-	res := callDaemon(c.name, params)
+	res := callDaemon(c.name, params, profile)
 	if res.Error != "" {
 		emitCmd(cmdResult{Error: res.Error})
 		os.Exit(1)
 	}
 	emitCmd(cmdResult{Text: res.Text})
+}
+
+// extractProfileFlag pulls --profile=<account> out of the argument list wherever
+// it appears and returns the remaining positionals. A flag, not a positional:
+// parseCLIArgs maps positionals onto the command's argSpec order, so an extra
+// positional would shift every argument of every command by one.
+func extractProfileFlag(args []string) (string, []string) {
+	const prefix = "--profile="
+	profile := ""
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, prefix) {
+			profile = strings.TrimPrefix(a, prefix)
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return profile, rest
 }
 
 func emitCmd(r cmdResult) {

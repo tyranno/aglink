@@ -395,7 +395,7 @@ func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, CallResult{Error: "missing method"})
 		return
 	}
-	writeJSON(w, d.call(body.Method, body.Params, ""))
+	writeJSON(w, d.call(body.Method, body.Params, body.Profile))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

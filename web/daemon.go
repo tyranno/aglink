@@ -213,6 +213,12 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 // {"id":0,"ok":true}, which the read loop drops but uses to refresh the deadline.
 const pingMethod = "__ping"
 
+// listProfilesMethod is the one command the daemon answers itself. Everything
+// else is relayed to an extension; this one describes the extensions, so routing
+// it would be circular — and it has to work when nothing is connected, which is
+// exactly when you most want to ask.
+const listProfilesMethod = "list_profiles"
+
 func (d *Daemon) pingLoop(ec *extConn, done <-chan struct{}) {
 	t := time.NewTicker(d.pingInterval)
 	defer t.Stop()
@@ -295,6 +301,10 @@ func (d *Daemon) accountsLocked() []string {
 
 // call sends one command to the extension and waits for its reply.
 func (d *Daemon) call(method string, params map[string]any, profile string) CallResult {
+	if method == listProfilesMethod {
+		return d.listProfiles()
+	}
+
 	d.mu.Lock()
 	ec, err := d.resolve(profile)
 	if err != nil {
@@ -341,6 +351,34 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 		log.Printf("aglink-web: ✗ ext #%d %s timed out", id, method)
 		return CallResult{Error: "browser did not respond within timeout"}
 	}
+}
+
+// listProfiles renders the connected profiles, oldest first — the same order
+// resolve() uses to pick the default, so the first line is always where an
+// unspecified call goes. Locks d.mu itself, unlike resolve().
+func (d *Daemon) listProfiles() CallResult {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(d.exts) == 0 {
+		return CallResult{OK: true, Text: "no Chrome profiles connected — sign in to Chrome and load the aglink-web extension"}
+	}
+
+	ecs := make([]*extConn, 0, len(d.exts))
+	for _, ec := range d.exts {
+		ecs = append(ecs, ec)
+	}
+	sort.Slice(ecs, func(i, j int) bool { return ecs[i].seq < ecs[j].seq })
+
+	var b strings.Builder
+	for i, ec := range ecs {
+		fmt.Fprintf(&b, "%s | connected %s ago", ec.account, time.Since(ec.since).Round(time.Second))
+		if i == 0 {
+			b.WriteString(" | default")
+		}
+		b.WriteString("\n")
+	}
+	return CallResult{OK: true, Text: strings.TrimRight(b.String(), "\n")}
 }
 
 func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {

@@ -374,6 +374,52 @@ func TestCallRoutesToNamedProfile(t *testing.T) {
 	}
 }
 
+// list_profiles is answered by the daemon itself — it never goes out to an
+// extension, so it works even with nothing connected.
+func TestListProfilesEmpty(t *testing.T) {
+	d := newDaemon("")
+	res := d.call(listProfilesMethod, nil, "")
+	if !res.OK {
+		t.Fatalf("list_profiles should succeed with no profiles: %+v", res)
+	}
+	if !strings.Contains(res.Text, "no Chrome profiles connected") {
+		t.Fatalf("unexpected text: %q", res.Text)
+	}
+}
+
+// The listing is ordered the same way the default is chosen, so reading it tells
+// you where an unspecified call will go.
+func TestListProfilesMarksDefaultFirst(t *testing.T) {
+	d, _ := connectProfiles(t, "first@example.com", "second@example.com")
+	res := d.call(listProfilesMethod, nil, "")
+	if !res.OK {
+		t.Fatalf("list_profiles: %+v", res)
+	}
+	lines := strings.Split(strings.TrimSpace(res.Text), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d: %q", len(lines), res.Text)
+	}
+	if !strings.HasPrefix(lines[0], "first@example.com") {
+		t.Fatalf("oldest connection should be listed first: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "default") {
+		t.Fatalf("oldest connection should be marked default: %q", lines[0])
+	}
+	if strings.Contains(lines[1], "default") {
+		t.Fatalf("only one profile may be marked default: %q", lines[1])
+	}
+}
+
+// A profile argument on list_profiles is meaningless but must not error: the
+// command is answered before any routing happens.
+func TestListProfilesIgnoresProfileArg(t *testing.T) {
+	d, _ := connectProfiles(t, "only@example.com")
+	res := d.call(listProfilesMethod, nil, "nobody@example.com")
+	if !res.OK {
+		t.Fatalf("list_profiles must not route: %+v", res)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	d := newDaemon("")
 	srv := httptest.NewServer(d.handler())

@@ -17,9 +17,29 @@ import (
 // single browser command before giving up.
 const callTimeout = 30 * time.Second
 
-// Daemon is the persistent process (`aglink-web serve`). It holds the single
-// live Chrome-extension WebSocket, assigns correlation IDs to outbound
-// commands, and blocks each POST /call until the matching Reply arrives.
+// extConn is one connected Chrome profile. The daemon holds one per signed-in
+// account, so two profiles no longer evict each other.
+type extConn struct {
+	conn    *websocket.Conn
+	account string    // lowercased; the map key and the routing name
+	since   time.Time // registration time; the oldest connection is the default
+
+	// writeMu serializes writes to conn. Per-connection, not per-daemon:
+	// gorilla conns are not write-safe, but two different profiles' sockets can
+	// be written concurrently.
+	writeMu sync.Mutex
+
+	// waiting is the set of request ids parked on this connection. On
+	// disconnect it lets us fail exactly this profile's in-flight calls instead
+	// of every profile's — one browser dying must not make another's caller
+	// wait out the full callTimeout.
+	waiting map[uint64]struct{}
+}
+
+// Daemon is the persistent process (`aglink-web serve`). It holds one live
+// Chrome-extension WebSocket per signed-in account, assigns correlation IDs to
+// outbound commands, and blocks each POST /call until the matching Reply
+// arrives.
 type Daemon struct {
 	// expectedExtID pins the accepted extension origin. When "" (unset), any
 	// chrome-extension:// origin is accepted (a warning is logged). Set via
@@ -34,8 +54,7 @@ type Daemon struct {
 	readTimeout  time.Duration
 
 	mu      sync.Mutex
-	ext     *websocket.Conn
-	writeMu sync.Mutex // serializes writes to ext (gorilla conns are not write-safe)
+	exts    map[string]*extConn // account (lowercased) → live connection
 	nextID  uint64
 	pending map[uint64]chan Reply
 
@@ -45,6 +64,7 @@ type Daemon struct {
 func newDaemon(expectedExtID string) *Daemon {
 	return &Daemon{
 		expectedExtID: expectedExtID,
+		exts:          make(map[string]*extConn),
 		pending:       make(map[uint64]chan Reply),
 		pingInterval:  10 * time.Second,
 		readTimeout:   25 * time.Second,
@@ -93,18 +113,36 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 		log.Printf("aglink-web: extension connected from %q (AGLINK_WEB_EXT_ID unset — accepting any extension; pin it for production)", origin)
 	}
 
+	// The signed-in Chrome account is this profile's identity: it is the map key
+	// and the name callers route by. Without it the connection would be
+	// unaddressable, so refuse at the handshake rather than accept a slot
+	// nothing can reach. A pre-multi-profile extension looks exactly like this.
+	account := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("account")))
+	if account == "" {
+		http.Error(w, "missing account", http.StatusBadRequest)
+		log.Printf("aglink-web: rejected extension with no account — sign in to Chrome, then reload the extension")
+		return
+	}
+
 	conn, err := d.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return // upgrader already wrote the error
 	}
 
-	d.mu.Lock()
-	if d.ext != nil {
-		_ = d.ext.Close() // newest connection wins
+	ec := &extConn{
+		conn:    conn,
+		account: account,
+		since:   time.Now(),
+		waiting: make(map[uint64]struct{}),
 	}
-	d.ext = conn
+	d.mu.Lock()
+	if old := d.exts[account]; old != nil {
+		_ = old.conn.Close() // newest connection for THIS account wins
+	}
+	d.exts[account] = ec
+	n := len(d.exts)
 	d.mu.Unlock()
-	log.Printf("aglink-web: extension registered")
+	log.Printf("aglink-web: extension registered for %s (%d profile(s) connected)", account, n)
 
 	// Keepalive: push an application-level ping every pingInterval. Received WS
 	// messages reset Chrome's MV3 service-worker idle timer (Chrome 116+), so
@@ -113,7 +151,7 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 	// either side dies, no replies arrive, the deadline fires, and we tear the
 	// stale connection down instead of letting commands hang.
 	done := make(chan struct{})
-	go d.pingLoop(conn, done)
+	go d.pingLoop(ec, done)
 
 	_ = conn.SetReadDeadline(time.Now().Add(d.readTimeout))
 	for {
@@ -142,25 +180,28 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 
 	close(done)
 	d.mu.Lock()
-	if d.ext == conn {
-		d.ext = nil
+	if d.exts[account] == ec {
+		delete(d.exts, account)
 	}
-	// Fail any in-flight calls now instead of making them wait out the full
-	// call timeout — the connection they were parked on is gone.
-	for id, ch := range d.pending {
-		ch <- Reply{ID: id, Error: "extension connection lost"}
-		delete(d.pending, id)
+	// Fail only the calls parked on THIS connection, instead of making them wait
+	// out the full call timeout. Another profile's pending calls are still
+	// perfectly answerable and must not be collateral damage.
+	for id := range ec.waiting {
+		if ch := d.pending[id]; ch != nil {
+			ch <- Reply{ID: id, Error: "extension connection lost"}
+			delete(d.pending, id)
+		}
 	}
 	d.mu.Unlock()
 	_ = conn.Close()
-	log.Printf("aglink-web: extension disconnected")
+	log.Printf("aglink-web: extension disconnected (%s)", account)
 }
 
 // pingMethod is the reserved keepalive method (id 0). The extension replies with
 // {"id":0,"ok":true}, which the read loop drops but uses to refresh the deadline.
 const pingMethod = "__ping"
 
-func (d *Daemon) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
+func (d *Daemon) pingLoop(ec *extConn, done <-chan struct{}) {
 	t := time.NewTicker(d.pingInterval)
 	defer t.Stop()
 	ping, _ := json.Marshal(Request{ID: 0, Method: pingMethod})
@@ -169,11 +210,11 @@ func (d *Daemon) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
 		case <-done:
 			return
 		case <-t.C:
-			d.writeMu.Lock()
-			err := conn.WriteMessage(websocket.TextMessage, ping)
-			d.writeMu.Unlock()
+			ec.writeMu.Lock()
+			err := ec.conn.WriteMessage(websocket.TextMessage, ping)
+			ec.writeMu.Unlock()
 			if err != nil {
-				_ = conn.Close() // unblocks ReadMessage → triggers cleanup
+				_ = ec.conn.Close() // unblocks ReadMessage → triggers cleanup
 				return
 			}
 		}
@@ -181,10 +222,16 @@ func (d *Daemon) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
 }
 
 // call sends one command to the extension and waits for its reply.
-func (d *Daemon) call(method string, params map[string]any) CallResult {
+func (d *Daemon) call(method string, params map[string]any, profile string) CallResult {
 	d.mu.Lock()
-	conn := d.ext
-	if conn == nil {
+	// TEMPORARY: picks an arbitrary connection. Replaced by resolve() in the
+	// next commit, which honours `profile` and defines the default properly.
+	var ec *extConn
+	for _, e := range d.exts {
+		ec = e
+		break
+	}
+	if ec == nil {
 		d.mu.Unlock()
 		return CallResult{Error: "Chrome extension not connected — open Chrome with the aglink-web extension loaded"}
 	}
@@ -192,11 +239,13 @@ func (d *Daemon) call(method string, params map[string]any) CallResult {
 	id := d.nextID
 	ch := make(chan Reply, 1)
 	d.pending[id] = ch
+	ec.waiting[id] = struct{}{}
 	d.mu.Unlock()
 
 	defer func() {
 		d.mu.Lock()
 		delete(d.pending, id)
+		delete(ec.waiting, id)
 		d.mu.Unlock()
 	}()
 
@@ -206,13 +255,13 @@ func (d *Daemon) call(method string, params map[string]any) CallResult {
 		return CallResult{Error: fmt.Sprintf("marshal request: %v", err)}
 	}
 
-	d.writeMu.Lock()
-	err = conn.WriteMessage(websocket.TextMessage, data)
-	d.writeMu.Unlock()
+	ec.writeMu.Lock()
+	err = ec.conn.WriteMessage(websocket.TextMessage, data)
+	ec.writeMu.Unlock()
 	if err != nil {
 		return CallResult{Error: fmt.Sprintf("send to extension: %v", err)}
 	}
-	log.Printf("aglink-web: → ext #%d %s", id, method)
+	log.Printf("aglink-web: → %s #%d %s", ec.account, id, method)
 
 	select {
 	case rep := <-ch:
@@ -242,7 +291,7 @@ func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, CallResult{Error: "missing method"})
 		return
 	}
-	writeJSON(w, d.call(body.Method, body.Params))
+	writeJSON(w, d.call(body.Method, body.Params, ""))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

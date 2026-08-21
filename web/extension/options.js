@@ -33,3 +33,26 @@ document.getElementById("save").addEventListener("click", async () => {
   await chrome.storage.local.set({ port: n });
   setStatus(`Saved port ${n}.`);
 });
+
+// Show which account this profile reports to the daemon. When a profile cannot
+// connect the reason is almost always "not signed in to Chrome", and that is
+// invisible from the daemon side — it never sees the connection at all, so
+// there is nothing in the log to look at either.
+(async () => {
+  const el = document.getElementById("account");
+  try {
+    const info = await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" });
+    const { lastError, connectedAs } = await chrome.storage.local.get(["lastError", "connectedAs"]);
+    if (info && info.email) {
+      el.textContent = `이 프로필의 계정: ${info.email}` + (connectedAs ? " (연결됨)" : "");
+      el.style.color = "#2a7";
+    } else {
+      el.textContent =
+        lastError || "Chrome에 로그인되어 있지 않습니다. 로그인 후 이 확장을 새로고침하세요.";
+      el.style.color = "#c33";
+    }
+  } catch (e) {
+    el.textContent = `계정을 읽지 못했습니다: ${e}`;
+    el.style.color = "#c33";
+  }
+})();

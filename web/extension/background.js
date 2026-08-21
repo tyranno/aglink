@@ -32,6 +32,28 @@ async function currentPort() {
   }
 }
 
+// NOT_SIGNED_IN is surfaced on the options page: without a Chrome account this
+// profile has no name the daemon can route to, so it cannot connect at all.
+const NOT_SIGNED_IN =
+  "this Chrome profile is not signed in — sign in to Chrome, then reload this extension";
+
+// currentAccount returns the Google account this Chrome profile is signed in as.
+// It is the profile's identity on the daemon: every command is routed by this
+// string, so an empty result means we must not connect.
+//
+// accountStatus:"ANY" matters. The default ("SYNC") returns an empty email
+// unless the user has turned Chrome sync on, and signed-in-without-sync is the
+// common case — without ANY this would report "not signed in" for profiles that
+// plainly are.
+async function currentAccount() {
+  try {
+    const info = await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" });
+    return (info && info.email ? info.email : "").trim().toLowerCase();
+  } catch (e) {
+    return "";
+  }
+}
+
 async function connect() {
   // Idempotent: never open a second socket while one is connecting/open.
   // onInstalled, onStartup, the keepalive alarm, storage changes, and the initial
@@ -45,9 +67,24 @@ async function connect() {
   connecting = true;
 
   const port = await currentPort();
+  const account = await currentAccount();
+  if (!account) {
+    connecting = false;
+    console.warn("aglink-web: " + NOT_SIGNED_IN);
+    try {
+      await chrome.storage.local.set({ lastError: NOT_SIGNED_IN });
+    } catch (e) {
+      // storage is a convenience for the options page; never block on it
+    }
+    // Retry anyway: the backoff caps at 30s, so signing in to Chrome recovers on
+    // its own without the user having to come back and reload the extension.
+    scheduleReconnect();
+    return;
+  }
+
   let socket;
   try {
-    socket = new WebSocket(`ws://127.0.0.1:${port}/ext`);
+    socket = new WebSocket(`ws://127.0.0.1:${port}/ext?account=${encodeURIComponent(account)}`);
   } catch (e) {
     connecting = false;
     scheduleReconnect();
@@ -57,8 +94,9 @@ async function connect() {
   connecting = false;
 
   socket.onopen = () => {
-    console.log("aglink-web: connected to daemon");
+    console.log("aglink-web: connected to daemon as " + account);
     backoffMs = 1000;
+    chrome.storage.local.set({ lastError: "", connectedAs: account }).catch(() => {});
   };
 
   socket.onmessage = async (event) => {

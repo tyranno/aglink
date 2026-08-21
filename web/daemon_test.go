@@ -259,6 +259,121 @@ func TestHandshakeWithoutAccountRejected(t *testing.T) {
 	}
 }
 
+// connectProfiles registers fake extensions in the given order and returns the
+// daemon. Order matters: the first one connected is the default.
+func connectProfiles(t *testing.T, accounts ...string) (*Daemon, *httptest.Server) {
+	t.Helper()
+	d := newDaemon("")
+	srv := httptest.NewServer(d.handler())
+	t.Cleanup(srv.Close)
+	for _, a := range accounts {
+		c := dialFakeExtension(t, srv, a)
+		t.Cleanup(func() { c.Close() })
+		go runFakeExtension(c, true)
+		waitForProfile(t, d, a)
+	}
+	return d, srv
+}
+
+func resolveName(t *testing.T, d *Daemon, name string) (string, error) {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ec, err := d.resolve(name)
+	if err != nil {
+		return "", err
+	}
+	return ec.account, nil
+}
+
+// An empty name means "the default", which is the longest-connected profile.
+// Recomputed per call, so a disconnect promotes the next one with no election.
+func TestResolveDefaultsToOldestConnection(t *testing.T) {
+	d, _ := connectProfiles(t, "first@example.com", "second@example.com")
+	got, err := resolveName(t, d, "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != "first@example.com" {
+		t.Fatalf("default = %q, want first@example.com", got)
+	}
+}
+
+func TestResolveExactAccount(t *testing.T) {
+	d, _ := connectProfiles(t, "first@example.com", "second@example.com")
+	got, err := resolveName(t, d, "second@example.com")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != "second@example.com" {
+		t.Fatalf("got %q, want second@example.com", got)
+	}
+}
+
+// Typing a full email on every override is tedious, so a prefix works when it
+// picks out exactly one profile.
+func TestResolveUniquePrefix(t *testing.T) {
+	d, _ := connectProfiles(t, "doowon.lab.02@gmail.com", "tyranno1223@gmail.com")
+	got, err := resolveName(t, d, "doowon")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != "doowon.lab.02@gmail.com" {
+		t.Fatalf("got %q, want doowon.lab.02@gmail.com", got)
+	}
+}
+
+// A prefix matching several profiles must fail loudly rather than pick one:
+// guessing here sends commands to the wrong browser.
+func TestResolveAmbiguousPrefix(t *testing.T) {
+	d, _ := connectProfiles(t, "same.a@gmail.com", "same.b@gmail.com")
+	_, err := resolveName(t, d, "same")
+	if err == nil {
+		t.Fatal("ambiguous prefix must be an error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("error should say it is ambiguous: %v", err)
+	}
+	if !strings.Contains(err.Error(), "same.a@gmail.com") || !strings.Contains(err.Error(), "same.b@gmail.com") {
+		t.Fatalf("error should list the candidates: %v", err)
+	}
+}
+
+func TestResolveUnknownListsConnected(t *testing.T) {
+	d, _ := connectProfiles(t, "only@example.com")
+	_, err := resolveName(t, d, "nobody")
+	if err == nil {
+		t.Fatal("unknown profile must be an error")
+	}
+	if !strings.Contains(err.Error(), "only@example.com") {
+		t.Fatalf("error should list what IS connected: %v", err)
+	}
+}
+
+func TestResolveIsCaseInsensitive(t *testing.T) {
+	d, _ := connectProfiles(t, "mixed@example.com")
+	got, err := resolveName(t, d, "MIXED@Example.COM")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != "mixed@example.com" {
+		t.Fatalf("got %q, want mixed@example.com", got)
+	}
+}
+
+// The end-to-end check that routing actually reaches the named browser.
+func TestCallRoutesToNamedProfile(t *testing.T) {
+	d, _ := connectProfiles(t, "first@example.com", "second@example.com")
+	res := d.call("list_tabs", nil, "second@example.com")
+	if !res.OK || res.Text != "pong:list_tabs" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	res = d.call("list_tabs", nil, "nobody@example.com")
+	if res.OK || !strings.Contains(res.Error, "not connected") {
+		t.Fatalf("want not-connected error, got %+v", res)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	d := newDaemon("")
 	srv := httptest.NewServer(d.handler())

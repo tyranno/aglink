@@ -26,3 +26,6 @@ aglink-web
 # OS
 Thumbs.db
 .DS_Store
+
+# Host-specific operational notes (this repo is public — never commit these)
+*.local.md

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 // callTimeout bounds how long the daemon waits for the extension to answer a
@@ -96,7 +97,30 @@ func (d *Daemon) handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.Handle("/mcp", d.mcpHandler())
 	return mux
+}
+
+// mcpHandler serves MCP over streamable HTTP at /mcp, so a client that cannot
+// spawn this binary — a Claude session on a remote machine reaching the daemon
+// through an SSH reverse tunnel — still gets the full browser tool set. The
+// stdio bridge remains the local path; this is the same server on a second
+// transport.
+//
+// Stateless: each request stands alone, so a remote client reconnecting (a
+// dropped tunnel, a restarted editor) never strands a session on this side.
+//
+// Tools dispatch straight into d.call rather than back through callDaemon,
+// which would POST to this very process. One consequence: the .aglink-web
+// project pin that callDaemon resolves from the caller's working directory
+// cannot apply here, since the caller's directory lives on another machine.
+// A remote call with no explicit 'profile' therefore lands on the daemon's
+// default profile; name the profile in the call to target another.
+func (d *Daemon) mcpHandler() http.Handler {
+	return server.NewStreamableHTTPServer(
+		newMCPServer(d.call),
+		server.WithStateLess(true),
+	)
 }
 
 // originAllowed reports whether a WS handshake Origin belongs to our extension.

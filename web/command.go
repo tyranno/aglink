@@ -384,15 +384,21 @@ func (c command) mcpParams(req mcp.CallToolRequest) (map[string]any, error) {
 	return params, nil
 }
 
-// mcpHandler returns the tool handler: extract params, call the daemon, and
-// shape the result (image for screenshot, text otherwise).
-func (c command) mcpHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+// dispatchFunc runs one browser command and returns its result. The stdio
+// bridge passes callDaemon (HTTP over to the daemon); the daemon's own MCP
+// endpoint passes its router directly, so a call that originates inside the
+// daemon never loops back out over HTTP to reach itself.
+type dispatchFunc func(method string, params map[string]any, profile string) CallResult
+
+// mcpHandler returns the tool handler: extract params, dispatch the command,
+// and shape the result (image for screenshot, text otherwise).
+func (c command) mcpHandler(dispatch dispatchFunc) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		params, err := c.mcpParams(req)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		r := callDaemon(c.name, params, req.GetString(profileArg, ""))
+		r := dispatch(c.name, params, req.GetString(profileArg, ""))
 		if c.image {
 			if r.Error != "" {
 				return mcp.NewToolResultError(r.Error), nil

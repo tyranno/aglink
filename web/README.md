@@ -55,9 +55,13 @@ One Go binary, three subcommands (mirrors `aglink-screen`):
   `ws://127.0.0.1:48219` are rejected. Pin the exact extension ID by setting
   `AGLINK_WEB_EXT_ID` (find it at `chrome://extensions`); unset accepts any
   extension (fine for local dev, logged as a warning).
-- **Loopback only.** The daemon binds `127.0.0.1`; the `/call` control endpoint
-  is reachable only by local processes — the same trust boundary as
-  `aglink-screen` (a local process could always spawn the binary directly).
+- **Loopback only.** The daemon binds `127.0.0.1`; the `/call` and `/mcp`
+  control endpoints are reachable only by local processes — the same trust
+  boundary as `aglink-screen` (a local process could always spawn the binary
+  directly). An SSH reverse tunnel deliberately widens that boundary to a
+  second machine's loopback; see
+  [원격 머신에서 쓰기](#원격-머신에서-쓰기-ssh-역터널--mcp) before setting one up
+  on a shared box.
 
 ## Install & run
 
@@ -141,6 +145,64 @@ teleclaude와 이 저장소를 **형제 디렉터리**(예: `..\teleclaude`, `..
 ./aglink-web.exe cmd wait_for_element ".results-loaded"
 ./aglink-web.exe cmd close_tab
 ```
+
+## 원격 머신에서 쓰기 (SSH 역터널 + `/mcp`)
+
+윈도우에서 작업하지만 **VS Code Remote-SSH 로 리눅스 머신의 프로젝트를 열어**
+그쪽 Claude 로 작업하는 경우 — 브라우저는 여전히 윈도우에 있다. 그 원격
+Claude 가 이 브라우저를 쓰게 하려면, 리눅스에 바이너리를 깔 필요 없이
+데몬이 직접 제공하는 MCP 엔드포인트에 붙이면 된다.
+
+데몬은 `/call`·`/health` 와 나란히 **`/mcp` 로 streamable-HTTP MCP** 를
+서빙한다. stdio 브리지와 **똑같은 툴 세트**(`command.go` 의 `commands` 표)이고,
+툴 호출은 자기 자신에게 다시 HTTP 를 치지 않고 데몬 라우터로 바로 들어간다.
+
+```
+Ubuntu (VS Code Remote-SSH)              Windows
+  Claude ──http──> 127.0.0.1:48219 ══SSH -R══> 127.0.0.1:48219 ──ws──> Chrome
+                   (터널 입구)                   aglink-web serve
+```
+
+**1. 윈도우 `~/.ssh/config`** 에 그 호스트 항목에 한 줄 — VS Code 가 접속할
+때마다 역터널이 자동으로 따라 올라온다:
+
+```
+Host my-linux-box
+  HostName 192.168.0.10
+  User me
+  RemoteForward 48219 127.0.0.1:48219
+```
+
+> `ExitOnForwardFailure yes` 는 **넣지 말 것.** 같은 머신에 VS Code 창을 두 개
+> 이상 붙이면 두 번째부터는 원격 48219 가 이미 잡혀 있어 포워딩이 실패하는데,
+> 이 옵션이 있으면 실패가 곧 **접속 자체의 종료**가 된다. 없으면 경고만 남기고
+> 붙으며, 먼저 뚫린 터널을 그대로 같이 쓴다.
+
+**2. 리눅스 쪽 Claude 에 등록** (설치할 바이너리 없음):
+
+```sh
+claude mcp add --transport http -s user aglink-web http://127.0.0.1:48219/mcp
+claude mcp list      # aglink-web: ... (HTTP) - ✔ Connected
+```
+
+이미 열려 있던 Claude 세션에는 반영되지 않는다 — MCP 서버는 세션 시작 시점에
+로드되므로 **새 세션부터** 툴이 보인다.
+
+### 프로필 지정이 달라지는 점
+
+로컬 stdio 브리지는 호출자의 작업 디렉터리에서 `.aglink-web/config` 의 프로필
+핀을 읽는다. `/mcp` 로 들어온 호출은 그 디렉터리가 **다른 머신에** 있으므로
+그 핀이 적용될 수 없고, `profile` 을 명시하지 않으면 데몬의 기본 프로필로
+간다. 다른 브라우저를 몰고 싶으면 `list_profiles` 로 확인한 뒤 호출마다
+`profile` 을 넘길 것.
+
+### 보안: 원격 머신을 공유한다면
+
+역터널의 출구는 그 리눅스 머신의 loopback 이고, loopback 은 **그 머신의 모든
+사용자가 공유**한다. 즉 그 박스에 계정이 있는 사람은 누구나
+`127.0.0.1:48219` 를 찔러 당신의 윈도우 크롬을 — **로그인된 세션 그대로** —
+조작할 수 있다. 1인 전용 머신이면 문제 없지만, 공용 머신이라면 이 터널을
+상시로 두지 말 것.
 
 ## Config
 

@@ -17,6 +17,15 @@ import (
 // via a search engine) rather than a direct browser action, so it needs its own
 // design pass.
 func RunMCPWeb() error {
+	return server.ServeStdio(newMCPServer(callDaemon))
+}
+
+// newMCPServer builds the "web" MCP server, registering every entry of the
+// `commands` table as a tool that routes through dispatch. Two transports share
+// it: the stdio bridge (dispatch = callDaemon) and the daemon's own /mcp
+// endpoint (dispatch = the daemon's router), so a remote client over /mcp sees
+// exactly the same tool set as a locally spawned bridge.
+func newMCPServer(dispatch dispatchFunc) *server.MCPServer {
 	s := server.NewMCPServer(
 		"web",
 		"0.1.0",
@@ -24,10 +33,10 @@ func RunMCPWeb() error {
 	)
 
 	for _, c := range commands {
-		s.AddTool(c.mcpTool(), c.mcpHandler())
+		s.AddTool(c.mcpTool(), c.mcpHandler(dispatch))
 	}
 
-	return server.ServeStdio(s)
+	return s
 }
 
 // toolResult converts a daemon CallResult into an MCP tool result, surfacing

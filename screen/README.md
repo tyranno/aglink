@@ -111,6 +111,26 @@ claude mcp add --transport http --scope user \
 이름을 `aglink-screen-remote`로 두면 도구가 `mcp__aglink-screen-remote__*`로 떠서,
 로컬에서 stdio로 띄운 `aglink-screen`과 이름으로 갈린다.
 
+### 항시 켜 두기
+
+역터널을 VS Code 연결이 물고 있으면 그 창을 닫는 순간 포트가 죽는다. 상시로
+쓰려면 [`scripts/aglink-always-on.ps1`](../scripts/aglink-always-on.ps1) 을
+로그온 작업으로 걸어 둔다 — 데몬 둘과 포트별 터널을 확인해 **없는 것만** 띄운다.
+
+```powershell
+# 확인만 (아무것도 바꾸지 않음)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\aglink-always-on.ps1 `
+  -SshHost user@host -CheckOnly
+
+# 작업 스케줄러: 로그온 시 + 5분마다. 반드시 "로그온한 사용자로만 실행"으로.
+# 서비스(session 0)로 돌리면 데스크톱이 없어 aglink-screen 이 못 쓴다.
+```
+
+건강하면 아무것도 하지 않고 로그도 남기지 않는다. 이미 도는 `serve` 프로세스는
+**절대 재시작하지 않는다** — 다른 세션이 붙어 쓰는 데몬이라, 응답이 잠깐 늦었다고
+두 번째를 띄우면 포트를 두고 서로 싸운다. 그런 경우엔 `STALLED` 로 적고 사람에게
+넘긴다. 로그는 `~/.aglink/always-on.log`.
+
 ### 알아둘 것 셋
 
 - **제어 잠금이 거칠어진다.** `screen_lease_windows.go`는 "대화마다 프로세스 하나"를

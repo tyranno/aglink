@@ -25,6 +25,9 @@ Windows 전용 (`GOOS=windows` 빌드 태그). 다른 OS에서는 스텁이 명�
 ```
 aglink-screen              # 기본값. MCP stdio 서버로 기동 (아래 "mcp"와 동일)
 aglink-screen mcp          # 명시적으로 같음
+aglink-screen serve [--addr host:port]
+                            # 같은 도구를 MCP streamable HTTP(/mcp)로 노출.
+                            # 기본 127.0.0.1:48220. 아래 "원격에서 쓰기" 참고
 aglink-screen cmd <sub> [args...] [--presets <path>]
                             # LLM 우회 fast-path. 결과를 JSON으로 stdout에 출력:
                             #   {"text": "...", "image": "<base64 PNG, 있으면>", "error": "..."}
@@ -72,6 +75,58 @@ teleclaude와 이 저장소를 **형제 디렉터리**(예: `..\teleclaude`, `..
 헤드리스 배포 등) 조용히 건너뛴다 — 자세한 내용은
 [teleclaude README의 "플러그인 확장" 절](https://github.com/tyranno/teleclaude#플러그인-확장-aglink-)
 참고.
+
+## 원격에서 쓰기 (SSH 역터널 + `/mcp`)
+
+VS Code를 SSH 원격으로 열어 리눅스 머신에서 작업할 때, 그쪽 Claude 세션이 이
+윈도우 호스트의 화면을 조작하게 하는 경로다. 화면 제어는 이 윈도우에서 돌아야
+하므로 **원격에는 설치할 것이 없다** — MCP 등록 한 줄이면 된다.
+
+**1. 윈도우에서 서버를 띄운다**
+
+```powershell
+aglink-screen serve                     # 127.0.0.1:48220 (loopback 전용)
+```
+
+**2. SSH 역터널로 그 포트를 원격에 넘긴다.** `~/.ssh/config`:
+
+```
+Host 192.168.123.146-doowon
+  HostName 192.168.123.146
+  User doowon
+  RemoteForward 48220 127.0.0.1:48220
+```
+
+> **`ExitOnForwardFailure yes`를 넣지 말 것.** 같은 호스트에 VS Code 창을 여러 개
+> 열면 두 번째 연결이 포트를 못 잡는데, 이 옵션이 있으면 그 연결 자체가 죽는다.
+> 포워딩 실패는 무시하고 연결만 살려두는 편이 맞다 — 이미 선 터널을 다 같이 쓴다.
+
+**3. 원격에서 MCP로 등록한다.**
+
+```sh
+claude mcp add --transport http --scope user \
+  aglink-screen-remote http://127.0.0.1:48220/mcp
+```
+
+이름을 `aglink-screen-remote`로 두면 도구가 `mcp__aglink-screen-remote__*`로 떠서,
+로컬에서 stdio로 띄운 `aglink-screen`과 이름으로 갈린다.
+
+### 알아둘 것 셋
+
+- **제어 잠금이 거칠어진다.** `screen_lease_windows.go`는 "대화마다 프로세스 하나"를
+  전제로 **PID**로 주인을 가리는데, 원격 세션은 전부 이 서버 프로세스 하나를
+  공유한다. 그래서 *로컬 aglink-screen ↔ 원격 서버*는 여전히 서로 막지만,
+  **원격 세션끼리는 서로 막지 못한다.** 한 사람이 쓰는 데스크톱을 전제로 한
+  선택이다 — 둘을 갈라야 할 일이 생기면 lease에 세션 id를 넣어야 한다.
+- **가상 데스크톱 복귀가 유휴 타이머로 바뀐다.** stdio는 파이프가 닫히는 것(=턴
+  종료)을 신호로 원래 데스크톱으로 되돌리는데, 상주 서버에는 그 경계가 없다.
+  대신 마지막 요청 이후 조용하면 되돌린다(기본 60초,
+  `AGLINK_SCREEN_REMOTE_IDLE_MS`).
+- **이 포트는 키보드·마우스·화면 전체를 준다.** 브라우저만 다루는 aglink-web보다
+  위험이 크다. `AGLINK_SCREEN_REMOTE_TOKEN`을 설정하면
+  `Authorization: Bearer <토큰>`을 요구하고, 없으면 기동할 때 경고만 찍고 연다
+  (loopback 전용이라 여기 닿는다는 건 이미 이 머신 또는 그 터널에 접근권이
+  있다는 뜻이다).
 
 ## 빌드
 

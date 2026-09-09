@@ -15,6 +15,9 @@ import (
 //	aglink-screen           — MCP stdio server (default; teleclaude points its
 //	                          worker's --mcp-config at this binary)
 //	aglink-screen mcp       — same, explicit
+//	aglink-screen serve [--addr host:port] — same tools over MCP streamable HTTP
+//	                          at /mcp, for sessions that cannot spawn a process
+//	                          here (remote VS Code over an SSH reverse tunnel)
 //	aglink-screen cmd <sub> [args...] [--presets <path>] — fast-path, no LLM;
 //	                          prints {"text","image","error"} JSON to stdout
 func main() {
@@ -29,12 +32,28 @@ func main() {
 		if err := RunMCPScreen(); err != nil {
 			log.Fatal(err)
 		}
+	case "serve":
+		if err := RunScreenRemote(parseAddr(args[1:])); err != nil {
+			log.Fatal(err)
+		}
 	case "cmd":
 		runCmd(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: aglink-screen [mcp | cmd <subcommand> [args...] [--presets <path>]]")
+		fmt.Fprintln(os.Stderr, "usage: aglink-screen [mcp | serve [--addr host:port] | cmd <subcommand> [args...] [--presets <path>]]")
 		os.Exit(2)
 	}
+}
+
+// parseAddr pulls `--addr host:port` out of the serve args. Empty means "use
+// the default", which RunScreenRemote resolves — keeping the default in one
+// place rather than duplicating the literal here.
+func parseAddr(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--addr" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // cmdResult is the JSON shape printed to stdout by `aglink-screen cmd`.

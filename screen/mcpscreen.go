@@ -92,6 +92,9 @@ func RunMCPScreen() error {
 	// done driving the other-desktop window, so the user isn't stranded there
 	// mid-turn) but it guarantees the user is never left parked on a desktop
 	// they didn't choose just because the model forgot the explicit call.
+	//
+	// The HTTP server (`aglink-screen serve`) has no such process boundary, so
+	// it arms an idle timer instead — see returnDesktopWhenIdle.
 	defer func() {
 		if msg, err := returnToOriginDesktop(); err != nil {
 			fmt.Fprintf(os.Stderr, "aglink-screen: warning: return_desktop on exit failed: %v\n", err)
@@ -100,6 +103,14 @@ func RunMCPScreen() error {
 		}
 	}()
 
+	return server.ServeStdio(newScreenMCPServer())
+}
+
+// newScreenMCPServer builds the MCP server with every screen tool registered.
+// It is deliberately transport-agnostic: `aglink-screen mcp` serves it over
+// stdio and `aglink-screen serve` serves the SAME instance over HTTP, so a
+// remote session can never see a different tool set than a local one.
+func newScreenMCPServer() *server.MCPServer {
 	s := server.NewMCPServer(
 		"screen",
 		"0.1.0",
@@ -762,9 +773,15 @@ func RunMCPScreen() error {
 
 	// ---- Coordinate preset tools ----
 
+	// A missing presets path is treated the same way as an unreadable presets
+	// file below: warn and carry on with an empty store. Presets are secondary
+	// to screenshot/click/type, and refusing to start the whole screen server
+	// because the data directory could not be resolved would take those down
+	// with it. preset_save then reports the failure per call, where the caller
+	// can see it.
 	presetPath, err := defaultPresetsPath()
 	if err != nil {
-		return fmt.Errorf("presets path: %w", err)
+		fmt.Fprintf(os.Stderr, "aglink-screen: warning: could not resolve presets path: %v (presets disabled)\n", err)
 	}
 	presets := NewPresetStore(presetPath)
 	if err := presets.Load(); err != nil {
@@ -1130,5 +1147,5 @@ func RunMCPScreen() error {
 		},
 	)
 
-	return server.ServeStdio(s)
+	return s
 }

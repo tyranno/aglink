@@ -79,6 +79,34 @@ $SshHost = @($SshHost | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.T
 
 $LogPath = Join-Path $env:USERPROFILE '.aglink\always-on.log'
 
+# Single-instance guard.
+#
+# The scheduled task launches this through a windowless wscript shim that
+# returns as soon as it has spawned us, so Task Scheduler believes the run
+# finished immediately and its MultipleInstances=IgnoreNew never applies. Two
+# runs could then overlap — the SSH probes take seconds each — and both decide
+# the same tunnel is down, or race in Start-Daemon between the "is it running?"
+# check and the launch. A mutex costs nothing and removes the whole class.
+#
+# Session-local: the task runs as the logged-on user, so there is no need for
+# Global\ and the privilege it would require.
+$mutex = New-Object System.Threading.Mutex($false, 'Local\aglink-always-on')
+$held = $false
+try {
+    $held = $mutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+    # The previous holder exited without releasing (an early `exit`, or it was
+    # killed). .NET hands the mutex over anyway and only raises this to say the
+    # state it guarded may be half-finished — which for us it cannot be, since
+    # every step re-measures before acting. So take it and carry on.
+    $held = $true
+}
+if (-not $held) {
+    # Another run is mid-flight. Silent: this is the normal, healthy outcome of
+    # a slow probe overlapping the next tick, not something to log every time.
+    exit 0
+}
+
 # Write only when something was actually done or found wrong. A line per quiet
 # check would bury the events worth reading under thousands of "all fine".
 function Write-Act([string] $Message) {
@@ -227,3 +255,5 @@ foreach ($p in $Ports) {
         Write-Act "TUNNEL   ${live}:$p could not be bound (held by another connection, or the far end is down)"
     }
 }
+
+$mutex.ReleaseMutex()

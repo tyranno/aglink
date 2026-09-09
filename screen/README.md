@@ -124,7 +124,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\aglink-always-on.ps1
 
 # 작업 스케줄러: 로그온 시 + 5분마다. 반드시 "로그온한 사용자로만 실행"으로.
 # 서비스(session 0)로 돌리면 데스크톱이 없어 aglink-screen 이 못 쓴다.
+#
+# 작업의 실행 대상은 powershell.exe 가 아니라 run-hidden.vbs 로 둔다:
+wscript.exe //B //Nologo scripts\run-hidden.vbs `
+  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""...\aglink-always-on.ps1"" -SshHost user@host"
 ```
+
+`-WindowStyle Hidden` 만으로는 **5분마다 콘솔 창이 번쩍인다** — 작업 스케줄러가
+창을 만든 뒤 숨기는 순서라 그 사이가 보인다. `run-hidden.vbs` 는 창을 애초에
+만들지 않는다.
+
+그 시임은 띄우자마자 끝나므로 작업 스케줄러는 실행이 끝난 줄 알고, 그 결과
+`MultipleInstances=IgnoreNew` 가 무력해진다. 그래서 스크립트 자신이 뮤텍스로
+중복 실행을 막는다(겹치면 두 번째가 조용히 물러난다).
 
 건강하면 아무것도 하지 않고 로그도 남기지 않는다. 이미 도는 `serve` 프로세스는
 **절대 재시작하지 않는다** — 다른 세션이 붙어 쓰는 데몬이라, 응답이 잠깐 늦었다고

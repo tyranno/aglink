@@ -288,7 +288,7 @@ func (b *Bot) routeToSession(chatID int64, text string, tgt Target) bool {
 			_ = reply.Send(chatID, "❌ 등록에서 사라진 호스트입니다: "+s.Host)
 			return
 		}
-		out, err := runSSHFn(ctx, b.cfg(), s.Host, claudeSendCmd(claudeBinOf(h), s.Name, body))
+		out, err := runSSHFn(ctx, b.cfg(), s.Host, claudeSendCmd(claudeBinOf(h), s.Name, body, sendTmpPath()))
 		if err != nil {
 			_ = reply.Send(chatID, "❌ 전달 실패: "+err.Error())
 			return

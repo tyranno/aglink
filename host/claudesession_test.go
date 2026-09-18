@@ -256,7 +256,7 @@ func TestClaudeListCmd(t *testing.T) {
 
 func TestClaudeSendCmd_CarriesTextAsBase64(t *testing.T) {
 	text := "따옴표 ' 와 \"둘\" 그리고\n줄바꿈이 든 한글"
-	cmd := claudeSendCmd("claude", "proj-a-cf", text)
+	cmd := claudeSendCmd("claude", "proj-a-cf", text, "/tmp/aglink-send-test.txt")
 
 	// 본문은 셸에 날것으로 나타나면 안 된다 — base64 로만 실린다.
 	if strings.Contains(cmd, "줄바꿈이 든 한글") {

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -158,7 +160,10 @@ func mergeSessions(host string, probe []remoteSession, peers []PeerSession) []Se
 			info.Name = peer.Name
 			info.Busy = peer.Busy
 			info.Addressable = true
-			if peer.Started != "" {
+			// The probe's start time wins: it is an exact clock reading and it
+			// renders in the same language as the rest of the list, where
+			// ListAgents hands back English prose ("25m ago").
+			if info.Started == "" {
 				info.Started = peer.Started
 			}
 			break
@@ -321,25 +326,40 @@ func claudeListCmd(bin string) string {
 		bin, shellQuote(prompt)))
 }
 
+// sendTmpPath names the remote scratch file one delivery uses. The path is
+// chosen HERE rather than with mktemp on the remote because the CLI has to be
+// told the path inside its prompt, and the prompt is single-quoted for the
+// shell — a `$VAR` in there would reach the CLI as the literal two characters,
+// and it would go looking for a file called "$F".
+func sendTmpPath() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Only used to keep two concurrent deliveries apart; the clock is a
+		// good enough fallback and a collision merely retries a send.
+		return fmt.Sprintf("/tmp/aglink-send-%d.txt", time.Now().UnixNano())
+	}
+	return "/tmp/aglink-send-" + hex.EncodeToString(b[:]) + ".txt"
+}
+
 // claudeSendCmd delivers text into a running session.
 //
-// The text travels as base64 and is decoded into a temp file on the remote,
-// then read back by the CLI. Two reasons, both load-bearing: base64 is ASCII,
-// so no quote, newline or Korean character can be mangled on the way through
-// the shell; and handing the CLI a FILE rather than an inline prompt is what
-// keeps it from paraphrasing the user's words, since the instruction is "send
+// The text travels as base64 and is decoded into tmp on the remote, then read
+// back by the CLI. Two reasons, both load-bearing: base64 is ASCII, so no
+// quote, newline or Korean character can be mangled on the way through the
+// shell; and handing the CLI a FILE rather than an inline prompt is what keeps
+// it from paraphrasing the user's words, since the instruction becomes "send
 // this file's contents", not "send this message".
-func claudeSendCmd(bin, target, text string) string {
+func claudeSendCmd(bin, target, text, tmp string) string {
 	enc := base64.StdEncoding.EncodeToString([]byte(text))
 	prompt := fmt.Sprintf(
-		"Read the file $F. Send its exact contents to the peer session named %s "+
+		"Read the file %s. Send its exact contents to the peer session named %s "+
 			"using SendMessage. Copy the text verbatim: do not translate it, "+
 			"summarise it, reword it or add anything. Then print the tool result "+
-			"and nothing else.", target)
+			"and nothing else.", tmp, target)
 	inner := fmt.Sprintf(
-		"cd /tmp && F=$(mktemp) && printf %%s %s | base64 -d > \"$F\" && "+
+		"cd /tmp && printf %%s %s | base64 -d > %s && "+
 			"%s -p --safe-mode --allowedTools Read,SendMessage --permission-mode acceptEdits %s; "+
-			"rm -f \"$F\"",
-		shellQuote(enc), bin, shellQuote(prompt))
+			"rm -f %s",
+		shellQuote(enc), shellQuote(tmp), bin, shellQuote(prompt), shellQuote(tmp))
 	return loginShell(inner)
 }

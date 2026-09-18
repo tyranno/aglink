@@ -348,20 +348,36 @@ func TestRouteToSession_WebLaneIsSeparate(t *testing.T) {
 func TestTurnSettled(t *testing.T) {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	quiet := 20 * time.Second
-	older := now.Add(-30 * time.Second)
-	recent := now.Add(-5 * time.Second)
+	stamp := now.Add(-3 * time.Minute) // 원격이 쓴 시각 — 로컬 시계와 맞출 필요 없다
 
-	if !turnSettled(older, older, now, quiet) {
-		t.Error("마지막 기록이 오래됐고 더 늘지 않으면 끝난 것으로 봐야 함")
+	if !turnSettled(stamp, now.Add(-30*time.Second), now, quiet) {
+		t.Error("마지막 기록이 바뀌지 않은 채 조용한 시간이 지났으면 끝난 것으로 봐야 함")
 	}
-	if turnSettled(older, recent, now, quiet) {
+	if turnSettled(stamp, now.Add(-5*time.Second), now, quiet) {
 		t.Error("방금 새 기록이 붙었으면 아직 끝난 게 아님")
 	}
-	if turnSettled(older, now, now, quiet) {
-		t.Error("지금 쓰고 있으면 끝난 게 아님")
-	}
-	if turnSettled(time.Time{}, time.Time{}, now, quiet) {
+	if turnSettled(time.Time{}, now.Add(-time.Hour), now, quiet) {
 		t.Error("읽은 것이 없으면 끝났다고 단정하면 안 됨")
+	}
+	if turnSettled(stamp, time.Time{}, now, quiet) {
+		t.Error("아직 한 번도 읽지 않았으면 끝났다고 단정하면 안 됨")
+	}
+}
+
+// TestTurnSettled_IgnoresClockSkew is the regression for the defect a live run
+// exposed: the remote machine's clock was almost two minutes AHEAD of this one,
+// so the transcript's newest timestamp sat in the local future. Any judgement
+// that subtracted it from the local clock got a negative age and could never
+// call the turn over — the user would wait for a reply that never came.
+func TestTurnSettled_IgnoresClockSkew(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	future := now.Add(2 * time.Minute) // 원격 시계가 앞선 경우
+	if !turnSettled(future, now.Add(-30*time.Second), now, 20*time.Second) {
+		t.Error("원격 시계가 앞서도 끝난 것을 알아채야 함")
+	}
+	past := now.Add(-2 * time.Hour) // 원격 시계가 뒤처진 경우
+	if turnSettled(past, now.Add(-1*time.Second), now, 20*time.Second) {
+		t.Error("원격 시계가 뒤처졌다고 끝났다고 단정하면 안 됨")
 	}
 }
 
@@ -423,5 +439,21 @@ func TestAttachIntent(t *testing.T) {
 		if ok != c.ok || name != c.name {
 			t.Errorf("%q → (%q,%v), 기대 (%q,%v)", c.in, name, ok, c.name, c.ok)
 		}
+	}
+}
+
+// TestSessionPrefix_TellsTheSessionNotToReplyBack guards the second line of the
+// prefix. Without it the first live test's answer arrived led by a complaint
+// that the relay session had already gone — the relay is one-shot by design, so
+// there is never anything there to reply to.
+func TestSessionPrefix_TellsTheSessionNotToReplyBack(t *testing.T) {
+	if !strings.Contains(sessionPrefix, "사용자") {
+		t.Error("사람의 지시임을 밝히는 부분이 없다")
+	}
+	if !strings.Contains(sessionPrefix, "SendMessage") {
+		t.Error("되돌려 보내지 말라는 부분이 없다")
+	}
+	if !strings.HasSuffix(sessionPrefix, "\n") {
+		t.Error("사용자가 친 말과 붙어버린다 — 줄바꿈으로 끝나야 함")
 	}
 }

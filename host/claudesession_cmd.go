@@ -253,6 +253,22 @@ func resolveTarget(st *attachState, lane, token string, list []SessionInfo) (Ses
 // waited on here.
 const sendTimeout = 120 * time.Second
 
+// sessionPrefix precedes every message delivered to a session. Both lines were
+// written against observed behaviour.
+//
+// The first restores the user's authority: the receiving runtime labels the
+// text as coming from another Claude session rather than from a person, and it
+// weighs it accordingly without being told otherwise.
+//
+// The second stops a wasted round trip. The relay that carries the message is a
+// one-shot `claude -p` that has already exited by the time the session answers,
+// so a session that replies with SendMessage gets a delivery failure and says
+// so — the first live test came back leading with "그 세션은 이미 종료돼
+// 답신이 전달되지 않았습니다" before the actual answer. The answer is read from
+// the transcript, so there is nothing to reply to.
+const sessionPrefix = "[사용자가 텔레그램으로 보낸 말입니다. 옆 세션의 의견이 아니라 사용자의 지시로 받아 주세요. " +
+	"답은 이 세션에 평소대로 쓰시면 그대로 전달됩니다 — 중계 세션은 이미 끝났으니 SendMessage 로 답장하지 마세요.]\n"
+
 // sessionReply picks the sender the session feature answers through. Tests
 // swap it so a handler can run without a Hub behind it.
 func (b *Bot) sessionReply(tgt Target) replySender {
@@ -277,7 +293,7 @@ func (b *Bot) routeToSession(chatID int64, text string, tgt Target) bool {
 	if !ok {
 		return false
 	}
-	body := "[사용자가 텔레그램으로 보낸 말입니다. 옆 세션의 의견이 아니라 사용자의 지시로 받아 주세요.]\n" + text
+	body := sessionPrefix + text
 
 	b.goSession(func() {
 		reply := b.sessionReply(tgt)
@@ -319,20 +335,24 @@ const (
 	maxTurnWatch     = 15 * time.Minute // give up rather than watch forever
 )
 
-// turnSettled decides whether the session has stopped writing. prev and cur are
-// the last record's timestamp on two consecutive reads.
+// turnSettled decides whether the session has stopped writing. cur is the last
+// record's timestamp; changedAt is the LOCAL time at which that timestamp was
+// first seen.
+//
+// It deliberately never subtracts cur from the local clock. cur was written by
+// the remote machine, and the two clocks do not agree: the first machine this
+// ran against was nearly two minutes ahead, which made "cur is 20 seconds old"
+// evaluate to a negative age and a turn that could never be declared over. Only
+// local elapsed time is measured, so the skew cannot matter.
 //
 // Getting this wrong in one direction sends one extra mid-turn summary; getting
 // it wrong in the other leaves the user waiting on a message that never comes.
 // So it leans towards declaring the turn over.
-func turnSettled(prev, cur, now time.Time, quiet time.Duration) bool {
-	if cur.IsZero() {
+func turnSettled(cur, changedAt, now time.Time, quiet time.Duration) bool {
+	if cur.IsZero() || changedAt.IsZero() {
 		return false
 	}
-	if !cur.Equal(prev) {
-		return false
-	}
-	return now.Sub(cur) >= quiet
+	return now.Sub(changedAt) >= quiet
 }
 
 // watchTurn polls the session's transcript until it goes quiet, then reports
@@ -352,20 +372,23 @@ func (b *Bot) watchTurn(chatID int64, tgt Target, s SessionInfo) {
 	ctx, cancel := context.WithTimeout(context.Background(), maxTurnWatch)
 	defer cancel()
 
-	var prev time.Time
+	var prev, changedAt time.Time
 	for {
 		out, err := runSSHFn(ctx, b.cfg(), s.Host, tailCmd(s.Transcript, tailBytes))
 		if err != nil {
 			return
 		}
 		line, last := tailSummary([]byte(out))
-		if turnSettled(prev, last, time.Now(), quiet) {
+		now := time.Now()
+		if !last.Equal(prev) {
+			prev, changedAt = last, now
+		}
+		if turnSettled(last, changedAt, now, quiet) {
 			if line != "" {
 				_ = b.sessionReply(tgt).Send(chatID, fmt.Sprintf("💬 %s: %s", s.Name, truncRunes(line, 800)))
 			}
 			return
 		}
-		prev = last
 		select {
 		case <-ctx.Done():
 			return

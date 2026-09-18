@@ -1,0 +1,365 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"path"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// PeerSession is one Claude session the remote's own `claude -p` + ListAgents
+// reported. It carries the two things the shell probe cannot know: the
+// session's addressable NAME (what SendMessage's `to:` takes) and whether it is
+// busy right now.
+type PeerSession struct {
+	Name    string // addressable name, e.g. "proj-a-cf"
+	Ref     string // short ref shown in brackets
+	Kind    string // "interactive" for a VS Code or terminal session
+	Started string // human text, e.g. "1h ago"
+	Busy    bool
+}
+
+// parsePeerSessions extracts sessions from ListAgents output. That output
+// arrives wrapped in whatever the relaying `claude -p` chose to print around
+// it — code fences, a preamble, a closing sentence — so anything that does not
+// look like a session row is dropped without complaint. A row looks like:
+//
+//	proj-a-cf [875607]  ·  interactive  ·  idle  ·  started 1h ago
+func parsePeerSessions(out string) []PeerSession {
+	var sessions []PeerSession
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(raw)
+		open := strings.Index(line, "[")
+		shut := strings.Index(line, "]")
+		if open <= 0 || shut <= open {
+			continue
+		}
+		name := strings.TrimSpace(line[:open])
+		if name == "" || strings.ContainsAny(name, " \t") {
+			continue
+		}
+		s := PeerSession{Name: name, Ref: strings.TrimSpace(line[open+1 : shut])}
+		for _, f := range strings.Split(line[shut+1:], "·") {
+			f = strings.TrimSpace(f)
+			switch {
+			case f == "busy":
+				s.Busy = true
+			case f == "idle":
+				s.Busy = false
+			case strings.HasPrefix(f, "started "):
+				s.Started = strings.TrimSpace(strings.TrimPrefix(f, "started "))
+			case f == "interactive" || f == "background":
+				s.Kind = f
+			}
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// remoteSession is one live Claude process the shell probe found. Everything
+// here is measured, not inferred: the pid owns the socket, the cwd comes from
+// /proc, and the transcript is the newest .jsonl in the project directory that
+// the cwd encodes.
+type remoteSession struct {
+	PID        int
+	Cwd        string
+	Transcript string
+	StartedAt  time.Time
+}
+
+// probeCmd is the remote shell that lists live sessions. It costs no tokens and
+// its output is deterministic, which is why the whole read path avoids an LLM.
+// It only ever stats the transcript — reading a 30 MB file here would be a bug,
+// and a test guards against it.
+//
+// Session sockets are 0600 under /run/user/<uid>, so this sees exactly the
+// sessions the SSH account itself started. That boundary is intentional.
+func probeCmd() string {
+	return `for s in /run/user/$(id -u)/cc-socks/*.sock; do ` +
+		`p=${s##*/}; p=${p%.sock}; ` +
+		`[ -d /proc/$p ] || continue; ` +
+		`cwd=$(readlink /proc/$p/cwd 2>/dev/null) || continue; ` +
+		`[ -n "$cwd" ] || continue; ` +
+		`enc=$(printf %s "$cwd" | sed "s#[/_.]#-#g"); ` +
+		`f=$(ls -t "$HOME/.claude/projects/$enc"/*.jsonl 2>/dev/null | head -1); ` +
+		`st=$(stat -c %Y /proc/$p 2>/dev/null); ` +
+		`echo "$p|$cwd|$f|$st"; done`
+}
+
+// parseProbe turns probeCmd's output into sessions, dropping any line the shell
+// or a login banner may have mixed in.
+func parseProbe(out string) []remoteSession {
+	var sessions []remoteSession
+	for _, raw := range strings.Split(out, "\n") {
+		parts := strings.Split(strings.TrimSpace(raw), "|")
+		if len(parts) < 4 {
+			continue
+		}
+		pid, err := strconv.Atoi(parts[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		s := remoteSession{PID: pid, Cwd: parts[1], Transcript: parts[2]}
+		if secs, err := strconv.ParseInt(parts[3], 10, 64); err == nil && secs > 0 {
+			s.StartedAt = time.Unix(secs, 0)
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// SessionInfo is one row of what !sessions shows: the shell probe's facts and
+// the LLM-sourced name/busy joined together.
+//
+// Addressable says whether SendMessage can reach it. A session the probe found
+// but ListAgents did not name cannot be messaged — it is still listed, because
+// hiding a session the user can see in their own editor is worse than showing
+// one they cannot talk to.
+type SessionInfo struct {
+	Host        string // ssh.hosts registry name it was found on
+	Name        string // addressable name, or the cwd's basename as a label
+	Cwd         string
+	Transcript  string
+	Started     string
+	Last        string // one line from the transcript tail
+	PID         int
+	Busy        bool
+	Addressable bool
+}
+
+// mergeSessions joins the shell probe to ListAgents by the session name's
+// prefix. Names are generated from the working directory's basename with a
+// short suffix ("…/proj-a" → "proj-a-cf"), which is what makes the join
+// possible. A custom name set with `claude -n` breaks the join; both sides then
+// survive as separate rows rather than one of them vanishing.
+func mergeSessions(host string, probe []remoteSession, peers []PeerSession) []SessionInfo {
+	used := make(map[int]bool, len(peers))
+	out := make([]SessionInfo, 0, len(probe)+len(peers))
+
+	for _, p := range probe {
+		base := path.Base(p.Cwd)
+		info := SessionInfo{
+			Host: host, Name: base, Cwd: p.Cwd,
+			Transcript: p.Transcript, PID: p.PID,
+		}
+		if !p.StartedAt.IsZero() {
+			info.Started = humanSince(p.StartedAt)
+		}
+		for i, peer := range peers {
+			if used[i] || !strings.HasPrefix(peer.Name, base+"-") {
+				continue
+			}
+			used[i] = true
+			info.Name = peer.Name
+			info.Busy = peer.Busy
+			info.Addressable = true
+			// The probe's start time wins: it is an exact clock reading and it
+			// renders in the same language as the rest of the list, where
+			// ListAgents hands back English prose ("25m ago").
+			if info.Started == "" {
+				info.Started = peer.Started
+			}
+			break
+		}
+		out = append(out, info)
+	}
+
+	for i, peer := range peers {
+		if used[i] {
+			continue
+		}
+		out = append(out, SessionInfo{
+			Host: host, Name: peer.Name, Started: peer.Started,
+			Busy: peer.Busy, Addressable: true,
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// humanSince renders an uptime the way the session list shows it.
+func humanSince(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "방금"
+	case d < time.Hour:
+		return fmt.Sprintf("%d분째", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%d시간째", int(d.Hours()))
+	}
+}
+
+// maxLastLine caps, in RUNES, how much of a session's own words leave the
+// machine. A session's transcript can hold anything that was on screen — this
+// morning it held a file of credentials — so the list shows a glance, not the
+// content. Bytes would split a Korean character in half; runes do not.
+const maxLastLine = 110
+
+// truncRunes cuts s to n runes, appending an ellipsis when it had to cut.
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// shellQuote wraps s in single quotes so the remote shell takes it literally.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// tailCmd reads the LAST n bytes of a transcript. Transcripts run past 30 MB;
+// anything that reads one whole is a bug, not a slow path.
+func tailCmd(transcript string, n int) string {
+	return fmt.Sprintf("tail -c %d %s 2>/dev/null", n, shellQuote(transcript))
+}
+
+// transcriptRec is the slice of a transcript record this code needs. The file
+// holds far more per line; decoding only these fields keeps the parse cheap and
+// stops a schema change elsewhere from breaking the read.
+type transcriptRec struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	Message   struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// tailSummary reads a chunk taken from the END of a transcript and returns the
+// last assistant text as a single line, plus the timestamp of the last record
+// of any kind (which is how "has it gone quiet?" gets answered later).
+//
+// The first line is almost always cut mid-record, so it is dropped.
+func tailSummary(chunk []byte) (string, time.Time) {
+	lines := strings.Split(string(chunk), "\n")
+	if len(lines) > 0 {
+		lines = lines[1:]
+	}
+	var line string
+	var last time.Time
+	for _, raw := range lines {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		var rec transcriptRec
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+			continue
+		}
+		if ts, err := time.Parse(time.RFC3339, rec.Timestamp); err == nil {
+			last = ts
+		}
+		if rec.Type != "assistant" {
+			continue
+		}
+		if text := recordText(rec.Message.Content); text != "" {
+			line = text
+		}
+	}
+	return collapseSpace(line), last
+}
+
+// recordText pulls the visible text out of a record's content, which is either
+// a bare string or a list of blocks of which only "text" is shown to a reader.
+func recordText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// collapseSpace folds every run of whitespace into one space so a paragraph
+// fits on the single line the list gives it.
+func collapseSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// claudeBinOf resolves how to invoke the CLI on a host.
+func claudeBinOf(h SSHHost) string {
+	if b := strings.TrimSpace(h.ClaudeBin); b != "" {
+		return b
+	}
+	return "claude"
+}
+
+// loginShell wraps a command so it runs with the account's own PATH. An SSH
+// command runs a non-login shell, where ~/.local/bin — where the CLI usually
+// lives — is not on PATH.
+func loginShell(cmd string) string {
+	return "bash -lc " + shellQuote(cmd)
+}
+
+// claudeListCmd asks the remote for its session list. --safe-mode skips the
+// account's plugins and hooks so the run stays minimal, and the tool allowance
+// is read-only on purpose: a listing must not be able to send anything.
+func claudeListCmd(bin string) string {
+	const prompt = "Call ListAgents once and print its raw output verbatim. Do nothing else."
+	return loginShell(fmt.Sprintf(
+		"cd /tmp && %s -p --safe-mode --allowedTools ListAgents --permission-mode acceptEdits %s",
+		bin, shellQuote(prompt)))
+}
+
+// sendTmpPath names the remote scratch file one delivery uses. The path is
+// chosen HERE rather than with mktemp on the remote because the CLI has to be
+// told the path inside its prompt, and the prompt is single-quoted for the
+// shell — a `$VAR` in there would reach the CLI as the literal two characters,
+// and it would go looking for a file called "$F".
+func sendTmpPath() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Only used to keep two concurrent deliveries apart; the clock is a
+		// good enough fallback and a collision merely retries a send.
+		return fmt.Sprintf("/tmp/aglink-send-%d.txt", time.Now().UnixNano())
+	}
+	return "/tmp/aglink-send-" + hex.EncodeToString(b[:]) + ".txt"
+}
+
+// claudeSendCmd delivers text into a running session.
+//
+// The text travels as base64 and is decoded into tmp on the remote, then read
+// back by the CLI. Two reasons, both load-bearing: base64 is ASCII, so no
+// quote, newline or Korean character can be mangled on the way through the
+// shell; and handing the CLI a FILE rather than an inline prompt is what keeps
+// it from paraphrasing the user's words, since the instruction becomes "send
+// this file's contents", not "send this message".
+func claudeSendCmd(bin, target, text, tmp string) string {
+	enc := base64.StdEncoding.EncodeToString([]byte(text))
+	prompt := fmt.Sprintf(
+		"Read the file %s. Send its exact contents to the peer session named %s "+
+			"using SendMessage. Copy the text verbatim: do not translate it, "+
+			"summarise it, reword it or add anything. Then print the tool result "+
+			"and nothing else.", tmp, target)
+	inner := fmt.Sprintf(
+		"cd /tmp && printf %%s %s | base64 -d > %s && "+
+			"%s -p --safe-mode --allowedTools Read,SendMessage --permission-mode acceptEdits %s; "+
+			"rm -f %s",
+		shellQuote(enc), shellQuote(tmp), bin, shellQuote(prompt), shellQuote(tmp))
+	return loginShell(inner)
+}

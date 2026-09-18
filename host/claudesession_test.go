@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -51,3 +52,50 @@ func TestParsePeerSessions_IgnoresJunkLines(t *testing.T) {
 	}
 }
 
+
+func TestParseProbe(t *testing.T) {
+	// 실제 원격 탐침 출력(경로는 일반화). 칸은 pid|cwd|기록파일|시작epoch.
+	in := "10957|/home/u1/project/proj-a|/home/u1/.claude/projects/-home-u1-project-proj-a/aaa.jsonl|1789700022\n" +
+		"11863|/home/u1/project/deep/proj-b|/home/u1/.claude/projects/-home-u1-project-deep-proj-b/bbb.jsonl|1789700105\n"
+	got := parseProbe(in)
+	if len(got) != 2 {
+		t.Fatalf("2개를 기대했으나 %d개: %+v", len(got), got)
+	}
+	if got[0].PID != 10957 || got[0].Cwd != "/home/u1/project/proj-a" {
+		t.Errorf("첫 항목이 어긋남: %+v", got[0])
+	}
+	if !strings.HasSuffix(got[0].Transcript, "aaa.jsonl") {
+		t.Errorf("기록 파일 경로가 어긋남: %q", got[0].Transcript)
+	}
+	if got[0].StartedAt.Unix() != 1789700022 {
+		t.Errorf("시작시각이 어긋남: %v", got[0].StartedAt)
+	}
+}
+
+func TestParseProbe_SkipsBadLines(t *testing.T) {
+	in := "\n" +
+		"bash: 줄 1: 무슨 오류\n" +
+		"notanumber|/a|/b|1\n" +
+		"777|/home/u1/p|/home/u1/t.jsonl|\n" +
+		"888|/home/u1/q\n"
+	got := parseProbe(in)
+	if len(got) != 1 || got[0].PID != 777 {
+		t.Fatalf("성한 줄 하나만 남아야 함: %+v", got)
+	}
+	if !got[0].StartedAt.IsZero() {
+		t.Errorf("시작시각이 비면 zero time 이어야 함: %v", got[0].StartedAt)
+	}
+}
+
+func TestProbeCmd_NeverReadsTheTranscript(t *testing.T) {
+	cmd := probeCmd()
+	// 기록 파일은 여기서 읽지 않는다 — 경로만 찾는다. 30MB 파일을 건드리면 버그다.
+	for _, forbidden := range []string{"cat ", "head -c", "grep "} {
+		if strings.Contains(cmd, forbidden) {
+			t.Errorf("탐침이 기록 파일을 읽으려 한다: %q 가 들어 있음", forbidden)
+		}
+	}
+	if !strings.Contains(cmd, "cc-socks") {
+		t.Error("탐침이 세션 소켓 디렉터리를 보지 않는다")
+	}
+}

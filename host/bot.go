@@ -397,6 +397,11 @@ func (b *Bot) Run() {
 			if b.routeToSession(chatID, text, TelegramTarget()) {
 				continue
 			}
+			if name, ok := attachIntent(text); ok {
+				tgt := TelegramTarget()
+				b.handleAttach(b.sessionReply(tgt), chatID, laneKeyOf(tgt), []string{"!attach", name})
+				continue
+			}
 			b.dispatchText(chatID, text, OriginTelegram)
 		}
 	}
@@ -2660,6 +2665,13 @@ func helpText() string {
 !ssh test <호스트>            원격 접속 확인
 !ssh put <호스트> <로컬> <원격>  로컬 파일을 원격으로 전송 (scp 대체)
 !ssh get <호스트> <원격> <로컬>  원격 파일을 로컬로 전송 (scp 대체)
+
+원격 Claude 세션에 붙기 (VS Code 등에서 돌고 있는 세션과 직접 대화):
+!sessions                    붙을 수 있는 세션 목록 (이름을 몰라도 번호로 고릅니다)
+!attach <번호|이름>           그 세션에 붙기 — 이후 평문은 전부 그 세션으로 갑니다
+!detach                      풀기
+                             "proj-a 제어할게" 처럼 평문으로도 붙을 수 있습니다
+                             ssh.hosts 의 claude_sessions: true 를 켠 호스트만 보입니다
 
 기타:
 !remind <시간> <메시지>      일회성 알림 (구버전 호환)

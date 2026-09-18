@@ -210,6 +210,10 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		if s.bot.routeToSession(chatID, text, tgt) {
 			return
 		}
+		if name, ok := attachIntent(text); ok {
+			go s.bot.handleAttach(s.bot.sessionReply(tgt), chatID, laneKeyOf(tgt), []string{"!attach", name})
+			return
+		}
 		go s.bot.dispatchTargeted(chatID, text, m.Target)
 	case "handle_command":
 		go s.bot.handleCommand(chatID, m.Text, origin, tgt)

@@ -403,3 +403,25 @@ func TestWatchTurn_NoTranscriptStaysQuiet(t *testing.T) {
 		t.Errorf("읽을 기록이 없으면 아무 말도 하지 않아야 함: %v", hub.sent)
 	}
 }
+
+func TestAttachIntent(t *testing.T) {
+	cases := []struct {
+		in   string
+		name string
+		ok   bool
+	}{
+		{"proj-a 제어할게", "proj-a", true},
+		{"proj-a 제어 할게", "proj-a", true},
+		{"proj-a-cf 에 붙어줘", "proj-a-cf", true},
+		{"proj-b 연결해줘", "proj-b", true},
+		{"세션 목록 보여줘", "", false},
+		{"오늘 날씨 어때", "", false},
+		{"제어", "", false},
+	}
+	for _, c := range cases {
+		name, ok := attachIntent(c.in)
+		if ok != c.ok || name != c.name {
+			t.Errorf("%q → (%q,%v), 기대 (%q,%v)", c.in, name, ok, c.name, c.ok)
+		}
+	}
+}

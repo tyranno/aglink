@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -371,4 +372,31 @@ func (b *Bot) watchTurn(chatID int64, tgt Target, s SessionInfo) {
 		case <-time.After(poll):
 		}
 	}
+}
+
+// attachVerbs are the words that, following a name, mean "bind this
+// conversation to that session". Kept narrow on purpose: a false positive
+// hijacks a message that was meant for the normal worker.
+var attachVerbs = regexp.MustCompile(`(제어|붙어|붙여|연결)`)
+
+// sessionNameShape is what a session name looks like — an identifier, not a
+// word in a sentence.
+var sessionNameShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// attachIntent reads a plain sentence as a request to attach, returning the
+// name it names. It only ever runs when the conversation is NOT attached — once
+// attached, every plain message goes to the session and is never re-read here.
+func attachIntent(text string) (string, bool) {
+	fields := strings.Fields(text)
+	if len(fields) < 2 {
+		return "", false
+	}
+	if !attachVerbs.MatchString(strings.Join(fields[1:], " ")) {
+		return "", false
+	}
+	name := fields[0]
+	if !sessionNameShape.MatchString(name) {
+		return "", false
+	}
+	return name, true
 }

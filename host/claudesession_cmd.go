@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // attachState remembers, per conversation lane, which remote Claude session
@@ -146,4 +148,101 @@ func formatSessionList(list []SessionInfo) string {
 		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// sessionTimeout bounds one !sessions sweep. A listing runs a `claude -p` on
+// each host, which is slower than a plain command but not slow.
+const sessionTimeout = 90 * time.Second
+
+// handleSessions shows what can be attached to.
+func (b *Bot) handleSessions(reply replySender, chatID int64, lane string) {
+	ctx, cancel := context.WithTimeout(context.Background(), sessionTimeout)
+	defer cancel()
+	list, errs := collectSessions(ctx, b.cfg())
+	b.attach.Remember(lane, list)
+	msg := formatSessionList(list)
+	if len(errs) > 0 {
+		msg += "\n⚠️ " + strings.Join(errs, " / ")
+	}
+	_ = reply.Send(chatID, msg)
+}
+
+// handleAttach binds this conversation to one session. It re-lists first so a
+// name that died since the last listing is caught here rather than on the next
+// message the user types.
+func (b *Bot) handleAttach(reply replySender, chatID int64, lane string, fields []string) {
+	if len(fields) < 2 {
+		_ = reply.Send(chatID, "사용법: !attach <번호|이름>  (먼저 !sessions 로 목록을 보세요)")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionTimeout)
+	defer cancel()
+	list, _ := collectSessions(ctx, b.cfg())
+	b.attach.Remember(lane, list)
+
+	target, why := resolveTarget(b.attach, lane, strings.Join(fields[1:], " "), list)
+	if why != "" {
+		_ = reply.Send(chatID, why)
+		return
+	}
+	b.attach.Attach(lane, target)
+	_ = reply.Send(chatID, fmt.Sprintf(
+		"🔗 %s (%s) 에 붙었습니다. 이제 그냥 말하면 그 세션으로 갑니다. 풀려면 !detach",
+		target.Name, target.Host))
+}
+
+// handleDetach unbinds this conversation.
+func (b *Bot) handleDetach(reply replySender, chatID int64, lane string) {
+	if b.attach.Detach(lane) {
+		_ = reply.Send(chatID, "🔓 세션에서 풀었습니다. 이제 평문은 원래대로 처리됩니다.")
+		return
+	}
+	_ = reply.Send(chatID, "붙어 있는 세션이 없습니다.")
+}
+
+// resolveTarget turns what the user typed into a session, or into the reason it
+// could not. A bare number means "the Nth row of the list you were just shown";
+// anything else is matched against names, exactly first and then by prefix.
+func resolveTarget(st *attachState, lane, token string, list []SessionInfo) (SessionInfo, string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return SessionInfo{}, "어느 세션인지 말씀해 주세요. !sessions 로 목록을 볼 수 있습니다."
+	}
+	if n, err := strconv.Atoi(token); err == nil {
+		s, ok := st.Recall(lane, n)
+		if !ok {
+			return SessionInfo{}, fmt.Sprintf("%d번은 목록에 없습니다. !sessions 로 다시 보세요.", n)
+		}
+		if !s.Addressable {
+			return SessionInfo{}, fmt.Sprintf("%s 는 이름을 읽지 못해 붙을 수 없습니다.", s.Name)
+		}
+		return s, ""
+	}
+	var hits []SessionInfo
+	for _, s := range list {
+		if s.Name == token {
+			if !s.Addressable {
+				return SessionInfo{}, fmt.Sprintf("%s 는 이름을 읽지 못해 붙을 수 없습니다.", s.Name)
+			}
+			return s, ""
+		}
+		if strings.HasPrefix(s.Name, token) {
+			hits = append(hits, s)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return SessionInfo{}, fmt.Sprintf("%q 라는 세션이 없습니다. !sessions 로 목록을 보세요.", token)
+	case 1:
+		if !hits[0].Addressable {
+			return SessionInfo{}, fmt.Sprintf("%s 는 이름을 읽지 못해 붙을 수 없습니다.", hits[0].Name)
+		}
+		return hits[0], ""
+	default:
+		var names []string
+		for _, s := range hits {
+			names = append(names, s.Name)
+		}
+		return SessionInfo{}, fmt.Sprintf("%q 에 걸리는 세션이 여럿입니다: %s", token, strings.Join(names, ", "))
+	}
 }

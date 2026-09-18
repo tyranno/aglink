@@ -63,6 +63,15 @@ type Bot struct {
 	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
 	out         *Hub   // output fan-out: telegram (global) + web channels (per-chat)
 
+	// attach maps a conversation lane to the remote Claude session it is
+	// talking to (!attach). Nil-safe: only the session commands touch it.
+	attach *attachState
+	// Session-attach timing, overridden in tests so a turn-watch does not take
+	// real seconds. Zero means "use the defaults".
+	turnQuiet time.Duration
+	turnPoll  time.Duration
+	turnReply func(Target) replySender // nil → b.ReplyTo
+
 	dispatchHook func(chatID int64, text string) // test seam; nil in production
 	commandHook  func(chatID int64, text string) // test seam; nil in production
 
@@ -113,6 +122,7 @@ func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *
 		cancels:     make(map[int]*cancelEntry),
 		lanes:       make(map[string]*lane),
 		out:         hub,
+		attach:      newAttachState(),
 	}
 }
 
@@ -730,6 +740,9 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		if qLen > 0 {
 			msg += fmt.Sprintf("\n📋 대기 중: %d개", qLen)
 		}
+		if s, ok := b.attach.Current(laneKeyOf(tgt)); ok {
+			msg += fmt.Sprintf("\n🔗 붙은 세션: %s (%s)", s.Name, s.Host)
+		}
 		msg += "\n🔧 백엔드: " + strings.ToUpper(b.manager.Backend())
 		_ = reply.Send(chatID, msg)
 	case "!project":
@@ -764,6 +777,12 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleScreen(reply, chatID, fields)
 	case "!ssh":
 		b.handleSSH(reply, chatID, fields)
+	case "!sessions":
+		b.handleSessions(reply, chatID, laneKeyOf(tgt))
+	case "!attach":
+		b.handleAttach(reply, chatID, laneKeyOf(tgt), fields)
+	case "!detach":
+		b.handleDetach(reply, chatID, laneKeyOf(tgt))
 	case "!compact":
 		if active, _ := b.dispatchLoad(); active > 0 {
 			_ = reply.Send(chatID, "⏳ 작업 중에는 압축할 수 없습니다. !cancel 후 다시 시도하세요.")

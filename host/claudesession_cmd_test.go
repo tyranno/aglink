@@ -170,3 +170,95 @@ func TestFormatSessionList_Empty(t *testing.T) {
 		t.Errorf("빈 목록 문구가 어긋남: %q", out)
 	}
 }
+
+// recordingReply captures what a handler would have sent.
+type recordingReply struct{ sent []string }
+
+func (r *recordingReply) Send(chatID int64, text string) error {
+	r.sent = append(r.sent, text)
+	return nil
+}
+func (r *recordingReply) Typing(int64) {}
+func (r *recordingReply) Done(int64)   {}
+func (r *recordingReply) SendPhoto(int64, []byte, string) error { return nil }
+
+// newTestBotForAttach builds the smallest Bot the session handlers need.
+func newTestBotForAttach(cfg *Config) *Bot {
+	return &Bot{cfgh: NewConfigHolder(cfg), attach: newAttachState()}
+}
+
+func TestResolveTarget(t *testing.T) {
+	st := newAttachState()
+	list := []SessionInfo{
+		{Name: "proj-a-cf", Addressable: true},
+		{Name: "proj-b-4f", Addressable: true},
+		{Name: "lonely", Addressable: false},
+	}
+	st.Remember("telegram", list)
+
+	if got, why := resolveTarget(st, "telegram", "2", list); why != "" || got.Name != "proj-b-4f" {
+		t.Errorf("번호로 고르기 실패: %+v %q", got, why)
+	}
+	if got, why := resolveTarget(st, "telegram", "proj-a-cf", list); why != "" || got.Name != "proj-a-cf" {
+		t.Errorf("이름으로 고르기 실패: %+v %q", got, why)
+	}
+	if got, why := resolveTarget(st, "telegram", "proj-a", list); why != "" || got.Name != "proj-a-cf" {
+		t.Errorf("앞부분만 대도 골라야 함: %+v %q", got, why)
+	}
+	if _, why := resolveTarget(st, "telegram", "proj", list); why == "" {
+		t.Error("여러 개에 걸리면 되물어야 함")
+	}
+	if _, why := resolveTarget(st, "telegram", "없는이름", list); why == "" {
+		t.Error("없는 이름은 거절해야 함")
+	}
+	if _, why := resolveTarget(st, "telegram", "9", list); why == "" {
+		t.Error("범위 밖 번호는 거절해야 함")
+	}
+	if _, why := resolveTarget(st, "telegram", "lonely", list); why == "" {
+		t.Error("이름을 못 읽은 세션에는 붙을 수 없어야 함")
+	}
+}
+
+func TestHandleAttachDetach(t *testing.T) {
+	fakeSSH(t, func(host, cmd string) (string, error) {
+		switch {
+		case strings.Contains(cmd, "cc-socks"):
+			return "1|/home/u1/project/proj-a|/t/a.jsonl|1789700022\n", nil
+		case strings.Contains(cmd, "ListAgents"):
+			return "  proj-a-cf [aaa]  ·  interactive  ·  idle  ·  started 1h ago\n", nil
+		}
+		return "", nil
+	})
+	b := newTestBotForAttach(testCfgWithHost())
+	rec := &recordingReply{}
+
+	b.handleAttach(rec, 7, "telegram", []string{"!attach", "proj-a-cf"})
+	if _, ok := b.attach.Current("telegram"); !ok {
+		t.Fatalf("붙지 않았다: %v", rec.sent)
+	}
+	if !strings.Contains(strings.Join(rec.sent, "\n"), "proj-a-cf") {
+		t.Errorf("무엇에 붙었는지 알려야 함: %v", rec.sent)
+	}
+
+	rec.sent = nil
+	b.handleDetach(rec, 7, "telegram")
+	if _, ok := b.attach.Current("telegram"); ok {
+		t.Error("풀리지 않았다")
+	}
+	if len(rec.sent) == 0 {
+		t.Error("풀렸다고 알려야 함")
+	}
+}
+
+func TestHandleAttach_UnknownName(t *testing.T) {
+	fakeSSH(t, func(host, cmd string) (string, error) { return "", nil })
+	b := newTestBotForAttach(testCfgWithHost())
+	rec := &recordingReply{}
+	b.handleAttach(rec, 7, "telegram", []string{"!attach", "없는것"})
+	if _, ok := b.attach.Current("telegram"); ok {
+		t.Error("없는 세션에 붙으면 안 됨")
+	}
+	if len(rec.sent) == 0 {
+		t.Error("왜 못 붙는지 알려야 함")
+	}
+}

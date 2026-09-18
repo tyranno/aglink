@@ -212,6 +212,11 @@ func runSSH(ctx context.Context, cfg *Config, hostName, remoteCmd string) (strin
 	}
 }
 
+// runSSHFn is the single seam every remote call in the session-attach feature
+// goes through, so tests can answer without a network. Production leaves it
+// pointing at runSSH.
+var runSSHFn = runSSH
+
 // uploadSSHFile copies localPath to remotePath on the named host over SFTP —
 // the pure-Go replacement for scp, reusing the same SSH connection/auth as
 // runSSH. remotePath's parent directory must already exist on the remote.

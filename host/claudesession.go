@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -106,4 +109,84 @@ func parseProbe(out string) []remoteSession {
 		sessions = append(sessions, s)
 	}
 	return sessions
+}
+
+// SessionInfo is one row of what !sessions shows: the shell probe's facts and
+// the LLM-sourced name/busy joined together.
+//
+// Addressable says whether SendMessage can reach it. A session the probe found
+// but ListAgents did not name cannot be messaged — it is still listed, because
+// hiding a session the user can see in their own editor is worse than showing
+// one they cannot talk to.
+type SessionInfo struct {
+	Host        string // ssh.hosts registry name it was found on
+	Name        string // addressable name, or the cwd's basename as a label
+	Cwd         string
+	Transcript  string
+	Started     string
+	Last        string // one line from the transcript tail
+	PID         int
+	Busy        bool
+	Addressable bool
+}
+
+// mergeSessions joins the shell probe to ListAgents by the session name's
+// prefix. Names are generated from the working directory's basename with a
+// short suffix ("…/proj-a" → "proj-a-cf"), which is what makes the join
+// possible. A custom name set with `claude -n` breaks the join; both sides then
+// survive as separate rows rather than one of them vanishing.
+func mergeSessions(host string, probe []remoteSession, peers []PeerSession) []SessionInfo {
+	used := make(map[int]bool, len(peers))
+	out := make([]SessionInfo, 0, len(probe)+len(peers))
+
+	for _, p := range probe {
+		base := path.Base(p.Cwd)
+		info := SessionInfo{
+			Host: host, Name: base, Cwd: p.Cwd,
+			Transcript: p.Transcript, PID: p.PID,
+		}
+		if !p.StartedAt.IsZero() {
+			info.Started = humanSince(p.StartedAt)
+		}
+		for i, peer := range peers {
+			if used[i] || !strings.HasPrefix(peer.Name, base+"-") {
+				continue
+			}
+			used[i] = true
+			info.Name = peer.Name
+			info.Busy = peer.Busy
+			info.Addressable = true
+			if peer.Started != "" {
+				info.Started = peer.Started
+			}
+			break
+		}
+		out = append(out, info)
+	}
+
+	for i, peer := range peers {
+		if used[i] {
+			continue
+		}
+		out = append(out, SessionInfo{
+			Host: host, Name: peer.Name, Started: peer.Started,
+			Busy: peer.Busy, Addressable: true,
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// humanSince renders an uptime the way the session list shows it.
+func humanSince(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "방금"
+	case d < time.Hour:
+		return fmt.Sprintf("%d분째", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%d시간째", int(d.Hours()))
+	}
 }

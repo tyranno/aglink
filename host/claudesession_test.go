@@ -99,3 +99,51 @@ func TestProbeCmd_NeverReadsTheTranscript(t *testing.T) {
 		t.Error("탐침이 세션 소켓 디렉터리를 보지 않는다")
 	}
 }
+
+func TestMergeSessions_JoinsByBasename(t *testing.T) {
+	probe := []remoteSession{
+		{PID: 1, Cwd: "/home/u1/project/proj-a", Transcript: "/t/a.jsonl"},
+		{PID: 2, Cwd: "/home/u1/deep/proj-b", Transcript: "/t/b.jsonl"},
+	}
+	peers := []PeerSession{
+		{Name: "proj-b-4f", Busy: true, Started: "1h ago"},
+		{Name: "proj-a-cf", Busy: false, Started: "2h ago"},
+	}
+	got := mergeSessions("dev", probe, peers)
+	if len(got) != 2 {
+		t.Fatalf("2개를 기대했으나 %d개: %+v", len(got), got)
+	}
+	if got[0].Name != "proj-a-cf" || got[0].Transcript != "/t/a.jsonl" {
+		t.Errorf("proj-a 가 제 이름/기록과 이어지지 않음: %+v", got[0])
+	}
+	if !got[0].Addressable {
+		t.Error("이름이 있으면 붙을 수 있어야 함")
+	}
+	if !got[1].Busy || got[1].Name != "proj-b-4f" {
+		t.Errorf("proj-b 가 어긋남: %+v", got[1])
+	}
+	if got[0].Host != "dev" {
+		t.Errorf("등록 호스트 이름이 실려야 함: %q", got[0].Host)
+	}
+}
+
+func TestMergeSessions_UnnamedStillListed(t *testing.T) {
+	probe := []remoteSession{{PID: 9, Cwd: "/home/u1/project/lonely", Transcript: "/t/l.jsonl"}}
+	got := mergeSessions("dev", probe, nil)
+	if len(got) != 1 {
+		t.Fatalf("이름이 없어도 목록에는 남아야 함: %+v", got)
+	}
+	if got[0].Addressable {
+		t.Error("이름이 없으면 붙을 수 없다고 표시해야 함")
+	}
+	if got[0].Name != "lonely" {
+		t.Errorf("이름이 없으면 작업디렉터리 이름을 보여야 함: %q", got[0].Name)
+	}
+}
+
+func TestMergeSessions_PeerWithoutProbeIsKept(t *testing.T) {
+	got := mergeSessions("dev", nil, []PeerSession{{Name: "ghost-11", Busy: true}})
+	if len(got) != 1 || got[0].Transcript != "" || !got[0].Addressable {
+		t.Fatalf("탐침에 없는 세션도 붙을 수 있게 남아야 함: %+v", got)
+	}
+}

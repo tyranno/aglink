@@ -138,6 +138,21 @@ wscript.exe //B //Nologo scripts\run-hidden.vbs `
 `MultipleInstances=IgnoreNew` 가 무력해진다. 그래서 스크립트 자신이 뮤텍스로
 중복 실행을 막는다(겹치면 두 번째가 조용히 물러난다).
 
+### aglink 호스트(텔레그램 봇)는 별도 작업으로
+
+호스트는 `screen_control.elevated` 가 켜져 있으면 **스스로 UAC 승격**을 한다.
+승격되지 않은 작업이 그걸 띄우면 되살릴 때마다 UAC 창이 뜨고, 자리에 사람이
+없으면 그 창 앞에서 멈춰 버린다 — 자동복구가 필요한 바로 그 상황에서 못 산다.
+그래서 호스트는 `RunLevel Highest` 작업으로 따로 건다(관리자 PowerShell 1회):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-host-task.ps1
+```
+
+호스트는 health 포트가 없어 "프로세스가 있는가"가 유일한 판정이다. 텔레그램
+long-poll 은 **실패만 로그에 남기므로**, 2026-09-07 에 죽었을 때 11일 동안
+아무도 몰랐다 — 브라우저·화면 서버는 멀쩡해서 겉보기에 이상이 없었다.
+
 건강하면 아무것도 하지 않고 로그도 남기지 않는다. 이미 도는 `serve` 프로세스는
 **절대 재시작하지 않는다** — 다른 세션이 붙어 쓰는 데몬이라, 응답이 잠깐 늦었다고
 두 번째를 띄우면 포트를 두고 서로 싸운다. 그런 경우엔 `STALLED` 로 적고 사람에게

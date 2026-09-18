@@ -51,7 +51,9 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    # Required for the server/tunnel mode; ignored (and unnecessary) with -Host_,
+    # which touches nothing remote. Validated in the body rather than declared
+    # Mandatory so the host task's command line carries no address at all.
     [string[]] $SshHost,
 
     # Left empty and resolved in the body: Windows PowerShell 5.1 has not yet
@@ -65,7 +67,24 @@ param(
 
     # Report what it would do and change nothing. Use it to confirm the checks
     # agree with reality before letting the scheduled task act on them.
-    [switch] $CheckOnly
+    [switch] $CheckOnly,
+
+    # Also keep the aglink host (the Telegram bot) alive.
+    #
+    # Off by default and driven by its OWN scheduled task, because the host
+    # re-launches itself elevated when screen_control.elevated is set. Started
+    # from an unelevated task it would raise a UAC prompt on every check, so its
+    # task runs at RunLevel Highest — and that cannot be the task that starts
+    # aglink-web/aglink-screen, which are meant to stay unelevated.
+    [switch] $Host_,
+
+    # Path to the host binary; only read when -Host_ is given.
+    [string] $HostExe,
+
+    # Hard cap on a single ssh probe. Nothing this script asks a remote box
+    # should take anywhere near this long, so exceeding it means the link is
+    # wedged, not slow.
+    [int] $ProbeTimeoutSec = 20
 )
 
 $ErrorActionPreference = 'Stop'
@@ -176,21 +195,56 @@ function Start-Daemon([string] $Exe, [string[]] $ExeArgs, [int] $Port, [string] 
 # under $ErrorActionPreference='Stop' that makes any ssh diagnostic — including
 # harmless ones — throw. So relax the preference around the call and drop the
 # ErrorRecords by type instead of redirecting the stream away.
+# ConnectTimeout only bounds the TCP handshake. A session that connects and then
+# stalls — a half-open link after a laptop sleeps or a network flaps — hangs
+# forever, and on 2026-09-17 one such probe held this script (and its mutex) for
+# 23 hours, silently disabling every later run. So the probe is also bounded on
+# both sides: ssh's own keepalive gives up on a dead peer, and Wait-Process caps
+# the wall clock in case ssh ignores it.
+$probeSshOpts = @(
+    '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=6',
+    '-o', 'ServerAliveInterval=5',
+    '-o', 'ServerAliveCountMax=2',
+    '-o', 'ClearAllForwardings=yes'
+)
+
+# Collects into $result and returns once, AFTER the try/finally. A `return`
+# from inside a try that has a finally loses the value in Windows PowerShell
+# 5.1 — the caller gets $null and then dies on .Trim(), which is exactly what an
+# unreachable host produced here.
 function Invoke-Probe([string] $Target, [string] $Command) {
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+    $result  = ''
+    $outFile = [IO.Path]::GetTempFileName()
+    $errFile = [IO.Path]::GetTempFileName()
     try {
-        $out = & ssh -o BatchMode=yes -o ConnectTimeout=6 -o ClearAllForwardings=yes $Target $Command 2>&1
-        return (($out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join "`n")
+        $p = Start-Process -FilePath 'ssh' -ArgumentList ($probeSshOpts + @($Target, $Command)) `
+            -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        if ($p) {
+            Wait-Process -Id $p.Id -Timeout $ProbeTimeoutSec -ErrorAction SilentlyContinue
+            if ($p.HasExited) {
+                # Cast: Get-Content -Raw yields $null for the empty file an ssh
+                # that never connected leaves behind.
+                $result = [string](Get-Content $outFile -Raw -ErrorAction SilentlyContinue)
+            } else {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                Write-Act "TIMEOUT  ssh probe to $Target exceeded ${ProbeTimeoutSec}s — killed"
+            }
+        }
     } catch {
-        return ''
+        $result = ''
     } finally {
-        $ErrorActionPreference = $prev
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
     }
+    return $result
 }
 
+# The "$( )" wrapper is load-bearing, not style: Invoke-Probe comes back $null
+# for a host that never answered (observed with an unreachable address), and a
+# bare .Trim() on that throws and aborts the whole run — which would leave the
+# daemons unattended for exactly the outage this script exists to cover.
 function Test-RemotePort([string] $Target, [int] $Port) {
-    return (Invoke-Probe $Target "curl -s -m 4 http://127.0.0.1:$Port/health").Trim() -eq 'ok'
+    return "$(Invoke-Probe $Target "curl -s -m 4 http://127.0.0.1:$Port/health")".Trim() -eq 'ok'
 }
 
 # Start-Tunnel opens one background ssh per port.
@@ -211,11 +265,62 @@ function Start-Tunnel([string] $Target, [int] $Port) {
         '-R', "${Port}:127.0.0.1:$Port",
         $Target
     )
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try { & ssh @sshArgs 2>&1 | Out-Null } catch { } finally { $ErrorActionPreference = $prev }
+    # Bounded for the same reason as the probe: -f forks to the background only
+    # AFTER authentication and forwarding are set up, so a wedged link stalls
+    # here just as readily.
+    $p = Start-Process -FilePath 'ssh' -ArgumentList $sshArgs -NoNewWindow -PassThru
+    Wait-Process -Id $p.Id -Timeout $ProbeTimeoutSec -ErrorAction SilentlyContinue
+    if (-not $p.HasExited) {
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        Write-Act "TIMEOUT  ssh -R $Port to $Target exceeded ${ProbeTimeoutSec}s — killed"
+        return $false
+    }
     Start-Sleep -Seconds 2
     return (Test-RemotePort $Target $Port)
+}
+
+# ---- 0: the aglink host (Telegram), when asked -------------------------------
+#
+# The host has no health port, so "is it up?" is the process itself. It polls
+# Telegram with a long-lived getUpdates loop and logs only failures, which is
+# why its death on 2026-09-07 went unnoticed for eleven days: the browser and
+# screen servers stayed up, so nothing looked wrong until a message went
+# unanswered.
+
+if ($Host_) {
+    if (-not $HostExe) { $HostExe = Join-Path $RepoRoot 'host\aglink.exe' }
+    $running = Get-CimInstance Win32_Process -Filter "Name='aglink.exe'" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $running) {
+        if (-not (Test-Path $HostExe)) {
+            Write-Act "MISSING  aglink host: $HostExe not found"
+        } elseif ($CheckOnly) {
+            Write-Act "WOULD    start aglink host"
+        } else {
+            Start-Process -FilePath $HostExe -ArgumentList 'run' `
+                -WorkingDirectory (Split-Path -Parent $HostExe) -WindowStyle Hidden | Out-Null
+            Start-Sleep -Seconds 5
+            $now = Get-CimInstance Win32_Process -Filter "Name='aglink.exe'" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($now) {
+                Write-Act "STARTED  aglink host pid $($now.ProcessId)"
+            } else {
+                # Expected transiently: the first process elevates and exits,
+                # and the elevated one takes a moment to appear. A run that is
+                # genuinely failing says so again on the next tick.
+                Write-Act "PENDING  aglink host launched but no process yet (elevating?)"
+            }
+        }
+    }
+    # The host task does only the host: the servers belong to the unelevated task.
+    $mutex.ReleaseMutex()
+    exit 0
+}
+
+if (-not $SshHost) {
+    Write-Act "USAGE    -SshHost is required unless -Host_ is given"
+    $mutex.ReleaseMutex()
+    exit 2
 }
 
 # ---- 1 & 2: the local servers -------------------------------------------------
@@ -231,7 +336,7 @@ Start-Daemon (Join-Path $RepoRoot 'screen\aglink-screen.exe') @('serve') 48220 '
 
 $live = $null
 foreach ($h in $SshHost) {
-    if ((Invoke-Probe $h 'echo up').Trim() -eq 'up') { $live = $h; break }
+    if ("$(Invoke-Probe $h 'echo up')".Trim() -eq 'up') { $live = $h; break }
 }
 
 if (-not $live) {

@@ -312,5 +312,63 @@ func (b *Bot) goSession(f func()) {
 	go f()
 }
 
-// watchTurn waits for the session to finish and reports back once. Task 10.
-func (b *Bot) watchTurn(chatID int64, tgt Target, s SessionInfo) {}
+const (
+	defaultTurnQuiet = 20 * time.Second // no new record for this long → the turn is over
+	defaultTurnPoll  = 5 * time.Second
+	maxTurnWatch     = 15 * time.Minute // give up rather than watch forever
+)
+
+// turnSettled decides whether the session has stopped writing. prev and cur are
+// the last record's timestamp on two consecutive reads.
+//
+// Getting this wrong in one direction sends one extra mid-turn summary; getting
+// it wrong in the other leaves the user waiting on a message that never comes.
+// So it leans towards declaring the turn over.
+func turnSettled(prev, cur, now time.Time, quiet time.Duration) bool {
+	if cur.IsZero() {
+		return false
+	}
+	if !cur.Equal(prev) {
+		return false
+	}
+	return now.Sub(cur) >= quiet
+}
+
+// watchTurn polls the session's transcript until it goes quiet, then reports
+// its last words once. It reads only the tail — the file is tens of megabytes.
+func (b *Bot) watchTurn(chatID int64, tgt Target, s SessionInfo) {
+	if s.Transcript == "" {
+		return
+	}
+	quiet, poll := b.turnQuiet, b.turnPoll
+	if quiet == 0 {
+		quiet = defaultTurnQuiet
+	}
+	if poll == 0 {
+		poll = defaultTurnPoll
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), maxTurnWatch)
+	defer cancel()
+
+	var prev time.Time
+	for {
+		out, err := runSSHFn(ctx, b.cfg(), s.Host, tailCmd(s.Transcript, tailBytes))
+		if err != nil {
+			return
+		}
+		line, last := tailSummary([]byte(out))
+		if turnSettled(prev, last, time.Now(), quiet) {
+			if line != "" {
+				_ = b.sessionReply(tgt).Send(chatID, fmt.Sprintf("💬 %s: %s", s.Name, truncRunes(line, 800)))
+			}
+			return
+		}
+		prev = last
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(poll):
+		}
+	}
+}

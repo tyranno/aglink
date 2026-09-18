@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -341,5 +342,64 @@ func TestRouteToSession_WebLaneIsSeparate(t *testing.T) {
 	b.attach.Attach(laneKeyOf(web), SessionInfo{Host: "dev", Name: "proj-b-4f", Addressable: true})
 	if !b.routeToSession(7, "안녕", web) {
 		t.Error("웹 대화가 붙었으면 웹에서도 가로채야 함")
+	}
+}
+
+func TestTurnSettled(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	quiet := 20 * time.Second
+	older := now.Add(-30 * time.Second)
+	recent := now.Add(-5 * time.Second)
+
+	if !turnSettled(older, older, now, quiet) {
+		t.Error("마지막 기록이 오래됐고 더 늘지 않으면 끝난 것으로 봐야 함")
+	}
+	if turnSettled(older, recent, now, quiet) {
+		t.Error("방금 새 기록이 붙었으면 아직 끝난 게 아님")
+	}
+	if turnSettled(older, now, now, quiet) {
+		t.Error("지금 쓰고 있으면 끝난 게 아님")
+	}
+	if turnSettled(time.Time{}, time.Time{}, now, quiet) {
+		t.Error("읽은 것이 없으면 끝났다고 단정하면 안 됨")
+	}
+}
+
+func TestWatchTurn_ReportsOnceWhenQuiet(t *testing.T) {
+	rec := `{"type":"assistant","timestamp":"2026-09-18T03:56:46.000Z","message":{"content":[{"type":"text","text":"2단계 끝났습니다."}]}}`
+	fakeSSH(t, func(host, cmd string) (string, error) {
+		if strings.Contains(cmd, "tail -c") {
+			return "버림\n" + rec + "\n", nil
+		}
+		return "  proj-a-cf [aaa]  ·  interactive  ·  idle  ·  started 1h ago\n", nil
+	})
+	b := newTestBotForAttach(testCfgWithHost())
+	hub := &recordingReply{}
+	b.turnReply = func(Target) replySender { return hub }
+	// 0 은 "설정 안 함"이라 기본값으로 덮인다. 시험은 사실상 0 인 값을 쓴다.
+	b.turnQuiet = time.Nanosecond
+	b.turnPoll = time.Millisecond
+
+	b.watchTurn(7, TelegramTarget(), SessionInfo{Host: "dev", Name: "proj-a-cf", Transcript: "/t/a.jsonl"})
+
+	if !strings.Contains(strings.Join(hub.sent, "\n"), "2단계 끝났습니다.") {
+		t.Fatalf("끝났을 때 한 번 알려야 함: %v", hub.sent)
+	}
+	if len(hub.sent) != 1 {
+		t.Errorf("딱 한 번만 알려야 함: %v", hub.sent)
+	}
+}
+
+func TestWatchTurn_NoTranscriptStaysQuiet(t *testing.T) {
+	fakeSSH(t, func(host, cmd string) (string, error) { return "", nil })
+	b := newTestBotForAttach(testCfgWithHost())
+	hub := &recordingReply{}
+	b.turnReply = func(Target) replySender { return hub }
+	b.turnQuiet = time.Nanosecond
+	b.turnPoll = time.Millisecond
+
+	b.watchTurn(7, TelegramTarget(), SessionInfo{Host: "dev", Name: "x"}) // Transcript 없음
+	if len(hub.sent) != 0 {
+		t.Errorf("읽을 기록이 없으면 아무 말도 하지 않아야 함: %v", hub.sent)
 	}
 }

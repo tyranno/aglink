@@ -147,3 +147,86 @@ func TestMergeSessions_PeerWithoutProbeIsKept(t *testing.T) {
 		t.Fatalf("탐침에 없는 세션도 붙을 수 있게 남아야 함: %+v", got)
 	}
 }
+
+func TestTruncRunes_CutsOnRuneBoundary(t *testing.T) {
+	s := strings.Repeat("가", 200)
+	got := truncRunes(s, 110)
+	if n := len([]rune(got)); n != 111 { // 110 + 말줄임표
+		t.Fatalf("110 룬 + … 이어야 하는데 %d 룬: %q", n, got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("잘렸으면 말줄임표가 붙어야 함: %q", got)
+	}
+	for _, r := range got {
+		if r == 0xFFFD {
+			t.Fatal("한글이 깨졌다")
+		}
+	}
+	if short := truncRunes("짧다", 110); short != "짧다" {
+		t.Errorf("한도 안이면 그대로여야 함: %q", short)
+	}
+}
+
+func TestTailSummary(t *testing.T) {
+	chunk := []byte(
+		`{"type":"assis` + "\n" +
+			`{"type":"user","timestamp":"2026-09-18T03:55:17.000Z","message":{"content":"뭐 하는 중?"}}` + "\n" +
+			`{"type":"assistant","timestamp":"2026-09-18T03:55:43.000Z","message":{"content":[{"type":"text","text":"2단계도\n초록입니다."}]}}` + "\n" +
+			`{"type":"assistant","timestamp":"2026-09-18T03:56:46.000Z","message":{"content":[{"type":"thinking","thinking":"속내"},{"type":"text","text":"담기를 지시했습니다."}]}}` + "\n")
+	line, last := tailSummary(chunk)
+	if line != "담기를 지시했습니다." {
+		t.Errorf("마지막 어시스턴트 글이 어긋남: %q", line)
+	}
+	if last.UTC().Format("15:04:05") != "03:56:46" {
+		t.Errorf("마지막 기록 시각이 어긋남: %v", last)
+	}
+}
+
+func TestTailSummary_CollapsesNewlines(t *testing.T) {
+	chunk := []byte("버림\n" +
+		`{"type":"assistant","timestamp":"2026-09-18T03:55:43.000Z","message":{"content":[{"type":"text","text":"첫 줄\n\n둘째 줄"}]}}` + "\n")
+	line, _ := tailSummary(chunk)
+	if strings.Contains(line, "\n") {
+		t.Errorf("여러 줄이 한 줄로 접혀야 함: %q", line)
+	}
+	if line != "첫 줄 둘째 줄" {
+		t.Errorf("접힌 결과가 어긋남: %q", line)
+	}
+}
+
+func TestTailSummary_NoAssistant(t *testing.T) {
+	line, last := tailSummary([]byte("버림\n" +
+		`{"type":"user","timestamp":"2026-09-18T03:55:17.000Z","message":{"content":"안녕"}}` + "\n"))
+	if line != "" {
+		t.Errorf("어시스턴트 글이 없으면 빈 문자열이어야 함: %q", line)
+	}
+	if last.IsZero() {
+		t.Error("어시스턴트 글이 없어도 마지막 기록 시각은 나와야 함")
+	}
+}
+
+func TestTailSummary_Empty(t *testing.T) {
+	line, last := tailSummary(nil)
+	if line != "" || !last.IsZero() {
+		t.Errorf("빈 입력은 빈 결과여야 함: %q %v", line, last)
+	}
+}
+
+func TestTailCmd_UsesTailC(t *testing.T) {
+	cmd := tailCmd("/t/a.jsonl", 200000)
+	if !strings.Contains(cmd, "tail -c 200000") {
+		t.Errorf("tail -c 로 읽어야 함: %q", cmd)
+	}
+	if strings.Contains(cmd, "cat ") {
+		t.Errorf("전체를 읽으려 한다: %q", cmd)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	if got := shellQuote("a'b"); got != `'a'\''b'` {
+		t.Errorf("작은따옴표 탈출이 어긋남: %s", got)
+	}
+	if got := shellQuote("/t/a b.jsonl"); got != "'/t/a b.jsonl'" {
+		t.Errorf("공백 있는 경로가 어긋남: %s", got)
+	}
+}

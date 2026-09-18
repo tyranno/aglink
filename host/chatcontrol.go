@@ -203,6 +203,13 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 			_ = s.bot.ReplyTo(tgt).Send(chatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
 			return
 		}
+		// The attached-session check must happen here as well as in the
+		// telegram loop: this is the other entry point free text arrives by,
+		// and patching only one lets a message typed in the browser go to a
+		// worker instead of the session this conversation is attached to.
+		if s.bot.routeToSession(chatID, text, tgt) {
+			return
+		}
 		go s.bot.dispatchTargeted(chatID, text, m.Target)
 	case "handle_command":
 		go s.bot.handleCommand(chatID, m.Text, origin, tgt)

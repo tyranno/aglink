@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestAttachState_AttachDetach(t *testing.T) {
@@ -184,7 +187,13 @@ func (r *recordingReply) SendPhoto(int64, []byte, string) error { return nil }
 
 // newTestBotForAttach builds the smallest Bot the session handlers need.
 func newTestBotForAttach(cfg *Config) *Bot {
-	return &Bot{cfgh: NewConfigHolder(cfg), attach: newAttachState()}
+	return &Bot{
+		cfgh:      NewConfigHolder(cfg),
+		attach:    newAttachState(),
+		turnReply: func(Target) replySender { return &recordingReply{} },
+		// 시험에서는 동기로 — 시험이 끝난 뒤까지 살아남는 goroutine 이 없어야 한다.
+		sessionGo: func(f func()) { f() },
+	}
 }
 
 func TestResolveTarget(t *testing.T) {
@@ -260,5 +269,77 @@ func TestHandleAttach_UnknownName(t *testing.T) {
 	}
 	if len(rec.sent) == 0 {
 		t.Error("왜 못 붙는지 알려야 함")
+	}
+}
+
+// decodeSentBody pulls the base64 payload back out of the shell command so a
+// test can assert on what the remote session will actually see.
+func decodeSentBody(t *testing.T, cmd string) string {
+	t.Helper()
+	re := regexp.MustCompile(`[A-Za-z0-9+/]{16,}={0,2}`)
+	for _, m := range re.FindAllString(cmd, -1) {
+		if b, err := base64.StdEncoding.DecodeString(m); err == nil && utf8.Valid(b) {
+			return string(b)
+		}
+	}
+	t.Fatalf("base64 본문을 찾지 못했다: %s", cmd)
+	return ""
+}
+
+func TestRouteToSession_NotAttachedReturnsFalse(t *testing.T) {
+	b := newTestBotForAttach(testCfgWithHost())
+	if b.routeToSession(7, "안녕", TelegramTarget()) {
+		t.Error("붙지 않았으면 가로채면 안 됨 — 평문은 워커로 가야 한다")
+	}
+}
+
+func TestRouteToSession_SendsVerbatim(t *testing.T) {
+	var cmd string
+	fakeSSH(t, func(host, c string) (string, error) {
+		if strings.Contains(c, "SendMessage") {
+			cmd = c
+			return `{"success":true,"msg_id":"abc"}`, nil
+		}
+		return "", nil
+	})
+	b := newTestBotForAttach(testCfgWithHost())
+	b.attach.Attach("telegram", SessionInfo{Host: "dev", Name: "proj-a-cf", Addressable: true})
+
+	text := "2단계 끝났으면 알려줘"
+	if !b.routeToSession(7, text, TelegramTarget()) {
+		t.Fatal("붙어 있으면 가로채야 함")
+	}
+	if cmd == "" {
+		t.Fatal("보내기 명령이 나가지 않았다")
+	}
+
+	enc := base64.StdEncoding.EncodeToString([]byte(text))
+	if strings.Contains(cmd, enc) {
+		t.Error("출처 한 줄이 붙지 않았다 — 본문이 사용자가 친 것과 정확히 같다")
+	}
+	decoded := decodeSentBody(t, cmd)
+	if !strings.HasSuffix(decoded, text) {
+		t.Errorf("사용자가 친 말이 끝에 그대로 있어야 함: %q", decoded)
+	}
+	if !strings.Contains(decoded, "사용자") {
+		t.Errorf("받는 쪽이 사람 말로 받게 하는 출처 줄이 없다: %q", decoded)
+	}
+	if !strings.Contains(cmd, "proj-a-cf") {
+		t.Errorf("어느 세션으로 보내는지가 빠졌다: %s", cmd)
+	}
+}
+
+func TestRouteToSession_WebLaneIsSeparate(t *testing.T) {
+	fakeSSH(t, func(host, cmd string) (string, error) { return `{"success":true}`, nil })
+	b := newTestBotForAttach(testCfgWithHost())
+	b.attach.Attach("telegram", SessionInfo{Host: "dev", Name: "proj-a-cf", Addressable: true})
+
+	web := WebTarget("7")
+	if b.routeToSession(7, "안녕", web) {
+		t.Error("텔레그램에서 붙었다고 웹 대화까지 가로채면 안 됨")
+	}
+	b.attach.Attach(laneKeyOf(web), SessionInfo{Host: "dev", Name: "proj-b-4f", Addressable: true})
+	if !b.routeToSession(7, "안녕", web) {
+		t.Error("웹 대화가 붙었으면 웹에서도 가로채야 함")
 	}
 }

@@ -71,6 +71,10 @@ type Bot struct {
 	turnQuiet time.Duration
 	turnPoll  time.Duration
 	turnReply func(Target) replySender // nil → b.ReplyTo
+	// sessionGo runs the delivery+watch work. Production spawns a goroutine so a
+	// slow remote never blocks message handling; tests run it inline so the work
+	// cannot outlive the test that set the seams up.
+	sessionGo func(func())
 
 	dispatchHook func(chatID int64, text string) // test seam; nil in production
 	commandHook  func(chatID int64, text string) // test seam; nil in production
@@ -388,6 +392,9 @@ func (b *Bot) Run() {
 			}
 			if strings.HasPrefix(text, "!") {
 				b.handleCommand(chatID, text, OriginTelegram, TelegramTarget())
+				continue
+			}
+			if b.routeToSession(chatID, text, TelegramTarget()) {
 				continue
 			}
 			b.dispatchText(chatID, text, OriginTelegram)

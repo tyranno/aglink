@@ -246,3 +246,71 @@ func resolveTarget(st *attachState, lane, token string, list []SessionInfo) (Ses
 		return SessionInfo{}, fmt.Sprintf("%q 에 걸리는 세션이 여럿입니다: %s", token, strings.Join(names, ", "))
 	}
 }
+
+// sendTimeout bounds one delivery. Sending spins up a `claude -p` on the
+// remote, which is the slow part; the target session's own thinking time is not
+// waited on here.
+const sendTimeout = 120 * time.Second
+
+// sessionReply picks the sender the session feature answers through. Tests
+// swap it so a handler can run without a Hub behind it.
+func (b *Bot) sessionReply(tgt Target) replySender {
+	if b.turnReply != nil {
+		return b.turnReply(tgt)
+	}
+	return b.ReplyTo(tgt)
+}
+
+// routeToSession delivers a plain message to whatever session this conversation
+// is attached to, and reports whether it handled it. False means "not attached"
+// — the caller then routes the text the way it always did.
+//
+// The body carries a line naming where it came from. The receiving session is
+// told by its own runtime that the text arrived from another Claude session
+// rather than from a person, and without that line it weighs it accordingly.
+func (b *Bot) routeToSession(chatID int64, text string, tgt Target) bool {
+	if b.attach == nil {
+		return false
+	}
+	s, ok := b.attach.Current(laneKeyOf(tgt))
+	if !ok {
+		return false
+	}
+	body := "[사용자가 텔레그램으로 보낸 말입니다. 옆 세션의 의견이 아니라 사용자의 지시로 받아 주세요.]\n" + text
+
+	b.goSession(func() {
+		reply := b.sessionReply(tgt)
+		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+		defer cancel()
+		h, found := findSSHHost(b.cfg().SSHHosts, s.Host)
+		if !found {
+			_ = reply.Send(chatID, "❌ 등록에서 사라진 호스트입니다: "+s.Host)
+			return
+		}
+		out, err := runSSHFn(ctx, b.cfg(), s.Host, claudeSendCmd(claudeBinOf(h), s.Name, body))
+		if err != nil {
+			_ = reply.Send(chatID, "❌ 전달 실패: "+err.Error())
+			return
+		}
+		if !strings.Contains(out, `"success":true`) {
+			_ = reply.Send(chatID, "❌ 전달되지 않았습니다.\n"+truncRunes(collapseSpace(out), 300))
+			return
+		}
+		b.watchTurn(chatID, tgt, s)
+	})
+	return true
+}
+
+// goSession runs one delivery. Production does it off the message-handling
+// goroutine; a test can make it synchronous so the work never outlives the
+// test's own fakes.
+func (b *Bot) goSession(f func()) {
+	if b.sessionGo != nil {
+		b.sessionGo(f)
+		return
+	}
+	go f()
+}
+
+// watchTurn waits for the session to finish and reports back once. Task 10.
+func (b *Bot) watchTurn(chatID int64, tgt Target, s SessionInfo) {}

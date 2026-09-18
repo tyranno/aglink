@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -293,4 +294,52 @@ func recordText(content json.RawMessage) string {
 // fits on the single line the list gives it.
 func collapseSpace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// claudeBinOf resolves how to invoke the CLI on a host.
+func claudeBinOf(h SSHHost) string {
+	if b := strings.TrimSpace(h.ClaudeBin); b != "" {
+		return b
+	}
+	return "claude"
+}
+
+// loginShell wraps a command so it runs with the account's own PATH. An SSH
+// command runs a non-login shell, where ~/.local/bin — where the CLI usually
+// lives — is not on PATH.
+func loginShell(cmd string) string {
+	return "bash -lc " + shellQuote(cmd)
+}
+
+// claudeListCmd asks the remote for its session list. --safe-mode skips the
+// account's plugins and hooks so the run stays minimal, and the tool allowance
+// is read-only on purpose: a listing must not be able to send anything.
+func claudeListCmd(bin string) string {
+	const prompt = "Call ListAgents once and print its raw output verbatim. Do nothing else."
+	return loginShell(fmt.Sprintf(
+		"cd /tmp && %s -p --safe-mode --allowedTools ListAgents --permission-mode acceptEdits %s",
+		bin, shellQuote(prompt)))
+}
+
+// claudeSendCmd delivers text into a running session.
+//
+// The text travels as base64 and is decoded into a temp file on the remote,
+// then read back by the CLI. Two reasons, both load-bearing: base64 is ASCII,
+// so no quote, newline or Korean character can be mangled on the way through
+// the shell; and handing the CLI a FILE rather than an inline prompt is what
+// keeps it from paraphrasing the user's words, since the instruction is "send
+// this file's contents", not "send this message".
+func claudeSendCmd(bin, target, text string) string {
+	enc := base64.StdEncoding.EncodeToString([]byte(text))
+	prompt := fmt.Sprintf(
+		"Read the file $F. Send its exact contents to the peer session named %s "+
+			"using SendMessage. Copy the text verbatim: do not translate it, "+
+			"summarise it, reword it or add anything. Then print the tool result "+
+			"and nothing else.", target)
+	inner := fmt.Sprintf(
+		"cd /tmp && F=$(mktemp) && printf %%s %s | base64 -d > \"$F\" && "+
+			"%s -p --safe-mode --allowedTools Read,SendMessage --permission-mode acceptEdits %s; "+
+			"rm -f \"$F\"",
+		shellQuote(enc), bin, shellQuote(prompt))
+	return loginShell(inner)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -228,5 +229,50 @@ func TestShellQuote(t *testing.T) {
 	}
 	if got := shellQuote("/t/a b.jsonl"); got != "'/t/a b.jsonl'" {
 		t.Errorf("공백 있는 경로가 어긋남: %s", got)
+	}
+}
+
+func TestClaudeBinOf(t *testing.T) {
+	if got := claudeBinOf(SSHHost{}); got != "claude" {
+		t.Errorf("기본값은 claude 여야 함: %q", got)
+	}
+	if got := claudeBinOf(SSHHost{ClaudeBin: "/opt/claude"}); got != "/opt/claude" {
+		t.Errorf("설정값이 이겨야 함: %q", got)
+	}
+}
+
+func TestClaudeListCmd(t *testing.T) {
+	cmd := claudeListCmd("claude")
+	for _, want := range []string{"--safe-mode", "ListAgents", "-p "} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("%q 가 빠졌다: %s", want, cmd)
+		}
+	}
+	// 읽기만 하는 호출이 쓰기 도구를 들고 있으면 안 된다.
+	if strings.Contains(cmd, "SendMessage") {
+		t.Errorf("목록 호출에 SendMessage 가 들어 있다: %s", cmd)
+	}
+}
+
+func TestClaudeSendCmd_CarriesTextAsBase64(t *testing.T) {
+	text := "따옴표 ' 와 \"둘\" 그리고\n줄바꿈이 든 한글"
+	cmd := claudeSendCmd("claude", "proj-a-cf", text)
+
+	// 본문은 셸에 날것으로 나타나면 안 된다 — base64 로만 실린다.
+	if strings.Contains(cmd, "줄바꿈이 든 한글") {
+		t.Errorf("본문이 셸 명령에 날것으로 들어갔다: %s", cmd)
+	}
+	enc := base64.StdEncoding.EncodeToString([]byte(text))
+	if !strings.Contains(cmd, enc) {
+		t.Errorf("base64 로 실린 본문을 찾을 수 없다: %s", cmd)
+	}
+	if !strings.Contains(cmd, "base64 -d") {
+		t.Errorf("원격에서 되돌리는 부분이 없다: %s", cmd)
+	}
+	if !strings.Contains(cmd, "SendMessage") || !strings.Contains(cmd, "proj-a-cf") {
+		t.Errorf("보내기 지시가 불완전하다: %s", cmd)
+	}
+	if !strings.Contains(cmd, "rm -f") {
+		t.Errorf("임시 파일을 지우지 않는다: %s", cmd)
 	}
 }

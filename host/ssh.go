@@ -30,6 +30,15 @@ type SSHHost struct {
 	User     string `yaml:"user" json:"user"`         // login user
 	Password string `yaml:"password" json:"password"` // used when KeyFile is empty
 	KeyFile  string `yaml:"key_file" json:"key_file"` // private key path; preferred over Password
+
+	// ClaudeSessions opts this host into !sessions. Off by default: listing
+	// costs a `claude -p` run on the remote account, which is pointless on a
+	// host that runs no interactive sessions.
+	ClaudeSessions bool `yaml:"claude_sessions,omitempty" json:"claude_sessions,omitempty"`
+	// ClaudeBin overrides how the claude CLI is invoked there. Empty means
+	// "claude", resolved through a login shell — an SSH command runs a
+	// non-login shell, which does not have ~/.local/bin on PATH.
+	ClaudeBin string `yaml:"claude_bin,omitempty" json:"claude_bin,omitempty"`
 }
 
 // findSSHHost returns the named host from the registry (case-insensitive).

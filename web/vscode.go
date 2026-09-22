@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,10 +27,15 @@ type vscodeWindow struct {
 	Session string // vscode.env.sessionId — distinguishes two windows on one folder
 }
 
+// remoteSuffix matches the " [SSH: host]" VS Code appends to a remote
+// workspace's name. The host is already carried after the '@', so repeating it
+// in the name only makes the profile longer to type.
+var remoteSuffix = regexp.MustCompile(`\s*\[[^\]]*\]\s*$`)
+
 func vscodeProfileName(w vscodeWindow) string {
 	name := "no-folder"
-	if strings.TrimSpace(w.Name) != "" {
-		name = appSlug(w.Name)
+	if n := strings.TrimSpace(remoteSuffix.ReplaceAllString(w.Name, "")); n != "" {
+		name = appSlug(n)
 	}
 	if strings.TrimSpace(w.Remote) == "" {
 		return "vscode:" + name

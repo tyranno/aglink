@@ -150,6 +150,9 @@ func TestVSCodeProfileName(t *testing.T) {
 		{vscodeWindow{Name: "backend", Remote: "192.168.0.9-doowon"}, "vscode:backend@192-168-0-9-doowon"},
 		{vscodeWindow{Name: "aglink"}, "vscode:aglink"},
 		{vscodeWindow{Name: ""}, "vscode:no-folder"},
+		// VS Code titles a remote workspace "backend [SSH: host]"; the host is
+		// already after the @, so the bracket must not be repeated in the name.
+		{vscodeWindow{Name: "backend [SSH: 192.168.0.9-doowon]", Remote: "192.168.0.9-doowon"}, "vscode:backend@192-168-0-9-doowon"},
 	}
 	for _, c := range cases {
 		if got := vscodeProfileName(c.w); got != c.want {

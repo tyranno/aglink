@@ -50,7 +50,7 @@ type command struct {
 var commands = []command{
 	{
 		name: "list_profiles",
-		desc: "List what aglink-web can drive: the connected Chrome profiles ('account | connected Xs ago | default', oldest first — the first line is where a call with no 'profile' goes), then any Electron/Wails app window that has a DevTools port open ('app:<name> | cdp:<port> | url | N window(s)'). Pass an account — or a unique prefix such as \"doowon.lab.02\" — or an app:/cdp: name as 'profile' on another tool to drive that target instead. App windows are driven like web pages, as text, which is far cheaper than screen capture.",
+		desc: "List what aglink-web can drive: the connected Chrome profiles ('account | connected Xs ago | default', oldest first — the first line is where a call with no 'profile' goes), then any Electron/Wails app window that has a DevTools port open ('app:<name> | cdp:<port> | url | N window(s)'), then any VS Code window running the aglink-vscode extension ('vscode:<workspace>@<host> | SSH <host> | folder | connected …' — drive those with the vscode_* tools). Pass an account — or a unique prefix such as \"doowon.lab.02\" — or an app:/cdp: name as 'profile' on another tool to drive that target instead. App windows are driven like web pages, as text, which is far cheaper than screen capture.",
 	},
 	{
 		name: "list_tabs",
@@ -274,7 +274,76 @@ var commands = []command{
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 		},
 	},
+
+	// ---- VS Code windows (aglink-vscode extension) --------------------------
+	// Every vscode_* tool needs profile="vscode:<name>" — a window listed by
+	// list_profiles. There is deliberately no default window.
+	{
+		name: "vscode_workspace",
+		desc: "Summarize a VS Code window (" + vscodeProfileHint + "): workspace name, remote host if it is a Remote-SSH window, folders, the active file and cursor line, and how many editors and terminals are open. Start here to see what that window is working on.",
+	},
+	{
+		name: "vscode_editors",
+		desc: "List the files open as tabs in a VS Code window (" + vscodeProfileHint + "), marking the active one and any with unsaved changes.",
+	},
+	{
+		name: "vscode_read",
+		desc: "Read a file as that VS Code window sees it (" + vscodeProfileHint + "), with line numbers — including unsaved edits in an open editor, which reading the file from disk would miss. For a Remote-SSH window the path is on the remote machine. Omit 'path' for the active editor. Up to 2000 lines per call; page with startLine/endLine.",
+		args: []argSpec{
+			{name: "path", typ: argString, desc: "File path — absolute, or relative to the window's first workspace folder. Omit for the active editor."},
+			{name: "startLine", typ: argInt, desc: "First line to return (1-based). Default 1."},
+			{name: "endLine", typ: argInt, desc: "Last line to return. Default startLine+1999."},
+		},
+	},
+	{
+		name: "vscode_open",
+		desc: "Open a file in a VS Code window (" + vscodeProfileHint + ") and optionally jump to a line, so the person looking at that window sees it.",
+		args: []argSpec{
+			{name: "path", typ: argString, required: true, desc: "File path — absolute, or relative to the window's first workspace folder."},
+			{name: "line", typ: argInt, desc: "Line to reveal and put the cursor on (1-based)."},
+		},
+	},
+	{
+		name: "vscode_problems",
+		desc: "List the errors and warnings a VS Code window (" + vscodeProfileHint + ") currently shows in its Problems panel, as 'severity path:line:col message [source]'. Optionally for one file.",
+		args: []argSpec{
+			{name: "path", typ: argString, desc: "Only this file (absolute or workspace-relative). Omit for all."},
+		},
+	},
+	{
+		name: "vscode_terminals",
+		desc: "List the terminals of a VS Code window (" + vscodeProfileHint + "): name, whether shell integration is on (needed to read output), and the last command run in each.",
+	},
+	{
+		name: "vscode_terminal_run",
+		desc: "Run a shell command in a terminal of a VS Code window (" + vscodeProfileHint + ") and wait for it to finish, returning its output and exit code. In a Remote-SSH window the command runs ON THE REMOTE machine. Uses a terminal named 'aglink' (created if missing) unless 'terminal' names another. If the command outlives timeoutSec, returns what it printed so far and says it is still running.",
+		args: []argSpec{
+			{name: "command", typ: argString, required: true, desc: "The shell command line to run."},
+			{name: "terminal", typ: argString, desc: "Name of an existing terminal to run it in. Omit for the 'aglink' terminal."},
+			{name: "timeoutSec", typ: argInt, desc: "How long to wait for it to finish (default 60, max 600)."},
+		},
+	},
+	{
+		name: "vscode_terminal_read",
+		desc: "Read the recent commands run in a VS Code window's terminal (" + vscodeProfileHint + ") and their output — including commands a person typed, as long as they ran after the extension started and shell integration is on.",
+		args: []argSpec{
+			{name: "terminal", typ: argString, desc: "Terminal name. Omit for the active terminal."},
+			{name: "max", typ: argInt, desc: "How many recent commands (default 5, max 20)."},
+		},
+	},
+	{
+		name: "vscode_command",
+		desc: "Run a VS Code command by its id in a window (" + vscodeProfileHint + "), e.g. 'workbench.action.files.saveAll' or 'workbench.action.tasks.runTask'. Any command a keybinding or the command palette can run.",
+		args: []argSpec{
+			{name: "command", typ: argString, required: true, desc: "Command id."},
+			{name: "args", typ: argString, desc: "Arguments as a JSON array, e.g. '[\"build\"]'. Omit for none."},
+		},
+	},
 }
+
+// vscodeProfileHint is repeated in every vscode_* description so a model sees
+// how to address a window from any one tool alone.
+const vscodeProfileHint = `profile="vscode:<name>" from list_profiles`
 
 // lookupCommand finds a command by name.
 func lookupCommand(name string) (command, bool) {
@@ -351,7 +420,7 @@ func (c command) parseCLIArgs(args []string) (map[string]any, error) {
 // repeat identically.
 const profileArg = "profile"
 
-const profileArgDesc = "Target to drive: a Chrome profile given as its signed-in Google account email or a unique prefix of it (e.g. \"doowon.lab.02\"), or an Electron/Wails app window as app:<name> (e.g. \"app:aglink\"; a unique prefix works) or cdp:<port>. Omit to use the account pinned by the project's .aglink-web/config, or the longest-connected Chrome profile when nothing is pinned. Call list_profiles to see what is available."
+const profileArgDesc = "Target to drive: a Chrome profile given as its signed-in Google account email or a unique prefix of it (e.g. \"doowon.lab.02\"), or an Electron/Wails app window as app:<name> (e.g. \"app:aglink\"; a unique prefix works) or cdp:<port>, or a VS Code window as vscode:<name> (vscode_* tools only). Omit to use the account pinned by the project's .aglink-web/config, or the longest-connected Chrome profile when nothing is pinned. Call list_profiles to see what is available."
 
 // mcpTool builds the MCP tool definition from the command's arg specs.
 func (c command) mcpTool() mcp.Tool {

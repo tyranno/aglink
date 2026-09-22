@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"net/http/httptest"
 
@@ -152,6 +154,84 @@ func TestVSCodeProfileName(t *testing.T) {
 	for _, c := range cases {
 		if got := vscodeProfileName(c.w); got != c.want {
 			t.Errorf("%+v → %q, want %q", c.w, got, c.want)
+		}
+	}
+}
+
+// recordingVSCode answers like the extension and remembers what it was asked.
+func recordingVSCode(conn *websocket.Conn, got chan<- Request) {
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var req Request
+		if json.Unmarshal(data, &req) != nil {
+			continue
+		}
+		if req.Method == pingMethod {
+			b, _ := json.Marshal(Reply{ID: 0, OK: true})
+			_ = conn.WriteMessage(websocket.TextMessage, b)
+			continue
+		}
+		got <- req
+		b, _ := json.Marshal(Reply{ID: req.ID, OK: true, Text: "answer:" + req.Method})
+		_ = conn.WriteMessage(websocket.TextMessage, b)
+	}
+}
+
+func TestVSCodeToolReachesTheWindow(t *testing.T) {
+	d, srv := vscodeDaemon(t)
+	c := dialFakeVSCode(t, srv, "backend", "host1", "/p", "s1")
+	defer c.Close()
+	got := make(chan Request, 4)
+	go recordingVSCode(c, got)
+	waitFor(t, func() bool { return vscodeCount(d) == 1 })
+
+	res := d.call("vscode_read", map[string]any{"path": "src/a.go", "startLine": 10}, "vscode:backend")
+	if !res.OK || res.Text != "answer:read" {
+		t.Fatalf("round trip: %+v", res)
+	}
+	req := <-got
+	if req.Method != "read" || req.Params["path"] != "src/a.go" {
+		t.Fatalf("the extension must get the bare method and the params: %+v", req)
+	}
+}
+
+func TestVSCodeToolAndProfileMustMatch(t *testing.T) {
+	d, srv := vscodeDaemon(t)
+	c := dialFakeVSCode(t, srv, "backend", "host1", "/p", "s1")
+	defer c.Close()
+	go runFakeExtension(c, true)
+	waitFor(t, func() bool { return vscodeCount(d) == 1 })
+
+	if res := d.call("vscode_workspace", nil, ""); res.OK || !strings.Contains(res.Error, `profile="vscode:<name>"`) {
+		t.Errorf("a vscode tool without a vscode profile: %+v", res)
+	}
+	if res := d.call("vscode_workspace", nil, "app:aglink"); res.OK || !strings.Contains(res.Error, "needs a VS Code window") {
+		t.Errorf("a vscode tool on an app profile: %+v", res)
+	}
+	if res := d.call("click", map[string]any{"selector": "x"}, "vscode:backend"); res.OK || !strings.Contains(res.Error, "use the vscode_* tools") {
+		t.Errorf("a web tool on a vscode profile: %+v", res)
+	}
+}
+
+func TestVSCodeTimeoutFollowsTheCommand(t *testing.T) {
+	if got := vscodeTimeout(nil); got != callTimeout {
+		t.Errorf("default: %v", got)
+	}
+	if got := vscodeTimeout(map[string]any{"timeoutSec": 120}); got != 125*time.Second {
+		t.Errorf("a long command must be waited for: %v", got)
+	}
+	if got := vscodeTimeout(map[string]any{"timeoutSec": float64(99999)}); got != 605*time.Second {
+		t.Errorf("capped at 10 minutes: %v", got)
+	}
+}
+
+func TestInstructionsMentionVSCode(t *testing.T) {
+	for _, want := range []string{"vscode:", "vscode_terminal_run", "aglink-vscode"} {
+		if !strings.Contains(serverInstructions, want) {
+			t.Errorf("server instructions miss %q", want)
 		}
 	}
 }

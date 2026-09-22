@@ -161,3 +161,37 @@ func (d *Daemon) vscodeProfileLines() []string {
 	}
 	return lines
 }
+
+// maxVSCodeWait caps how long a single tool call may keep a caller waiting,
+// however long a terminal command was allowed to run.
+const maxVSCodeWait = 10 * time.Minute
+
+// vscodeTimeout is the daemon's wait for a window's answer: the default, or a
+// terminal command's own timeoutSec plus a margin for the answer to travel.
+func vscodeTimeout(params map[string]any) time.Duration {
+	sec := intp(params, "timeoutSec", 0)
+	if sec <= 0 {
+		return callTimeout
+	}
+	d := time.Duration(sec) * time.Second
+	if d > maxVSCodeWait {
+		d = maxVSCodeWait
+	}
+	return d + 5*time.Second
+}
+
+// callVSCode runs one vscode_* tool in the named window. The extension gets
+// the method without its "vscode_" prefix — "read", "terminal_run" — since the
+// namespace only matters on the MCP side.
+func (d *Daemon) callVSCode(method string, params map[string]any, profile string) CallResult {
+	if !isVSCodeProfile(profile) {
+		return CallResult{Error: fmt.Sprintf("%s needs a VS Code window: pass profile=\"vscode:<name>\" (see list_profiles)", method)}
+	}
+	d.mu.Lock()
+	ec, err := d.resolveVSCode(profile)
+	d.mu.Unlock()
+	if err != nil {
+		return CallResult{Error: err.Error()}
+	}
+	return d.roundTrip(ec, strings.TrimPrefix(method, "vscode_"), params, vscodeTimeout(params), "VS Code window")
+}

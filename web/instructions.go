@@ -14,4 +14,6 @@ Prefer this over screen-capture tools (aglink-screen) for any Electron/Wails win
 
 An app shows up only if it was launched with a debugging port: Electron with --remote-debugging-port=9222; a Wails app needs AdditionalBrowserArgs set from AGLINK_WEBVIEW_DEBUG_PORT (the WEBVIEW2_* environment variable does not work for Wails). Ports 9222-9240 on 127.0.0.1 are searched.
 
+VS Code windows: with the aglink-vscode extension installed, every open VS Code window (including Remote-SSH windows) appears in list_profiles as vscode:<workspace>@<host>. Use the vscode_* tools on it — vscode_workspace to see what it is doing, vscode_read / vscode_problems / vscode_terminal_read to inspect, vscode_open / vscode_terminal_run / vscode_command to act. This reads another window's files, errors and terminal output as text, which screen capture cannot. vscode_terminal_run in a Remote-SSH window runs on the remote machine. The web-page tools do not work on vscode: profiles, and the Claude chat panel of another window is not readable this way.
+
 JavaScript dialogs (alert/confirm/prompt) in an app window freeze its page: other tools then fail fast with "dialog open"; answer with dialog_status, then handle_dialog. Chrome dialogs are not supported yet. get_console_logs, get_network_requests, close_tab and reload_extension work on Chrome only.`

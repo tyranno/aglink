@@ -306,6 +306,12 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if method == listProfilesMethod {
 		return d.listProfiles()
 	}
+	if strings.HasPrefix(method, "vscode_") {
+		return d.callVSCode(method, params, profile)
+	}
+	if isVSCodeProfile(profile) {
+		return CallResult{Error: fmt.Sprintf("%s works on web pages; for a VS Code window use the vscode_* tools", method)}
+	}
 	if isAppProfile(profile) {
 		return d.callApp(method, params, profile)
 	}

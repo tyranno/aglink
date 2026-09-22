@@ -421,6 +421,12 @@
         return { found: true, isSelect: true, matched: true, selected: match.textContent.trim() };
       };
 
+  // The daemon calls these instead of keyCombo/listElements directly, so the
+  // key table and the interactive-element selector never have to travel over
+  // the wire on every call. The extension keeps passing its own copies.
+  P.keyComboDefault = (combo) => P.keyCombo(combo, KEY_SPECS, MOD_PROPS);
+  P.listElementsDefault = (max) => P.listElements(INTERACTIVE_SELECTOR, AGLINK_ID_ATTR, max);
+
   P.constants = { AGLINK_ID_ATTR, INTERACTIVE_SELECTOR, KEY_SPECS, MOD_PROPS };
   globalThis.__aglinkPage = P;
 })();

@@ -296,6 +296,28 @@ handle_dialog   profile="app:aglink"  prompt_text="홍길동"
 절대 붙지 않고, Chromium 의 기본 바인딩도 루프백이다. 그래도 **개발용 실행에서만**
 켤 것 — 위 Wails 코드가 환경변수 없이는 포트를 열지 않는 이유다.
 
+## VS Code 창 다루기 (aglink-vscode 확장)
+
+VS Code 창은 DOM 대신 **확장**으로 다룬다. 편집기는 보이는 줄만 DOM 에 있고
+터미널은 캔버스에 그려져, 정작 보고 싶은 것이 CDP 로는 안 읽히기 때문이다.
+[`../vscode`](../vscode/README.md) 의 확장을 윈도우 VS Code 에 한 번 설치하면
+창마다(Remote-SSH 창 포함) 데몬의 `/vscode` 로 접속해 `list_profiles` 에
+`vscode:<작업공간>@<호스트>` 로 나타난다.
+
+```
+vscode_workspace      profile="vscode:backend"   → 무엇을 하고 있는지
+vscode_read           profile="vscode:backend"   path="src/main.go"   (저장 안 한 내용 포함)
+vscode_problems       profile="vscode:backend"
+vscode_terminal_run   profile="vscode:backend"   command="go test ./..."   → 출력 + 종료 코드
+```
+
+- 확장은 UI 확장이라 **윈도우에만 설치**한다. 원격에는 아무것도 깔지 않는다.
+- 창을 고르는 기본값은 없다 — 에이전트 자신의 창도 연결돼 있어서다.
+- `vscode_*` 도구에 크롬·앱 프로필을, DOM 도구에 `vscode:` 프로필을 주면 거절한다.
+- 원격 창의 `vscode_terminal_run` 은 **원격에서** 실행된다. 역터널로 데몬에 닿는
+  원격 세션도 이 도구를 쓸 수 있다 — aglink-screen 과 같은 수준의 권한이다.
+- 다른 확장의 화면(Claude 채팅 패널 등)은 읽지 못한다. Claude 대화는 `!attach`.
+
 ## Config
 
 | Env var | Default | Meaning |

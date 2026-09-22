@@ -1,0 +1,39 @@
+{
+  "name": "aglink-vscode",
+  "displayName": "aglink for VS Code",
+  "description": "Lets aglink-web read and act in this VS Code window — files, problems, terminal output — so an agent in another window can see what this one is doing without screen capture.",
+  "version": "0.1.0",
+  "publisher": "aglink",
+  "private": true,
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "aglink",
+      "properties": {
+        "aglink.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Connect this window to the aglink-web daemon. Turn off to keep this window out of reach of aglink-web's vscode_* tools."
+        },
+        "aglink.port": {
+          "type": "number",
+          "default": 0,
+          "description": "aglink-web daemon port. 0 reads it from ~/.aglink/aglink-web.port, falling back to 48219."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tyranno/aglink"
+  }
+}

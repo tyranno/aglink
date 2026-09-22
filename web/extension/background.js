@@ -219,7 +219,7 @@ async function ensureHelpers(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["aglink-inject.js"],
+      files: ["aglink-inject.js", "page-actions.js"],
     });
   } catch (e) {
     // Non-fatal — see comment above.
@@ -266,20 +266,11 @@ async function getPageText(params) {
   const cursor = hasCursor ? Math.floor(params.cursor) : -1;
   const offset = Number.isFinite(params.offset) ? Math.floor(params.offset) : 0;
 
-  if (selector) await ensureHelpers(tabId);
+  await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel) => {
-      let el;
-      if (sel) {
-        el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-        if (!el) return { found: false };
-      } else {
-        el = document.body;
-      }
-      return { found: true, text: el ? (el.innerText || "") : "" };
-    },
-    args: [selector],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["getPageText", [selector]],
   });
   const r = results && results[0] && results[0].result;
   if (selector && (!r || !r.found)) throw new Error(`no element matched selector: ${selector}`);
@@ -326,17 +317,8 @@ async function elementExists(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel) => {
-      const all = globalThis.__aglink ? globalThis.__aglink.resolveAll(sel)
-                                      : Array.from(document.querySelectorAll(sel));
-      let visible = false;
-      for (const el of all) {
-        const rc = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-        if (rc && rc.width > 0 && rc.height > 0) { visible = true; break; }
-      }
-      return { exists: all.length > 0, visible, count: all.length };
-    },
-    args: [selector],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["elementExists", [selector]],
   });
   const r = (results && results[0] && results[0].result) || { exists: false, visible: false, count: 0 };
   return JSON.stringify(r);
@@ -363,29 +345,8 @@ async function click(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel, btn) => {
-      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
-      el.scrollIntoView({ block: "center", inline: "center" });
-      if (btn === "left") {
-        el.click();
-      } else {
-        const rect = el.getBoundingClientRect();
-        const opts = {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: rect.left + rect.width / 2,
-          clientY: rect.top + rect.height / 2,
-          button: btn === "right" ? 2 : 1,
-        };
-        el.dispatchEvent(new MouseEvent("mousedown", opts));
-        el.dispatchEvent(new MouseEvent("mouseup", opts));
-        el.dispatchEvent(new MouseEvent(btn === "right" ? "contextmenu" : "auxclick", opts));
-      }
-      return { found: true, tag: el.tagName.toLowerCase(), text: (el.textContent || "").trim().slice(0, 80) };
-    },
-    args: [selector, button],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["click", [selector, button]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -406,25 +367,8 @@ async function hover(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel) => {
-      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
-      el.scrollIntoView({ block: "center", inline: "center" });
-      const rect = el.getBoundingClientRect();
-      const opts = {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: rect.left + rect.width / 2,
-        clientY: rect.top + rect.height / 2,
-      };
-      el.dispatchEvent(new MouseEvent("pointerover", opts));
-      el.dispatchEvent(new MouseEvent("mouseover", opts));
-      el.dispatchEvent(new MouseEvent("mouseenter", { ...opts, bubbles: false }));
-      el.dispatchEvent(new MouseEvent("mousemove", opts));
-      return { found: true, tag: el.tagName.toLowerCase(), text: (el.textContent || "").trim().slice(0, 80) };
-    },
-    args: [selector],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["hover", [selector]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -443,27 +387,8 @@ async function doubleClick(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel) => {
-      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
-      el.scrollIntoView({ block: "center", inline: "center" });
-      const rect = el.getBoundingClientRect();
-      const opts = {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: rect.left + rect.width / 2,
-        clientY: rect.top + rect.height / 2,
-      };
-      for (let i = 0; i < 2; i++) {
-        el.dispatchEvent(new MouseEvent("mousedown", opts));
-        el.dispatchEvent(new MouseEvent("mouseup", opts));
-        el.dispatchEvent(new MouseEvent("click", opts));
-      }
-      el.dispatchEvent(new MouseEvent("dblclick", { ...opts, detail: 2 }));
-      return { found: true, tag: el.tagName.toLowerCase(), text: (el.textContent || "").trim().slice(0, 80) };
-    },
-    args: [selector],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["doubleClick", [selector]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -487,50 +412,8 @@ async function drag(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (srcSel, dstSel) => {
-      const resolve = (s) => (globalThis.__aglink ? globalThis.__aglink.resolve(s) : document.querySelector(s));
-      const src = resolve(srcSel);
-      if (!src) return { found: false, which: "source", sel: srcSel };
-      const dst = resolve(dstSel);
-      if (!dst) return { found: false, which: "target", sel: dstSel };
-      src.scrollIntoView({ block: "center", inline: "center" });
-      const sr = src.getBoundingClientRect();
-      const dr = dst.getBoundingClientRect();
-      const at = (r) => ({ clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
-      const sp = at(sr);
-      const dp = at(dr);
-      const dt = typeof DataTransfer === "function" ? new DataTransfer() : null;
-      const mouse = (type, el, p) =>
-        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: p.clientX, clientY: p.clientY }));
-      const dnd = (type, el, p) => {
-        let ev;
-        try {
-          ev = new DragEvent(type, { bubbles: true, cancelable: true, view: window, clientX: p.clientX, clientY: p.clientY, dataTransfer: dt });
-        } catch (e) {
-          // Some engines forbid passing dataTransfer to the constructor; fall
-          // back to a MouseEvent with dataTransfer patched on.
-          ev = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: p.clientX, clientY: p.clientY });
-          if (dt) try { Object.defineProperty(ev, "dataTransfer", { value: dt }); } catch (e2) {}
-        }
-        el.dispatchEvent(ev);
-      };
-      // Pointer/mouse path (JS reorder handlers).
-      mouse("pointerdown", src, sp);
-      mouse("mousedown", src, sp);
-      mouse("mousemove", src, sp);
-      mouse("mousemove", dst, dp);
-      // HTML5 DnD path (native drop zones).
-      dnd("dragstart", src, sp);
-      dnd("dragenter", dst, dp);
-      dnd("dragover", dst, dp);
-      dnd("drop", dst, dp);
-      dnd("dragend", src, dp);
-      // Release the pointer over the target.
-      mouse("mouseup", dst, dp);
-      mouse("pointerup", dst, dp);
-      return { found: true, srcTag: src.tagName.toLowerCase(), dstTag: dst.tagName.toLowerCase() };
-    },
-    args: [selector, target],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["drag", [selector, target]],
   });
   const r = results && results[0] && results[0].result;
   if (!r) throw new Error("drag failed");
@@ -552,14 +435,8 @@ async function getAttribute(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel, attr) => {
-      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
-      const tag = el.tagName.toLowerCase();
-      if (attr === "text") return { found: true, tag, present: true, value: (el.textContent || "").trim() };
-      return { found: true, tag, present: el.hasAttribute(attr), value: el.getAttribute(attr) };
-    },
-    args: [selector, name],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["getAttribute", [selector, name]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -575,20 +452,11 @@ async function getHtml(params) {
   const tabId = await activeTabId(params);
   const maxChars = params.maxChars || DEFAULT_MAX_CHARS;
   const selector = params.selector || null;
-  if (selector) await ensureHelpers(tabId);
+  await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel) => {
-      let el;
-      if (sel) {
-        el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-        if (!el) return { found: false };
-      } else {
-        el = document.documentElement;
-      }
-      return { found: true, html: el.outerHTML || "" };
-    },
-    args: [selector],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["getHtml", [selector]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -616,31 +484,8 @@ async function queryAll(params) {
     .filter(Boolean);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel, attrList, maxEls) => {
-      const helper = globalThis.__aglink;
-      const cands = helper ? helper.resolveAll(sel) : Array.from(document.querySelectorAll(sel));
-      const out = [];
-      for (const el of cands) {
-        if (out.length >= maxEls) break;
-        const rec = {
-          tag: el.tagName ? el.tagName.toLowerCase() : "",
-          text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200),
-          attrs: [],
-        };
-        for (const a of attrList) {
-          if (a === "text") continue; // text is already its own column
-          rec.attrs.push([a, el.getAttribute ? el.getAttribute(a) : null]);
-        }
-        // With no explicit attrs, surface href for links so link-harvesting works
-        // out of the box.
-        if (attrList.length === 0 && el.tagName === "A" && el.getAttribute && el.getAttribute("href") != null) {
-          rec.attrs.push(["href", el.getAttribute("href")]);
-        }
-        out.push(rec);
-      }
-      return out;
-    },
-    args: [selector, attrs, max],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["queryAll", [selector, attrs, max]],
   });
   const els = (results && results[0] && results[0].result) || [];
   if (els.length === 0) return `(no elements matched selector: ${selector})`;
@@ -735,48 +580,8 @@ async function listElements(params) {
   const max = params.max || 200;
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (selectorList, idAttr, maxEls) => {
-      // Pierce open shadow roots when the helper is present, so web-component
-      // internals (buttons/inputs inside a custom element) are listed too;
-      // fall back to the flat top-document scan otherwise.
-      const helper = globalThis.__aglink;
-      const clearSet = helper ? helper.deepQueryAll(`[${idAttr}]`) : document.querySelectorAll(`[${idAttr}]`);
-      clearSet.forEach((el) => el.removeAttribute(idAttr));
-      const candidates = helper ? helper.deepQueryAll(selectorList) : Array.from(document.querySelectorAll(selectorList));
-      const out = [];
-      let idx = 0;
-      for (const el of candidates) {
-        if (out.length >= maxEls) break;
-        const rect = el.getBoundingClientRect();
-        // A non-zero rect is enough to mean "rendered": offsetParent is null
-        // (misleadingly) for <body>/<html> and for position:fixed elements
-        // too, not just display:none — toasts/modals are commonly fixed, so
-        // checking it here would silently drop exactly the elements a caller
-        // is most likely waiting to interact with.
-        if (rect.width <= 0 || rect.height <= 0) continue;
-        el.setAttribute(idAttr, String(idx));
-        const label = (
-          el.getAttribute("aria-label") ||
-          el.getAttribute("placeholder") ||
-          el.value ||
-          el.textContent ||
-          ""
-        ).trim().replace(/\s+/g, " ").slice(0, 60);
-        out.push({
-          idx,
-          tag: el.tagName.toLowerCase(),
-          role: el.getAttribute("role") || "",
-          type: el.getAttribute("type") || "",
-          label,
-          disabled: !!el.disabled,
-          x: Math.round(rect.left + rect.width / 2),
-          y: Math.round(rect.top + rect.height / 2),
-        });
-        idx++;
-      }
-      return out;
-    },
-    args: [INTERACTIVE_SELECTOR, AGLINK_ID_ATTR, max],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["listElements", [INTERACTIVE_SELECTOR, AGLINK_ID_ATTR, max]],
   });
   const els = (results && results[0] && results[0].result) || [];
   if (els.length === 0) return "(no visible interactive elements found)";
@@ -809,17 +614,8 @@ async function waitForElement(params) {
     await ensureHelpers(tabId);
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      func: (sel) => {
-        const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-        if (!el) return { found: false };
-        const rect = el.getBoundingClientRect();
-        // See listElements' matching comment: offsetParent is null for
-        // <body>/<html> and position:fixed elements too, not just
-        // display:none, so it must not gate visibility here.
-        const visible = rect.width > 0 && rect.height > 0;
-        return { found: true, visible, tag: el.tagName.toLowerCase() };
-      },
-      args: [selector],
+      func: (name, args) => globalThis.__aglinkPage[name](...args),
+      args: ["waitForElement", [selector]],
     });
     const r = results && results[0] && results[0].result;
     if (r && r.found && r.visible) {
@@ -873,27 +669,8 @@ async function typeText(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel, value) => {
-      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
-      el.scrollIntoView({ block: "center", inline: "center" });
-      el.focus();
-      if (el.isContentEditable) {
-        el.textContent = value;
-      } else {
-        const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-        if (setter) {
-          setter.call(el, value);
-        } else {
-          el.value = value;
-        }
-      }
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { found: true, tag: el.tagName.toLowerCase() };
-    },
-    args: [selector, text],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["typeText", [selector, text]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -912,19 +689,8 @@ async function getValue(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel) => {
-      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
-      const tag = el.tagName.toLowerCase();
-      if (el.isContentEditable) {
-        return { found: true, tag, value: el.textContent || "" };
-      }
-      if ("value" in el) {
-        return { found: true, tag, value: el.value };
-      }
-      return { found: true, tag, value: el.textContent || "" };
-    },
-    args: [selector],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["getValue", [selector]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -998,41 +764,11 @@ async function keyCombo(params) {
     if (!active) throw new Error("no active tab");
     tabId = active.id;
   }
+  await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (comboStr, keySpecs, modProps) => {
-      const parts = comboStr.split("+").map((p) => p.trim().toLowerCase()).filter(Boolean);
-      if (parts.length === 0) return { ok: false, error: "empty key combo" };
-      const mods = {};
-      let keyToken = null;
-      parts.forEach((p, i) => {
-        if (modProps[p] && i !== parts.length - 1) {
-          mods[modProps[p]] = true;
-        } else {
-          keyToken = p;
-        }
-      });
-      if (!keyToken) return { ok: false, error: `no key in combo "${comboStr}"` };
-      let spec = keySpecs[keyToken];
-      if (!spec && keyToken.length === 1) {
-        spec = { key: keyToken, code: "Key" + keyToken.toUpperCase(), keyCode: keyToken.toUpperCase().charCodeAt(0) };
-      }
-      if (!spec) return { ok: false, error: `unknown key "${keyToken}" in combo "${comboStr}"` };
-      const el = document.activeElement || document.body;
-      const opts = {
-        key: spec.key,
-        code: spec.code,
-        keyCode: spec.keyCode,
-        which: spec.keyCode,
-        bubbles: true,
-        cancelable: true,
-        ...mods,
-      };
-      el.dispatchEvent(new KeyboardEvent("keydown", opts));
-      el.dispatchEvent(new KeyboardEvent("keyup", opts));
-      return { ok: true, tag: el.tagName ? el.tagName.toLowerCase() : "document" };
-    },
-    args: [combo, KEY_SPECS, MOD_PROPS],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["keyCombo", [combo, KEY_SPECS, MOD_PROPS]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.ok) throw new Error((r && r.error) || "key failed");
@@ -1052,16 +788,11 @@ async function scroll(params) {
   if (dx === 0 && dy === 0) throw new Error("scroll requires a non-zero dx or dy");
   const tabId = await activeTabId(params);
   const selector = params.selector || null;
-  if (selector) await ensureHelpers(tabId);
+  await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel, dxPx, dyPx) => {
-      const target = sel ? (globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel)) : null;
-      if (sel && !target) return { found: false };
-      (target || window).scrollBy({ left: dxPx, top: dyPx, behavior: "instant" });
-      return { found: true };
-    },
-    args: [selector, dx, dy],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["scroll", [selector, dx, dy]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
@@ -1083,28 +814,8 @@ async function selectOption(params) {
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (sel, val, lbl) => {
-      const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
-      if (el.tagName !== "SELECT") return { found: true, isSelect: false, tag: el.tagName.toLowerCase() };
-      let match = null;
-      for (const opt of el.options) {
-        if (val !== null && val !== undefined && opt.value === String(val)) {
-          match = opt;
-          break;
-        }
-        if (lbl !== null && lbl !== undefined && opt.textContent.trim() === String(lbl)) {
-          match = opt;
-          break;
-        }
-      }
-      if (!match) return { found: true, isSelect: true, matched: false };
-      el.value = match.value;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { found: true, isSelect: true, matched: true, selected: match.textContent.trim() };
-    },
-    args: [selector, value === undefined ? null : value, label === undefined ? null : label],
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["selectOption", [selector, value === undefined ? null : value, label === undefined ? null : label]],
   });
   const r = results && results[0] && results[0].result;
   if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);

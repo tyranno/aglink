@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"log"
 	"log/slog"
+	"os"
 	"path/filepath"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -73,7 +74,8 @@ func main() {
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
 		Windows: application.WindowsOptions{
-			WebviewUserDataPath: webviewUserDataPath(),
+			WebviewUserDataPath:   webviewUserDataPath(),
+			AdditionalBrowserArgs: devtoolsArgs(),
 		},
 	})
 
@@ -89,4 +91,21 @@ func main() {
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// devtoolsArgs opens a Chrome DevTools Protocol port on the WebView2 window when
+// AGLINK_WEBVIEW_DEBUG_PORT is set, so aglink-web can drive this UI as text
+// (profile "app:aglink" or "cdp:<port>") instead of by screen capture. Unset —
+// every normal launch and every shipped build — it returns nothing and no port
+// is opened.
+//
+// It has to be an app option: Wails' WebView2 loader deliberately blanks the
+// WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS environment variable, so the usual
+// outside-in way of passing --remote-debugging-port is ignored. Copy this
+// function into any other Wails app to make it drivable the same way.
+func devtoolsArgs() []string {
+	if p := os.Getenv("AGLINK_WEBVIEW_DEBUG_PORT"); p != "" {
+		return []string{"--remote-debugging-port=" + p}
+	}
+	return nil
 }

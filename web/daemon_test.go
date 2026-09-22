@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -444,4 +445,79 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition not met within timeout")
+}
+
+// appDaemon is a daemon whose app discovery returns one scripted window.
+func appDaemon(t *testing.T, s *pageSim) (*Daemon, *fakeCDP) {
+	t.Helper()
+	f := newFakeCDP(t, s.handle)
+	d := newDaemon("")
+	d.discover = func(context.Context) []appInfo {
+		page := cdpTarget{ID: "P1", Type: "page", Title: "aglink", URL: "http://wails.localhost/", WebSocketDebuggerURL: f.url()}
+		return []appInfo{{Port: 9333, Title: "aglink", URL: page.URL, Pages: []cdpTarget{page}}}
+	}
+	t.Cleanup(d.closeApps)
+	return d, f
+}
+
+func TestCallRoutesAppProfileToCDP(t *testing.T) {
+	d, _ := appDaemon(t, &pageSim{})
+	res := d.call("get_page_text", map[string]any{}, "app:agl")
+	if !res.OK || res.Text != "hi\n[cursor:2]" {
+		t.Fatalf("app call: %+v", res)
+	}
+	d.mu.Lock()
+	pending := len(d.pending)
+	d.mu.Unlock()
+	if pending != 0 {
+		t.Fatal("an app call must never touch the extension's pending table")
+	}
+}
+
+func TestAppConnectionIsReused(t *testing.T) {
+	d, f := appDaemon(t, &pageSim{})
+	for i := 0; i < 3; i++ {
+		if res := d.call("get_page_text", nil, "cdp:9333"); !res.OK {
+			t.Fatalf("call %d: %+v", i, res)
+		}
+	}
+	enables := 0
+	for _, r := range f.requests() {
+		if r.Method == "Page.enable" {
+			enables++
+		}
+	}
+	if enables != 1 {
+		t.Fatalf("the window connection must be opened once and kept, saw %d Page.enable", enables)
+	}
+}
+
+func TestUnknownAppIsExplained(t *testing.T) {
+	d, _ := appDaemon(t, &pageSim{})
+	res := d.call("get_page_text", nil, "app:nothing")
+	if res.OK || !strings.Contains(res.Error, "app:aglink") {
+		t.Fatalf("an unknown app should list what was found: %+v", res)
+	}
+}
+
+func TestListProfilesIncludesApps(t *testing.T) {
+	d, _ := appDaemon(t, &pageSim{})
+	res := d.call(listProfilesMethod, nil, "")
+	if !res.OK || !strings.Contains(res.Text, "app:aglink | cdp:9333 | http://wails.localhost/ | 1 window") {
+		t.Fatalf("apps missing from list_profiles: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "no Chrome profiles connected") {
+		t.Fatalf("the Chrome line must still say none are connected: %q", res.Text)
+	}
+}
+
+func TestDialogToolsRefusedForChrome(t *testing.T) {
+	d := newDaemon("")
+	d.discover = func(context.Context) []appInfo { return nil }
+	for _, m := range []string{"dialog_status", "handle_dialog"} {
+		res := d.call(m, nil, "")
+		if res.OK || !strings.Contains(res.Error, "only available for app profiles") {
+			t.Errorf("%s on Chrome: %+v", m, res)
+		}
+	}
 }

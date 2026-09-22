@@ -410,8 +410,8 @@ test("selector commands inject the shared resolver helper first", async () => {
   // Compare element-wise: the array is built in the vm realm, so its prototype
   // differs from this realm's Array and deepStrictEqual would reject it.
   assert.ok(
-    calls[0].files && calls[0].files.length === 1 && calls[0].files[0] === "aglink-inject.js",
-    "first call must inject the resolver file"
+    calls[0].files && calls[0].files.length === 2 && calls[0].files[0] === "aglink-inject.js" && calls[0].files[1] === "page-actions.js",
+    "first call must inject the resolver and the shared page functions"
   );
   assert.ok(!calls[1].files && typeof calls[1].func === "function", "second call runs the action func");
 });
@@ -684,4 +684,37 @@ test("selectOption rejects a non-<select> element and an unmatched option", asyn
     () => noMatch.selectOption({ selector: "#x", value: "zz" }),
     /no <option> matching value="zz"/
   );
+});
+
+test("page-actions.js defines every shared page function", () => {
+  const src = fs.readFileSync(path.join(__dirname, "page-actions.js"), "utf8");
+  const sb = {};
+  vm.createContext(sb);
+  vm.runInContext(src, sb);
+  const want = ["getPageText", "elementExists", "click", "doubleClick", "hover", "drag", "getHtml",
+    "queryAll", "evalExpression", "getAttribute", "listElements", "waitForElement", "typeText",
+    "getValue", "keyCombo", "scroll", "selectOption"];
+  for (const n of want) assert.strictEqual(typeof sb.__aglinkPage[n], "function", n);
+  assert.strictEqual(sb.__aglinkPage.constants.KEY_SPECS.f5.key, "F5", "F-key table must be complete");
+});
+
+test("shared handlers call through __aglinkPage with the original args", async () => {
+  const calls = [];
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 5, active: true }] },
+      scripting: {
+        executeScript: async (opts) => {
+          calls.push(opts);
+          return [{ result: { found: true, text: "hi" } }];
+        },
+      },
+    })
+  );
+  await sb.getPageText({});
+  const run = calls.find((c) => typeof c.func === "function");
+  assert.strictEqual(run.args[0], "getPageText");
+  assert.strictEqual(run.args[1].length, 1);
+  assert.strictEqual(run.args[1][0], null, "no selector is passed through as null, as before");
+  assert.ok(calls.some((c) => c.files), "selectorless calls must still inject page-actions.js");
 });

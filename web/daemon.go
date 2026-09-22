@@ -82,6 +82,12 @@ type Daemon struct {
 	// a field so tests need not knock on real ports.
 	apps     appState
 	discover func(context.Context) []appInfo
+
+	// VS Code windows (profile vscode:…), one connection each from the
+	// aglink-vscode extension. Separate from exts so a window is never the
+	// default Chrome profile.
+	vscodes    map[string]*extConn
+	vscodeInfo map[string]vscodeWindow
 }
 
 func newDaemon(expectedExtID string) *Daemon {
@@ -91,6 +97,8 @@ func newDaemon(expectedExtID string) *Daemon {
 		pending:       make(map[uint64]chan Reply),
 		apps:          appState{conns: make(map[string]*appTarget)},
 		discover:      defaultDiscover,
+		vscodes:       make(map[string]*extConn),
+		vscodeInfo:    make(map[string]vscodeWindow),
 		pingInterval:  10 * time.Second,
 		readTimeout:   25 * time.Second,
 		upgrader: websocket.Upgrader{
@@ -106,6 +114,7 @@ func newDaemon(expectedExtID string) *Daemon {
 func (d *Daemon) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ext", d.handleExt)
+	mux.HandleFunc("/vscode", d.handleVSCode)
 	mux.HandleFunc("/call", d.handleCall)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -323,6 +332,7 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 func (d *Daemon) listProfiles() CallResult {
 	lines := d.chromeProfileLines()
 	lines = append(lines, d.appProfileLines()...)
+	lines = append(lines, d.vscodeProfileLines()...)
 	return CallResult{OK: true, Text: strings.Join(lines, "\n")}
 }
 

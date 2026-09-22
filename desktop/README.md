@@ -45,6 +45,22 @@ GOWORK=off go build -ldflags "-H windowsgui -s -w" -o bin/aglink-desktop.exe .
 **`-H windowsgui` is not optional.** Without it the binary links as a console
 subsystem app and Windows opens a terminal window next to the GUI every launch.
 
+## Driving the UI from aglink-web
+
+Set `AGLINK_WEBVIEW_DEBUG_PORT` before launching and the window opens a Chrome
+DevTools Protocol port, which aglink-web picks up as the profile `app:aglink`
+(or `cdp:<port>`) — the whole UI can then be read and clicked as text instead of
+through screen capture.
+
+```powershell
+$env:AGLINK_WEBVIEW_DEBUG_PORT = '9333'; .\aglink-desktop.exe
+```
+
+Without the variable no port is opened. It is passed through Wails'
+`AdditionalBrowserArgs` (`devtoolsArgs()` in `main.go`) because Wails' WebView2
+loader blanks `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` on purpose. See the
+aglink-web README, "앱 화면 다루기".
+
 ## Logs
 
 Because the binary is GUI-subsystem it has no stderr, so all logging goes to a

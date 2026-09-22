@@ -204,6 +204,94 @@ claude mcp list      # aglink-web: ... (HTTP) - ✔ Connected
 조작할 수 있다. 1인 전용 머신이면 문제 없지만, 공용 머신이라면 이 터널을
 상시로 두지 말 것.
 
+## 앱 화면 다루기 (Electron · Wails)
+
+Electron 이나 Wails 로 만든 윈도우 앱의 UI 도 **일반 웹페이지처럼** 같은 도구로
+다룬다. 앱의 웹뷰는 크롬이 아니라 확장을 설치할 수 없으므로, 데몬이 앱의
+DevTools 포트(CDP)에 **직접** 붙는다. 스크린샷 대신 텍스트로 읽으니 aglink-screen
+보다 훨씬 가볍다.
+
+### 앱 쪽 준비 — 디버그 포트 열기
+
+**Wails** — `main.go` 의 Windows 옵션에 한 줄. 환경변수가 있을 때만 포트가 열리므로
+평소 실행·배포판에는 영향이 없다.
+
+```go
+Windows: application.WindowsOptions{
+	AdditionalBrowserArgs: devtoolsArgs(),
+},
+
+func devtoolsArgs() []string {
+	if p := os.Getenv("AGLINK_WEBVIEW_DEBUG_PORT"); p != "" {
+		return []string{"--remote-debugging-port=" + p}
+	}
+	return nil
+}
+```
+
+```powershell
+$env:AGLINK_WEBVIEW_DEBUG_PORT = '9333'; .\myapp.exe
+```
+
+> `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 환경변수로는 **안 된다.** Wails 의 WebView2
+> 로더가 보안상 그 변수를 일부러 비운다. 반드시 앱 옵션으로 넣어야 한다.
+> `aglink/desktop/main.go` 에 본보기가 있다.
+
+**Electron** — 코드 수정 없이 실행 인자로:
+
+```powershell
+.\myapp.exe --remote-debugging-port=9222
+```
+
+### 부르기
+
+```
+list_profiles
+  doowon.lab.02@gmail.com | connected 3h ago | default
+  app:aglink | cdp:9333 | http://wails.localhost/ | 1 window
+
+get_page_text   profile="app:aglink"
+click           profile="app:aglink"  selector="text=업무 관리"
+type            profile="cdp:9333"    selector="placeholder=메시지" text="안녕"
+```
+
+- `app:<이름>` — 창 제목에서 만든 이름. 앞부분만 대도 된다(겹치면 되묻는다).
+- `cdp:<포트>` — 항상 통하는 정확한 이름. 제목이 바뀌어도 안 변한다.
+- 창이 여럿이면 `list_tabs` 가 `1 | 제목 | url` 로 번호를 매기고, 다른 도구의
+  `tabId` 가 그 번호다.
+- 설정은 없다. 데몬이 `127.0.0.1:9222–9240` 을 짧게 두드려 찾는다. 범위는
+  `AGLINK_WEB_CDP_PORTS` 로 바꾼다(`9333`, `9300-9310`, `9222,9333` 모두 가능).
+
+선택자는 크롬과 **같은 엔진**이다(`extension/aglink-inject.js` +
+`extension/page-actions.js` 를 데몬이 그대로 앱에 넣는다). 크롬에서 되는
+`role=`/`text=`/`label=`/`placeholder=`/`testid=` 선택자가 앱에서도 그대로 된다.
+
+### alert · confirm · prompt
+
+이 창이 뜨면 페이지 JS 가 멈춰서, 그 창에 대한 다른 도구는 전부
+`dialog open: confirm "…" — call handle_dialog to answer it` 로 **즉시** 돌아온다
+(시간 초과까지 기다리지 않는다).
+
+```
+dialog_status   profile="app:aglink"                  → confirm: "삭제할까요?"
+handle_dialog   profile="app:aglink"  accept="false"  → 취소
+handle_dialog   profile="app:aglink"  prompt_text="홍길동"
+```
+
+크롬의 alert/confirm 은 아직 지원하지 않는다(확장에 디버거 권한이 필요해 따로
+진행한다).
+
+### 앱에서 안 되는 것
+
+`get_console_logs`, `get_network_requests`, `close_tab`, `reload_extension` 은 앱
+프로필에서 분명한 오류로 거절한다.
+
+### 주의 — 디버그 포트는 앱 전체를 주는 문이다
+
+포트에 닿는 누구든 그 앱을 통째로 조작할 수 있다. 데몬은 `127.0.0.1` 밖의 CDP 에는
+절대 붙지 않고, Chromium 의 기본 바인딩도 루프백이다. 그래도 **개발용 실행에서만**
+켤 것 — 위 Wails 코드가 환경변수 없이는 포트를 열지 않는 이유다.
+
 ## Config
 
 | Env var | Default | Meaning |

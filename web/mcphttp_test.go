@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -146,5 +147,43 @@ func TestMCPEndpointReportsNoExtension(t *testing.T) {
 	text, _ := json.Marshal(call)
 	if !strings.Contains(string(text), "not connected") {
 		t.Fatalf("expected a 'not connected' result, got: %s", text)
+	}
+}
+
+// A model learns that app windows exist only from what the server says on
+// connecting — no single tool's description can carry it. Pin that it is sent.
+func TestMCPInitializeCarriesAppInstructions(t *testing.T) {
+	d := newDaemon("")
+	d.discover = func(context.Context) []appInfo { return nil }
+	srv := httptest.NewServer(d.handler())
+	defer srv.Close()
+
+	init := postMCP(t, srv.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "0"},
+		},
+	})
+	result, _ := init["result"].(map[string]any)
+	instr, _ := result["instructions"].(string)
+	for _, want := range []string{"app:<name>", "cdp:<port>", "Electron", "Wails", "handle_dialog", "AGLINK_WEBVIEW_DEBUG_PORT"} {
+		if !strings.Contains(instr, want) {
+			t.Errorf("initialize instructions miss %q:\n%s", want, instr)
+		}
+	}
+}
+
+// Tools that cannot work on an app window must say so in their description,
+// or a model will try them there and only learn from the error.
+func TestChromeOnlyToolsSaySo(t *testing.T) {
+	chromeOnly := map[string]bool{"get_console_logs": true, "get_network_requests": true, "close_tab": true, "reload_extension": true}
+	for _, c := range commands {
+		if chromeOnly[c.name] && !strings.Contains(c.desc, "Chrome profiles only") {
+			t.Errorf("%s: description must mark it Chrome-only", c.name)
+		}
 	}
 }

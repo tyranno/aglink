@@ -30,6 +30,7 @@ func newMCPServer(dispatch dispatchFunc) *server.MCPServer {
 		"web",
 		"0.1.0",
 		server.WithToolCapabilities(true),
+		server.WithInstructions(serverInstructions),
 	)
 
 	for _, c := range commands {

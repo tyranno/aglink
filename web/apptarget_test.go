@@ -13,8 +13,8 @@ import (
 // pageSim answers Runtime.evaluate like a page that starts without the shared
 // scripts and gains them once both inject evaluations have run.
 type pageSim struct {
-	injected   atomic.Int32 // number of inject scripts evaluated
-	calls      atomic.Int32 // number of __aglinkPage calls that actually ran
+	injected   atomic.Int32                                   // number of inject scripts evaluated
+	calls      atomic.Int32                                   // number of __aglinkPage calls that actually ran
 	onEvaluate func(f *fakeCDP, req cdpMsg, expr string) bool // return true if handled
 }
 

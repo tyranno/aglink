@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -70,6 +71,12 @@ type Daemon struct {
 	pending map[uint64]chan Reply
 
 	upgrader websocket.Upgrader
+
+	// Electron/Wails windows reached over CDP (profile app:… / cdp:…). Kept
+	// apart from exts: an app never goes through the extension. discover is
+	// a field so tests need not knock on real ports.
+	apps     appState
+	discover func(context.Context) []appInfo
 }
 
 func newDaemon(expectedExtID string) *Daemon {
@@ -77,6 +84,8 @@ func newDaemon(expectedExtID string) *Daemon {
 		expectedExtID: expectedExtID,
 		exts:          make(map[string]*extConn),
 		pending:       make(map[uint64]chan Reply),
+		apps:          appState{conns: make(map[string]*appTarget)},
+		discover:      defaultDiscover,
 		pingInterval:  10 * time.Second,
 		readTimeout:   25 * time.Second,
 		upgrader: websocket.Upgrader{
@@ -328,6 +337,12 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if method == listProfilesMethod {
 		return d.listProfiles()
 	}
+	if isAppProfile(profile) {
+		return d.callApp(method, params, profile)
+	}
+	if appOnlyMethods[method] {
+		return appOnlyRefusal(method)
+	}
 
 	d.mu.Lock()
 	ec, err := d.resolve(profile)
@@ -380,12 +395,22 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 // listProfiles renders the connected profiles, oldest first — the same order
 // resolve() uses to pick the default, so the first line is always where an
 // unspecified call goes. Locks d.mu itself, unlike resolve().
+//
+// App windows with a DevTools port follow the Chrome profiles. Discovery runs
+// after d.mu is released: it waits on the network, and holding the lock would
+// stall every Chrome call meanwhile.
 func (d *Daemon) listProfiles() CallResult {
+	lines := d.chromeProfileLines()
+	lines = append(lines, d.appProfileLines()...)
+	return CallResult{OK: true, Text: strings.Join(lines, "\n")}
+}
+
+func (d *Daemon) chromeProfileLines() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if len(d.exts) == 0 {
-		return CallResult{OK: true, Text: "no Chrome profiles connected — sign in to Chrome and load the aglink-web extension"}
+		return []string{"no Chrome profiles connected — sign in to Chrome and load the aglink-web extension"}
 	}
 
 	ecs := make([]*extConn, 0, len(d.exts))
@@ -394,15 +419,15 @@ func (d *Daemon) listProfiles() CallResult {
 	}
 	sort.Slice(ecs, func(i, j int) bool { return ecs[i].seq < ecs[j].seq })
 
-	var b strings.Builder
+	lines := make([]string, 0, len(ecs))
 	for i, ec := range ecs {
-		fmt.Fprintf(&b, "%s | connected %s ago", ec.account, time.Since(ec.since).Round(time.Second))
+		line := fmt.Sprintf("%s | connected %s ago", ec.account, time.Since(ec.since).Round(time.Second))
 		if i == 0 {
-			b.WriteString(" | default")
+			line += " | default"
 		}
-		b.WriteString("\n")
+		lines = append(lines, line)
 	}
-	return CallResult{OK: true, Text: strings.TrimRight(b.String(), "\n")}
+	return lines
 }
 
 func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {

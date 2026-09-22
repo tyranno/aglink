@@ -54,7 +54,9 @@ func newFakeCDP(t *testing.T, handle func(f *fakeCDP, req cdpMsg)) *fakeCDP {
 	return f
 }
 
-func (f *fakeCDP) url() string { return "ws" + strings.TrimPrefix(f.srv.URL, "http") + "/devtools/page/X" }
+func (f *fakeCDP) url() string {
+	return "ws" + strings.TrimPrefix(f.srv.URL, "http") + "/devtools/page/X"
+}
 
 func (f *fakeCDP) send(v any) {
 	data, _ := json.Marshal(v)

@@ -127,7 +127,7 @@ func TestAppClickAndFriends(t *testing.T) {
 
 func TestAppQueryAllAndListElements(t *testing.T) {
 	f := &fakePage{results: map[string]string{
-		"queryAll":     `[{"tag":"a","text":"홈","attrs":[["href","/"]]},{"tag":"a","text":"설정","attrs":[]}]`,
+		"queryAll":            `[{"tag":"a","text":"홈","attrs":[["href","/"]]},{"tag":"a","text":"설정","attrs":[]}]`,
 		"listElementsDefault": `[{"idx":0,"tag":"button","role":"","type":"","label":"저장","x":10,"y":20,"disabled":false},{"idx":1,"tag":"input","role":"","type":"text","label":"이름","x":5,"y":6,"disabled":true}]`,
 	}}
 	r := run(t, f, "query_all", map[string]any{"selector": "a", "attrs": "href, class"})
@@ -169,11 +169,11 @@ func TestAppAttributeValueHtml(t *testing.T) {
 
 func TestAppTypeKeyScrollSelectEval(t *testing.T) {
 	f := &fakePage{results: map[string]string{
-		"typeText":       `{"found":true,"tag":"input"}`,
+		"typeText":        `{"found":true,"tag":"input"}`,
 		"keyComboDefault": `{"ok":true,"tag":"body"}`,
-		"scroll":         `{"found":true}`,
-		"selectOption":   `{"found":true,"isSelect":true,"matched":true,"selected":"서울"}`,
-		"evalExpression": `{"ok":true,"json":"42"}`,
+		"scroll":          `{"found":true}`,
+		"selectOption":    `{"found":true,"isSelect":true,"matched":true,"selected":"서울"}`,
+		"evalExpression":  `{"ok":true,"json":"42"}`,
 	}}
 	if r := run(t, f, "type", map[string]any{"selector": "input", "text": ""}); r.Text != "ok: typed into <input>" {
 		t.Fatalf("type (empty text is valid): %+v", r)

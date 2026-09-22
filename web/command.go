@@ -50,7 +50,7 @@ type command struct {
 var commands = []command{
 	{
 		name: "list_profiles",
-		desc: "List the Chrome profiles currently connected to aglink-web, as 'account | connected Xs ago | default' lines, oldest first. The first line is where a call with no 'profile' goes. Pass any of these accounts — or a unique prefix such as \"doowon.lab.02\" — as 'profile' on another tool to drive that browser instead.",
+		desc: "List what aglink-web can drive: the connected Chrome profiles ('account | connected Xs ago | default', oldest first — the first line is where a call with no 'profile' goes), then any Electron/Wails app window that has a DevTools port open ('app:<name> | cdp:<port> | url | N window(s)'). Pass an account — or a unique prefix such as \"doowon.lab.02\" — or an app:/cdp: name as 'profile' on another tool to drive that target instead. App windows are driven like web pages, as text, which is far cheaper than screen capture.",
 	},
 	{
 		name: "list_tabs",
@@ -252,6 +252,22 @@ var commands = []command{
 		desc: "Dev-workflow convenience: reload the aglink-web extension itself (chrome.runtime.reload()) so a background.js/manifest.json edit takes effect, instead of manually navigating to chrome://extensions and clicking reload. Not useful for driving a user's own browsing — only relevant when developing this extension.",
 	},
 	{
+		name: "dialog_status",
+		desc: "Report the JavaScript dialog (alert, confirm, prompt, or leave-page confirmation) currently open in an app window, as 'type: \"message\"'. While one is open the page's JavaScript is frozen, so every other tool on that window fails with 'dialog open' until it is answered with handle_dialog. App profiles (app:/cdp:) only for now; Chrome profiles are not supported yet.",
+		args: []argSpec{
+			{name: "tabId", typ: argInt, desc: "Optional window number (from list_tabs). Omit for the first window."},
+		},
+	},
+	{
+		name: "handle_dialog",
+		desc: "Answer the JavaScript dialog open in an app window — press OK (accept, the default) or Cancel (accept=false), optionally typing text into a prompt(). Check what it says with dialog_status first. App profiles (app:/cdp:) only for now.",
+		args: []argSpec{
+			{name: "accept", typ: argString, desc: "\"true\" (default) presses OK, \"false\" presses Cancel."},
+			{name: "prompt_text", typ: argString, desc: "Text to enter into a prompt() dialog before accepting. Ignored for alert/confirm."},
+			{name: "tabId", typ: argInt, desc: "Optional window number (from list_tabs). Omit for the first window."},
+		},
+	},
+	{
 		name: "close_tab",
 		desc: "Close a Chrome tab. If 'tabId' is omitted, the active tab of the focused window is closed.",
 		args: []argSpec{
@@ -335,7 +351,7 @@ func (c command) parseCLIArgs(args []string) (map[string]any, error) {
 // repeat identically.
 const profileArg = "profile"
 
-const profileArgDesc = "Target Chrome profile, given as its signed-in Google account email or a unique prefix of it (e.g. \"doowon.lab.02\"). Omit to use the account pinned by the project's .aglink-web/config, or the longest-connected profile when nothing is pinned. Call list_profiles to see what is connected."
+const profileArgDesc = "Target to drive: a Chrome profile given as its signed-in Google account email or a unique prefix of it (e.g. \"doowon.lab.02\"), or an Electron/Wails app window as app:<name> (e.g. \"app:aglink\"; a unique prefix works) or cdp:<port>. Omit to use the account pinned by the project's .aglink-web/config, or the longest-connected Chrome profile when nothing is pinned. Call list_profiles to see what is available."
 
 // mcpTool builds the MCP tool definition from the command's arg specs.
 func (c command) mcpTool() mcp.Tool {

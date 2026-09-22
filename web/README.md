@@ -281,6 +281,10 @@ handle_dialog   profile="app:aglink"  prompt_text="홍길동"
 크롬의 alert/confirm 은 아직 지원하지 않는다(확장에 디버거 권한이 필요해 따로
 진행한다).
 
+2026-09-22 aglink 데스크톱(Wails v3)으로 실측: 목록·본문 읽기·`text=`/`role=`
+선택자 클릭·입력·값 읽기·스크린샷·`confirm()` 처리까지 전부 동작했고, 확인창이
+떠 있는 동안 다른 도구는 100ms 안에 `dialog open` 으로 돌아왔다.
+
 ### 앱에서 안 되는 것
 
 `get_console_logs`, `get_network_requests`, `close_tab`, `reload_extension` 은 앱

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aglink-web 사용 안내</title>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1d1d1b; --muted:#5f5f5a; --line:#e3e2dd; --accent:#2f5d8a; --code:#f1f0ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#191918; --fg:#ececea; --muted:#a3a39d; --line:#33332f; --accent:#8db6df; --code:#262624; } }
+  body { background:var(--bg); color:var(--fg); font:16px/1.65 "Segoe UI","Malgun Gothic",sans-serif; margin:0; }
+  main { max-width:760px; margin:0 auto; padding:40px 20px 80px; }
+  h1 { font-size:28px; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 32px; }
+  h2 { font-size:19px; margin:36px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  code, kbd { background:var(--code); border-radius:4px; padding:1px 6px; font:14px Consolas,"D2Coding",monospace; }
+  pre { background:var(--code); border-radius:8px; padding:14px 16px; overflow-x:auto; font:14px/1.5 Consolas,"D2Coding",monospace; }
+  ol li, ul li { margin:6px 0; }
+  .step { display:inline-block; min-width:24px; height:24px; border-radius:12px; background:var(--accent); color:var(--bg); text-align:center; font-weight:600; margin-right:8px; }
+  table { border-collapse:collapse; width:100%; font-size:15px; } td, th { border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; vertical-align:top; }
+  .note { color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+<h1>aglink-web</h1>
+<p class="sub">Claude 가 브라우저 · Electron/Wails 앱 · 다른 VS Code 창을 <b>텍스트로</b> 읽고 조작하게 해 줍니다.</p>
+
+<p>설치 프로그램이 이미 해 둔 것: 데몬 설치와 자동 시작, Claude Code 에 MCP 서버 <code>aglink-web</code> 등록, VS Code 확장 <code>aglink-vscode</code> 설치(VS Code 가 있을 때). 남은 건 <b>크롬 확장 하나</b>뿐입니다.</p>
+
+<h2><span class="step">1</span>크롬 확장 불러오기 (처음 한 번)</h2>
+<ol>
+  <li>크롬 주소창에 <code>chrome://extensions</code> 를 입력합니다.</li>
+  <li>오른쪽 위 <b>개발자 모드</b>를 켭니다.</li>
+  <li><b>압축해제된 확장 프로그램을 로드합니다</b>를 누르고 이 폴더를 고릅니다:<br>
+    <code>%LOCALAPPDATA%\Programs\aglink-web\chrome-extension</code><br>
+    <span class="note">시작 메뉴 → aglink-web → "크롬 확장 폴더 열기" 로 바로 열 수 있습니다. 설치 폴더를 바꿨다면 그 아래의 <code>chrome-extension</code> 입니다.</span></li>
+  <li>크롬에 <b>로그인</b>돼 있어야 합니다. 확장은 로그인한 계정 이름으로 데몬에 붙습니다.</li>
+</ol>
+
+<h2><span class="step">2</span>업데이트할 때</h2>
+<p>새 설치 파일을 그냥 실행하면 됩니다. 끝나면 <code>chrome://extensions</code> 에서 aglink-web 카드의 <b>새로고침(↻)</b> 을 한 번 누르세요. 쓰던 Claude 세션은 새로 열어야 도구가 다시 붙습니다.</p>
+
+<h2>쓰는 법</h2>
+<p>Claude Code 에게 말로 시키면 됩니다. 도구는 이렇게 고릅니다:</p>
+<pre>list_profiles
+  you@example.com | connected 3h ago | default          ← 크롬
+  app:mytool | cdp:9222 | http://… | 1 window           ← Electron/Wails 앱
+  vscode:backend@myserver | SSH myserver | /home/… | …  ← 다른 VS Code 창</pre>
+<table>
+  <tr><th>대상</th><th>도구</th><th>예</th></tr>
+  <tr><td>크롬 탭</td><td><code>get_page_text</code>, <code>click</code>, <code>type</code>, <code>list_elements</code> …</td><td>"열린 탭에서 결재 목록 읽어줘"</td></tr>
+  <tr><td>Electron/Wails 앱</td><td>같은 도구 + <code>profile="app:이름"</code></td><td>앱을 디버그 포트로 띄워야 보입니다(아래)</td></tr>
+  <tr><td>다른 VS Code 창</td><td><code>vscode_workspace</code>, <code>vscode_read</code>, <code>vscode_terminal_run</code> …</td><td>"backend 창에서 go test 돌려서 결과 알려줘"</td></tr>
+</table>
+
+<h2>Electron · Wails 앱을 다루려면</h2>
+<p>앱이 디버그 포트를 열고 떠 있어야 합니다(9222–9240 을 찾습니다).</p>
+<ul>
+  <li><b>Electron</b>: <code>myapp.exe --remote-debugging-port=9222</code></li>
+  <li><b>Wails</b>: 앱 코드의 Windows 옵션에 <code>AdditionalBrowserArgs</code> 한 줄이 필요합니다(환경변수로는 안 됩니다). 개발자에게 aglink 저장소의 <code>web/README.md</code> "앱 화면 다루기" 를 보여 주세요.</li>
+</ul>
+
+<h2>VS Code 창을 다루려면</h2>
+<p>설치 프로그램이 VS Code 확장을 깔아 두었습니다. VS Code 창마다 자동으로 붙어 <code>list_profiles</code> 에 <code>vscode:…</code> 로 나타납니다. <b>Remote-SSH 창도</b> 그대로 됩니다 — 확장은 이 PC 에서 돌고, 명령과 파일은 원격에서 처리됩니다.</p>
+<p class="note">창이 안 보이면: VS Code 출력 패널에서 "aglink" 를 골라 로그를 보세요. 한 번만 창에서 <kbd>Ctrl+Shift+P</kbd> → "Developer: Reload Window" 를 하면 대부분 해결됩니다.</p>
+<p class="note">주의: <code>vscode_terminal_run</code> 은 그 창의 권한으로 명령을 실행합니다(원격 창이면 원격에서). 창 설정에서 <code>aglink.enabled</code> 를 끄면 그 창은 연결되지 않습니다.</p>
+
+<h2>원격(SSH) 머신의 Claude 에서 쓰려면 (선택)</h2>
+<p>Claude Code 가 원격 리눅스에서 돌 때는, 이 PC 의 데몬 포트를 SSH 로 넘겨 주고 원격에 한 번 등록합니다.</p>
+<pre># 이 PC 의 ~/.ssh/config — 해당 Host 항목에 한 줄
+  RemoteForward 48219 127.0.0.1:48219
+
+# 원격에서 한 번
+claude mcp add --transport http --scope user aglink-web-remote http://127.0.0.1:48219/mcp</pre>
+<p class="note"><code>ExitOnForwardFailure yes</code> 는 넣지 마세요 — 같은 호스트에 VS Code 창을 두 개 열면 두 번째 연결이 끊깁니다.</p>
+
+<h2>문제가 있을 때</h2>
+<ul>
+  <li>데몬 확인: 브라우저에서 <code>http://127.0.0.1:48219/health</code> → <code>ok</code> 가 나와야 합니다. 안 나오면 시작 메뉴에서 로그오프/로그온하거나 설치 파일을 다시 실행하세요.</li>
+  <li>Claude 에 도구가 안 보이면: 터미널에서 <code>claude mcp list</code> 로 <code>aglink-web</code> 이 있는지 보세요.</li>
+  <li>제거: 설정 → 앱 → aglink-web. 사용자 설정(<code>%USERPROFILE%\.aglink</code>)은 남겨 둡니다.</li>
+</ul>
+</main>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aglink-screen 사용 안내</title>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1d1d1b; --muted:#5f5f5a; --line:#e3e2dd; --code:#f1f0ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#191918; --fg:#ececea; --muted:#a3a39d; --line:#33332f; --code:#262624; } }
+  body { background:var(--bg); color:var(--fg); font:16px/1.65 "Segoe UI","Malgun Gothic",sans-serif; margin:0; }
+  main { max-width:760px; margin:0 auto; padding:40px 20px 80px; }
+  h1 { font-size:28px; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 32px; }
+  h2 { font-size:19px; margin:36px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  code { background:var(--code); border-radius:4px; padding:1px 6px; font:14px Consolas,"D2Coding",monospace; }
+  pre { background:var(--code); border-radius:8px; padding:14px 16px; overflow-x:auto; font:14px/1.5 Consolas,"D2Coding",monospace; }
+  li { margin:6px 0; } .note { color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+<h1>aglink-screen</h1>
+<p class="sub">Claude 가 윈도우 화면을 직접 조작하게 해 줍니다 — 창 목록, 접근성 트리로 읽기, 클릭·입력, 창 캡처.</p>
+
+<p>설치 프로그램이 Claude Code 에 MCP 서버 <code>aglink-screen</code> 을 등록해 두었습니다. <b>Claude Code 세션을 새로 열면</b> 도구가 붙습니다. 따로 켜 둘 것은 없습니다 — Claude 가 필요할 때 띄웁니다.</p>
+
+<h2>언제 쓰나</h2>
+<ul>
+  <li>일반 윈도우 프로그램(탐색기, 설정, 사내 네이티브 앱 …)</li>
+  <li>웹 페이지 · Electron/Wails 앱 · VS Code 창은 <b>aglink-web</b> 이 훨씬 가볍습니다 — 화면을 찍지 않고 텍스트로 읽기 때문입니다.</li>
+</ul>
+
+<h2>토큰을 아끼는 순서</h2>
+<ol>
+  <li><code>list_windows</code> → <code>snapshot</code> (접근성 트리 — 글자로 읽음, 가장 쌈)</li>
+  <li><code>invoke</code> / <code>set_value</code> 로 좌표 없이 조작</li>
+  <li>그래도 안 되면 <code>capture_window</code> (이미지 — 가장 비쌈)</li>
+</ol>
+
+<h2>관리자 권한으로 뜬 프로그램</h2>
+<p>대상 앱이 관리자 권한이면 윈도우가 일반 프로그램의 클릭을 조용히 막습니다(UIPI). 결과에 경고가 붙으면 Claude Code 를 관리자 권한으로 실행해야 합니다.</p>
+
+<h2>업데이트 · 제거</h2>
+<ul>
+  <li>업데이트: 새 설치 파일을 실행하고, 쓰던 Claude 세션을 새로 여세요.</li>
+  <li>도구가 안 보이면: <code>claude mcp list</code> 로 <code>aglink-screen</code> 확인.</li>
+  <li>제거: 설정 → 앱 → aglink-screen.</li>
+</ul>
+<p class="note">화면을 조작하는 도구라, 쓰는 동안 마우스·키보드를 함께 움직이면 서로 방해합니다.</p>
+</main>
+</body>
+</html>

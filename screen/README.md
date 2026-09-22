@@ -109,7 +109,8 @@ claude mcp add --transport http --scope user \
 ```
 
 이름을 `aglink-screen-remote`로 두면 도구가 `mcp__aglink-screen-remote__*`로 떠서,
-로컬에서 stdio로 띄운 `aglink-screen`과 이름으로 갈린다.
+로컬에서 stdio로 띄운 `aglink-screen`과 이름으로 갈린다. aglink-web 도 같은 규칙이다
+(`aglink-web-remote`) — [`docs/mcp-names.md`](../docs/mcp-names.md).
 
 ### 항시 켜 두기
 

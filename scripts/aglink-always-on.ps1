@@ -26,9 +26,9 @@
 
   Ports land on the REMOTE loopback, which is per-machine, not per-user — so one
   tunnel serves every account on that host. Each account still needs its own MCP
-  registration:
+  registration (names per docs/mcp-names.md — "-remote" means "the Windows PC"):
 
-    claude mcp add --transport http --scope user aglink-web          http://127.0.0.1:48219/mcp
+    claude mcp add --transport http --scope user aglink-web-remote    http://127.0.0.1:48219/mcp
     claude mcp add --transport http --scope user aglink-screen-remote http://127.0.0.1:48220/mcp
 
 .PARAMETER SshHost

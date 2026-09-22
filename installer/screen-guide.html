@@ -39,6 +39,17 @@
 <h2>관리자 권한으로 뜬 프로그램</h2>
 <p>대상 앱이 관리자 권한이면 윈도우가 일반 프로그램의 클릭을 조용히 막습니다(UIPI). 결과에 경고가 붙으면 Claude Code 를 관리자 권한으로 실행해야 합니다.</p>
 
+<h2>원격(SSH) 머신의 Claude 에서 쓰려면 (선택)</h2>
+<p>Claude Code 가 원격 리눅스에서 돌 때 이 PC 의 화면을 쓰려면, 이 PC 에서 화면 서버를 띄워 두고 그 포트를 SSH 로 넘깁니다.</p>
+<pre># 이 PC — 화면 서버 (창을 닫으면 꺼지므로 상시로 쓰려면 로그온 작업으로)
+"%LOCALAPPDATA%\Programs\aglink-screen\aglink-screen.exe" serve
+
+# 이 PC 의 ~/.ssh/config — 해당 Host 항목에 한 줄
+  RemoteForward 48220 127.0.0.1:48220
+
+# 원격에서 한 번 — 이름 끝의 -remote 는 "건너간 윈도우 PC 의 것" 이라는 뜻
+claude mcp add --transport http --scope user aglink-screen-remote http://127.0.0.1:48220/mcp</pre>
+
 <h2>업데이트 · 제거</h2>
 <ul>
   <li>업데이트: 새 설치 파일을 실행하고, 쓰던 Claude 세션을 새로 여세요.</li>

@@ -181,9 +181,12 @@ Host my-linux-box
 **2. 리눅스 쪽 Claude 에 등록** (설치할 바이너리 없음):
 
 ```sh
-claude mcp add --transport http -s user aglink-web http://127.0.0.1:48219/mcp
-claude mcp list      # aglink-web: ... (HTTP) - ✔ Connected
+claude mcp add --transport http -s user aglink-web-remote http://127.0.0.1:48219/mcp
+claude mcp list      # aglink-web-remote: ... (HTTP) - ✔ Connected
 ```
+
+이름에 `-remote` 를 붙이는 이유: 원격에서 `aglink-web` 은 **그 리눅스 머신 자신의**
+브라우저 몫으로 남겨 둔다. 규칙은 [`docs/mcp-names.md`](../docs/mcp-names.md).
 
 이미 열려 있던 Claude 세션에는 반영되지 않는다 — MCP 서버는 세션 시작 시점에
 로드되므로 **새 세션부터** 툴이 보인다.

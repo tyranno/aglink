@@ -45,6 +45,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setu
 
 제거는 위를 전부 되돌린다(설정 → 앱). 사용자 설정 `%USERPROFILE%\.aglink` 는 남긴다.
 
+등록 이름은 `aglink-web` / `aglink-screen` — **그 머신 자신의 것**이라는 뜻이다. 원격
+리눅스의 Claude 가 이 PC 를 쓸 때는 `aglink-web-remote` / `aglink-screen-remote` 로
+등록한다. 규칙과 포트는 [`docs/mcp-names.md`](../docs/mcp-names.md).
+
 ## 명령줄 옵션
 
 조용히 설치하거나 일부를 건너뛸 때:

@@ -8,3 +8,5 @@ bin/
 frontend/bindings/
 frontend/dist/
 *.syso
+build/android/.gradle/
+build/android/build/

@@ -21,6 +21,7 @@ import (
 //	aglink-web serve      — the persistent daemon the extension connects to
 //	                        (auto-spawned by the bridge if not already running)
 //	aglink-web cmd <sub>  — fast-path, no LLM; prints {"text","error"} JSON
+//	aglink-web trust-cert <url> — trust an internal site's certificate for good
 func main() {
 	args := os.Args[1:]
 	sub := "mcp"
@@ -39,8 +40,10 @@ func main() {
 		}
 	case "cmd":
 		runCmd(args[1:])
+	case "trust-cert":
+		runTrustCert(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: aglink-web [mcp | serve | cmd <subcommand> [args...]]")
+		fmt.Fprintln(os.Stderr, "usage: aglink-web [mcp | serve | cmd <subcommand> [args...] | trust-cert <https-url> [--yes]]")
 		os.Exit(2)
 	}
 }

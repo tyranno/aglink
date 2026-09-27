@@ -118,7 +118,7 @@ async function connect() {
       reply.text = await dispatch(req.method, req.params || {});
       reply.ok = true;
     } catch (e) {
-      reply.error = String(e && e.message ? e.message : e);
+      reply.error = await explainError(req.params || {}, String(e && e.message ? e.message : e));
     }
     send(socket, reply);
   };
@@ -202,6 +202,8 @@ async function dispatch(method, params) {
       return await reloadExtension();
     case "close_tab":
       return await closeTab(params);
+    case "proceed_insecure":
+      return await proceedInsecure(params);
     default:
       throw new Error(`unknown method: ${method}`);
   }
@@ -254,7 +256,12 @@ async function navigate(params) {
   }
   await waitForComplete(tab.id);
   const updated = await chrome.tabs.get(tab.id);
-  return `ok: navigated tab ${updated.id} — ${updated.title || ""} — ${updated.url || ""}`;
+  const ok = `ok: navigated tab ${updated.id} — ${updated.title || ""} — ${updated.url || ""}`;
+  // A certificate problem does not fail the navigation: Chrome shows its own
+  // warning page in the tab, and every later tool would fail on it with an
+  // opaque "showing error page". Say so here, with the way past it.
+  const warn = await certWarning(updated.id);
+  return warn ? `${ok}\n${warn}` : ok;
 }
 
 async function getPageText(params) {
@@ -930,6 +937,318 @@ async function closeTab(params) {
   return `ok: closed tab ${tabId}`;
 }
 
+// ---- certificate warnings ---------------------------------------------------
+//
+// An https site with a bad certificate (self-signed, internal CA, expired, wrong
+// name) makes Chrome show its own warning page instead of the site. That page is
+// a chrome-error:// document: executeScript cannot touch it, so every tool fails
+// on it and its "Proceed" link cannot be clicked the usual way.
+//
+// Detection: webNavigation reports the main-frame net error (net::ERR_CERT_…)
+// for the load the warning replaced; it is kept per tab, in memory and in
+// storage.session so a restarted service worker still knows.
+//
+// Getting past it: proceed_insecure attaches chrome.debugger — the one extension
+// API that reaches the warning page — and tries, in order, what a person would
+// do (the page's own proceed link), Chrome's keyboard bypass for warnings that
+// have no such link (HSTS), and finally ignoring certificate errors outright.
+// The first two are remembered by Chrome for the host for the rest of the
+// browser session, exactly as if the user had clicked through.
+
+const navErrors = new Map(); // tabId → { url, error }
+const debuggerTabs = new Set(); // tabs this worker holds chrome.debugger on
+const BYPASS_KEYS = "thisisunsafe";
+
+function isCertError(error) {
+  return /^net::ERR_(CERT_|SSL_|BAD_SSL_)/.test(error || "") || error === "net::ERR_INSECURE_RESPONSE";
+}
+
+// isErrorPageMessage matches what executeScript throws on a browser error or
+// warning page — the only documents it refuses with these words.
+function isErrorPageMessage(msg) {
+  return /showing error page|chrome-error:/i.test(msg || "");
+}
+
+function hostOf(url) {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(url || "");
+  return m ? m[1] : url || "";
+}
+
+async function rememberNavError(tabId, value) {
+  if (value) navErrors.set(tabId, value);
+  else navErrors.delete(tabId);
+  try {
+    const key = `navErr:${tabId}`;
+    if (value) await chrome.storage.session.set({ [key]: value });
+    else await chrome.storage.session.remove(key);
+  } catch (e) {
+    // storage.session only carries this across a worker restart; never block on it
+  }
+}
+
+async function lastNavError(tabId) {
+  if (navErrors.has(tabId)) return navErrors.get(tabId);
+  try {
+    const key = `navErr:${tabId}`;
+    const got = await chrome.storage.session.get(key);
+    return (got && got[key]) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// probePage runs a no-op in the tab: "ok" if the page is scriptable, "error"
+// if it is a browser error/warning page, "other" for anything else (tab gone,
+// chrome:// page) — so a failure for an unrelated reason is never mistaken for
+// having left the warning.
+async function probePage(tabId) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, func: () => 1 });
+    return "ok";
+  } catch (e) {
+    return isErrorPageMessage(String(e && e.message ? e.message : e)) ? "error" : "other";
+  }
+}
+
+// certWarning returns the line navigate appends when the tab ended up on a
+// warning page rather than the site, or "" when it did not.
+async function certWarning(tabId) {
+  if ((await probePage(tabId)) !== "error") return "";
+  let err = await lastNavError(tabId);
+  if (!err) {
+    // The error event can trail the load's "complete" by a moment.
+    await new Promise((r) => setTimeout(r, 300));
+    err = await lastNavError(tabId);
+  }
+  if (err && !isCertError(err.error)) {
+    return `warning: the page failed to load (${err.error} for ${err.url}) — the tab shows Chrome's error page`;
+  }
+  const what = err ? `certificate warning on tab ${tabId} (${err.error}, host ${hostOf(err.url)})` : `error or warning page on tab ${tabId}`;
+  return `warning: ${what} — Chrome is showing its warning instead of the page. To continue past it, call proceed_insecure with tabId=${tabId}`;
+}
+
+// explainError turns executeScript's opaque "showing error page" into what is
+// actually on screen and what to do about it.
+async function explainError(params, msg) {
+  if (!isErrorPageMessage(msg)) return msg;
+  let tabId = params.tabId;
+  if (!tabId) {
+    try {
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      tabId = active && active.id;
+    } catch (e) {
+      // fall through with the raw message
+    }
+  }
+  if (!tabId) return msg;
+  const err = await lastNavError(tabId);
+  if (err && isCertError(err.error)) {
+    return `tab ${tabId} is showing Chrome's certificate warning (${err.error}, host ${hostOf(err.url)}), not the page — call proceed_insecure with tabId=${tabId} to continue past it`;
+  }
+  if (err) return `tab ${tabId} is showing Chrome's error page: ${err.error} loading ${err.url}`;
+  return `${msg} — tab ${tabId} is on a browser error or warning page; if it is a certificate warning, call proceed_insecure with tabId=${tabId}`;
+}
+
+function bypassFallback(tabId, why) {
+  return (
+    `${why}. Other ways past it: ` +
+    `(1) with aglink-screen, bring this Chrome window (tab ${tabId}) to the front and type the keys "thisisunsafe" while the warning is showing — Chrome's own bypass; ` +
+    `(2) ask the user to trust the site's certificate once with "aglink-web trust-cert <url>", which removes the warning for good; ` +
+    `(3) list the host in ~/.aglink/aglink-web-insecure-hosts so navigate continues past it by itself`
+  );
+}
+
+async function attachDebugger(target) {
+  if (debuggerTabs.has(target.tabId)) return;
+  try {
+    await chrome.debugger.attach(target, "1.3");
+  } catch (e) {
+    // A worker restart forgets the set but not the attachment.
+    if (!/already attached/i.test(String(e && e.message ? e.message : e))) throw e;
+  }
+  debuggerTabs.add(target.tabId);
+}
+
+async function detachDebugger(target) {
+  debuggerTabs.delete(target.tabId);
+  overrideCertTabs.delete(target.tabId);
+  try {
+    await chrome.debugger.detach(target);
+  } catch (e) {
+    // already gone
+  }
+}
+
+// leaveWarningTimeoutMs is how long each bypass step gets to bring the site
+// up. A function so tests can shorten it.
+function leaveWarningTimeoutMs() {
+  return 8000;
+}
+
+// waitLeftWarning polls until the tab holds a scriptable page again (the site
+// loaded) or the time runs out.
+async function waitLeftWarning(tabId, timeoutMs = leaveWarningTimeoutMs()) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    if ((await probePage(tabId)) === "ok") {
+      await waitForComplete(tabId, 10000);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Tabs whose certificate errors this worker answers with "continue".
+const overrideCertTabs = new Set();
+
+// ignoreCertErrors makes the attached tab load past bad certificates. The
+// modern Security.setIgnoreCertificateErrors is browser-level and an
+// extension's debugger does not get it ("wasn't found"), so the older per-tab
+// form is the fallback: Chrome raises Security.certificateError for each bad
+// certificate and waits for handleCertificateError (see onCertificateError).
+async function ignoreCertErrors(target) {
+  try {
+    await chrome.debugger.sendCommand(target, "Security.setIgnoreCertificateErrors", { ignore: true });
+    return;
+  } catch (e) {
+    // fall back below
+  }
+  await chrome.debugger.sendCommand(target, "Security.enable");
+  await chrome.debugger.sendCommand(target, "Security.setOverrideCertificateErrors", { override: true });
+  overrideCertTabs.add(target.tabId);
+}
+
+function onCertificateError(source, method, params) {
+  if (method !== "Security.certificateError" || !source || !overrideCertTabs.has(source.tabId)) return;
+  chrome.debugger
+    .sendCommand(source, "Security.handleCertificateError", { eventId: params.eventId, action: "continue" })
+    .catch(() => {});
+}
+
+// CERT_BYPASS_STEPS run in order until one gets the site on screen.
+const CERT_BYPASS_STEPS = [
+  {
+    // What a person clicks under "Advanced". Absent on HSTS hosts.
+    name: "proceed link",
+    run: async (target) => {
+      const r = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => { const a = document.getElementById("proceed-link"); if (!a) return false; a.click(); return true; })()`,
+        returnByValue: true,
+        userGesture: true,
+      });
+      return !!(r && r.result && r.result.value === true);
+    },
+  },
+  {
+    // Chrome's keyboard bypass on its warning page; the one way past a warning
+    // that offers no proceed link.
+    name: "thisisunsafe keys",
+    run: async (target) => {
+      for (const ch of BYPASS_KEYS) {
+        const key = { key: ch, code: `Key${ch.toUpperCase()}`, windowsVirtualKeyCode: ch.toUpperCase().charCodeAt(0) };
+        await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", { type: "keyDown", text: ch, unmodifiedText: ch, ...key });
+        await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", { type: "keyUp", ...key });
+      }
+      return true;
+    },
+  },
+  {
+    // Tell this tab to ignore certificate errors and load the site again.
+    // Nothing is remembered by Chrome, so the debugger has to stay attached or
+    // the site's own later requests would hit the same error.
+    name: "ignore certificate errors",
+    keepAttached: true,
+    note:
+      "certificate errors stay ignored in this tab only while aglink-web's debugger remains attached (Chrome shows a 'started debugging this browser' bar); closing the tab or cancelling that bar ends it",
+    run: async (target, err) => {
+      const tab = await chrome.tabs.get(target.tabId);
+      await ignoreCertErrors(target);
+      await chrome.debugger.sendCommand(target, "Page.navigate", { url: (err && err.url) || tab.url });
+      return true;
+    },
+  },
+];
+
+// CERT_STUCK starts the error when no in-browser step got past the warning.
+// The daemon keys its last resort off it — typing "thisisunsafe" into the
+// Chrome window from outside the browser — so keep the wording.
+const CERT_STUCK = "certificate warning is still showing";
+
+// proceedInsecure continues past Chrome's certificate warning in a tab, the
+// way a user would by clicking "Proceed to … (unsafe)". It refuses on any
+// other kind of error page: there is nothing there to proceed to.
+//
+// As of Chrome 14x an extension's debugger can neither attach to the warning
+// page ("Cannot attach to this target") nor use the Security domain, so in
+// practice every in-browser step is skipped and the daemon finishes the job
+// by typing Chrome's bypass keys (see CERT_STUCK); it then calls back with
+// waitOnly to learn whether the site came up. The steps stay for browsers
+// that do allow them.
+async function proceedInsecure(params) {
+  const tabId = await activeTabId(params);
+  if (params.waitOnly) {
+    if (await waitLeftWarning(tabId)) {
+      await rememberNavError(tabId, null);
+      const tab = await chrome.tabs.get(tabId);
+      return `ok: continued past the certificate warning for ${hostOf(tab.url)} via thisisunsafe typed into the Chrome window — ${tab.title || ""} — ${tab.url || ""}`;
+    }
+    throw new Error(bypassFallback(tabId, `${CERT_STUCK} on tab ${tabId} after typing thisisunsafe into it`));
+  }
+  if ((await probePage(tabId)) !== "error") {
+    const tab = await chrome.tabs.get(tabId);
+    return `ok: tab ${tabId} is not on a warning page — nothing to do — ${tab.title || ""} — ${tab.url || ""}`;
+  }
+  const err = await lastNavError(tabId);
+  if (err && !isCertError(err.error)) {
+    throw new Error(`tab ${tabId} shows Chrome's error page for ${err.error}, not a certificate warning — there is nothing to proceed past`);
+  }
+  if (!chrome.debugger) {
+    throw new Error(bypassFallback(tabId, "the extension has no debugger permission yet"));
+  }
+  const host = hostOf(err ? err.url : (await chrome.tabs.get(tabId)).url);
+  const target = { tabId };
+  // Attaching to the warning page itself fails in current Chrome; the steps
+  // that need it are then skipped and the last one attaches elsewhere.
+  let attachError = "";
+  try {
+    await attachDebugger(target);
+  } catch (e) {
+    attachError = String(e && e.message ? e.message : e);
+  }
+
+  let keep = false;
+  const tried = [];
+  try {
+    for (const step of CERT_BYPASS_STEPS) {
+      if (attachError) break;
+      let applied = false;
+      try {
+        applied = await step.run(target, err);
+      } catch (e) {
+        tried.push(`${step.name} (${e && e.message ? e.message : e})`);
+        continue;
+      }
+      if (!applied) continue;
+      tried.push(step.name);
+      if (await waitLeftWarning(tabId)) {
+        keep = !!step.keepAttached;
+        await rememberNavError(tabId, null);
+        const tab = await chrome.tabs.get(tabId);
+        let out = `ok: continued past the certificate warning for ${host} via ${step.name}${err ? ` (was ${err.error})` : ""} — ${tab.title || ""} — ${tab.url || ""}`;
+        if (keep) out += `\nnote: ${step.note}`;
+        return out;
+      }
+    }
+  } finally {
+    if (!keep) await detachDebugger(target);
+  }
+  let why = `${CERT_STUCK} on tab ${tabId}`;
+  if (tried.length) why += ` after trying: ${tried.join(", ")}`;
+  if (attachError) why += ` (the browser's debugger cannot reach its warning page: ${attachError})`;
+  throw new Error(bypassFallback(tabId, why));
+}
+
 // waitForComplete resolves when the tab finishes loading, or after a timeout so
 // a slow/hung page never blocks the command indefinitely.
 //
@@ -991,6 +1310,29 @@ chrome.storage.onChanged.addListener((changes, area) => {
   backoffMs = 1000;
   connect();
 });
+
+// Track each tab's last main-frame load error, so a certificate warning can be
+// told apart from any other error page (see "certificate warnings").
+if (chrome.webNavigation) {
+  chrome.webNavigation.onBeforeNavigate.addListener((d) => {
+    if (d.frameId === 0) rememberNavError(d.tabId, null);
+  });
+  chrome.webNavigation.onErrorOccurred.addListener((d) => {
+    if (d.frameId === 0) rememberNavError(d.tabId, { url: d.url, error: d.error });
+  });
+}
+if (chrome.tabs.onRemoved) {
+  chrome.tabs.onRemoved.addListener((tabId) => rememberNavError(tabId, null));
+}
+if (chrome.debugger) {
+  chrome.debugger.onDetach.addListener((source) => {
+    if (source && source.tabId) {
+      debuggerTabs.delete(source.tabId);
+      overrideCertTabs.delete(source.tabId);
+    }
+  });
+  if (chrome.debugger.onEvent) chrome.debugger.onEvent.addListener(onCertificateError);
+}
 
 // Also connect when this worker first loads.
 connect();

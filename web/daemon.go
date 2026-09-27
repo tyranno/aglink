@@ -325,7 +325,14 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if err != nil {
 		return CallResult{Error: err.Error()}
 	}
-	return d.roundTrip(ec, method, params, callTimeout, "browser")
+	if method == "proceed_insecure" {
+		return d.proceedChrome(ec, params)
+	}
+	res := d.roundTrip(ec, method, params, callTimeout, "browser")
+	if method == "navigate" && res.OK {
+		res = d.autoProceed(ec, params, res)
+	}
+	return res
 }
 
 // listProfiles renders the connected profiles, oldest first — the same order

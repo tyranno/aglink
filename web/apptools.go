@@ -87,24 +87,37 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		if url == "" {
 			return "", errors.New("navigate requires 'url'")
 		}
+		// A host the user listed as trusted-despite-its-certificate loads
+		// without the warning, as the extension does for Chrome.
+		if insecureAllowed(urlHost(url)) {
+			if _, err := p.Raw(ctx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}); err != nil {
+				return "", fmt.Errorf("ignore certificate errors for %s: %w", urlHost(url), err)
+			}
+		}
 		if _, err := p.Raw(ctx, "Page.navigate", map[string]any{"url": url}); err != nil {
 			return "", err
 		}
-		deadline := time.Now().Add(navigateLoadTimeout)
-		for time.Now().Before(deadline) {
-			raw, err := p.Eval(ctx, "document.readyState")
-			if err == nil && string(raw) == `"complete"` {
-				break
-			}
-			time.Sleep(navigateLoadPollDelay)
-		}
-		raw, err := p.Eval(ctx, "[document.title, location.href]")
+		title, href, err := waitLoaded(ctx, p)
 		if err != nil {
 			return "", err
 		}
-		var tu [2]string
-		_ = json.Unmarshal(raw, &tu)
-		return fmt.Sprintf("ok: navigated — %s — %s", tu[0], tu[1]), nil
+		return fmt.Sprintf("ok: navigated — %s — %s", title, href), nil
+
+	case "proceed_insecure":
+		// WebView2 and Electron put up their own error page for a bad
+		// certificate. Ignoring certificate errors lasts as long as this CDP
+		// connection, which the daemon keeps open for the window.
+		if _, err := p.Raw(ctx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}); err != nil {
+			return "", err
+		}
+		if _, err := p.Raw(ctx, "Page.reload", map[string]any{"ignoreCache": true}); err != nil {
+			return "", err
+		}
+		title, href, err := waitLoaded(ctx, p)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("ok: certificate errors are ignored in this window while aglink-web stays attached; reloaded — %s — %s", title, href), nil
 
 	case "screenshot":
 		return p.Screenshot(ctx)
@@ -512,6 +525,26 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		return "", fmt.Errorf("not supported for app profiles: %s", method)
 	}
 	return "", fmt.Errorf("unknown method: %s", method)
+}
+
+// waitLoaded polls until the window's document is complete (or the load
+// timeout passes) and returns its title and URL.
+func waitLoaded(ctx context.Context, p appPage) (title, href string, err error) {
+	deadline := time.Now().Add(navigateLoadTimeout)
+	for time.Now().Before(deadline) {
+		raw, err := p.Eval(ctx, "document.readyState")
+		if err == nil && string(raw) == `"complete"` {
+			break
+		}
+		time.Sleep(navigateLoadPollDelay)
+	}
+	raw, err := p.Eval(ctx, "[document.title, location.href]")
+	if err != nil {
+		return "", "", err
+	}
+	var tu [2]string
+	_ = json.Unmarshal(raw, &tu)
+	return tu[0], tu[1], nil
 }
 
 // tagText is the {found, tag, text} shape several page functions return.

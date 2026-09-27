@@ -58,6 +58,23 @@ function makeChrome(overrides = {}) {
 // loadBackground evaluates background.js in a fresh sandbox and returns it so the
 // test can call the worker's functions. Loading also runs connect() once; the
 // WebSocket mock makes that a harmless no-op.
+// Every timer a loaded worker starts. With no signed-in account connect()
+// retries forever on a backoff timer, which kept `node --test` from ever
+// exiting; they are all cleared once the file's tests are done.
+const sandboxTimers = new Set();
+function sandboxSetTimeout(fn, ms, ...args) {
+  const t = setTimeout(() => {
+    sandboxTimers.delete(t);
+    fn(...args);
+  }, ms);
+  sandboxTimers.add(t);
+  return t;
+}
+test.after(() => {
+  for (const t of sandboxTimers) clearTimeout(t);
+  sandboxTimers.clear();
+});
+
 function loadBackground(chrome) {
   class FakeWebSocket {
     constructor() {
@@ -75,7 +92,7 @@ function loadBackground(chrome) {
     chrome,
     WebSocket: FakeWebSocket,
     console: { log() {}, error() {}, warn() {} },
-    setTimeout,
+    setTimeout: sandboxSetTimeout,
     clearTimeout,
     Promise,
     Math,
@@ -717,4 +734,158 @@ test("shared handlers call through __aglinkPage with the original args", async (
   assert.strictEqual(run.args[1].length, 1);
   assert.strictEqual(run.args[1][0], null, "no selector is passed through as null, as before");
   assert.ok(calls.some((c) => c.files), "selectorless calls must still inject page-actions.js");
+});
+
+// ---- certificate warnings ---------------------------------------------------
+
+// certChrome mocks a tab (id 7) that is on Chrome's certificate warning until
+// one of the bypasses the test enables takes effect.
+function certChrome({ onWarning = true, proceedLink = false, keysWork = false, ignoreWorks = false } = {}) {
+  const st = { onWarning, attached: 0, detached: 0, keys: [], commands: [], nav: {} };
+  const errorPage = () => new Error("Frame with ID 0 is showing error page");
+  const chrome = makeChrome({
+    tabs: {
+      query: async () => [{ id: 7, active: true }],
+      get: async (id) => ({ id, status: "complete", title: st.onWarning ? "Privacy error" : "NAS", url: "https://nas.local/" }),
+      update: async (id) => ({ id }),
+    },
+    scripting: {
+      executeScript: async () => {
+        if (st.onWarning) throw errorPage();
+        return [{ result: 1 }];
+      },
+    },
+    webNavigation: {
+      onBeforeNavigate: { addListener: (fn) => (st.nav.before = fn) },
+      onErrorOccurred: { addListener: (fn) => (st.nav.error = fn) },
+    },
+    debugger: {
+      attach: async () => { st.attached++; },
+      detach: async () => { st.detached++; },
+      onDetach: { addListener: () => {} },
+      sendCommand: async (target, method, params) => {
+        st.commands.push(method);
+        if (method === "Runtime.evaluate") {
+          if (proceedLink) st.onWarning = false;
+          return { result: { value: proceedLink } };
+        }
+        if (method === "Input.dispatchKeyEvent" && params.type === "keyDown") {
+          st.keys.push(params.text);
+          if (keysWork && st.keys.join("") === "thisisunsafe") st.onWarning = false;
+        }
+        if (method === "Page.navigate" && ignoreWorks && st.commands.includes("Security.setIgnoreCertificateErrors")) {
+          st.onWarning = false;
+        }
+        return {};
+      },
+    },
+  });
+  const sb = loadBackground(chrome);
+  sb.leaveWarningTimeoutMs = () => 600;
+  const certError = (error = "net::ERR_CERT_AUTHORITY_INVALID") =>
+    st.nav.error({ frameId: 0, tabId: 7, url: "https://nas.local/", error });
+  return { sb, st, certError };
+}
+
+test("navigate says when the tab is left on a certificate warning, and how past it", async () => {
+  const { sb, certError } = certChrome();
+  certError();
+  const out = await sb.navigate({ url: "https://nas.local/", tabId: 7 });
+  assert.match(out, /^ok: navigated tab 7/);
+  assert.match(out, /certificate warning on tab 7 \(net::ERR_CERT_AUTHORITY_INVALID, host nas\.local\)/);
+  assert.match(out, /call proceed_insecure with tabId=7/, "the daemon keys auto-proceed off this phrase");
+});
+
+test("navigate reports a plain load failure without offering proceed_insecure", async () => {
+  const { sb, certError } = certChrome();
+  certError("net::ERR_NAME_NOT_RESOLVED");
+  const out = await sb.navigate({ url: "https://nas.local/", tabId: 7 });
+  assert.match(out, /failed to load \(net::ERR_NAME_NOT_RESOLVED/);
+  assert.doesNotMatch(out, /proceed_insecure/);
+});
+
+test("the opaque 'showing error page' error is explained", async () => {
+  const { sb, certError } = certChrome();
+  certError();
+  const msg = await sb.explainError({ tabId: 7 }, "Frame with ID 0 is showing error page");
+  assert.match(msg, /tab 7 is showing Chrome's certificate warning .* call proceed_insecure with tabId=7/);
+  assert.strictEqual(await sb.explainError({}, "no element matched selector: #x"), "no element matched selector: #x");
+});
+
+test("a new navigation forgets the previous certificate error", async () => {
+  const { sb, st, certError } = certChrome();
+  certError();
+  st.nav.before({ frameId: 0, tabId: 7 });
+  assert.strictEqual(await sb.lastNavError(7), null);
+});
+
+test("proceed_insecure uses the warning page's proceed link first, then detaches", async () => {
+  const { sb, st, certError } = certChrome({ proceedLink: true });
+  certError();
+  const out = await sb.proceedInsecure({ tabId: 7 });
+  assert.match(out, /^ok: continued past the certificate warning for nas\.local via proceed link \(was net::ERR_CERT_AUTHORITY_INVALID\)/);
+  assert.deepStrictEqual(st.commands, ["Runtime.evaluate"]);
+  assert.strictEqual(st.detached, 1, "a remembered decision needs no debugger afterwards");
+});
+
+test("proceed_insecure types thisisunsafe when there is no proceed link (HSTS)", async () => {
+  const { sb, st, certError } = certChrome({ keysWork: true });
+  certError("net::ERR_CERT_COMMON_NAME_INVALID");
+  const out = await sb.proceedInsecure({ tabId: 7 });
+  assert.match(out, /via thisisunsafe keys/);
+  assert.strictEqual(st.keys.join(""), "thisisunsafe");
+  assert.strictEqual(st.detached, 1);
+});
+
+test("proceed_insecure falls back to ignoring certificate errors and keeps the debugger", async () => {
+  const { sb, st, certError } = certChrome({ ignoreWorks: true });
+  certError();
+  const out = await sb.proceedInsecure({ tabId: 7 });
+  assert.match(out, /via ignore certificate errors/);
+  assert.match(out, /note: certificate errors stay ignored/);
+  assert.strictEqual(st.detached, 0, "ignoring only lasts while attached");
+});
+
+test("proceed_insecure names the remaining ways when nothing works", async () => {
+  const { sb, st, certError } = certChrome();
+  certError();
+  await assert.rejects(() => sb.proceedInsecure({ tabId: 7 }), (e) => {
+    assert.match(e.message, /^certificate warning is still showing on tab 7 after trying: thisisunsafe keys, ignore certificate errors/, "the daemon keys its keyboard fallback off this phrase");
+    assert.match(e.message, /aglink-screen/);
+    assert.match(e.message, /aglink-web trust-cert/);
+    return true;
+  });
+  assert.strictEqual(st.detached, 1);
+});
+
+test("proceed_insecure refuses a page that is not a certificate warning", async () => {
+  const { sb, st, certError } = certChrome();
+  certError("net::ERR_CONNECTION_REFUSED");
+  await assert.rejects(() => sb.proceedInsecure({ tabId: 7 }), /not a certificate warning/);
+  assert.strictEqual(st.attached, 0);
+});
+
+test("proceed_insecure on a normal page does nothing", async () => {
+  const { sb, st } = certChrome({ onWarning: false });
+  assert.match(await sb.proceedInsecure({ tabId: 7 }), /not on a warning page — nothing to do/);
+  assert.strictEqual(st.attached, 0);
+});
+
+test("when the debugger cannot reach the warning page, proceed_insecure hands over to the daemon", async () => {
+  const { sb, st, certError } = certChrome();
+  certError();
+  // Current Chrome: "Cannot attach to this target." on its warning page.
+  sb.attachDebugger = async () => { throw new Error("Cannot attach to this target."); };
+  await assert.rejects(() => sb.proceedInsecure({ tabId: 7 }), (e) => {
+    assert.match(e.message, /^certificate warning is still showing on tab 7 \(the browser's debugger cannot reach its warning page: Cannot attach to this target\.\)/);
+    return true;
+  });
+  assert.deepStrictEqual(st.commands, [], "no step may run without the debugger");
+});
+
+test("waitOnly reports whether the site came up after the daemon typed the bypass", async () => {
+  const ok = certChrome({ onWarning: false });
+  assert.match(await ok.sb.proceedInsecure({ tabId: 7, waitOnly: 1 }), /^ok: continued past the certificate warning for nas\.local via thisisunsafe typed into the Chrome window/);
+  const stuck = certChrome();
+  await assert.rejects(() => stuck.sb.proceedInsecure({ tabId: 7, waitOnly: 1 }), /certificate warning is still showing on tab 7 after typing thisisunsafe/);
 });

@@ -268,6 +268,13 @@ var commands = []command{
 		},
 	},
 	{
+		name: "proceed_insecure",
+		desc: "Continue past a browser certificate warning (\"Your connection is not private\" / NET::ERR_CERT_…) — the equivalent of the user clicking Advanced → Proceed. navigate and the other tools say when a tab is stuck on such a warning; call this then. Chrome: tries the warning page's own proceed link, then Chrome's 'thisisunsafe' keyboard bypass (for HSTS hosts with no link), then ignoring certificate errors in that tab while the debugger stays attached; the first two are remembered for the host for the rest of the browser session. App profiles (app:/cdp:): ignores certificate errors in that window and reloads. Only for sites the user means to reach — a certificate warning can also mean someone is intercepting the connection. To trust an internal site for good instead, the user can run 'aglink-web trust-cert <url>'; hosts listed in ~/.aglink/aglink-web-insecure-hosts are proceeded automatically on navigate.",
+		args: []argSpec{
+			{name: "tabId", typ: argInt, desc: "Tab (or app window number) showing the warning. Omit for the active tab / first window."},
+		},
+	},
+	{
 		name: "close_tab",
 		desc: "Close a Chrome tab. If 'tabId' is omitted, the active tab of the focused window is closed. Chrome profiles only — not available for app windows.",
 		args: []argSpec{

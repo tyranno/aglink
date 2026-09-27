@@ -321,12 +321,87 @@ vscode_terminal_run   profile="vscode:backend"   command="go test ./..."   → �
   원격 세션도 이 도구를 쓸 수 있다 — aglink-screen 과 같은 수준의 권한이다.
 - 다른 확장의 화면(Claude 채팅 패널 등)은 읽지 못한다. Claude 대화는 `!attach`.
 
+## 인증서 경고 넘기기 (HTTPS)
+
+사내 NAS·공유기·개발 서버처럼 자체 서명이나 사설 CA 인증서를 쓰는 https 사이트는
+크롬이 "연결이 비공개로 설정되어 있지 않습니다" 경고를 띄운다. 이 경고 화면은
+`chrome-error://` 문서라 `executeScript` 가 닿지 않고, 그래서 예전에는 모든 도구가
+`showing error page` 로 실패하고 "계속 진행" 도 누를 수 없었다. 이제는 네 가지 길이 있다.
+
+**1. 알려 준다.** 확장이 `webNavigation` 으로 탭마다 마지막 로드 오류
+(`net::ERR_CERT_…`)를 기억한다. `navigate` 는 경고에 멈추면 결과에
+`warning: certificate warning on tab 7 (net::ERR_CERT_AUTHORITY_INVALID, host nas.local) … call proceed_insecure with tabId=7`
+을 붙이고, 다른 도구도 알 수 없는 오류 대신 같은 안내를 돌려준다. 인증서가 아닌 로드
+실패(`ERR_NAME_NOT_RESOLVED` 등)는 그대로 실패라고만 한다.
+
+**2. `proceed_insecure` — 사람이 "고급 → 계속 진행" 누르는 것과 같다.**
+
+현재 크롬은 확장의 `chrome.debugger` 가 경고 페이지에 붙는 것을 막고
+(`Cannot attach to this target`), 확장 디버거에는 `Security` 도메인 자체를 주지 않는다
+(`'Security.enable' wasn't found`). 그래서 브라우저 안에서는 넘길 방법이 없고, 실제로
+넘기는 것은 **데몬이 크롬 창에 `thisisunsafe` 를 직접 타이핑**하는 것이다. 크롬 경고
+페이지에 원래 있는 키보드 우회라, 넘긴 결정은 크롬이 그 호스트에 대해 브라우저 세션
+동안 기억한다(계속 진행을 누른 것과 같다).
+
+1. 확장이 디버거로 시도(경고 페이지의 `#proceed-link` 클릭 → 키 입력 → 인증서 오류
+   무시). 붙을 수 있는 브라우저를 위해 남겨 둔 단계로, 지금 크롬에서는 붙지 못해 건너뛴다.
+2. 확장이 `certificate warning is still showing` 으로 돌아오면 데몬이 `activate_tab` 으로
+   그 탭과 창을 앞으로 가져온다.
+3. **앞에 있는 창이 `chrome.exe` 이고 제목이 그 경고 탭의 제목으로 시작할 때만**
+   `SendInput` 으로 `thisisunsafe` 를 친다. 다른 앱이나 다른 크롬 창(원격 데스크톱
+   세션 등)이 앞에 있으면 아무것도 치지 않고 오류를 돌려준다. 가상 키가 아니라 유니코드
+   문자로 보내므로 한글 IME 가 켜져 있어도 `ㅅㅗ…` 로 바뀌지 않는다.
+4. 확장에 다시 물어(`waitOnly`) 사이트가 떴는지 확인한 뒤에만 성공이라고 한다.
+
+키 입력은 윈도우에서만 되고, 화면이 잠겨 있으면 안 된다. 안 되면 오류에 남은 방법을
+적어 돌려준다 — aglink-screen 으로 직접 치기, 또는 아래 3번.
+앱 프로필(`app:`/`cdp:`)에서는 그 창의 CDP 연결에 `Security.setIgnoreCertificateErrors`
+를 걸고 다시 로드한다(데몬이 연결을 유지하는 동안 지속).
+
+**3. `aglink-web trust-cert <url>` — 영구 해결.** 사이트가 내미는 인증서(자체 서명이면
+그 자신, 사설 CA 면 서버가 보낸 최상위 인증서)를 **현재 사용자**의 신뢰할 수 있는 루트에
+넣는다. 크롬은 윈도우 인증서 저장소를 쓰므로 경고 자체가 사라진다.
+
+```powershell
+aglink-web trust-cert https://nas.local:5001
+#  Certificate: CN=nas.local …  SHA-256: 3F2A…
+#  Add it to the current user's trusted root certificates? [y/N] y
+#  (윈도우가 한 번 더 확인 창을 띄운다)
+#  To undo: certutil -user -delstore Root <serial>
+```
+
+- 사람이 직접 실행하는 명령이다. **MCP 도구로는 일부러 두지 않았다** — 루트로 신뢰한
+  인증서는 어떤 사이트든 보증할 수 있어서, 에이전트가 스스로 할 일이 아니다.
+- 인증서의 이름이 호스트와 다르거나 기한이 지났으면 신뢰해도 경고가 남는다. 그때는
+  그렇다고 먼저 알려 준다(그런 경우엔 2번이나 4번).
+- 이미 신뢰되는 사이트면 아무것도 하지 않는다.
+
+**4. 자동으로 넘길 호스트 목록.** 여기 적은 호스트는 `navigate` 가 경고에 멈추면 데몬이
+곧바로 `proceed_insecure` 를 부른다(앱 창은 이동 전에 인증서 오류 무시를 켠다).
+
+```
+# ~/.aglink/aglink-web-insecure-hosts   — 한 줄에 하나, # 주석
+nas.local            # 포트 무관
+10.0.0.5:8443        # 이 포트만
+*.corp.example       # 모든 하위 도메인 (corp.example 자신은 아님)
+```
+
+환경변수 `AGLINK_WEB_INSECURE_HOSTS`(쉼표 구분)도 같이 읽는다. 파일은 호출마다 읽으니
+데몬 재시작이 필요 없다. 모든 호스트를 뜻하는 `*` 는 받지 않는다.
+
+> 인증서 경고는 누군가 연결을 가로채고 있다는 뜻일 수도 있다. 넘기는 것은 **사용자가
+> 가려는 곳이 확실한 내부 사이트**에만 할 것. 이 때문에 자동 목록은 비어 있는 것이 기본이다.
+
+확장에 `webNavigation`·`debugger` 권한이 새로 붙었다. 업데이트 뒤 `chrome://extensions`
+에서 확장을 한 번 새로고침해야 적용된다.
+
 ## Config
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `AGLINK_WEB_PORT` | `48219` | Daemon/bridge port. If you change it, also set the matching port in the extension's options page (see below) — the extension can't read env vars. |
 | `AGLINK_WEB_EXT_ID` | *(unset)* | Pin the accepted extension ID. Unset = accept any `chrome-extension://` origin. |
+| `AGLINK_WEB_INSECURE_HOSTS` | *(unset)* | Hosts to continue past certificate warnings automatically, in addition to `~/.aglink/aglink-web-insecure-hosts`. See "인증서 경고 넘기기". |
 
 The daemon writes its live port to `~/.teleclaude/aglink-web.port` so the **bridge**
 finds it automatically; a stale/corrupt file falls back to the default. The

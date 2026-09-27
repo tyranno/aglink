@@ -253,18 +253,18 @@ var commands = []command{
 	},
 	{
 		name: "dialog_status",
-		desc: "Report the JavaScript dialog (alert, confirm, prompt, or leave-page confirmation) currently open in an app window, as 'type: \"message\"'. While one is open the page's JavaScript is frozen, so every other tool on that window fails with 'dialog open' until it is answered with handle_dialog. App profiles (app:/cdp:) only for now; Chrome profiles are not supported yet.",
+		desc: "Report the JavaScript dialog (alert, confirm, prompt, or leave-page confirmation) currently open in a Chrome tab or app window, as 'type: \"message\"'. While one is open the page's JavaScript is frozen, so every other tool on that tab fails with 'dialog open: …' until it is answered with handle_dialog. In Chrome the debugger is attached briefly to look (Chrome shows its 'started debugging' bar for that moment).",
 		args: []argSpec{
-			{name: "tabId", typ: argInt, desc: "Optional window number (from list_tabs). Omit for the first window."},
+			{name: "tabId", typ: argInt, desc: "Tab id, or app window number (from list_tabs). Omit for the active tab / first window."},
 		},
 	},
 	{
 		name: "handle_dialog",
-		desc: "Answer the JavaScript dialog open in an app window — press OK (accept, the default) or Cancel (accept=false), optionally typing text into a prompt(). Check what it says with dialog_status first. App profiles (app:/cdp:) only for now.",
+		desc: "Answer the JavaScript dialog open in a Chrome tab or app window — press OK (accept, the default) or Cancel (accept=false), optionally typing text into a prompt(). Check what it says with dialog_status first. In Chrome, if the debugger cannot answer it, aglink-web brings the tab to the front and presses Enter/Esc itself — only when that Chrome tab is the window in front.",
 		args: []argSpec{
 			{name: "accept", typ: argString, desc: "\"true\" (default) presses OK, \"false\" presses Cancel."},
 			{name: "prompt_text", typ: argString, desc: "Text to enter into a prompt() dialog before accepting. Ignored for alert/confirm."},
-			{name: "tabId", typ: argInt, desc: "Optional window number (from list_tabs). Omit for the first window."},
+			{name: "tabId", typ: argInt, desc: "Tab id, or app window number (from list_tabs). Omit for the active tab / first window."},
 		},
 	},
 	{

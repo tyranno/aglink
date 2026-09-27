@@ -296,3 +296,92 @@ func TestProceedDoesNotClaimSuccessWhenTypingIsRefused(t *testing.T) {
 		t.Fatalf("got %+v", res)
 	}
 }
+
+// runDialogExtension behaves like Chrome with a dialog its debugger cannot
+// answer: handle_dialog asks for the keyboard, and dialog_status reports the
+// dialog gone once the daemon has pressed a key.
+func runDialogExtension(conn *websocket.Conn, pressed *bool) {
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var req Request
+		if json.Unmarshal(data, &req) != nil || req.Method == pingMethod {
+			continue
+		}
+		reply := Reply{ID: req.ID}
+		switch req.Method {
+		case "handle_dialog":
+			reply.Error = `dialog needs the keyboard on tab 7 (a dialog (its text is not readable from the browser)): {"code":-32602,"message":"No dialog is showing"}`
+		case "activate_tab":
+			reply.OK, reply.Text = true, "ok: activated tab 7 — 게시판 — https://intra.example/"
+		case "dialog_status":
+			reply.OK, reply.Text = true, "a dialog (its text is not readable from the browser) (tab 7)"
+			if *pressed {
+				reply.Text = "no dialog open"
+			}
+		}
+		b, _ := json.Marshal(reply)
+		conn.WriteMessage(websocket.TextMessage, b)
+	}
+}
+
+func TestHandleDialogFromTheKeyboard(t *testing.T) {
+	d := newDaemon("")
+	srv := httptest.NewServer(d.handler())
+	defer srv.Close()
+	conn := dialFakeExtension(t, srv, "a@b.com")
+	defer conn.Close()
+	pressed := false
+	go runDialogExtension(conn, &pressed)
+	waitForProfile(t, d, "a@b.com")
+
+	type press struct {
+		title, text string
+		vk          uint16
+	}
+	var got []press
+	orig := pressKeys
+	defer func() { pressKeys = orig }()
+	pressKeys = func(title, text string, vk uint16) error {
+		got = append(got, press{title, text, vk})
+		pressed = true
+		return nil
+	}
+
+	res := d.call("handle_dialog", map[string]any{"prompt_text": "Kim"}, "")
+	if !res.OK || res.Text != "ok: accepted the dialog on tab 7 from the keyboard" {
+		t.Fatalf("accept: %+v", res)
+	}
+	pressed = false
+	res = d.call("handle_dialog", map[string]any{"tabId": 7, "accept": "false", "prompt_text": "ignored"}, "")
+	if !res.OK || !strings.Contains(res.Text, "dismissed") {
+		t.Fatalf("dismiss: %+v", res)
+	}
+	want := []press{{"게시판", "Kim", vkReturn}, {"게시판", "", vkEscape}}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("pressed %+v, want %+v", got, want)
+	}
+}
+
+func TestHandleDialogKeyboardRefusedIsAnError(t *testing.T) {
+	d := newDaemon("")
+	srv := httptest.NewServer(d.handler())
+	defer srv.Close()
+	conn := dialFakeExtension(t, srv, "a@b.com")
+	defer conn.Close()
+	pressed := false
+	go runDialogExtension(conn, &pressed)
+	waitForProfile(t, d, "a@b.com")
+
+	orig := pressKeys
+	defer func() { pressKeys = orig }()
+	pressKeys = func(string, string, uint16) error {
+		return errors.New("the window in front is code.exe, not Chrome — nothing was typed")
+	}
+	res := d.call("handle_dialog", map[string]any{"tabId": 7}, "")
+	if res.OK || !strings.Contains(res.Error, "nothing was typed") {
+		t.Fatalf("got %+v", res)
+	}
+}

@@ -115,7 +115,7 @@ async function connect() {
     }
     const reply = { id: req.id, ok: false };
     try {
-      reply.text = await dispatch(req.method, req.params || {});
+      reply.text = await withDialogWatch(req.method, req.params || {}, () => dispatch(req.method, req.params || {}));
       reply.ok = true;
     } catch (e) {
       reply.error = await explainError(req.params || {}, String(e && e.message ? e.message : e));
@@ -204,6 +204,10 @@ async function dispatch(method, params) {
       return await closeTab(params);
     case "proceed_insecure":
       return await proceedInsecure(params);
+    case "dialog_status":
+      return await dialogStatus(params);
+    case "handle_dialog":
+      return await handleDialog(params);
     default:
       throw new Error(`unknown method: ${method}`);
   }
@@ -1072,6 +1076,8 @@ async function attachDebugger(target) {
 async function detachDebugger(target) {
   debuggerTabs.delete(target.tabId);
   overrideCertTabs.delete(target.tabId);
+  // Detached, the tab's dialog events stop arriving; what we knew goes stale.
+  openDialogs.delete(target.tabId);
   try {
     await chrome.debugger.detach(target);
   } catch (e) {
@@ -1249,6 +1255,165 @@ async function proceedInsecure(params) {
   throw new Error(bypassFallback(tabId, why));
 }
 
+// ---- JavaScript dialogs (alert / confirm / prompt) --------------------------
+//
+// A dialog freezes the page's JavaScript, so executeScript on that tab just
+// waits until someone closes it — every tool used to sit out the daemon's 30s
+// timeout and fail with nothing to show for it, and the dialog itself is not
+// in the DOM to be read or clicked.
+//
+// chrome.debugger reaches it: Page.javascriptDialogOpening says what is up and
+// Page.handleJavaScriptDialog answers it. The debugger is attached only while
+// looking (Chrome shows its "started debugging" bar meanwhile), never kept.
+// Where it cannot answer, the daemon presses the dialog's keys itself (Enter /
+// Esc, typed text for prompt) — see DIALOG_NEEDS_KEYS.
+
+const openDialogs = new Map(); // tabId → { type, message, defaultPrompt, url }
+
+// DIALOG_NEEDS_KEYS starts handle_dialog's error when the debugger could not
+// answer; the daemon keys its keyboard fallback off it. Keep the wording.
+const DIALOG_NEEDS_KEYS = "dialog needs the keyboard";
+
+// How long a tool may run before the tab is checked for a dialog. Most tools
+// answer in well under a second; a function so tests can shorten it.
+function dialogCheckAfterMs() {
+  return 2500;
+}
+
+// Tools that run script in the tab, and so freeze behind a dialog.
+const DIALOG_WATCHED = new Set([
+  "get_page_text", "element_exists", "click", "double_click", "hover", "drag", "get_html",
+  "query_all", "eval", "get_attribute", "list_elements", "wait_for_element", "type",
+  "get_value", "key", "scroll", "select_option", "get_console_logs", "get_network_requests",
+]);
+
+function onDialogEvent(source, method, params) {
+  if (!source || !source.tabId) return;
+  if (method === "Page.javascriptDialogOpening") {
+    openDialogs.set(source.tabId, {
+      type: params.type,
+      message: params.message || "",
+      defaultPrompt: params.defaultPrompt || "",
+      url: params.url || "",
+    });
+  } else if (method === "Page.javascriptDialogClosed") {
+    openDialogs.delete(source.tabId);
+  }
+}
+
+function dialogLine(d) {
+  // Chrome announces a dialog only to a debugger that was attached when it
+  // opened, and this one attaches after. The page is frozen, so its text is
+  // not readable from here; the screen still shows it.
+  if (d.type === "unknown") return "a dialog (its text is not readable from the browser — aglink-screen can read it off the screen)";
+  let s = `${d.type}: ${JSON.stringify(d.message)}`;
+  if (d.type === "prompt" && d.defaultPrompt) s += ` (default ${JSON.stringify(d.defaultPrompt)})`;
+  return s;
+}
+
+// withDebugger runs fn with the debugger on the tab, detaching afterwards
+// unless it was already attached for something else (a certificate bypass).
+async function withDebugger(tabId, fn) {
+  const target = { tabId };
+  const had = debuggerTabs.has(tabId);
+  await attachDebugger(target);
+  try {
+    return await fn(target);
+  } finally {
+    if (!had) await detachDebugger(target);
+  }
+}
+
+// findDialog reports the dialog open in an attached tab, or null. Enabling
+// the Page domain makes Chrome announce a dialog that is already showing; if
+// it stays silent but the page does not answer a trivial evaluation, a dialog
+// is up all the same, just unnamed.
+async function findDialog(target) {
+  // Page.enable itself waits on the renderer, which a dialog has frozen: it
+  // is never awaited for long. The announcement it triggers arrives as an
+  // event regardless.
+  const enabled = await answersWithin(chrome.debugger.sendCommand(target, "Page.enable"), 500);
+  if (!openDialogs.has(target.tabId)) await new Promise((r) => setTimeout(r, 200));
+  if (openDialogs.has(target.tabId)) return openDialogs.get(target.tabId);
+  const answered =
+    enabled && (await answersWithin(chrome.debugger.sendCommand(target, "Runtime.evaluate", { expression: "1", returnByValue: true }), 800));
+  if (openDialogs.has(target.tabId)) return openDialogs.get(target.tabId);
+  return answered ? null : { type: "unknown", message: "", defaultPrompt: "", url: "" };
+}
+
+// answersWithin reports whether a promise settles (either way) within ms.
+function answersWithin(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.then(() => true, () => true),
+    new Promise((r) => (timer = setTimeout(() => r(false), ms))),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// withDialogWatch runs a tool, and if it has not answered after a moment,
+// looks for a dialog in its tab: when there is one the tool fails at once
+// with what the dialog says, instead of waiting out the timeout. The tool's
+// own call keeps running and completes once the dialog is answered.
+async function withDialogWatch(method, params, run) {
+  const pending = run();
+  if (!DIALOG_WATCHED.has(method)) return pending;
+  const SLOW = {};
+  let timer;
+  const first = await Promise.race([
+    pending,
+    new Promise((r) => (timer = setTimeout(() => r(SLOW), dialogCheckAfterMs()))),
+  ]).finally(() => clearTimeout(timer));
+  if (first !== SLOW) return first;
+
+  let d = null;
+  try {
+    const tabId = await activeTabId(params);
+    d = await withDebugger(tabId, findDialog);
+    if (d) {
+      pending.catch(() => {});
+      throw new Error(`dialog open on tab ${tabId}: ${dialogLine(d)} — call handle_dialog to answer it (accept="false" for Cancel)`);
+    }
+  } catch (e) {
+    if (d) throw e;
+    // Could not look (no debugger); keep waiting for the tool itself.
+  }
+  return pending;
+}
+
+async function dialogStatus(params) {
+  const tabId = await activeTabId(params);
+  const d = await withDebugger(tabId, findDialog);
+  return d ? `${dialogLine(d)} (tab ${tabId})` : "no dialog open";
+}
+
+// handleDialog presses OK (accept, the default) or Cancel, typing promptText
+// into a prompt() first.
+async function handleDialog(params) {
+  const tabId = await activeTabId(params);
+  const accept = !["false", "no", "0"].includes(String(params.accept === undefined ? "" : params.accept).toLowerCase());
+  const promptText = params.prompt_text || "";
+  let d = null;
+  try {
+    return await withDebugger(tabId, async (target) => {
+      d = await findDialog(target);
+      if (!d) throw new Error("no dialog open");
+      const args = { accept };
+      if (promptText) args.promptText = promptText;
+      let timer;
+      await Promise.race([
+        chrome.debugger.sendCommand(target, "Page.handleJavaScriptDialog", args),
+        new Promise((_, rej) => (timer = setTimeout(() => rej(new Error("the debugger did not answer the dialog in time")), 3000))),
+      ]).finally(() => clearTimeout(timer));
+      openDialogs.delete(tabId);
+      return `ok: ${accept ? "accepted" : "dismissed"} ${dialogLine(d)}`;
+    });
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : e);
+    if (msg === "no dialog open") throw e;
+    throw new Error(`${DIALOG_NEEDS_KEYS} on tab ${tabId}${d ? ` (${dialogLine(d)})` : ""}: ${msg}`);
+  }
+}
+
 // waitForComplete resolves when the tab finishes loading, or after a timeout so
 // a slow/hung page never blocks the command indefinitely.
 //
@@ -1329,9 +1494,13 @@ if (chrome.debugger) {
     if (source && source.tabId) {
       debuggerTabs.delete(source.tabId);
       overrideCertTabs.delete(source.tabId);
+      openDialogs.delete(source.tabId);
     }
   });
-  if (chrome.debugger.onEvent) chrome.debugger.onEvent.addListener(onCertificateError);
+  if (chrome.debugger.onEvent) {
+    chrome.debugger.onEvent.addListener(onCertificateError);
+    chrome.debugger.onEvent.addListener(onDialogEvent);
+  }
 }
 
 // Also connect when this worker first loads.

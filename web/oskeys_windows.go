@@ -5,8 +5,10 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 )
@@ -52,6 +54,63 @@ type winInput struct {
 	_   [8]byte
 }
 
+var (
+	procEnumWindows         = user32.NewProc("EnumWindows")
+	procIsWindowVisible     = user32.NewProc("IsWindowVisible")
+	procIsIconic            = user32.NewProc("IsIconic")
+	procShowWindow          = user32.NewProc("ShowWindow")
+	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
+	procBringWindowToTop    = user32.NewProc("BringWindowToTop")
+	procAttachThreadInput   = user32.NewProc("AttachThreadInput")
+	procGetCurrentThreadId  = kernel32.NewProc("GetCurrentThreadId")
+)
+
+const swRestore = 9
+
+// bringChromeForward finds the visible Chrome window whose title starts with
+// wantTitle (Chrome titles a window after its active tab) and makes it the
+// foreground window. Windows lets only the thread that owns the foreground
+// hand it over, so this thread briefly shares input state with that one
+// (AttachThreadInput) — no keystroke is sent, so nothing in the current
+// window reacts. Best effort: the caller checks the result.
+func bringChromeForward(wantTitle string) {
+	runtime.LockOSThread() // AttachThreadInput is per OS thread
+	defer runtime.UnlockOSThread()
+	var found uintptr
+	cb := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
+		if v, _, _ := procIsWindowVisible.Call(hwnd); v == 0 {
+			return 1
+		}
+		title, exe := windowInfo(hwnd)
+		if strings.EqualFold(filepath.Base(exe), "chrome.exe") && strings.HasPrefix(title, wantTitle) {
+			found = hwnd
+			return 0 // stop
+		}
+		return 1
+	})
+	procEnumWindows.Call(cb, 0)
+	if found == 0 {
+		return
+	}
+	if ic, _, _ := procIsIconic.Call(found); ic != 0 {
+		procShowWindow.Call(found, swRestore)
+	}
+	fg, _, _ := procGetForegroundWindow.Call()
+	fgThread, _, _ := procGetWindowThreadProcessId.Call(fg, 0)
+	self, _, _ := procGetCurrentThreadId.Call()
+	attached := false
+	if fgThread != 0 && fgThread != self {
+		r, _, _ := procAttachThreadInput.Call(self, fgThread, 1)
+		attached = r != 0
+	}
+	procBringWindowToTop.Call(found)
+	procSetForegroundWindow.Call(found)
+	if attached {
+		procAttachThreadInput.Call(self, fgThread, 0)
+	}
+	time.Sleep(200 * time.Millisecond)
+}
+
 // foregroundWindow returns the title and executable of the window that has
 // the keyboard.
 func foregroundWindow() (title, exe string) {
@@ -59,6 +118,11 @@ func foregroundWindow() (title, exe string) {
 	if hwnd == 0 {
 		return "", ""
 	}
+	return windowInfo(hwnd)
+}
+
+// windowInfo returns a window's title and its process's executable path.
+func windowInfo(hwnd uintptr) (title, exe string) {
 	buf := make([]uint16, 512)
 	n, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	title = syscall.UTF16ToString(buf[:n])
@@ -88,6 +152,26 @@ func foregroundWindow() (title, exe string) {
 // keyboard layout and a Korean IME left in Hangul mode cannot turn "t" into
 // "ㅅ".
 func typeIntoChrome(wantTitle, text string) error {
+	return chromeKeys(wantTitle, text, 0)
+}
+
+// Virtual keys chromeKeys can finish with.
+const (
+	vkReturn = 0x0D
+	vkEscape = 0x1B
+)
+
+// chromeKeys is typeIntoChrome followed by one virtual key (vkReturn,
+// vkEscape; 0 for none) — how a JavaScript dialog is answered by hand.
+func chromeKeys(wantTitle, text string, vk uint16) error {
+	if wantTitle != "" {
+		// activate_tab asks Chrome to come forward, but Windows refuses a
+		// background app focus while the user works elsewhere. Bring it
+		// forward from here if it is not already in front.
+		if t, _ := foregroundWindow(); !strings.HasPrefix(t, wantTitle) {
+			bringChromeForward(wantTitle)
+		}
+	}
 	title, exe := foregroundWindow()
 	if name := strings.ToLower(filepath.Base(exe)); name != "chrome.exe" {
 		if name == "" || name == "." {
@@ -104,6 +188,15 @@ func typeIntoChrome(wantTitle, text string) error {
 			winInput{typ: inputKeyboard, ki: keybdInput{wScan: u, dwFlags: keyeventfUnicode}},
 			winInput{typ: inputKeyboard, ki: keybdInput{wScan: u, dwFlags: keyeventfUnicode | keyeventfKeyUp}},
 		)
+	}
+	if vk != 0 {
+		ins = append(ins,
+			winInput{typ: inputKeyboard, ki: keybdInput{wVk: vk}},
+			winInput{typ: inputKeyboard, ki: keybdInput{wVk: vk, dwFlags: keyeventfKeyUp}},
+		)
+	}
+	if len(ins) == 0 {
+		return nil
 	}
 	sent, _, err := procSendInput.Call(uintptr(len(ins)), uintptr(unsafe.Pointer(&ins[0])), unsafe.Sizeof(ins[0]))
 	if int(sent) != len(ins) {

@@ -510,14 +510,3 @@ func TestListProfilesIncludesApps(t *testing.T) {
 		t.Fatalf("the Chrome line must still say none are connected: %q", res.Text)
 	}
 }
-
-func TestDialogToolsRefusedForChrome(t *testing.T) {
-	d := newDaemon("")
-	d.discover = func(context.Context) []appInfo { return nil }
-	for _, m := range []string{"dialog_status", "handle_dialog"} {
-		res := d.call(m, nil, "")
-		if res.OK || !strings.Contains(res.Error, "only available for app profiles") {
-			t.Errorf("%s on Chrome: %+v", m, res)
-		}
-	}
-}

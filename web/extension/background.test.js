@@ -889,3 +889,87 @@ test("waitOnly reports whether the site came up after the daemon typed the bypas
   const stuck = certChrome();
   await assert.rejects(() => stuck.sb.proceedInsecure({ tabId: 7, waitOnly: 1 }), /certificate warning is still showing on tab 7 after typing thisisunsafe/);
 });
+// ---- JavaScript dialogs ----------------------------------------------------
+
+// dialogChrome mocks tab 7 whose page is frozen behind a dialog while
+// st.dialog is set. announce makes Page.enable report it the way Chrome does
+// to a debugger attached before the dialog opened; handles makes
+// Page.handleJavaScriptDialog work.
+function dialogChrome({ dialog = null, announce = false, handles = true } = {}) {
+  const st = { dialog, attached: 0, detached: 0, handled: null, onEvent: null };
+  const chrome = makeChrome({
+    tabs: { query: async () => [{ id: 7, active: true }] },
+    scripting: {
+      executeScript: () =>
+        st.dialog ? new Promise(() => {}) : Promise.resolve([{ result: { found: true, text: "page" } }]),
+    },
+    debugger: {
+      attach: async () => { st.attached++; },
+      detach: async () => { st.detached++; },
+      onDetach: { addListener: () => {} },
+      onEvent: { addListener: (fn) => { if (!st.onEvent) st.onEvent = []; st.onEvent.push(fn); } },
+      sendCommand: async (target, method, params) => {
+        if (method === "Page.enable") {
+          if (st.dialog && announce) for (const fn of st.onEvent) fn({ tabId: 7 }, "Page.javascriptDialogOpening", st.dialog);
+          if (st.dialog) return new Promise(() => {}); // the frozen renderer never answers
+          return {};
+        }
+        if (method === "Runtime.evaluate") return st.dialog ? new Promise(() => {}) : { result: { value: 1 } };
+        if (method === "Page.handleJavaScriptDialog") {
+          if (!handles) throw new Error("No dialog is showing");
+          st.handled = params;
+          st.dialog = null;
+          return {};
+        }
+        return {};
+      },
+    },
+  });
+  const sb = loadBackground(chrome);
+  sb.dialogCheckAfterMs = () => 50;
+  return { sb, st };
+}
+
+test("a tool stuck behind a dialog fails fast, saying what the dialog asks", async () => {
+  const { sb, st } = dialogChrome({ dialog: { type: "confirm", message: "Delete?" }, announce: true });
+  await assert.rejects(
+    () => sb.withDialogWatch("get_page_text", {}, () => sb.getPageText({})),
+    /^Error: dialog open on tab 7: confirm: "Delete\?" — call handle_dialog/
+  );
+  assert.strictEqual(st.detached, 1, "the debugger is only borrowed to look");
+});
+
+test("a dialog Chrome does not announce is still detected from the frozen page", async () => {
+  const { sb } = dialogChrome({ dialog: { type: "alert", message: "hi" } });
+  assert.match(await sb.dialogStatus({ tabId: 7 }), /^a dialog \(its text is not readable from the browser/);
+});
+
+test("a slow tool on a page without a dialog is left to finish", async () => {
+  const { sb } = dialogChrome();
+  const out = await sb.withDialogWatch("get_page_text", {}, () => new Promise((r) => setTimeout(() => r("done"), 150)));
+  assert.strictEqual(out, "done");
+  assert.strictEqual(await sb.dialogStatus({ tabId: 7 }), "no dialog open");
+});
+
+test("handle_dialog answers through the debugger, with prompt text", async () => {
+  const { sb, st } = dialogChrome({ dialog: { type: "prompt", message: "Name?", defaultPrompt: "x" }, announce: true });
+  const out = await sb.handleDialog({ tabId: 7, prompt_text: "Kim" });
+  assert.strictEqual(out, 'ok: accepted prompt: "Name?" (default "x")');
+  assert.deepStrictEqual({ ...st.handled }, { accept: true, promptText: "Kim" });
+});
+
+test("handle_dialog with accept=false presses Cancel", async () => {
+  const { sb, st } = dialogChrome({ dialog: { type: "confirm", message: "Sure?" }, announce: true });
+  assert.match(await sb.handleDialog({ tabId: 7, accept: "false" }), /^ok: dismissed confirm/);
+  assert.strictEqual(st.handled.accept, false);
+});
+
+test("when the debugger cannot answer, handle_dialog hands over to the daemon's keyboard", async () => {
+  const { sb } = dialogChrome({ dialog: { type: "alert", message: "hi" }, handles: false });
+  await assert.rejects(() => sb.handleDialog({ tabId: 7 }), /^Error: dialog needs the keyboard on tab 7 /);
+});
+
+test("handle_dialog with no dialog says so, not 'needs the keyboard'", async () => {
+  const { sb } = dialogChrome();
+  await assert.rejects(() => sb.handleDialog({ tabId: 7 }), /^Error: no dialog open$/);
+});

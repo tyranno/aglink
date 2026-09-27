@@ -315,9 +315,6 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if isAppProfile(profile) {
 		return d.callApp(method, params, profile)
 	}
-	if appOnlyMethods[method] {
-		return appOnlyRefusal(method)
-	}
 
 	d.mu.Lock()
 	ec, err := d.resolve(profile)
@@ -327,6 +324,9 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	}
 	if method == "proceed_insecure" {
 		return d.proceedChrome(ec, params)
+	}
+	if method == "handle_dialog" {
+		return d.handleDialogChrome(ec, params)
 	}
 	res := d.roundTrip(ec, method, params, callTimeout, "browser")
 	if method == "navigate" && res.OK {

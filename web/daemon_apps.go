@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 )
@@ -124,11 +123,4 @@ func (d *Daemon) closeApps() {
 		a.Close()
 		delete(d.apps.conns, id)
 	}
-}
-
-// appOnlyMethods are tools that exist only for app targets in this version.
-var appOnlyMethods = map[string]bool{"dialog_status": true, "handle_dialog": true}
-
-func appOnlyRefusal(method string) CallResult {
-	return CallResult{Error: fmt.Sprintf("%s is only available for app profiles (app:/cdp:) in this version — Chrome dialogs are not supported yet", strings.TrimSpace(method))}
 }

@@ -281,8 +281,7 @@ handle_dialog   profile="app:aglink"  accept="false"  → 취소
 handle_dialog   profile="app:aglink"  prompt_text="홍길동"
 ```
 
-크롬의 alert/confirm 은 아직 지원하지 않는다(확장에 디버거 권한이 필요해 따로
-진행한다).
+크롬 탭도 같은 도구로 된다 — 아래 "크롬의 alert · confirm · prompt".
 
 2026-09-22 aglink 데스크톱(Wails v3)으로 실측: 목록·본문 읽기·`text=`/`role=`
 선택자 클릭·입력·값 읽기·스크린샷·`confirm()` 처리까지 전부 동작했고, 확인창이
@@ -320,6 +319,35 @@ vscode_terminal_run   profile="vscode:backend"   command="go test ./..."   → �
 - 원격 창의 `vscode_terminal_run` 은 **원격에서** 실행된다. 역터널로 데몬에 닿는
   원격 세션도 이 도구를 쓸 수 있다 — aglink-screen 과 같은 수준의 권한이다.
 - 다른 확장의 화면(Claude 채팅 패널 등)은 읽지 못한다. Claude 대화는 `!attach`.
+
+## 크롬의 alert · confirm · prompt
+
+대화창이 뜨면 페이지 JS 가 멈춰 `executeScript` 가 돌아오지 않는다. 예전에는 그 탭의
+모든 도구가 30초 시간 초과로 실패했고, 대화창은 DOM 에 없어 읽을 수도 누를 수도 없었다.
+
+- **감지.** 페이지를 건드리는 도구가 2.5초 안에 답이 없으면 확장이 `chrome.debugger`
+  를 잠깐 붙여 확인한다. 대화창이면 바로
+  `dialog open on tab 7: confirm: "삭제할까요?" — call handle_dialog to answer it` 로
+  실패한다. 원래 호출은 그대로 살아 있다가 대화창이 닫히면 끝난다.
+- **`dialog_status` / `handle_dialog`** 는 앱 창과 같은 인자로 크롬 탭에도 된다.
+  확장이 디버거의 `Page.handleJavaScriptDialog` 로 답하고, 못 하면 데몬이 그 탭을
+  앞으로 가져와 **Enter**(확인 — prompt 는 글자를 먼저 친다) 또는 **Esc**(취소)를
+  누른 뒤, 대화창이 사라졌는지 확인하고서야 성공이라고 한다. 앞에 있는 창이 그 탭을
+  보여 주는 `chrome.exe` 가 아니면 아무 키도 누르지 않는다(인증서 경고와 같은 안전장치).
+  창을 앞으로 가져올 때는 키 입력 없이 `AttachThreadInput` + `SetForegroundWindow` 를 쓴다.
+- 디버거는 보는 동안만 붙는다. 그 순간 크롬 위에 "디버깅 중" 막대가 잠깐 보인다.
+
+실측으로 알게 된 크롬의 동작(2026-09-27):
+
+- **대화창은 탭이 보이고 창이 앞에 있을 때만 뜬다.** 뒤에 있는 탭의 `confirm()` 은
+  바로 `false` 를 돌려받는다 — 대화창이 뜨지도 않는다.
+- **디버거를 나중에 붙이면 크롬은 이미 떠 있는 대화창을 알려 주지 않고**
+  (`Page.enable` 도 멈춘 렌더러를 기다리느라 답하지 않는다), `Page.handleJavaScriptDialog`
+  도 `No dialog is showing` 으로 거절한다. 그래서 실제로는 키보드 경로로 답하게 되고,
+  대화창의 **문구는 브라우저 쪽에서 읽을 수 없다** — 메시지가
+  "its text is not readable from the browser" 라고 하는 경우다. 문구가 필요하면
+  aglink-screen 으로 화면에서 읽는다.
+- confirm 확인/취소, alert 확인, prompt 입력+확인/취소를 실제 크롬에서 확인했다.
 
 ## 인증서 경고 넘기기 (HTTPS)
 

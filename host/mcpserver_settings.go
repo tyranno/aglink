@@ -1,173 +1,181 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 )
 
-// --- User-defined MCP servers (scalar-slot editing) ------------------------
+// --- User-defined MCP servers (list CRUD over the control API) --------------
 //
-// The structured settings form is scalar-only, so cfg.MCPServers (see
-// MCPServerDef in mcpservers.go) is edited as fixed "slots"
-// (mcp_server.1.*, mcp_server.2.*, …) exactly like vLLM's primary/secondary
-// servers and the custom-provider slots. Args/Env don't have a native scalar
-// UI type, so they round-trip through a comma-separated string
-// ("-y, @pkg/name" / "KEY=VALUE, FOO=bar").
+// cfg.MCPServers (see MCPServerDef in mcpservers.go) is a list with no length
+// limit, but the structured settings form is scalar-only — it can render a
+// fixed set of flat key/value rows and nothing else. So this registry gets its
+// own pair of control verbs (get_mcp_servers / save_mcp_servers) carrying the
+// list as structured JSON, and the UIs render a real add/remove list instead
+// of a handful of "slot 1/2/3" text fields.
+//
+// Saves are whole-list replacements: add, delete, reorder and edit are all just
+// "here is the new list". The host validates the list as a unit (names unique,
+// none shadowing a built-in, usable as an MCP identifier) and writes config.yaml
+// only when every entry is valid, so a rejected save never leaves the registry
+// half-applied.
 
-// mcpServerSlots is how many user-defined MCP server slots the scalar
-// settings form exposes. A small fixed count keeps the form manageable;
-// config.yaml's mcp_servers list itself has no such limit (raw editor covers
-// anything beyond this).
-const mcpServerSlots = 3
+// builtinMCPServerNames are the names buildMCPServerList hands to aglink's own
+// plugins. A user-defined server may not reuse one: both backends key their MCP
+// wiring by name (claude's --mcp-config object, codex's -c mcp_servers.<name>.*),
+// so a collision would silently shadow the built-in.
+var builtinMCPServerNames = []string{"screen", "web", "goono", "notion"}
 
-// mcpServerAt returns the i-th user-defined MCP server, or a zero
-// MCPServerDef when the slot doesn't exist, so the scalar settings UI can
-// read a slot without index checks.
-func mcpServerAt(cfg *Config, i int) MCPServerDef {
-	if cfg == nil || i < 0 || i >= len(cfg.MCPServers) {
-		return MCPServerDef{}
+// mcpServersResponse is the get_mcp_servers reply. Reserved travels with the
+// list so the UI can warn about a built-in name collision while typing instead
+// of only on save.
+type mcpServersResponse struct {
+	Servers  []MCPServerDef `json:"servers"`
+	Reserved []string       `json:"reserved"`
+}
+
+// mcpServersRequest is the save_mcp_servers payload. Servers is a pointer so
+// that a payload which omits the field (or sends null) is rejected instead of
+// read as "the new list is empty": because a save replaces the whole registry,
+// that distinction is the difference between a malformed request and silently
+// deleting every server the user registered.
+type mcpServersRequest struct {
+	Servers *[]MCPServerDef `json:"servers"`
+}
+
+// buildMCPServersResponse snapshots the user-defined registry for the UI. The
+// slice is always non-nil so clients can iterate it without a null check.
+func buildMCPServersResponse(cfg *Config) mcpServersResponse {
+	servers := []MCPServerDef{}
+	if cfg != nil {
+		servers = append(servers, cfg.MCPServers...)
 	}
-	return cfg.MCPServers[i]
+	return mcpServersResponse{Servers: servers, Reserved: builtinMCPServerNames}
 }
 
-// setMCPServerField sets one field of the i-th server, growing the slice with
-// empty slots as needed (the UI may fill slot 2 before slot 1). Callers
-// normalize afterward (normalizeMCPServers) to drop the trailing empties this
-// can create.
-func setMCPServerField(cfg *Config, i int, field string, v any) {
-	for len(cfg.MCPServers) <= i {
-		cfg.MCPServers = append(cfg.MCPServers, MCPServerDef{})
+// validMCPServerNameChar reports whether r may appear in an MCP server name.
+// The name becomes a JSON object key for claude and a bare TOML key path
+// segment for codex (`-c mcp_servers.<name>.command=…`), so anything outside
+// this set could break the generated config rather than just look odd.
+func validMCPServerNameChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+}
+
+// validMCPEnvKey reports whether k is usable as an environment variable name.
+// Rejecting '=' and whitespace keeps a malformed key from corrupting the codex
+// `-c mcp_servers.<name>.env.<key>=…` override it is spliced into.
+func validMCPEnvKey(k string) bool {
+	if k == "" {
+		return false
 	}
-	switch field {
-	case "enabled":
-		cfg.MCPServers[i].Enabled = asBool(v)
-	case "name":
-		cfg.MCPServers[i].Name = strings.TrimSpace(asString(v))
-	case "command":
-		cfg.MCPServers[i].Command = strings.TrimSpace(asString(v))
-	case "args":
-		cfg.MCPServers[i].Args = parseMCPArgsString(asString(v))
-	case "env":
-		cfg.MCPServers[i].Env = parseMCPEnvString(asString(v))
-	case "system_prompt":
-		cfg.MCPServers[i].SystemPrompt = asString(v)
+	return !strings.ContainsAny(k, "= \t\r\n")
+}
+
+// normalizeMCPServers trims and validates a whole user-defined server list,
+// returning the cleaned list to store in cfg.MCPServers. It returns an error —
+// naming the offending row so the UI can point at it — rather than dropping bad
+// entries, so a typo is reported instead of silently losing a server.
+func normalizeMCPServers(in []MCPServerDef) ([]MCPServerDef, error) {
+	if len(in) == 0 {
+		return nil, nil
 	}
-}
-
-// mcpServerEmpty reports whether a slot carries no usable definition (an
-// all-blank slot the scalar UI created and the user never filled in).
-func mcpServerEmpty(d MCPServerDef) bool {
-	return !d.Enabled && strings.TrimSpace(d.Name) == "" && strings.TrimSpace(d.Command) == "" &&
-		len(d.Args) == 0 && len(d.Env) == 0 && strings.TrimSpace(d.SystemPrompt) == ""
-}
-
-// normalizeMCPServers trims trailing all-blank slots so a cleared slot
-// doesn't linger. Only trailing blanks are dropped — a blank slot between two
-// filled ones is kept so slot indices stay stable within one save.
-func normalizeMCPServers(cfg *Config) {
-	for len(cfg.MCPServers) > 0 && mcpServerEmpty(cfg.MCPServers[len(cfg.MCPServers)-1]) {
-		cfg.MCPServers = cfg.MCPServers[:len(cfg.MCPServers)-1]
+	reserved := map[string]bool{}
+	for _, n := range builtinMCPServerNames {
+		reserved[n] = true
 	}
-}
-
-// joinMCPArgsString / parseMCPArgsString round-trip an args slice through the
-// scalar string field ("-y, @pkg/name" <-> []string{"-y", "@pkg/name"}).
-func joinMCPArgsString(args []string) string {
-	return strings.Join(args, ", ")
-}
-
-func parseMCPArgsString(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
+	seen := map[string]int{} // lowercased name → 1-based row that claimed it
+	out := make([]MCPServerDef, 0, len(in))
+	for i, d := range in {
+		row := i + 1
+		name := strings.TrimSpace(d.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%d번째 MCP 서버: 이름을 입력하세요", row)
 		}
-	}
-	return out
-}
-
-// joinMCPEnvString / parseMCPEnvString round-trip an env map through the
-// scalar string field ("KEY=VALUE, FOO=bar" <-> map[string]string).
-func joinMCPEnvString(env map[string]string) string {
-	if len(env) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys) // deterministic display order
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+"="+env[k])
-	}
-	return strings.Join(parts, ", ")
-}
-
-func parseMCPEnvString(s string) map[string]string {
-	var out map[string]string
-	for _, p := range strings.Split(s, ",") {
-		p = strings.TrimSpace(p)
-		eq := strings.Index(p, "=")
-		if eq <= 0 {
-			continue
+		for _, r := range name {
+			if !validMCPServerNameChar(r) {
+				return nil, fmt.Errorf("MCP 서버 이름 %q: 영문·숫자·'-'·'_'만 사용할 수 있습니다", name)
+			}
 		}
-		k := strings.TrimSpace(p[:eq])
-		if k == "" {
-			continue
+		lower := strings.ToLower(name)
+		if reserved[lower] {
+			return nil, fmt.Errorf("MCP 서버 이름 %q은(는) aglink 내장 서버 이름이라 사용할 수 없습니다 (%s)", name, strings.Join(builtinMCPServerNames, "/"))
 		}
-		if out == nil {
-			out = map[string]string{}
+		if prev, dup := seen[lower]; dup {
+			return nil, fmt.Errorf("MCP 서버 이름 %q이(가) 중복됩니다 (%d번째와 %d번째)", name, prev, row)
 		}
-		out[k] = strings.TrimSpace(p[eq+1:])
+		seen[lower] = row
+
+		cmd := strings.TrimSpace(d.Command)
+		if cmd == "" {
+			return nil, fmt.Errorf("MCP 서버 %q: 실행 명령을 입력하세요", name)
+		}
+
+		// Args arrive as one entry per UI line; blank lines are just formatting.
+		var args []string
+		for _, a := range d.Args {
+			if a = strings.TrimSpace(a); a != "" {
+				args = append(args, a)
+			}
+		}
+
+		var env map[string]string
+		if len(d.Env) > 0 {
+			keys := make([]string, 0, len(d.Env))
+			for k := range d.Env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys) // deterministic error for multiple bad keys
+			for _, k := range keys {
+				trimmed := strings.TrimSpace(k)
+				if trimmed == "" {
+					continue // an empty row the user never filled in
+				}
+				if !validMCPEnvKey(trimmed) {
+					return nil, fmt.Errorf("MCP 서버 %q: 환경변수 이름 %q에 '=' 또는 공백을 쓸 수 없습니다", name, trimmed)
+				}
+				if env == nil {
+					env = map[string]string{}
+				}
+				env[trimmed] = strings.TrimSpace(d.Env[k])
+			}
+		}
+
+		out = append(out, MCPServerDef{
+			Name:         name,
+			Enabled:      d.Enabled,
+			Command:      cmd,
+			Args:         args,
+			Env:          env,
+			SystemPrompt: strings.TrimSpace(d.SystemPrompt),
+		})
 	}
-	return out
+	return out, nil
 }
 
-// mcpServerFields renders the "user-defined MCP servers" slots for the
-// structured settings form. Each slot maps 1:1 onto an MCPServerDef; saving a
-// slot with a name+command grows cfg.MCPServers, which buildMCPServerList
-// then picks up on the worker's next turn — no Go code or rebuild needed.
-func mcpServerFields(cfg *Config) []settingField {
-	fields := make([]settingField, 0, mcpServerSlots*6)
-	for i := 0; i < mcpServerSlots; i++ {
-		d := mcpServerAt(cfg, i)
-		n := i + 1
-		prefix := fmt.Sprintf("mcp_server.%d.", n)
-		fields = append(fields,
-			settingField{Key: prefix + "enabled", Label: fmt.Sprintf("MCP %d — 사용", n),
-				Desc: "이 슬롯을 켜야 실제로 연결됩니다.", Type: "bool", Value: d.Enabled},
-			settingField{Key: prefix + "name", Label: fmt.Sprintf("MCP %d — 이름", n),
-				Desc: "영문/숫자 식별자. 다른 슬롯이나 screen/web/goono/notion과 겹치면 안 됩니다.", Type: "string", Value: d.Name},
-			settingField{Key: prefix + "command", Label: fmt.Sprintf("MCP %d — 실행 명령", n),
-				Desc: "예: npx, 또는 MCP 서버 실행파일의 전체 경로.", Type: "string", Value: d.Command},
-			settingField{Key: prefix + "args", Label: fmt.Sprintf("MCP %d — 인자", n),
-				Desc: "쉼표로 구분해서 순서대로 적습니다. 예: -y, @notionhq/notion-mcp-server", Type: "string", Value: joinMCPArgsString(d.Args)},
-			settingField{Key: prefix + "env", Label: fmt.Sprintf("MCP %d — 환경변수(선택)", n),
-				Desc: "KEY=VALUE 쌍을 쉼표로 구분. 예: API_KEY=secret, FOO=bar", Type: "string", Value: joinMCPEnvString(d.Env)},
-			settingField{Key: prefix + "system_prompt", Label: fmt.Sprintf("MCP %d — 안내 문구(선택)", n),
-				Desc: "AI에게 이 MCP를 언제·어떻게 쓸지 알려주는 짧은 문구. 비워도 됩니다.", Type: "string", Value: d.SystemPrompt},
-		)
+// applyMCPServersUpdate replaces the whole user-defined MCP registry from a
+// save_mcp_servers payload ({"servers":[…]}) and persists config.yaml (fsnotify
+// hot-reloads it, so the next worker turn picks the new list up via
+// buildMCPServerList — no restart). Returns the control-reply JSON:
+// {"ok":true} or {"ok":false,"error":…}. Everything else in the config —
+// secrets, allowlists, comments-free structured fields — round-trips untouched
+// through marshalConfigYAML, same as the structured settings save.
+func applyMCPServersUpdate(cfgPath string, cfg *Config, body []byte) json.RawMessage {
+	var req mcpServersRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return settingsFail("잘못된 요청: " + err.Error())
 	}
-	return fields
-}
-
-// applyMCPServerSetting routes a dynamic "mcp_server.<n>.<field>" settings key
-// to the matching slot (1-based n in the UI → 0-based slice index). Unknown
-// fields are ignored (the raw editor covers anything the form can't).
-func applyMCPServerSetting(cfg *Config, key string, v any) {
-	rest := strings.TrimPrefix(key, "mcp_server.")
-	dot := strings.Index(rest, ".")
-	if dot <= 0 {
-		return
+	if req.Servers == nil {
+		// Clearing the registry is an explicit []; a missing list is a broken
+		// request, and answering it by wiping every server would be unrecoverable.
+		return settingsFail("잘못된 요청: servers 목록이 없습니다")
 	}
-	n := atoiOr(rest[:dot], 0)
-	if n < 1 {
-		return
+	servers, err := normalizeMCPServers(*req.Servers)
+	if err != nil {
+		return settingsFail(err.Error())
 	}
-	switch field := rest[dot+1:]; field {
-	case "enabled", "name", "command", "args", "env", "system_prompt":
-		setMCPServerField(cfg, n-1, field, v)
-	}
+	newCfg := *cfg // shallow copy; only MCPServers is replaced (not mutated in place)
+	newCfg.MCPServers = servers
+	return persistConfig(cfgPath, &newCfg)
 }

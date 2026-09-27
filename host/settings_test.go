@@ -357,3 +357,42 @@ func TestApplyThenBuild_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// models.worker_light decides whether a short message is answered by the cheap
+// model instead of the configured worker model — the settings form must expose
+// it (it used to be raw-YAML only, so a user who had it set saw their new
+// "작업 모델" apparently ignored) and round-trip it.
+func TestWorkerLightModelSettingRoundTrip(t *testing.T) {
+	cfg := Config{TelegramBotToken: "t", AllowedUserIDs: []int64{1}, WorkerModel: "opus"}
+	if err := applySettings(&cfg, map[string]any{"models.worker_light": "sonnet"}); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	if cfg.WorkerModelLight != "sonnet" {
+		t.Fatalf("WorkerModelLight = %q, want %q", cfg.WorkerModelLight, "sonnet")
+	}
+	raw, err := marshalConfigYAML(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := unmarshalConfigYAML(raw)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.WorkerModelLight != "sonnet" || got.WorkerModel != "opus" {
+		t.Fatalf("models did not round-trip: worker=%q light=%q", got.WorkerModel, got.WorkerModelLight)
+	}
+	var found bool
+	for _, sec := range buildSettings(got, nil) {
+		for _, f := range sec.Fields {
+			if f.Key == "models.worker_light" {
+				found = true
+				if f.Value != "sonnet" {
+					t.Fatalf("form renders models.worker_light=%v, want sonnet", f.Value)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("models.worker_light is missing from the settings form")
+	}
+}

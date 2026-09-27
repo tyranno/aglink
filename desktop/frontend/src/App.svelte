@@ -6,6 +6,7 @@
   import GroupNode from "./GroupNode.svelte";
   import PlaybookPanel from "./PlaybookPanel.svelte";
   import ReservationPanel from "./ReservationPanel.svelte";
+  import MCPServerPanel from "./MCPServerPanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import {
     chat,
@@ -62,9 +63,12 @@
 
   let view = $state("chat");
   let settingsTab = $state("settings");
+  // 알려진 탭 값만 복원한다 — 저장된 값이 낯설면 "chat"으로 떨어뜨려야, 렌더링
+  // 분기의 마지막 else(MCP)가 알 수 없는 값을 떠안는 일이 없다.
+  const SIDEBAR_TABS = ["chat", "playbook", "reservation", "mcp"];
   let sidebarTab = $state(
-    sidebarPrefs.tab === "playbook" || sidebarPrefs.tab === "reservation" ? sidebarPrefs.tab : "chat",
-  ); // 대화 목록 / 업무 관리 / 예약
+    SIDEBAR_TABS.includes(sidebarPrefs.tab) ? sidebarPrefs.tab : "chat",
+  ); // 대화 목록 / 업무 관리 / 예약 / MCP
   let sidebarCollapsed = $state(sidebarPrefs.collapsed === true);
   $effect(() => {
     // Re-runs whenever either changes → persists the current sidebar state.
@@ -246,13 +250,9 @@
       );
       if (reply.ok) {
         settingsMsg = "저장했습니다. 필요한 경우 서비스 재시작이 필요할 수 있습니다.";
-        await loadSettingsSchema();
-        // aglink's config hot-reload is debounced (~300ms) before it takes
-        // effect, so refetch the version/backend info shortly after saving —
-        // otherwise the header badge keeps showing the backend from launch.
-        window.setTimeout(() => {
-          void loadVersionInfo();
-        }, 500);
+        // aglink applies a saved config before replying (host ConfigApplier), so
+        // both refetches read the new values — no debounce to wait out.
+        await Promise.all([loadSettingsSchema(), loadVersionInfo()]);
       } else {
         settingsMsg = `저장 실패: ${reply.error || "알 수 없는 오류"}`;
       }
@@ -584,6 +584,10 @@
                 class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "reservation" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "reservation")}
               >예약</button>
+              <button
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "mcp" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
+                onclick={() => (sidebarTab = "mcp")}
+              >MCP</button>
             </div>
             {#if sidebarTab === "chat"}
             <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 dark:border-slate-700 px-3">
@@ -786,8 +790,10 @@
             </div>
             {:else if sidebarTab === "playbook"}
               <PlaybookPanel />
-            {:else}
+            {:else if sidebarTab === "reservation"}
               <ReservationPanel />
+            {:else}
+              <MCPServerPanel />
             {/if}
           </aside>
         {:else}

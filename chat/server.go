@@ -601,6 +601,32 @@ func (s *browserServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleMCPServers proxies the user-defined MCP server registry to teleclaude
+// via get_mcp_servers/save_mcp_servers — the same list-CRUD control verbs the
+// desktop app's MCP panel uses (see host/mcpserver_settings.go). GET returns
+// {servers,reserved}; PUT sends {"servers":[…]} and returns {ok,error} as-is
+// (relayControl forwards the control reply verbatim, unlike handleSettings'
+// 204/400 mapping — the list can fail per-entry, so the caller reads .error).
+func (s *browserServer) handleMCPServers(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.relayControl(w, controlIn{Type: "get_mcp_servers"})
+	case http.MethodPut:
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		s.relayControl(w, controlIn{Type: "save_mcp_servers", Payload: json.RawMessage(body)})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // handleStatus reports this frontend's own bind address for the "이 웹 서버"
 // panel section (aglink helper status comes from /api/aux).
 func (s *browserServer) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -726,6 +752,7 @@ func (s *browserServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/mcp-servers", s.handleMCPServers)
 	mux.Handle("/static/", noStore(http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))))
 	mux.HandleFunc("/", s.handleIndex)
 

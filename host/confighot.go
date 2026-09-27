@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -74,14 +78,98 @@ func applyReload(old, nw *Config, h ReloadHooks) {
 	}
 }
 
-// WatchConfig watches the config file's directory and hot-reloads on change.
-// Returns a stop func. Editor atomic-saves (temp+rename) are handled by watching
-// the directory and filtering for the config file name; events are debounced.
-func WatchConfig(path string, holder *ConfigHolder, hooks ReloadHooks) (func(), error) {
+// ConfigApplier re-reads the config file and swaps it into the live holder,
+// firing the reload hooks for whatever changed. Everything that reloads config
+// goes through one applier: the fsnotify watcher below, and — synchronously —
+// every writer that persists config.yaml (settings form, raw editor, MCP list).
+// The writers matter because the UI refetches the settings right after a save;
+// waiting for the watcher's 300ms debounce meant that refetch returned the
+// pre-save values and the form re-rendered showing the old model.
+type ConfigApplier struct {
+	path   string
+	holder *ConfigHolder
+	hooks  ReloadHooks
+
+	mu      sync.Mutex
+	lastRaw []byte // bytes of the last successfully applied file
+}
+
+func NewConfigApplier(path string, holder *ConfigHolder, hooks ReloadHooks) *ConfigApplier {
+	a := &ConfigApplier{path: path, holder: holder, hooks: hooks}
+	// Seed with the bytes the running config was loaded from so an event for a
+	// touch that didn't actually change anything is recognized as a no-op.
+	a.lastRaw, _ = os.ReadFile(path)
+	return a
+}
+
+// Apply re-reads the config file and, if its content changed since the last
+// applied version, swaps it into the holder and fires the hooks. Identical
+// content is a no-op — a save applies synchronously and the debounced watcher
+// event for that same write lands here afterwards, which would otherwise
+// re-notify every user a second time. On a parse error the previous config is
+// kept and the error returned.
+func (a *ConfigApplier) Apply() error {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	raw, rerr := os.ReadFile(a.path)
+	if rerr == nil && a.lastRaw != nil && bytes.Equal(raw, a.lastRaw) {
+		return nil
+	}
+	cfg, err := LoadConfig(a.path)
+	if err != nil {
+		log.Printf("[config] reload 실패: %v (이전 설정 유지)", err)
+		a.notify("⚠️ 설정 reload 실패: " + err.Error() + " — 이전 설정 유지")
+		return err
+	}
+	old := a.holder.Get()
+	a.holder.Set(cfg)
+	a.lastRaw = raw
+	applyReload(old, cfg, a.hooks)
+	log.Printf("[config] reload 적용됨")
+	a.notify("⚙️ 설정이 reload되었습니다")
+	return nil
+}
+
+// notify fans the message out off the caller's goroutine: Notify sends chat
+// messages, and a save's control reply shouldn't wait on Telegram round-trips
+// now that writers apply synchronously.
+func (a *ConfigApplier) notify(msg string) {
+	if a.hooks.Notify == nil {
+		return
+	}
+	go a.hooks.Notify(msg)
+}
+
+// liveConfigApplier is the process-wide applier registered by main. Config
+// writers call applyLiveConfig after a successful write so the change is live
+// *before* they reply. Nil (tests, wizard) makes applyLiveConfig a no-op.
+var liveConfigApplier atomic.Pointer[ConfigApplier]
+
+// SetLiveConfigApplier registers the applier used by applyLiveConfig.
+func SetLiveConfigApplier(a *ConfigApplier) { liveConfigApplier.Store(a) }
+
+// applyLiveConfig hot-applies the config file that was just written, so the
+// running process (and the very next get_settings read) sees it immediately
+// instead of up to a debounce later.
+func applyLiveConfig() {
+	if a := liveConfigApplier.Load(); a != nil {
+		_ = a.Apply()
+	}
+}
+
+// WatchConfig watches the config file's directory and hot-reloads on change via
+// the applier. Returns a stop func. Editor atomic-saves (temp+rename) are
+// handled by watching the directory and filtering for the config file name;
+// events are debounced.
+func WatchConfig(a *ConfigApplier) (func(), error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
+	path := a.path
 	dir := filepath.Dir(path)
 	name := filepath.Base(path)
 	if err := w.Add(dir); err != nil {
@@ -98,21 +186,7 @@ func WatchConfig(path string, holder *ConfigHolder, hooks ReloadHooks) (func(), 
 				return
 			default:
 			}
-			cfg, err := LoadConfig(path)
-			if err != nil {
-				log.Printf("[config] reload 실패: %v (이전 설정 유지)", err)
-				if hooks.Notify != nil {
-					hooks.Notify("⚠️ 설정 reload 실패: " + err.Error() + " — 이전 설정 유지")
-				}
-				return
-			}
-			old := holder.Get()
-			holder.Set(cfg)
-			applyReload(old, cfg, hooks)
-			log.Printf("[config] reload 적용됨")
-			if hooks.Notify != nil {
-				hooks.Notify("⚙️ 설정이 reload되었습니다")
-			}
+			_ = a.Apply()
 		}
 		for {
 			select {

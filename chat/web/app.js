@@ -42,6 +42,10 @@
   const configText = document.getElementById("config-text");
   const configMsg = document.getElementById("config-msg");
   const connBody = document.getElementById("conn-body");
+  const mcpListEl = document.getElementById("mcp-list");
+  const mcpMsgEl = document.getElementById("mcp-msg");
+  const mcpAddBtn = document.getElementById("mcp-add");
+  const mcpRefreshBtn = document.getElementById("mcp-refresh");
   const dialogOverlay = document.getElementById("dialog-overlay");
   const dialogTitle = document.getElementById("dialog-title");
   const dialogBody = document.getElementById("dialog-body");
@@ -1383,10 +1387,13 @@
     currentSettingsTab = tab;
     document.querySelectorAll(".settings-tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
     const cfgPanel = document.getElementById("settings-tab-config");
+    const mcpPanel = document.getElementById("settings-tab-mcp");
     const connPanel = document.getElementById("settings-tab-conn");
     if (cfgPanel) cfgPanel.hidden = tab !== "config";
+    if (mcpPanel) mcpPanel.hidden = tab !== "mcp";
     if (connPanel) connPanel.hidden = tab !== "conn";
     if (tab === "config") { loadSettingsForm(); loadRawConfig(); }
+    else if (tab === "mcp") { loadMCPServers(); }
     else { renderConnBody(); }
   }
   document.querySelectorAll(".settings-tab").forEach((b) => b.addEventListener("click", () => loadSettingsTab(b.dataset.tab)));
@@ -1450,6 +1457,7 @@
   let activeSettingsTab = "";
   async function loadSettingsForm() {
     if (!settingsForm) return;
+    const prevTab = activeSettingsTab; // keep the user on the tab they saved from
     settingsForm.replaceChildren();
     settingsFields = [];
     if (settingsMsg) settingsMsg.textContent = "";
@@ -1506,7 +1514,7 @@
       rec.el.addEventListener("input", applyVisibility);
     }
 
-    activeSettingsTab = groups[0] || "";
+    activeSettingsTab = groups.includes(prevTab) ? prevTab : (groups[0] || "");
     applyVisibility();
 
     if (settingsFields.length === 0) {
@@ -1525,7 +1533,9 @@
     if (settingsMsg) settingsMsg.textContent = "저장 중…";
     try {
       const r = await fetch("/api/settings", { method: "PUT", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify(updates) });
-      if (r.status === 204) { if (settingsMsg) settingsMsg.textContent = "저장됨 — 핫리로드 적용 (주소·기동 항목은 재시작 필요)"; loadSettingsForm(); }
+      // aglink hot-applies the save before replying, so the refetch below shows
+      // the new values. Set the message after it — loadSettingsForm clears it.
+      if (r.status === 204) { await loadSettingsForm(); if (settingsMsg) settingsMsg.textContent = "저장됨 — 핫리로드 적용 (주소·기동 항목은 재시작 필요)"; }
       else { const t = await r.text(); if (settingsMsg) settingsMsg.textContent = "실패: " + t; }
     } catch (e) { if (settingsMsg) settingsMsg.textContent = "오류: " + e; }
   }
@@ -1551,6 +1561,241 @@
   }
   const configSaveBtn = document.getElementById("config-save");
   if (configSaveBtn) configSaveBtn.addEventListener("click", saveConfig);
+
+  // --- User-defined MCP servers tab (GET/PUT /api/mcp-servers) -------------
+  // Mirrors the desktop app's MCPServerPanel.svelte: config.yaml's
+  // `mcp_servers:` list, edited whole — add/edit/delete/toggle all replace the
+  // full list via save_mcp_servers (see host/mcpserver_settings.go), so every
+  // mutation here goes through mcpPersist() and reloads from the host after.
+  let mcpServers = [];
+  let mcpReserved = [];
+  let mcpBusy = false;
+
+  async function loadMCPServers() {
+    if (!mcpListEl) return;
+    try {
+      const r = await fetch("/api/mcp-servers", { headers: authHeaders });
+      const data = r.ok ? await r.json() : {};
+      mcpServers = Array.isArray(data.servers) ? data.servers : [];
+      mcpReserved = Array.isArray(data.reserved) ? data.reserved : [];
+      if (mcpMsgEl) mcpMsgEl.textContent = "";
+    } catch (e) {
+      mcpServers = [];
+      if (mcpMsgEl) mcpMsgEl.textContent = "MCP 서버 목록을 불러오지 못했습니다.";
+    }
+    renderMCPList();
+  }
+
+  function renderMCPList() {
+    if (!mcpListEl) return;
+    mcpListEl.replaceChildren();
+    if (mcpServers.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "mcp-empty";
+      empty.textContent = "등록된 사용자 정의 MCP 서버가 없습니다. ＋로 추가하세요.";
+      mcpListEl.appendChild(empty);
+      return;
+    }
+    mcpServers.forEach((s, i) => mcpListEl.appendChild(makeMCPRow(s, i)));
+  }
+
+  function makeMCPRow(s, i) {
+    const row = document.createElement("div");
+    row.className = "mcp-row";
+    const head = document.createElement("div");
+    head.className = "mcp-row-head";
+    const nameBlock = document.createElement("div");
+    nameBlock.className = "mcp-name-block";
+    nameBlock.addEventListener("click", () => openMCPEditor(i));
+    const name = document.createElement("div");
+    name.className = "mcp-name"; name.textContent = s.name; name.title = s.name;
+    const cmd = document.createElement("div");
+    cmd.className = "mcp-command"; cmd.textContent = s.command; cmd.title = s.command;
+    nameBlock.append(name, cmd);
+    const badge = document.createElement("span");
+    badge.className = "mcp-badge " + (s.enabled ? "mcp-badge-on" : "mcp-badge-off");
+    badge.textContent = s.enabled ? "사용중" : "중지됨";
+    head.append(nameBlock, badge);
+    row.appendChild(head);
+
+    const meta = [];
+    if (s.args && s.args.length) meta.push("인자 " + s.args.length + "개");
+    if (s.env && Object.keys(s.env).length) meta.push("환경변수 " + Object.keys(s.env).length + "개");
+    if (s.system_prompt) meta.push("[안내 문구]");
+    if (meta.length) {
+      const metaEl = document.createElement("div");
+      metaEl.className = "mcp-meta"; metaEl.textContent = meta.join("   ");
+      row.appendChild(metaEl);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "mcp-actions";
+    const editBtn = document.createElement("button");
+    editBtn.type = "button"; editBtn.textContent = "✏️ 편집";
+    editBtn.addEventListener("click", () => openMCPEditor(i));
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    if (!s.enabled) toggleBtn.classList.add("mcp-enable");
+    toggleBtn.textContent = s.enabled ? "⏸ 사용 중지" : "▶ 사용";
+    toggleBtn.addEventListener("click", () => mcpToggle(i));
+    const delBtn = document.createElement("button");
+    delBtn.type = "button"; delBtn.className = "mcp-danger"; delBtn.textContent = "🗑 삭제";
+    delBtn.addEventListener("click", () => mcpDelete(i));
+    actions.append(editBtn, toggleBtn, delBtn);
+    row.appendChild(actions);
+    return row;
+  }
+
+  // Common path for every mutation: save the whole new list, then reload from
+  // the host regardless of outcome — a rejected save must not leave the screen
+  // showing an unsaved state as if it were real.
+  async function mcpPersist(newList) {
+    let ok = true, err = "";
+    try {
+      const r = await fetch("/api/mcp-servers", {
+        method: "PUT",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ servers: newList }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.ok === false) { ok = false; err = data.error || "저장에 실패했습니다."; }
+    } catch (e) {
+      ok = false;
+      err = "연결이 끊겨 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+    }
+    await loadMCPServers();
+    return { ok, err };
+  }
+
+  async function mcpToggle(i) {
+    if (mcpBusy) return;
+    mcpBusy = true;
+    const next = mcpServers.map((s, idx) => (idx === i ? { ...s, enabled: !s.enabled } : s));
+    const { ok, err } = await mcpPersist(next);
+    mcpBusy = false;
+    if (!ok && mcpMsgEl) mcpMsgEl.textContent = err;
+  }
+
+  async function mcpDelete(i) {
+    const s = mcpServers[i];
+    const confirmed = await askConfirm(
+      "MCP 서버 삭제",
+      `"${s.name}" MCP 서버를 목록에서 삭제할까요? 이 작업은 되돌릴 수 없습니다.`,
+      { danger: true, okLabel: "삭제하기" },
+    );
+    if (!confirmed || mcpBusy) return;
+    mcpBusy = true;
+    const next = mcpServers.filter((_, idx) => idx !== i);
+    const { ok, err } = await mcpPersist(next);
+    mcpBusy = false;
+    if (!ok && mcpMsgEl) mcpMsgEl.textContent = err;
+  }
+
+  function mcpField(parent, label, value, placeholder) {
+    const wrap = document.createElement("div"); wrap.className = "dialog-field";
+    const l = document.createElement("div"); l.className = "dialog-label"; l.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.className = "dialog-input"; inp.value = value || "";
+    if (placeholder) inp.placeholder = placeholder;
+    wrap.append(l, inp);
+    parent.appendChild(wrap);
+    return inp;
+  }
+  function mcpTextArea(parent, label, value, placeholder) {
+    const wrap = document.createElement("div"); wrap.className = "dialog-field";
+    const l = document.createElement("div"); l.className = "dialog-label"; l.textContent = label;
+    const ta = document.createElement("textarea");
+    ta.className = "dialog-input"; ta.rows = 3; ta.value = value || "";
+    if (placeholder) ta.placeholder = placeholder;
+    wrap.append(l, ta);
+    parent.appendChild(wrap);
+    return ta;
+  }
+
+  // Opens the add/edit form and resolves the entry object to save, or null on
+  // cancel. Validation mirrors normalizeMCPServers on the host (name/command
+  // required, KEY=VALUE env lines) so a typo is caught before the round trip.
+  function openMCPEditorDialog(existing) {
+    return openDialog(existing ? "MCP 서버 편집" : "새 MCP 서버", (body, foot, finish) => {
+      body.classList.add("mcp-editor-body");
+      const nameInput = mcpField(body, "이름", existing ? existing.name : "", "예: filesystem");
+      const hint = document.createElement("div");
+      hint.className = "dialog-hint";
+      hint.textContent = "영문/숫자/-/_만 쓸 수 있습니다."
+        + (mcpReserved.length ? ` ${mcpReserved.join(", ")}은(는) 내장 서버 이름이라 사용할 수 없습니다.` : "");
+      body.appendChild(hint);
+
+      const enabledLabel = document.createElement("label");
+      enabledLabel.className = "dialog-checkbox-label";
+      const enabledInput = document.createElement("input");
+      enabledInput.type = "checkbox";
+      enabledInput.checked = existing ? !!existing.enabled : true;
+      enabledLabel.append(enabledInput, document.createTextNode("사용 여부 (끄면 대화에 이 MCP가 로드되지 않습니다)"));
+      body.appendChild(enabledLabel);
+
+      const commandInput = mcpField(body, "실행 명령", existing ? existing.command : "", "예: npx");
+      const argsArea = mcpTextArea(body, "인자 (한 줄에 하나)", existing ? (existing.args || []).join("\n") : "", "-y\n@modelcontextprotocol/server-filesystem\nC:\\work");
+      const envArea = mcpTextArea(
+        body, "환경변수 (한 줄에 KEY=VALUE)",
+        existing && existing.env ? Object.keys(existing.env).map((k) => `${k}=${existing.env[k]}`).join("\n") : "",
+        "API_KEY=xxxx\nBASE_URL=https://example.com",
+      );
+      const sysArea = mcpTextArea(body, "안내 문구 (선택)", existing ? existing.system_prompt || "" : "", "예: 사내 위키를 찾을 때는 이 MCP의 search 도구를 먼저 사용하세요.");
+
+      const errEl = document.createElement("div");
+      errEl.className = "dialog-error";
+      body.appendChild(errEl);
+
+      const cancel = document.createElement("button");
+      cancel.type = "button"; cancel.className = "dialog-btn-secondary"; cancel.textContent = "취소";
+      cancel.addEventListener("click", () => finish(null));
+
+      const save = document.createElement("button");
+      save.type = "button"; save.textContent = "저장";
+      save.addEventListener("click", () => {
+        const name = nameInput.value.trim();
+        const command = commandInput.value.trim();
+        if (!name || !command) { errEl.textContent = "이름과 실행 명령을 입력하세요."; return; }
+        const args = argsArea.value.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+        const env = {};
+        for (const line of envArea.value.split("\n")) {
+          const l = line.trim();
+          if (l === "") continue;
+          const eq = l.indexOf("=");
+          if (eq <= 0) { errEl.textContent = `환경변수는 KEY=VALUE 형식으로 한 줄에 하나씩 입력해 주세요: "${l}"`; return; }
+          env[l.slice(0, eq).trim()] = l.slice(eq + 1).trim();
+        }
+        const entry = { name, enabled: enabledInput.checked, command };
+        if (args.length) entry.args = args;
+        if (Object.keys(env).length) entry.env = env;
+        const sys = sysArea.value.trim();
+        if (sys) entry.system_prompt = sys;
+        finish(entry);
+      });
+      foot.append(cancel, save);
+    }, null);
+  }
+
+  async function openMCPEditor(i) {
+    const existing = i >= 0 ? mcpServers[i] : null;
+    const entry = await openMCPEditorDialog(existing);
+    if (!entry) return;
+    // The list may have shrunk while the dialog was open (another client
+    // deleted an entry, or config.yaml was edited directly) — refuse rather
+    // than silently overwrite the wrong row or lose the edit.
+    if (i >= 0 && i >= mcpServers.length) {
+      if (mcpMsgEl) mcpMsgEl.textContent = "목록이 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.";
+      return;
+    }
+    const next = i >= 0
+      ? mcpServers.map((s, idx) => (idx === i ? entry : s))
+      : [...mcpServers, entry];
+    const { ok, err } = await mcpPersist(next);
+    if (!ok && mcpMsgEl) mcpMsgEl.textContent = err;
+  }
+
+  if (mcpAddBtn) mcpAddBtn.addEventListener("click", () => openMCPEditor(-1));
+  if (mcpRefreshBtn) mcpRefreshBtn.addEventListener("click", loadMCPServers);
 
   // --- Connections / aglink status tab -------------------------------------
   function connHeading(text) {

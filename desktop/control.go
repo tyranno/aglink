@@ -569,6 +569,26 @@ func (c *ControlService) SetSettings(body string) (string, error) {
 	return string(data), err
 }
 
+// --- 사용자 정의 MCP 서버 ------------------------------------------------------
+// A variable-length registry the scalar settings form can't express, so it has
+// its own list-CRUD verbs. Relayed opaquely (same as playbooks/tasks) — the host
+// owns the schema and does the validation.
+
+// ListMCPServers returns {servers,reserved} as a JSON string: the user-defined
+// MCP server list plus the built-in names it may not reuse.
+func (c *ControlService) ListMCPServers() (string, error) {
+	data, err := c.request(controlIn{Type: "get_mcp_servers"})
+	return string(data), err
+}
+
+// SaveMCPServers replaces the whole user-defined MCP server list from a
+// {"servers":[…]} JSON payload — add/delete/edit are all one whole-list save —
+// and returns the {ok,error} control reply as a JSON string.
+func (c *ControlService) SaveMCPServers(payload string) (string, error) {
+	data, err := c.request(controlIn{Type: "save_mcp_servers", Payload: json.RawMessage(payload)})
+	return string(data), err
+}
+
 // PickFile opens a native OS file picker and returns the chosen absolute path.
 func (c *ControlService) PickFile() (string, error) {
 	return application.Get().Dialog.OpenFile().

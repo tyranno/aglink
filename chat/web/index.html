@@ -69,6 +69,7 @@
       <span class="settings-title">설정</span>
       <div class="settings-tabs">
         <button type="button" class="settings-tab" data-tab="config">설정</button>
+        <button type="button" class="settings-tab" data-tab="mcp">MCP</button>
         <button type="button" class="settings-tab" data-tab="conn">연결 / aglink</button>
       </div>
     </div>
@@ -85,6 +86,15 @@
           <textarea id="config-text" spellcheck="false"></textarea>
           <div class="panel-foot"><span id="config-msg"></span><button type="button" id="config-save">raw 저장 (핫리로드)</button></div>
         </details>
+      </div>
+      <div id="settings-tab-mcp" class="settings-tab-panel" hidden>
+        <div class="settings-section-desc">screen/web/goono/notion 외에 추가로 붙이고 싶은 MCP 서버를 등록합니다. npx 패키지나 실행파일 등 stdio로 동작하는 MCP라면 됩니다. 여기서 추가한 서버는 config.yaml에 저장되고, 다음 대화부터 AI가 사용할 수 있습니다.</div>
+        <div class="mcp-toolbar">
+          <button type="button" id="mcp-add">＋ 새 MCP 서버</button>
+          <button type="button" id="mcp-refresh" class="icon-button" title="새로고침" aria-label="새로고침">↻</button>
+        </div>
+        <div id="mcp-msg" class="settings-desc"></div>
+        <div id="mcp-list" class="mcp-list"></div>
       </div>
       <div id="settings-tab-conn" class="settings-tab-panel" hidden>
         <div id="conn-body" class="conn-body"></div>

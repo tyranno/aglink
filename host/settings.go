@@ -14,13 +14,9 @@ import (
 // save regenerates the file via marshalConfigYAML (comments not preserved — use
 // the raw editor for those).
 func applySettingsUpdate(cfgPath string, cfg *Config, body []byte) json.RawMessage {
-	fail := func(msg string) json.RawMessage {
-		d, _ := json.Marshal(map[string]any{"ok": false, "error": msg})
-		return d
-	}
 	var updates map[string]any
 	if err := json.Unmarshal(body, &updates); err != nil {
-		return fail("잘못된 요청: " + err.Error())
+		return settingsFail("잘못된 요청: " + err.Error())
 	}
 	newCfg := *cfg // shallow copy
 	// applySettings edits the Providers map and VLLMServers slice, which a shallow
@@ -40,25 +36,39 @@ func applySettingsUpdate(cfgPath string, cfg *Config, body []byte) json.RawMessa
 	if len(cfg.CustomProviders) > 0 {
 		newCfg.CustomProviders = append([]FreeProvider(nil), cfg.CustomProviders...)
 	}
-	// applySettings also grows/rewrites MCPServers in place (setMCPServerField),
-	// which the shallow copy shares — clone it too so a rejected save leaves the
-	// live one (and its running worker connections) intact.
-	if len(cfg.MCPServers) > 0 {
-		newCfg.MCPServers = append([]MCPServerDef(nil), cfg.MCPServers...)
-	}
 	if err := applySettings(&newCfg, updates); err != nil {
-		return fail(err.Error())
+		return settingsFail(err.Error())
 	}
-	raw, err := marshalConfigYAML(&newCfg)
+	return persistConfig(cfgPath, &newCfg)
+}
+
+// settingsFail is the shared {"ok":false,"error":…} control reply used by every
+// config-writing verb (set_settings, save_mcp_servers).
+func settingsFail(msg string) json.RawMessage {
+	d, _ := json.Marshal(map[string]any{"ok": false, "error": msg})
+	return d
+}
+
+// persistConfig serializes an edited config, re-parses it to prove the result is
+// still loadable, and only then writes cfgPath (fsnotify hot-reloads it).
+// Returns the control reply JSON. Shared by every structured writer so a
+// rejected save can never leave a half-written config.yaml behind. Note the
+// generated file has no comments — the raw editor is the way to keep those.
+func persistConfig(cfgPath string, newCfg *Config) json.RawMessage {
+	raw, err := marshalConfigYAML(newCfg)
 	if err != nil {
-		return fail("직렬화 실패: " + err.Error())
+		return settingsFail("직렬화 실패: " + err.Error())
 	}
 	if _, verr := unmarshalConfigYAML(raw); verr != nil {
-		return fail(verr.Error())
+		return settingsFail(verr.Error())
 	}
 	if werr := os.WriteFile(cfgPath, raw, 0o600); werr != nil {
-		return fail("기록 실패: " + werr.Error())
+		return settingsFail("기록 실패: " + werr.Error())
 	}
+	// Hot-apply now rather than leaving it to the watcher's debounce: the UI
+	// refetches the settings as soon as this reply lands, and a stale read there
+	// re-renders the form with the pre-save values (see ConfigApplier).
+	applyLiveConfig()
 	d, _ := json.Marshal(map[string]any{"ok": true})
 	return d
 }
@@ -256,6 +266,7 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 		{Title: "모델 (claude·codex용)", Group: settingsGroupAI, Desc: "claude나 codex를 쓸 때 어느 모델로 답할지 정합니다. 비워두면 각 백엔드의 기본값을 씁니다 — 잘 모르면 그대로 두세요.", Fields: []settingField{
 			modelField("models.manager", "매니저 모델", "메시지를 어디로 보낼지 판단하는 가벼운 모델. 비우면 기본값.", cfg.ManagerModel, claudeModelAliases),
 			modelField("models.worker", "작업 모델", "실제 답을 만드는 모델. 비우면 기본값.", cfg.WorkerModel, claudeModelAliases),
+			modelField("models.worker_light", "가벼운 작업 모델(선택)", "채우면 짧고 단순한 메시지만 이 모델이 처리하고, 진짜 작업은 위 '작업 모델'이 맡습니다(비용 절감). 비우면 항상 작업 모델을 씁니다 — 작업 모델을 바꿨는데 답이 다른 모델로 나오는 것 같으면 이 값을 확인하세요.", cfg.WorkerModelLight, claudeModelAliases),
 			modelField("backend.codex_model", "Codex 작업 모델", "codex를 쓸 때의 작업 모델. 설치된 codex에서 실제 확인한 목록입니다.", cfg.CodexModel, codexModels),
 			modelField("backend.codex_manager_model", "Codex 매니저 모델", "codex를 쓸 때의 매니저 모델.", cfg.CodexManagerModel, codexModels),
 			{Key: "models.manager_always", Label: "항상 매니저 먼저", Desc: "켜면 모든 메시지를 매니저 모델이 먼저 훑어 분배합니다. 끄면 간단한 메시지는 바로 작업 모델로 갑니다.", Type: "bool", Value: cfg.ManagerAlways},
@@ -296,7 +307,10 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "notion_control.enabled", Label: "Notion 연동 허용", Desc: "봇이 Notion MCP로 페이지를 읽고 쓰게 합니다. 토큰은 설정 파일(notion_control.token)에 직접 넣어야 합니다.", Type: "bool", Value: cfg.NotionControl},
 			{Key: "goono_control.enabled", Label: "구노(goono) 문서 연동 허용", Desc: "봇이 구노 MCP로 문서를 검색·업로드하게 합니다. 실행파일 경로는 설정 파일(goono_control.binary_path)에서 지정합니다.", Type: "bool", Value: cfg.GoonoControl},
 		}},
-		{Title: "사용자 정의 MCP 서버", Group: settingsGroupSecurity, Advanced: true, Desc: "screen/web/goono/notion 외에 추가로 붙이고 싶은 MCP 서버를 등록합니다. npx 패키지나 실행파일 등 stdio로 동작하는 MCP라면 됩니다. 이름·명령을 채우고 '사용'을 켠 뒤 저장하면 다음 대화부터 연결됩니다.", Fields: mcpServerFields(cfg)},
+		// NOTE: user-defined MCP servers are NOT here. They're a variable-length
+		// list, which this scalar form can't express, so they have their own
+		// control verbs (get_mcp_servers/save_mcp_servers) and a dedicated
+		// add/remove list UI — see mcpserver_settings.go.
 		{Title: "연결 / 네트워크", Group: settingsGroupNetwork, Advanced: true, Desc: "웹 화면·제어 API가 어느 주소에서 열릴지 정합니다. 기본값으로 두면 됩니다. (대부분 변경 시 재시작 필요)", Fields: []settingField{
 			{Key: "aglink_chat.enabled", Label: "웹 채팅 화면 사용", Desc: "aglink가 웹 채팅 프론트를 함께 띄웁니다.", Type: "bool", Value: cfg.AglinkChat},
 			{Key: "aglink_chat.addr", Label: "웹 채팅 주소", Desc: "예: 127.0.0.1:27271", Type: "string", Value: cfg.AglinkChatAddr},
@@ -326,17 +340,13 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			applyCustomProviderSetting(cfg, k, asString(v))
 			continue
 		}
-		// User-defined MCP server slots (mcp_server.<n>.<field>) include a bool
-		// field ("enabled"), so route the raw value rather than pre-stringifying it.
-		if strings.HasPrefix(k, "mcp_server.") {
-			applyMCPServerSetting(cfg, k, v)
-			continue
-		}
 		switch k {
 		case "models.manager":
 			cfg.ManagerModel = asString(v)
 		case "models.worker":
 			cfg.WorkerModel = asString(v)
+		case "models.worker_light":
+			cfg.WorkerModelLight = asString(v)
 		case "models.manager_always":
 			cfg.ManagerAlways = asBool(v)
 		case "backend.default":
@@ -406,8 +416,6 @@ func applySettings(cfg *Config, updates map[string]any) error {
 	normalizeVLLMServers(cfg)
 	// Same for trailing all-blank custom-provider slots.
 	normalizeCustomProviders(cfg)
-	// Same for trailing all-blank user-defined MCP server slots.
-	normalizeMCPServers(cfg)
 	return nil
 }
 

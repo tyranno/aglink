@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyReload_RateLimitChanged(t *testing.T) {
@@ -87,4 +91,132 @@ func TestApplyReload_DefaultBackendUnchanged_NoHook(t *testing.T) {
 	applyReload(old, nw, ReloadHooks{
 		OnDefaultBackend: func(string) { t.Error("backend hook should not fire when unchanged") },
 	})
+}
+
+// writeTestConfig writes a minimal-but-valid config.yaml with the given worker
+// model and returns its path.
+func writeTestConfig(t *testing.T, dir, workerModel string) string {
+	t.Helper()
+	path := filepath.Join(dir, "config.yaml")
+	cfg := &Config{
+		TelegramBotToken: "t",
+		AllowedUserIDs:   []int64{1},
+		WorkerModel:      workerModel,
+	}
+	raw, err := marshalConfigYAML(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+// A file change is picked up synchronously by Apply — this is what lets a
+// settings save reply only after the new config is live, so the UI's immediate
+// refetch can't render the pre-save values.
+func TestConfigApplier_AppliesFileChange(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, "sonnet")
+	start, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	holder := NewConfigHolder(start)
+	applier := NewConfigApplier(path, holder, ReloadHooks{})
+
+	writeTestConfig(t, dir, "opus")
+	if err := applier.Apply(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got := holder.Get().WorkerModel; got != "opus" {
+		t.Fatalf("worker model = %q, want %q (config change not applied)", got, "opus")
+	}
+}
+
+// Applying the same file twice must not re-fire hooks: a save applies
+// synchronously and the watcher's debounced event for that same write arrives
+// afterwards, which would otherwise notify every user a second time.
+func TestConfigApplier_UnchangedFileIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, "sonnet")
+	start, _ := LoadConfig(path)
+	holder := NewConfigHolder(start)
+	notes := make(chan string, 4)
+	applier := NewConfigApplier(path, holder, ReloadHooks{Notify: func(m string) { notes <- m }})
+
+	writeTestConfig(t, dir, "opus")
+	if err := applier.Apply(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	select {
+	case <-notes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Apply should notify about the reload")
+	}
+	if err := applier.Apply(); err != nil { // same bytes — the watcher echo
+		t.Fatalf("second Apply: %v", err)
+	}
+	select {
+	case m := <-notes:
+		t.Fatalf("unchanged file must not notify again, got %q", m)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A broken config keeps the running one instead of dropping the process to a
+// half-parsed state.
+func TestConfigApplier_InvalidFileKeepsOldConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, "sonnet")
+	start, _ := LoadConfig(path)
+	holder := NewConfigHolder(start)
+	applier := NewConfigApplier(path, holder, ReloadHooks{})
+
+	if err := os.WriteFile(path, []byte("::: not yaml :::"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := applier.Apply(); err == nil {
+		t.Fatal("Apply should fail on an unparseable config")
+	}
+	if got := holder.Get().WorkerModel; got != "sonnet" {
+		t.Fatalf("worker model = %q, want the previous %q", got, "sonnet")
+	}
+}
+
+// Regression: saving the settings form used to reply before the config was
+// live, so the UI's immediate get_settings refetch rendered the *old* model
+// (pick opus, form comes back showing sonnet). persistConfig must hot-apply
+// before replying.
+func TestApplySettingsUpdate_ConfigIsLiveWhenReplySent(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, "sonnet")
+	start, _ := LoadConfig(path)
+	holder := NewConfigHolder(start)
+	SetLiveConfigApplier(NewConfigApplier(path, holder, ReloadHooks{}))
+	t.Cleanup(func() { SetLiveConfigApplier(nil) })
+
+	reply := applySettingsUpdate(path, holder.Get(), []byte(`{"models.worker":"opus"}`))
+	var got struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(reply, &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if !got.OK {
+		t.Fatalf("save failed: %s", got.Error)
+	}
+	if m := holder.Get().WorkerModel; m != "opus" {
+		t.Fatalf("live worker model = %q right after the save reply, want %q", m, "opus")
+	}
+	// And the settings the UI refetches must show the saved value.
+	for _, sec := range buildSettings(holder.Get(), nil) {
+		for _, f := range sec.Fields {
+			if f.Key == "models.worker" && f.Value != "opus" {
+				t.Fatalf("get_settings would render models.worker=%v, want opus", f.Value)
+			}
+		}
+	}
 }

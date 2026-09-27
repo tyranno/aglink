@@ -479,5 +479,11 @@ func writeValidatedConfig(cfgPath string, cfg *Config, body []byte) error {
 	if _, verr := unmarshalConfigYAML(restored); verr != nil {
 		return verr
 	}
-	return os.WriteFile(cfgPath, restored, 0o600)
+	if err := os.WriteFile(cfgPath, restored, 0o600); err != nil {
+		return err
+	}
+	// Same as the structured form: apply immediately so the editor's reload (and
+	// the running process) sees the edit without waiting on the watcher.
+	applyLiveConfig()
+	return nil
 }

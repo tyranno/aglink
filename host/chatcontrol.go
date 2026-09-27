@@ -33,7 +33,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | get_mcp_servers | save_mcp_servers | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -46,7 +46,7 @@ type controlIn struct {
 	Backend string  `json:"backend,omitempty"`
 	Body    string  `json:"body,omitempty"`    // set_config: edited config.yaml text
 	Filter  string  `json:"filter,omitempty"`  // task_list: status filter ("pending"|"paused"|"cancelled"|"all")
-	Payload json.RawMessage `json:"payload,omitempty"` // playbook_save/pbgroup_save: the Playbook/PlaybookGroup JSON
+	Payload json.RawMessage `json:"payload,omitempty"` // playbook_save/pbgroup_save: the Playbook/PlaybookGroup JSON; save_mcp_servers: {"servers":[…]}
 }
 
 // controlOut is a message to aglink-chat: either a Hub-driven browser frame
@@ -326,6 +326,18 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "set_settings":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: applySettingsUpdate(s.cfgPath, s.bot.cfg(), []byte(m.Body))})
+	// User-defined MCP servers are a variable-length list, which the scalar
+	// settings form can't render — they get their own list-CRUD verbs instead of
+	// a fixed number of mcp_server.<n>.* rows.
+	case "get_mcp_servers":
+		data, err := json.Marshal(buildMCPServersResponse(s.bot.cfg()))
+		if err != nil {
+			log.Printf("[chatcontrol] get_mcp_servers marshal: %v", err)
+			return
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "save_mcp_servers":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: applyMCPServersUpdate(s.cfgPath, s.bot.cfg(), m.Payload)})
 	case "playbook_list":
 		data, err := json.Marshal(buildPlaybooksResponse(s.bot.playbooks))
 		if err != nil {

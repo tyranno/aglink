@@ -451,7 +451,11 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 			}
 		},
 	}
-	if stop, werr := WatchConfig(cfgPath, holder, hooks); werr != nil {
+	// Register the applier before the watcher: config writers use it to apply a
+	// save immediately, so the UI's post-save refetch can't read stale values.
+	applier := NewConfigApplier(cfgPath, holder, hooks)
+	SetLiveConfigApplier(applier)
+	if stop, werr := WatchConfig(applier); werr != nil {
 		log.Printf("[config] hot-reload 비활성: %v", werr)
 	} else {
 		defer stop()

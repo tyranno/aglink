@@ -13,7 +13,7 @@ func TestUpdatePlugins_SkipsMissingSubdir(t *testing.T) {
 	pluginBuilds = []struct{ subdir, exe string }{{"nonexistent", "nonexistent-plugin"}}
 
 	aglinkDir := t.TempDir()
-	report, err := updatePlugins(aglinkDir)
+	report, err := updatePlugins(aglinkDir, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestUpdatePlugins_BuildsSubdirAndReportsIt(t *testing.T) {
 	mustMkdir(t, pluginDir)
 	writeMinimalGoModule(t, pluginDir, "okbin")
 
-	report, err := updatePlugins(aglinkDir)
+	report, err := updatePlugins(aglinkDir, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestUpdatePlugins_BuildFailureAborts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := updatePlugins(aglinkDir); err == nil {
+	if _, err := updatePlugins(aglinkDir, ""); err == nil {
 		t.Fatal("expected error for broken plugin build")
 	}
 }
@@ -87,5 +87,70 @@ func writeMinimalGoModule(t *testing.T, dir, module string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPluginSourceRoot_FindsRepoRootFromHostDir(t *testing.T) {
+	orig := pluginBuilds
+	defer func() { pluginBuilds = orig }()
+	pluginBuilds = []struct{ subdir, exe string }{{"web", "aglink-web"}}
+
+	// <repo>/host/aglink.exe with the plugin source at <repo>/web/.
+	repo := t.TempDir()
+	hostDir := filepath.Join(repo, "host")
+	mustMkdir(t, hostDir)
+	mustMkdir(t, filepath.Join(repo, "web"))
+	writeMinimalGoModule(t, filepath.Join(repo, "web"), "aglink-web")
+	if got := pluginSourceRoot(hostDir); got != repo {
+		t.Errorf("from host/: got %s, want the repo root %s", got, repo)
+	}
+	// aglink.exe at the repo root itself.
+	if got := pluginSourceRoot(repo); got != repo {
+		t.Errorf("from the root: got %s, want %s", got, repo)
+	}
+	// No plugin source anywhere: stay put (every plugin is then skipped).
+	lone := t.TempDir()
+	if got := pluginSourceRoot(lone); got != lone {
+		t.Errorf("no sources: got %s, want %s", got, lone)
+	}
+}
+
+func TestUpdatePlugins_RefreshesTheCopyNextToTheExe(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	orig := pluginBuilds
+	defer func() { pluginBuilds = orig }()
+	pluginBuilds = []struct{ subdir, exe string }{{"okplugin", "okbin"}, {"other", "otherbin"}}
+
+	repo := t.TempDir()
+	hostDir := filepath.Join(repo, "host")
+	mustMkdir(t, hostDir)
+	pluginDir := filepath.Join(repo, "okplugin")
+	mustMkdir(t, pluginDir)
+	writeMinimalGoModule(t, pluginDir, "okbin")
+	otherDir := filepath.Join(repo, "other")
+	mustMkdir(t, otherDir)
+	writeMinimalGoModule(t, otherDir, "otherbin")
+
+	// The host spawns host/okbin first (resolveAglinkBinary), so that stale copy
+	// must be replaced. otherbin has no copy beside the exe and must not get one.
+	stale := filepath.Join(hostDir, "okbin"+exeSuffix)
+	if err := os.WriteFile(stale, []byte("stale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updatePlugins(repo, hostDir); err != nil {
+		t.Fatalf("updatePlugins: %v", err)
+	}
+	got, _ := os.ReadFile(stale)
+	built, _ := os.ReadFile(filepath.Join(pluginDir, "okbin"+exeSuffix))
+	if string(got) == "stale" || string(got) != string(built) {
+		t.Errorf("the copy beside the exe was not replaced with the new build")
+	}
+	if _, err := os.Stat(stale + ".old"); err != nil {
+		t.Errorf("the previous copy should be kept as .old: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(hostDir, "otherbin"+exeSuffix)); err == nil {
+		t.Errorf("a plugin with no copy beside the exe must not gain one")
 	}
 }

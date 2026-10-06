@@ -24,6 +24,7 @@ import (
 type appPage interface {
 	CallPage(ctx context.Context, name string, args []any) (json.RawMessage, error)
 	Eval(ctx context.Context, expr string) (json.RawMessage, error)
+	EvalResult(ctx context.Context, expr string) (*evalResult, error)
 	Raw(ctx context.Context, method string, params any) (json.RawMessage, error)
 	Dialog() *dialogInfo
 	HandleDialog(ctx context.Context, accept bool, promptText string) error
@@ -475,22 +476,18 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		if expr == "" {
 			return "", errors.New("eval requires 'expression'")
 		}
-		raw, err := p.CallPage(ctx, "evalExpression", []any{expr})
+		// Straight through Runtime.evaluate rather than the shared page
+		// function: that one calls eval(), which a Content-Security-Policy
+		// without 'unsafe-eval' — common in Electron apps — refuses, while
+		// DevTools evaluation is exempt from it.
+		r, err := p.EvalResult(ctx, expr)
 		if err != nil {
+			if strings.HasPrefix(err.Error(), "page error: ") {
+				return "", fmt.Errorf("eval error: %s", strings.TrimPrefix(err.Error(), "page error: "))
+			}
 			return "", err
 		}
-		var r struct {
-			OK    bool   `json:"ok"`
-			JSON  string `json:"json"`
-			Error string `json:"error"`
-		}
-		if string(raw) == "null" || json.Unmarshal(raw, &r) != nil {
-			return "", errors.New("eval returned no result (the page may block script injection)")
-		}
-		if !r.OK {
-			return "", fmt.Errorf("eval error: %s", r.Error)
-		}
-		return r.JSON, nil
+		return formatEvalValue(r), nil
 
 	case "dialog_status":
 		d := p.Dialog()
@@ -545,6 +542,23 @@ func waitLoaded(ctx context.Context, p appPage) (title, href string, err error) 
 	var tu [2]string
 	_ = json.Unmarshal(raw, &tu)
 	return tu[0], tu[1], nil
+}
+
+// formatEvalValue renders an evaluation the way the extension's eval does:
+// "undefined", JSON.stringify(value, null, 2), or — for what JSON cannot
+// carry, like a function — its string form.
+func formatEvalValue(r *evalResult) string {
+	if r.Result.Type == "undefined" {
+		return "undefined"
+	}
+	if len(r.Result.Value) > 0 {
+		var b bytes.Buffer
+		if json.Indent(&b, r.Result.Value, "", "  ") == nil {
+			return b.String()
+		}
+		return string(r.Result.Value)
+	}
+	return r.Result.Description
 }
 
 // tagText is the {found, tag, text} shape several page functions return.

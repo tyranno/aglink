@@ -1359,7 +1359,7 @@ func (b *Bot) handleUpdate(reply replySender, chatID int64) {
 	// Plugins first (fail fast — don't touch aglink if a sibling plugin's
 	// source is broken). Skips silently on deployments that don't have
 	// aglink-screen/aglink-web checked out next to aglink.
-	pluginReport, perr := updatePlugins(srcDir)
+	pluginReport, perr := updatePlugins(pluginSourceRoot(srcDir), srcDir)
 	if perr != nil {
 		_ = reply.Send(chatID, "⚠️ "+perr.Error())
 		return

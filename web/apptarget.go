@@ -103,8 +103,9 @@ func (a *appTarget) Raw(ctx context.Context, method string, params any) (json.Ra
 
 type evalResult struct {
 	Result struct {
-		Type  string          `json:"type"`
-		Value json.RawMessage `json:"value"`
+		Type        string          `json:"type"`
+		Value       json.RawMessage `json:"value"`
+		Description string          `json:"description"`
 	} `json:"result"`
 	ExceptionDetails *struct {
 		Text      string `json:"text"`
@@ -118,6 +119,23 @@ type evalResult struct {
 // before the page answers, it returns errDialogOpen at once instead of waiting
 // out the call — the page cannot answer until the dialog is gone.
 func (a *appTarget) Eval(ctx context.Context, expr string) (json.RawMessage, error) {
+	r, err := a.EvalResult(ctx, expr)
+	if err != nil {
+		return nil, err
+	}
+	if len(r.Result.Value) == 0 {
+		return json.RawMessage("null"), nil
+	}
+	return r.Result.Value, nil
+}
+
+// EvalResult is Eval with the whole result — type and description too, which
+// the eval tool needs for values JSON cannot carry (functions, undefined).
+//
+// userGesture: an action run here counts as the user's own, as it does in a
+// real click, so pages that gate a file picker, clipboard write or window.open
+// on user activation do not refuse it.
+func (a *appTarget) EvalResult(ctx context.Context, expr string) (*evalResult, error) {
 	a.mu.Lock()
 	if a.dialog != nil {
 		a.mu.Unlock()
@@ -136,6 +154,7 @@ func (a *appTarget) Eval(ctx context.Context, expr string) (json.RawMessage, err
 			"expression":    expr,
 			"returnByValue": true,
 			"awaitPromise":  true,
+			"userGesture":   true,
 		})
 		ch <- out{raw, err}
 	}()
@@ -156,10 +175,7 @@ func (a *appTarget) Eval(ctx context.Context, expr string) (json.RawMessage, err
 			}
 			return nil, fmt.Errorf("page error: %s", msg)
 		}
-		if len(r.Result.Value) == 0 {
-			return json.RawMessage("null"), nil
-		}
-		return r.Result.Value, nil
+		return &r, nil
 	case <-opened:
 		return nil, errDialogOpen
 	case <-ctx.Done():

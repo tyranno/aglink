@@ -21,6 +21,7 @@ type fakePage struct {
 		text   string
 	}
 	evalErr error
+	eval    string // the Runtime.evaluate result EvalResult returns, as JSON
 }
 
 func (f *fakePage) CallPage(ctx context.Context, name string, args []any) (json.RawMessage, error) {
@@ -41,6 +42,18 @@ func (f *fakePage) Eval(ctx context.Context, expr string) (json.RawMessage, erro
 		return json.RawMessage(`"complete"`), nil
 	}
 	return json.RawMessage(`["제목","http://wails.localhost/next"]`), nil
+}
+
+// EvalResult answers the eval tool from f.eval (an evalResult as JSON), or
+// fails with f.evalErr.
+func (f *fakePage) EvalResult(ctx context.Context, expr string) (*evalResult, error) {
+	f.evals = append(f.evals, expr)
+	if f.evalErr != nil {
+		return nil, f.evalErr
+	}
+	var r evalResult
+	_ = json.Unmarshal([]byte(f.eval), &r)
+	return &r, nil
 }
 func (f *fakePage) Raw(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	f.raws = append(f.raws, method)
@@ -173,7 +186,6 @@ func TestAppTypeKeyScrollSelectEval(t *testing.T) {
 		"keyComboDefault": `{"ok":true,"tag":"body"}`,
 		"scroll":          `{"found":true}`,
 		"selectOption":    `{"found":true,"isSelect":true,"matched":true,"selected":"서울"}`,
-		"evalExpression":  `{"ok":true,"json":"42"}`,
 	}}
 	if r := run(t, f, "type", map[string]any{"selector": "input", "text": ""}); r.Text != "ok: typed into <input>" {
 		t.Fatalf("type (empty text is valid): %+v", r)
@@ -196,12 +208,43 @@ func TestAppTypeKeyScrollSelectEval(t *testing.T) {
 	if !strings.HasSuffix(f.calls[len(f.calls)-1], `["select",null,"서울"]`) {
 		t.Fatalf("absent value must pass as null: %s", f.calls[len(f.calls)-1])
 	}
+	f.eval = `{"result":{"type":"number","value":42}}`
 	if r := run(t, f, "eval", map[string]any{"expression": "6*7"}); r.Text != "42" {
 		t.Fatalf("eval: %q", r.Text)
 	}
-	f.results["evalExpression"] = `{"ok":false,"error":"nope is not defined"}`
-	if r := run(t, f, "eval", map[string]any{"expression": "nope"}); r.Error != "eval error: nope is not defined" {
+	if f.evals[len(f.evals)-1] != "6*7" {
+		t.Fatalf("eval must hand the expression to Runtime.evaluate as is (no page eval(), which CSP blocks): %q", f.evals[len(f.evals)-1])
+	}
+	for _, c := range calls(f) {
+		if strings.HasPrefix(c, "evalExpression") {
+			t.Fatal("eval must not go through the page's own eval()")
+		}
+	}
+	f.evalErr = errors.New("page error: ReferenceError: nope is not defined")
+	if r := run(t, f, "eval", map[string]any{"expression": "nope"}); r.Error != "eval error: ReferenceError: nope is not defined" {
 		t.Fatalf("eval error: %+v", r)
+	}
+}
+
+func calls(f *fakePage) []string { return f.calls }
+
+// formatEvalValue must print what the extension's eval prints for the same value.
+func TestFormatEvalValueMatchesTheExtension(t *testing.T) {
+	cases := map[string]string{
+		`{"result":{"type":"undefined"}}`:                                          "undefined",
+		`{"result":{"type":"string","value":"hi"}}`:                                `"hi"`,
+		`{"result":{"type":"object","value":{"a":1,"b":[2,3]}}}`:                   "{\n  \"a\": 1,\n  \"b\": [\n    2,\n    3\n  ]\n}",
+		`{"result":{"type":"object","subtype":"null","value":null}}`:               "null",
+		`{"result":{"type":"function","description":"function f() { return 1 }"}}`: "function f() { return 1 }",
+	}
+	for in, want := range cases {
+		var r evalResult
+		if err := json.Unmarshal([]byte(in), &r); err != nil {
+			t.Fatal(err)
+		}
+		if got := formatEvalValue(&r); got != want {
+			t.Errorf("%s:\n got %q\nwant %q", in, got, want)
+		}
 	}
 }
 

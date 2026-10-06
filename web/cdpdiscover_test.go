@@ -125,7 +125,8 @@ func TestResolveApp(t *testing.T) {
 
 func TestCDPPortsFromEnv(t *testing.T) {
 	t.Setenv("AGLINK_WEB_CDP_PORTS", "")
-	if p := cdpPorts(); len(p) != 19 || p[0] != 9222 || p[18] != 9240 {
+	// 9222-9240 plus 9333, the port the Wails docs use.
+	if p := cdpPorts(); len(p) != 20 || p[0] != 9222 || p[18] != 9240 || p[19] != 9333 {
 		t.Errorf("default range: %v", p)
 	}
 	t.Setenv("AGLINK_WEB_CDP_PORTS", "9333")
@@ -135,5 +136,25 @@ func TestCDPPortsFromEnv(t *testing.T) {
 	t.Setenv("AGLINK_WEB_CDP_PORTS", "9300-9302, 9400")
 	if p := cdpPorts(); len(p) != 4 || p[3] != 9400 {
 		t.Errorf("range+list: %v", p)
+	}
+}
+
+func TestAppPagesSkipsDevToolsAndKeepsAFixedOrder(t *testing.T) {
+	// Chromium's most-recently-used-first order, with an open DevTools window.
+	list := []cdpTarget{
+		{ID: "C3", Type: "page", Title: "설정", URL: "http://wails.localhost/settings", WebSocketDebuggerURL: "ws://127.0.0.1:9333/devtools/page/C3"},
+		{ID: "D9", Type: "page", Title: "DevTools", URL: "devtools://devtools/bundled/inspector.html", WebSocketDebuggerURL: "ws://127.0.0.1:9333/devtools/page/D9"},
+		{ID: "A1", Type: "page", Title: "aglink", URL: "http://wails.localhost/", WebSocketDebuggerURL: "ws://127.0.0.1:9333/devtools/page/A1"},
+		{ID: "S0", Type: "service_worker", URL: "http://wails.localhost/sw.js", WebSocketDebuggerURL: "ws://127.0.0.1:9333/devtools/page/S0"},
+	}
+	pages := appPages(list)
+	if len(pages) != 2 || pages[0].ID != "A1" || pages[1].ID != "C3" {
+		t.Fatalf("pages = %+v", pages)
+	}
+	// The user clicks the other window: Chromium reorders, the numbering must not.
+	list[0], list[2] = list[2], list[0]
+	again := appPages(list)
+	if again[0].ID != "A1" || again[1].ID != "C3" {
+		t.Fatalf("order changed with recency: %+v", again)
 	}
 }

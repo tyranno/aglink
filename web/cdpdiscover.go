@@ -44,12 +44,18 @@ func (a appInfo) slug() string { return appSlug(a.Title) }
 // a listing costs at most this long however many ports are in range.
 const probeTimeout = 300 * time.Millisecond
 
+// defaultCDPPorts is where discovery looks with no AGLINK_WEB_CDP_PORTS:
+// Electron's customary 9222 range, plus 9333 — the port the Wails example in
+// the README and aglink-desktop's own docs use, which the range alone missed,
+// so following the docs found no app.
+const defaultCDPPorts = "9222-9240,9333"
+
 // cdpPorts reads AGLINK_WEB_CDP_PORTS ("9222-9240", "9333", or a comma list of
-// either), defaulting to 9222–9240.
+// either), defaulting to defaultCDPPorts.
 func cdpPorts() []int {
 	spec := strings.TrimSpace(os.Getenv("AGLINK_WEB_CDP_PORTS"))
 	if spec == "" {
-		spec = "9222-9240"
+		spec = defaultCDPPorts
 	}
 	var out []int
 	for _, part := range strings.Split(spec, ",") {
@@ -90,12 +96,7 @@ func discoverApps(ctx context.Context, ports []int) []appInfo {
 			if !getJSON(ctx, client, base+"/json/list", &targets) {
 				return
 			}
-			app := appInfo{Port: port}
-			for _, t := range targets {
-				if t.Type == "page" && t.WebSocketDebuggerURL != "" {
-					app.Pages = append(app.Pages, t)
-				}
-			}
+			app := appInfo{Port: port, Pages: appPages(targets)}
 			if len(app.Pages) == 0 {
 				return
 			}
@@ -108,6 +109,28 @@ func discoverApps(ctx context.Context, ports []int) []appInfo {
 	wg.Wait()
 	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
 	return out
+}
+
+// appPages picks the app's own windows out of /json/list and puts them in a
+// fixed order.
+//
+//   - DevTools windows are skipped. Opened during development they are "page"
+//     targets too (devtools://…), and one could become the "first window" —
+//     the default target — or lend its title to the app:<name>.
+//   - Chromium lists targets most-recently-used first, so with two windows the
+//     order flipped whenever the user clicked the other one: tabId 1 and the
+//     default target changed under the agent between calls. Target ids are
+//     fixed for a window's lifetime, so sorting by them keeps the numbering.
+func appPages(targets []cdpTarget) []cdpTarget {
+	var pages []cdpTarget
+	for _, t := range targets {
+		if t.Type != "page" || t.WebSocketDebuggerURL == "" || strings.HasPrefix(t.URL, "devtools://") {
+			continue
+		}
+		pages = append(pages, t)
+	}
+	sort.SliceStable(pages, func(i, j int) bool { return pages[i].ID < pages[j].ID })
+	return pages
 }
 
 func getOK(ctx context.Context, c *http.Client, url string) bool {
@@ -220,5 +243,5 @@ func portSpecLabel() string {
 	if s := strings.TrimSpace(os.Getenv("AGLINK_WEB_CDP_PORTS")); s != "" {
 		return "ports " + s
 	}
-	return "ports 9222-9240"
+	return "ports " + defaultCDPPorts
 }

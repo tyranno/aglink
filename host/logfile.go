@@ -40,7 +40,7 @@ func setupFileLogging(dir string) (io.Closer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
-	tee := io.MultiWriter(os.Stderr, f)
+	tee := redactWriter{io.MultiWriter(os.Stderr, f)} // see logredact.go
 	log.SetOutput(tee)
 	childLogWriter = tee
 	log.Printf("[log] diagnostic log → %s (pid %d, elevated=%v)", path, os.Getpid(), isElevated())

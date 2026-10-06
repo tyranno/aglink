@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // Design Ref: §1 (structure), §2 (tool priority / worker system prompt).
 //
 // This file assembles the worker guidance and binary resolution for the screen
@@ -42,6 +44,43 @@ func screenSystemPrompt() string {
 		"충돌하지 말고 몇 초 뒤 같은 동작을 다시 시도하라. 계속 SCREEN_BUSY면 사용자에게 '다른 대화가 화면을 사용 중이라 대기 중'이라고 " +
 		"알려라. 미리 확인하려면 control_status(읽기 전용)로 현재 제어권 상태를 볼 수 있다.\n" +
 		"Always prefer snapshot/invoke, then win_controls/click_control, then screenshot+click as the last resort."
+}
+
+// screenSystemPromptBrief is the condensed screen guidance appended for a
+// conversation that has not (yet) used the screen tools — see
+// Manager.screenBriefFor. It keeps the rules that matter even on a first,
+// unexpected screen call (tool priority, capture cost, SCREEN_BUSY,
+// return_desktop) in a few lines instead of the ~1.5k-token full text; once the
+// conversation actually uses a screen tool the full screenSystemPrompt takes over
+// from the next turn on.
+func screenSystemPromptBrief() string {
+	return "" +
+		"You can control this Windows desktop via the `screen` MCP tools (launch_app/focus_window, snapshot→invoke/set_value, get_text, win_controls→click_control, capture_*).\n" +
+		"우선순위: snapshot/invoke(UIA) → win_controls/click_control(정확한 좌표) → 캡처+click(최후). 내용 읽기는 캡처 말고 get_text/get_value. " +
+		"캡처는 이후 모든 턴에 재과금되니 꼭 필요할 때만 capture_region/capture_window로 좁게. " +
+		"'SCREEN_BUSY:' 에러는 다른 대화가 화면 사용 중 — 몇 초 뒤 재시도. 다른 가상 데스크톱으로 넘어갔다면 끝나고 return_desktop."
+}
+
+// screenIntentKeywords mark a request that plausibly needs the screen tools, so
+// the full screen guidance should be sent with it (Manager.screenBriefFor). Kept
+// broad: a false positive only costs one ~1.5k-token system-prompt upgrade for
+// the rest of the conversation; a false negative still has the brief pointer.
+var screenIntentKeywords = []string{
+	"화면", "스크린", "캡처", "캡쳐", "클릭", "창 ", "창을", "창에", "윈도우", "마우스", "키보드", "버튼", "메뉴",
+	"앱 실행", "앱을", "프로그램 실행", "실행해서", "띄워", "열어서", "눌러", "입력해", "타이핑",
+	"screen", "screenshot", "capture", "click", "window", "mouse", "keyboard", "button", "desktop", "launch",
+}
+
+// looksLikeScreenRequest reports whether text plausibly asks for desktop/screen
+// control. Pure and testable.
+func looksLikeScreenRequest(text string) bool {
+	lower := strings.ToLower(text)
+	for _, kw := range screenIntentKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveScreenBinaryPath locates the aglink-screen executable that provides

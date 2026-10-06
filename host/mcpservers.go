@@ -33,13 +33,23 @@ type MCPServerDef struct {
 // (-c mcp_servers.*) paths build their args from this single list instead of
 // each carrying its own per-server merge logic.
 func buildMCPServerList(cfg *Config, screenBin, webBin, goonoBin string) []MCPServerDef {
+	return buildMCPServerListOpts(cfg, screenBin, webBin, goonoBin, false)
+}
+
+// buildMCPServerListOpts is buildMCPServerList with the screen server's system
+// prompt optionally replaced by the short pointer (screenSystemPromptBrief).
+func buildMCPServerListOpts(cfg *Config, screenBin, webBin, goonoBin string, screenBrief bool) []MCPServerDef {
 	if cfg == nil {
 		return nil
 	}
 	var out []MCPServerDef
 
 	if cfg.ScreenControl && screenBin != "" {
-		d := MCPServerDef{Name: "screen", Command: screenBin, Args: []string{"mcp"}, SystemPrompt: screenSystemPrompt()}
+		sp := screenSystemPrompt()
+		if screenBrief {
+			sp = screenSystemPromptBrief()
+		}
+		d := MCPServerDef{Name: "screen", Command: screenBin, Args: []string{"mcp"}, SystemPrompt: sp}
 		// Pass the configurable full-screenshot cap to the screen MCP process (it
 		// reads AGLINK_SCREENSHOT_MAX_EDGE at startup). 0 = leave its built-in
 		// default (1280).

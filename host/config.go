@@ -263,13 +263,15 @@ func LoadConfig(path string) (*Config, error) {
 	defer f.Close()
 
 	cfg := &Config{
-		ManagerModel:        "haiku",
-		TimeoutMinutes:      10,
-		ManagerAlways:       true,
-		MaxWorkers:          3,
-		RateLimitPerMin:     20,
-		AllowScripts:        false,
-		ConversationTTLDays: 30,
+		ManagerModel:         "haiku",
+		TimeoutMinutes:       10,
+		ManagerAlways:        true,
+		MaxWorkers:           3,
+		RateLimitPerMin:      20,
+		AllowScripts:         false,
+		ConversationTTLDays:  30,
+		SummaryOnReset:       true,
+		ScreenPromptAdaptive: true,
 	}
 
 	sc := bufio.NewScanner(f)

@@ -33,7 +33,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | get_mcp_servers | save_mcp_servers | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | get_mcp_servers | save_mcp_servers | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel | get_usage_stats | set_conv_model
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -47,6 +47,8 @@ type controlIn struct {
 	Body    string  `json:"body,omitempty"`    // set_config: edited config.yaml text
 	Filter  string  `json:"filter,omitempty"`  // task_list: status filter ("pending"|"paused"|"cancelled"|"all")
 	Payload json.RawMessage `json:"payload,omitempty"` // playbook_save/pbgroup_save: the Playbook/PlaybookGroup JSON; save_mcp_servers: {"servers":[…]}
+	Model   string          `json:"model,omitempty"` // set_conv_model: model to pin ("" | "default" → unpin)
+	Limit   int             `json:"limit,omitempty"` // get_usage_stats: recent turns per conversation (0 → default)
 }
 
 // controlOut is a message to aglink-chat: either a Hub-driven browser frame
@@ -387,6 +389,32 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.resumeTask(m.ID)})
 	case "task_cancel":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.cancelTask(m.ID)})
+	// Per-conversation token/cost statistics (convstats.go). With a target: that
+	// one conversation (telegram stream or web topic) with up to 200 recent
+	// turns; without: every conversation that recorded usage, 20 recent turns
+	// each. limit overrides the per-conversation recent-turn count.
+	case "get_usage_stats":
+		data, err := json.Marshal(buildUsageStatsResponse(s.bot.store, m.Target, m.Limit))
+		if err != nil {
+			log.Printf("[chatcontrol] get_usage_stats marshal: %v", err)
+			return
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	// Pin (or unpin with ""/"default") the worker model of the target
+	// conversation; a pin overrides the configured model and light/heavy tiering.
+	case "set_conv_model":
+		out := map[string]any{"ok": true}
+		if s.bot == nil || s.bot.manager == nil {
+			out["ok"] = false
+			out["error"] = "manager unavailable"
+		} else if pinned, err := s.bot.manager.SetConvModel(tgt, m.Model); err != nil {
+			out["ok"] = false
+			out["error"] = err.Error()
+		} else {
+			out["model"] = pinned
+		}
+		data, _ := json.Marshal(out)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	default:
 		log.Printf("[chatcontrol] unknown control message type %q", m.Type)
 	}

@@ -48,17 +48,23 @@ type yamlConfig struct {
 		RateLimitPerMin     *int `yaml:"rate_limit_per_min"`
 		ConversationTTLDays *int `yaml:"conversation_ttl_days"`
 	} `yaml:"runtime"`
+	// Context controls how conversation context is carried across a CLI session
+	// reset/recovery. See convsummary.go.
+	Context struct {
+		SummaryOnReset *bool `yaml:"summary_on_reset,omitempty"` // nil → true
+	} `yaml:"context"`
 	Scripts struct {
 		Allow           bool     `yaml:"allow"`
 		AllowedCommands []string `yaml:"allowed_commands"`
 	} `yaml:"scripts"`
 	ScreenControl struct {
-		Enabled              bool   `yaml:"enabled"`
-		PresetsFile          string `yaml:"presets_file"`
-		Elevated             bool   `yaml:"elevated"`
-		KeepAwake            bool   `yaml:"keep_awake"`
-		BinaryPath           string `yaml:"binary_path"`
-		MaxScreenshotLongEdge int   `yaml:"max_screenshot_long_edge"`
+		Enabled               bool   `yaml:"enabled"`
+		PresetsFile           string `yaml:"presets_file"`
+		Elevated              bool   `yaml:"elevated"`
+		KeepAwake             bool   `yaml:"keep_awake"`
+		BinaryPath            string `yaml:"binary_path"`
+		MaxScreenshotLongEdge int    `yaml:"max_screenshot_long_edge"`
+		AdaptivePrompt        *bool  `yaml:"adaptive_prompt,omitempty"` // nil → true
 	} `yaml:"screen_control"`
 	WebControl struct {
 		Enabled    bool   `yaml:"enabled"`
@@ -76,7 +82,7 @@ type yamlConfig struct {
 	// (npx package, prebuilt binary, …) here without touching Go code. See
 	// MCPServerDef / buildMCPServerList.
 	MCPServers []MCPServerDef `yaml:"mcp_servers,omitempty"`
-	WebChat struct {
+	WebChat    struct {
 		Enabled     bool   `yaml:"enabled"`
 		Addr        string `yaml:"addr"`
 		Token       string `yaml:"token"`
@@ -119,13 +125,15 @@ type yamlConfig struct {
 // defaults mirror config.go LoadConfig defaults.
 func yamlToConfig(y *yamlConfig) *Config {
 	c := &Config{
-		ManagerModel:        "haiku",
-		TimeoutMinutes:      10,
-		ManagerAlways:       true,
-		MaxWorkers:          3,
-		RateLimitPerMin:     20,
-		AllowScripts:        false,
-		ConversationTTLDays: 30,
+		ManagerModel:         "haiku",
+		TimeoutMinutes:       10,
+		ManagerAlways:        true,
+		MaxWorkers:           3,
+		RateLimitPerMin:      20,
+		AllowScripts:         false,
+		ConversationTTLDays:  30,
+		SummaryOnReset:       true,
+		ScreenPromptAdaptive: true,
 	}
 	c.HomeDir = y.HomeDir
 	c.TelegramBotToken = y.Telegram.BotToken
@@ -177,6 +185,12 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.ScreenKeepAwake = y.ScreenControl.KeepAwake
 	c.ScreenBinaryPath = y.ScreenControl.BinaryPath
 	c.ScreenMaxScreenshotLongEdge = y.ScreenControl.MaxScreenshotLongEdge
+	if y.ScreenControl.AdaptivePrompt != nil {
+		c.ScreenPromptAdaptive = *y.ScreenControl.AdaptivePrompt
+	}
+	if y.Context.SummaryOnReset != nil {
+		c.SummaryOnReset = *y.Context.SummaryOnReset
+	}
 	c.WebControl = y.WebControl.Enabled
 	c.WebBinaryPath = y.WebControl.BinaryPath
 	c.NotionControl = y.NotionControl.Enabled
@@ -257,6 +271,9 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ScreenControl.KeepAwake = c.ScreenKeepAwake
 	y.ScreenControl.BinaryPath = c.ScreenBinaryPath
 	y.ScreenControl.MaxScreenshotLongEdge = c.ScreenMaxScreenshotLongEdge
+	ap, sor := c.ScreenPromptAdaptive, c.SummaryOnReset
+	y.ScreenControl.AdaptivePrompt = &ap
+	y.Context.SummaryOnReset = &sor
 	y.WebControl.Enabled = c.WebControl
 	y.WebControl.BinaryPath = c.WebBinaryPath
 	y.NotionControl.Enabled = c.NotionControl

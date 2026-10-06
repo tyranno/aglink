@@ -27,10 +27,16 @@ type mcpConfig struct {
 // separately (which would silently make the last one win). Returns nil when
 // no plugin is active.
 func pluginWorkerArgs(cfg *Config, screenBin, webBin, goonoBin string) []string {
+	return pluginWorkerArgsOpts(cfg, screenBin, webBin, goonoBin, false)
+}
+
+// pluginWorkerArgsOpts is pluginWorkerArgs with the screen guidance optionally
+// condensed (screenBrief — see screenSystemPromptBrief / RunRequest.ScreenBrief).
+func pluginWorkerArgsOpts(cfg *Config, screenBin, webBin, goonoBin string, screenBrief bool) []string {
 	if cfg == nil {
 		return nil
 	}
-	list := buildMCPServerList(cfg, screenBin, webBin, goonoBin)
+	list := buildMCPServerListOpts(cfg, screenBin, webBin, goonoBin, screenBrief)
 	if len(list) == 0 {
 		return nil
 	}

@@ -266,10 +266,15 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 		{Title: "모델 (claude·codex용)", Group: settingsGroupAI, Desc: "claude나 codex를 쓸 때 어느 모델로 답할지 정합니다. 비워두면 각 백엔드의 기본값을 씁니다 — 잘 모르면 그대로 두세요.", Fields: []settingField{
 			modelField("models.manager", "매니저 모델", "메시지를 어디로 보낼지 판단하는 가벼운 모델. 비우면 기본값.", cfg.ManagerModel, claudeModelAliases),
 			modelField("models.worker", "작업 모델", "실제 답을 만드는 모델. 비우면 기본값.", cfg.WorkerModel, claudeModelAliases),
-			modelField("models.worker_light", "가벼운 작업 모델(선택)", "채우면 짧고 단순한 메시지만 이 모델이 처리하고, 진짜 작업은 위 '작업 모델'이 맡습니다(비용 절감). 비우면 항상 작업 모델을 씁니다 — 작업 모델을 바꿨는데 답이 다른 모델로 나오는 것 같으면 이 값을 확인하세요.", cfg.WorkerModelLight, claudeModelAliases),
+			modelField("models.worker_light", "가벼운 작업 모델(선택)", "채우면 짧고 단순한 메시지만 이 모델이 처리하고, 진짜 작업은 위 '작업 모델'이 맡습니다(비용 절감). 비우면 항상 작업 모델을 씁니다 — 작업 모델을 바꿨는데 답이 다른 모델로 나오는 것 같으면 이 값을 확인하세요. 이미 길어진 대화(약 2만 토큰 이상)는 캐시 손실을 피하려고 작업 모델을 유지합니다. 대화별 고정은 !model.", cfg.WorkerModelLight, claudeModelAliases),
 			modelField("backend.codex_model", "Codex 작업 모델", "codex를 쓸 때의 작업 모델. 설치된 codex에서 실제 확인한 목록입니다.", cfg.CodexModel, codexModels),
 			modelField("backend.codex_manager_model", "Codex 매니저 모델", "codex를 쓸 때의 매니저 모델.", cfg.CodexManagerModel, codexModels),
 			{Key: "models.manager_always", Label: "항상 매니저 먼저", Desc: "켜면 모든 메시지를 매니저 모델이 먼저 훑어 분배합니다. 끄면 간단한 메시지는 바로 작업 모델로 갑니다.", Type: "bool", Value: cfg.ManagerAlways},
+		}},
+
+		{Title: "토큰 절약", Group: settingsGroupAI, Desc: "긴 대화의 비용을 줄이는 옵션입니다. 기본값(켜짐)을 권장합니다. 대화별 모델 고정은 채팅에서 !model 로 합니다.", Fields: []settingField{
+			{Key: "context.summary_on_reset", Label: "세션 정리 시 요약 사용", Desc: "대화가 길어져 세션을 새로 시작할 때, 예전 대화 기록을 통째로 다시 넣는 대신 매니저 모델이 만든 요약 + 최근 몇 턴만 넣습니다. 요약에 실패하면 예전 방식으로 자동 전환됩니다.", Type: "bool", Value: cfg.SummaryOnReset},
+			{Key: "screen_control.adaptive_prompt", Label: "화면 제어 안내 축약", Desc: "화면 제어를 아직 쓰지 않은 대화에는 긴 화면 제어 안내 대신 짧은 요약만 넣습니다. 화면을 한 번 쓰거나 화면 관련 요청이 오면 그 대화부터 전체 안내를 넣습니다.", Type: "bool", Value: cfg.ScreenPromptAdaptive},
 		}},
 
 		// ── 무료·로컬 AI 탭 (opencode 선택 시에만 표시) ────────────────
@@ -387,6 +392,10 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.AllowScripts = asBool(v)
 		case "screen_control.enabled":
 			cfg.ScreenControl = asBool(v)
+		case "screen_control.adaptive_prompt":
+			cfg.ScreenPromptAdaptive = asBool(v)
+		case "context.summary_on_reset":
+			cfg.SummaryOnReset = asBool(v)
 		case "screen_control.keep_awake":
 			cfg.ScreenKeepAwake = asBool(v)
 		case "screen_control.elevated":

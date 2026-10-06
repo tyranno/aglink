@@ -109,6 +109,10 @@ func (c *Conversation) clone() *Conversation {
 		cp.History = make([]ConversationTurn, len(c.History))
 		copy(cp.History, c.History)
 	}
+	if c.TurnStats != nil {
+		cp.TurnStats = make([]TurnStat, len(c.TurnStats))
+		copy(cp.TurnStats, c.TurnStats)
+	}
 	return &cp
 }
 

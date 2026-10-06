@@ -38,7 +38,8 @@ type Config struct {
 	ScreenKeepAwake       bool     // 화면 유휴 잠금/화면보호기 방지 (SetThreadExecutionState, Windows). 기본 false
 	ScreenBinaryPath      string   // aglink-screen 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 	ScreenMaxScreenshotLongEdge int // 전체 screenshot 긴 변 최대 px (vision 토큰 절감용). 0 = 기본값(1280). 낮출수록 이미지 토큰↓·글자 가독성↓. capture_window/region은 영향 없음
-	WebControl            bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
+	ScreenPromptAdaptive  bool     // screen 안내 시스템 프롬프트를 대화별로 조절(화면을 안 쓴 대화엔 축약본만). yaml 기본 true. See Manager.screenBriefFor
+	WebControl           bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
 	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 	NotionControl         bool     // Notion MCP(@notionhq/notion-mcp-server, npx로 실행) 활성화. 기본 false
 	NotionToken           string   // Notion internal integration token (ntn_...). 비어있으면 비활성
@@ -51,6 +52,11 @@ type Config struct {
 	// above which each need bespoke binary resolution. See MCPServerDef /
 	// buildMCPServerList.
 	MCPServers []MCPServerDef
+
+	// SummaryOnReset: 세션 리셋/복구 시 최근 40턴(24k자)을 다시 넣는 대신, 매니저
+	// 모델(haiku)로 유지하는 대화별 롤링 요약 + 최근 몇 턴만 주입한다. yaml 기본
+	// true. 요약 실패 시 기존 방식으로 폴백. See convsummary.go.
+	SummaryOnReset bool
 
 	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 	WebChat               bool     // local web chat transport enabled
@@ -157,16 +163,46 @@ type Conversation struct {
 	// codex backend; 0 = unknown / not yet observed. See runWorker.
 	CodexContextTokens int `json:"codexContextTokens,omitempty"`
 
-	// ClaudeContextTokens is the total billed usage (turnUsage.Total() — input +
-	// cache read + cache write + output) the claude CLI reported on this
-	// conversation's last worker turn. A turn that makes several internal tool
-	// round-trips re-sends the whole grown conversation on EACH round-trip, so
-	// this can spike well above "current context size" within a single turn; when
-	// it crosses claudeContextResetTokens the manager starts a fresh claude
+	// ClaudeContextTokens is the real context size of this conversation's claude
+	// session as of its last worker turn: the prompt size of the LAST main-thread
+	// API round-trip of that turn (input + cache read + cache write — see
+	// RunResult.ContextTokens). It used to be the turn's summed usage
+	// (turnUsage.Total()), which counts the same context once per tool
+	// round-trip — a 10-tool turn on a 100k context read as "1M" and reset the
+	// session almost every turn, throwing the prompt cache away each time. When
+	// this crosses claudeContextResetTokens the manager starts a fresh claude
 	// session (same conversation, same history, new CLI session) instead of
 	// resuming. Only meaningful for the claude backend; 0 = unknown / not yet
 	// observed. See runWorker.
 	ClaudeContextTokens int `json:"claudeContextTokens,omitempty"`
+
+	// PinnedModel is a per-conversation worker model override ("!model <name>" /
+	// control verb set_conv_model). Non-empty wins over the configured worker
+	// model AND over light/heavy tiering (pickWorkerModel). "" = follow config.
+	PinnedModel string `json:"pinnedModel,omitempty"`
+	// LastModel is the worker model the previous turn actually ran on. Used to
+	// keep a large resumed session on the model whose prompt cache is warm (see
+	// pickWorkerModel) and reported by get_usage_stats.
+	LastModel string `json:"lastModel,omitempty"`
+	// ScreenUsed is sticky: set once this conversation used the screen MCP tools
+	// (or a request plainly asked for screen work). From then on the full screen
+	// guidance is appended to the system prompt; before that only a short pointer
+	// (see Manager.screenBriefFor). Sticky so the system prompt flips at most once
+	// per conversation — every flip invalidates the prompt cache.
+	ScreenUsed bool `json:"screenUsed,omitempty"`
+
+	// RollingSummary is a compact manager-model (haiku) summary of this
+	// conversation up to RollingSummaryUpTo (the Timestamp of the last turn it
+	// covers). Injected instead of a long history slice when the CLI session is
+	// reset or recovered. See convsummary.go.
+	RollingSummary     string    `json:"rollingSummary,omitempty"`
+	RollingSummaryUpTo time.Time `json:"rollingSummaryUpTo,omitempty"`
+
+	// Usage statistics (get_usage_stats). TurnCount/ResetCount are all-time
+	// counters; TurnStats keeps only the most recent maxTurnStats records.
+	TurnCount  int        `json:"turnCount,omitempty"`
+	ResetCount int        `json:"resetCount,omitempty"`
+	TurnStats  []TurnStat `json:"turnStats,omitempty"`
 
 	// UsageTotal is the running sum of every turn's token usage this conversation
 	// has ever reported (across every worker model it has used — dynamicWorkerModel
@@ -177,6 +213,26 @@ type Conversation struct {
 	// for a conversation that predates this field or a backend that reports no
 	// usage (codex/opencode).
 	UsageTotal CumUsage `json:"usageTotal,omitempty"`
+}
+
+// TurnStat is one worker turn's usage record (get_usage_stats). Bounded per
+// conversation by maxTurnStats.
+type TurnStat struct {
+	At            time.Time `json:"at"`
+	Backend       string    `json:"backend,omitempty"`
+	Model         string    `json:"model,omitempty"`
+	Tier          string    `json:"tier,omitempty"` // "light" | "heavy" | "pinned" | "" (non-claude / tiering off)
+	Input         int       `json:"input,omitempty"`
+	CacheRead     int       `json:"cacheRead,omitempty"`
+	CacheWrite    int       `json:"cacheWrite,omitempty"`
+	Output        int       `json:"output,omitempty"`
+	CostUSD       float64   `json:"costUsd,omitempty"`
+	ContextTokens int       `json:"contextTokens,omitempty"` // real context size after the turn (last API round-trip)
+	Reset         bool      `json:"reset,omitempty"`         // ran on a fresh session after a context-size reset
+	Recovered     bool      `json:"recovered,omitempty"`     // ran on a fresh session after the old one was lost
+	SummaryUsed   bool      `json:"summaryUsed,omitempty"`   // rolling summary injected instead of the long history slice
+	DurationMs    int64     `json:"durationMs,omitempty"`
+	IsError       bool      `json:"isError,omitempty"`
 }
 
 // CumUsage is a token usage counter (and cost) — either one turn's own usage or a
@@ -371,6 +427,16 @@ type RunRequest struct {
 	// image blocks live in tool_result content that the final result envelope drops.
 	// Wired to Telegram (bot.SendPhoto) so conversational captures actually arrive.
 	OnImage func(png []byte, caption string)
+
+	// Stream forces the claude worker onto --output-format stream-json even when
+	// neither callback is set, so the per-round-trip usage (the real context
+	// size, RunResult.ContextTokens) can be read. claudeRunner.Run always sets it.
+	Stream bool
+
+	// ScreenBrief replaces the ~1.5k-token screen MCP guidance in the appended
+	// system prompt with a short pointer (screenSystemPromptBrief). Zero value =
+	// full guidance (previous behavior). See Manager.screenBriefFor.
+	ScreenBrief bool
 }
 
 type RunResult struct {
@@ -392,6 +458,16 @@ type RunResult struct {
 	CacheCreationTokens int
 	OutputTokens        int
 	CostUSD             float64
+
+	// ContextTokens is the real context size at the end of the turn: input +
+	// cache read + cache write of the LAST main-thread assistant message in the
+	// claude stream-json output (one API round-trip) — NOT the summed usage
+	// above, which counts the context once per tool round-trip. 0 = unknown
+	// (non-stream output, other backends). Drives the session-reset decision.
+	ContextTokens int
+	// ScreenToolUsed reports that the turn called a screen MCP tool
+	// (mcp__screen__*). Sets Conversation.ScreenUsed.
+	ScreenToolUsed bool
 }
 
 // --- Interfaces (Design §4.1, Option C boundaries) ---

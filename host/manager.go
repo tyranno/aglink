@@ -41,6 +41,12 @@ type Manager struct {
 	// shown when a new turn starts — see recordTurnDuration/estimateTurnDuration.
 	durationsMu   sync.Mutex
 	turnDurations map[string][]time.Duration // backend name → rolling window of completed-turn durations
+
+	// summaryMu guards the rolling-summary cache filled by background prewarm
+	// calls (see convsummary.go) — keyed by summaryKey.
+	summaryMu       sync.Mutex
+	summaries       map[string]convSummaryState
+	summaryInflight map[string]bool
 }
 
 func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *ConfigHolder) *Manager {
@@ -708,6 +714,7 @@ type convSink interface {
 	save(c *Conversation) error      // persist updated conversation
 	setActive(c *Conversation) error // update the channel's active pointer
 	makeContinuation(c *Conversation) (*Conversation, error)
+	current(id string) (*Conversation, bool) // latest persisted copy (picks up changes made while a turn ran)
 }
 
 type projectSink struct {
@@ -725,6 +732,10 @@ func (p projectSink) setActive(c *Conversation) error {
 }
 func (p projectSink) makeContinuation(c *Conversation) (*Conversation, error) {
 	return p.m.makeContinuation(p.proj, c)
+}
+
+func (p projectSink) current(id string) (*Conversation, bool) {
+	return p.m.store.GetConversation(p.proj, id)
 }
 
 func (m *Manager) projectSink(project string) convSink { return projectSink{m: m, proj: project} }
@@ -754,6 +765,11 @@ func (t telegramSink) makeContinuation(c *Conversation) (*Conversation, error) {
 	return c, nil
 }
 
+func (t telegramSink) current(id string) (*Conversation, bool) {
+	c := t.m.store.TelegramConversation()
+	return c, c != nil && c.ID == id
+}
+
 func (m *Manager) telegramSink(project string) convSink { return telegramSink{m: m, proj: project} }
 
 // webConvSink persists a top-level, project-independent web conversation. It has
@@ -775,6 +791,8 @@ func (w webConvSink) makeContinuation(c *Conversation) (*Conversation, error) {
 	c.Started = false
 	return c, nil
 }
+
+func (w webConvSink) current(id string) (*Conversation, bool) { return w.m.store.GetWebConv(id) }
 
 func (m *Manager) newWebConvSink() convSink { return webConvSink{m: m} }
 
@@ -858,19 +876,110 @@ func (m *Manager) workerModelForBackendName(backend string) string {
 // zero-cost heuristic (see classifyWorkerTier); telegram deliberately does no
 // per-message router LLM call, so an LLM judgment here would re-introduce the
 // latency that was removed. It is quality-biased: any doubt resolves to the heavy
-// model, because there is no per-conversation model override to escalate with.
+// model. A per-conversation pin ("!model", set_conv_model) overrides it — see
+// pickWorkerModel, which runWorker uses.
 func (m *Manager) dynamicWorkerModel(backend, text string) string {
-	if backend != "claude" {
-		return m.workerModelForBackendName(backend)
+	model, _ := m.pickWorkerModel(backend, text, nil, false)
+	return model
+}
+
+// tierSwitchMaxContextTokens: above this session context size, a resumed turn
+// does not DOWNGRADE to the light model unless the previous turn already ran on
+// it. The prompt cache is per model: dropping a warm 100k-token opus session to
+// sonnet re-writes the whole context into sonnet's cache (1.25× input price)
+// instead of reading opus's cache (0.1×), which costs far more than the light
+// model saves on a short chatty answer. Small contexts switch freely.
+const tierSwitchMaxContextTokens = 20000
+
+// pickWorkerModel resolves the worker model for one turn and the reason
+// ("pinned" | "light" | "heavy" | "" when tiering doesn't apply):
+//
+//  1. c.PinnedModel wins (a claude-model pin is ignored on a non-claude backend).
+//  2. Non-claude backends use their configured model.
+//  3. claude with WorkerModelLight set: classifyWorkerTier picks light/heavy,
+//     except that a large resumed session isn't moved onto the light model
+//     (tierSwitchMaxContextTokens). Escalating light→heavy is always allowed —
+//     quality first. claude --resume accepts a different --model per invocation;
+//     the session (transcript) is kept, only the model changes.
+func (m *Manager) pickWorkerModel(backend, text string, c *Conversation, resume bool) (model, tier string) {
+	if c != nil {
+		if pin := strings.TrimSpace(c.PinnedModel); pin != "" {
+			if backend == "claude" || !isClaudeModelName(pin) {
+				return pin, "pinned"
+			}
+		}
 	}
+	if backend != "claude" {
+		return m.workerModelForBackendName(backend), ""
+	}
+	heavy := m.cfg().WorkerModel
 	light := strings.TrimSpace(m.cfg().WorkerModelLight)
 	if light == "" {
-		return m.cfg().WorkerModel // dynamic selection disabled
+		return heavy, "" // dynamic selection disabled
 	}
-	if classifyWorkerTier(text) == "light" {
-		return light
+	if classifyWorkerTier(text) != "light" {
+		return heavy, "heavy"
 	}
-	return m.cfg().WorkerModel
+	if resume && c != nil && c.ClaudeContextTokens >= tierSwitchMaxContextTokens && c.LastModel != light {
+		return heavy, "heavy"
+	}
+	return light, "light"
+}
+
+// SetConvModel pins (model != "") or unpins (model == "" / "default" / "off")
+// the worker model of tgt's conversation. See Conversation.PinnedModel.
+func (m *Manager) SetConvModel(tgt Target, model string) (string, error) {
+	model = normalizePinnedModel(model)
+	if tgt.IsWeb() {
+		if tgt.ID == "" {
+			return "", fmt.Errorf("web conversation id is required")
+		}
+		c, ok := m.store.GetWebConv(tgt.ID)
+		if !ok {
+			return "", fmt.Errorf("web conversation not found: %s", tgt.ID)
+		}
+		c.PinnedModel = model
+		return model, m.store.UpdateWebConv(c)
+	}
+	c := m.store.TelegramConversation()
+	c.PinnedModel = model
+	return model, m.store.UpdateTelegramConversation(c)
+}
+
+// ConvModelInfo reports tgt's pinned model ("" = none), the model the last turn
+// ran on, and the conversation's effective backend.
+func (m *Manager) ConvModelInfo(tgt Target) (pinned, last, backend string, err error) {
+	var c *Conversation
+	if tgt.IsWeb() {
+		wc, ok := m.store.GetWebConv(tgt.ID)
+		if !ok {
+			return "", "", "", fmt.Errorf("web conversation not found: %s", tgt.ID)
+		}
+		c = wc
+	} else {
+		c = m.store.TelegramConversation()
+	}
+	return c.PinnedModel, c.LastModel, m.effectiveBackend(c.Backend), nil
+}
+
+// screenBriefFor decides whether this turn gets only the condensed screen
+// guidance (RunRequest.ScreenBrief). Full guidance once the conversation has used
+// the screen tools or the request looks like screen work; the decision is sticky
+// (marks c.ScreenUsed) so the appended system prompt — part of the cached
+// prefix — changes at most once per conversation.
+func (m *Manager) screenBriefFor(c *Conversation, text string) bool {
+	cfg := m.cfg()
+	if !cfg.ScreenControl || !cfg.ScreenPromptAdaptive || c == nil {
+		return false
+	}
+	if c.ScreenUsed {
+		return false
+	}
+	if looksLikeScreenRequest(text) {
+		c.ScreenUsed = true
+		return false
+	}
+	return true
 }
 
 // workTierKeywords mark a turn as real work (→ heavy model). Kept broad and
@@ -1304,17 +1413,32 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// the session-loss recovery below — gets a much larger, char-bounded slice,
 	// because then the stored history is the only context there is.
 	historyForPrompt := historyForContext(workConv.History, resume)
+	// A fresh session over an existing long conversation (context reset, desync
+	// self-heal, telegram compaction leftovers): inject the rolling summary + the
+	// last few turns instead of the long history slice, when enabled and
+	// available. Falls back to historyForPrompt above on any failure.
+	sumKey := summaryKey(sink, workConv.ID)
+	promptSummary := parentSummary
+	summaryUsed := false
+	if !resume {
+		if sum, tail, ok := m.summaryForFreshSession(ctx, sumKey, workConv, workConv.History); ok {
+			historyForPrompt = tail
+			promptSummary = joinSummaries(parentSummary, sum)
+			summaryUsed = true
+		}
+	}
 	globalMemory := readGlobalMemory()
 	projectMemory := ""
 	if pPath != "" {
 		projectMemory = readProjectMemory(pPath, workConv.ID)
 	}
 	memPath := conversationMemoryPath(pPath, workConv.ID)
-	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, historyForPrompt)
+	prompt := buildContextPrompt(text, promptSummary, globalMemory, projectMemory, memPath, historyForPrompt)
 
-	workerModel := m.dynamicWorkerModel(backend, text)
-	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
-		backend, workerModel, project, workConv.ID, resume, len(prompt))
+	workerModel, workerTier := m.pickWorkerModel(backend, text, workConv, resume)
+	screenBrief := m.screenBriefFor(workConv, text)
+	log.Printf("[worker] ▶ backend=%s model=%q tier=%s project=%s conv=%s resume=%v summary=%v screenBrief=%v prompt=%d chars",
+		backend, workerModel, workerTier, project, workConv.ID, resume, summaryUsed, screenBrief, len(prompt))
 
 	// sessionRecovered records that this turn ran as a fresh CLI session after the
 	// stored one turned out to be gone. The persistence guard below skips a
@@ -1340,14 +1464,15 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	}
 
 	res, err := client.Run(ctx, RunRequest{
-		Prompt:     prompt,
-		WorkDir:    workDir,
-		SessionID:  workConv.SessionID,
-		Resume:     resume,
-		Model:      workerModel,
-		OnImage:    onImage,
-		OnProgress: onProgress,
-		OwnerLabel: screenOwnerLabel(chatID, workConv),
+		Prompt:      prompt,
+		WorkDir:     workDir,
+		SessionID:   workConv.SessionID,
+		Resume:      resume,
+		Model:       workerModel,
+		OnImage:     onImage,
+		OnProgress:  onProgress,
+		OwnerLabel:  screenOwnerLabel(chatID, workConv),
+		ScreenBrief: screenBrief,
 	})
 	close(heartbeatDone)
 	elapsed := time.Since(startTime)
@@ -1375,20 +1500,27 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			log.Printf("[worker] session lost (%v) — retrying once without --resume, with fuller history", err)
 			sessionRecovered = true
 			recoveryHistory := historyForContext(workConv.History[:pendingIdx], false)
-			recoveryPrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, recoveryHistory)
+			recoverySummary := parentSummary
+			if sum, tail, ok := m.summaryForFreshSession(ctx, sumKey, workConv, workConv.History[:pendingIdx]); ok {
+				recoveryHistory = tail
+				recoverySummary = joinSummaries(parentSummary, sum)
+				summaryUsed = true
+			}
+			recoveryPrompt := buildContextPrompt(text, recoverySummary, globalMemory, projectMemory, memPath, recoveryHistory)
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
 			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
 			res, err = client.Run(ctx, RunRequest{
-				Prompt:     recoveryPrompt,
-				WorkDir:    workDir,
-				SessionID:  workConv.SessionID,
-				Resume:     false,
-				Model:      workerModel,
-				OnImage:    onImage,
-				OnProgress: onProgress,
-				OwnerLabel: screenOwnerLabel(chatID, workConv),
+				Prompt:      recoveryPrompt,
+				WorkDir:     workDir,
+				SessionID:   workConv.SessionID,
+				Resume:      false,
+				Model:       workerModel,
+				OnImage:     onImage,
+				OnProgress:  onProgress,
+				OwnerLabel:  screenOwnerLabel(chatID, workConv),
+				ScreenBrief: screenBrief,
 			})
 			close(recoverDone)
 			elapsed = time.Since(startTime)
@@ -1409,14 +1541,15 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			recoverDone := make(chan struct{})
 			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
 			res, err = client.Run(ctx, RunRequest{
-				Prompt:     resumePrompt,
-				WorkDir:    workDir,
-				SessionID:  workConv.SessionID,
-				Resume:     true,
-				Model:      workerModel,
-				OnImage:    onImage,
-				OnProgress: onProgress,
-				OwnerLabel: screenOwnerLabel(chatID, workConv),
+				Prompt:      resumePrompt,
+				WorkDir:     workDir,
+				SessionID:   workConv.SessionID,
+				Resume:      true,
+				Model:       workerModel,
+				OnImage:     onImage,
+				OnProgress:  onProgress,
+				OwnerLabel:  screenOwnerLabel(chatID, workConv),
+				ScreenBrief: screenBrief,
 			})
 			close(recoverDone)
 			elapsed = time.Since(startTime)
@@ -1489,14 +1622,15 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				}
 			}()
 			res, err = client.Run(ctx, RunRequest{
-				Prompt:     retryPrompt,
-				WorkDir:    workDir,
-				SessionID:  workConv.SessionID,
-				Resume:     false,
-				Model:      workerModel,
-				OnImage:    onImage,
-				OnProgress: onProgress,
-				OwnerLabel: screenOwnerLabel(chatID, workConv),
+				Prompt:      retryPrompt,
+				WorkDir:     workDir,
+				SessionID:   workConv.SessionID,
+				Resume:      false,
+				Model:       workerModel,
+				OnImage:     onImage,
+				OnProgress:  onProgress,
+				OwnerLabel:  screenOwnerLabel(chatID, workConv),
+				ScreenBrief: screenBrief,
 			})
 			close(retryDone)
 			elapsed = time.Since(startTime)
@@ -1570,20 +1704,68 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			Cost:   res.CostUSD,
 		}
 		workConv.UsageTotal = workConv.UsageTotal.add(turnUsage)
-		// Track this turn's cost so the NEXT turn can decide whether to reset the
-		// claude session (see claudeContextResetTokens). A fresh/reset turn reports
-		// a small count on its own, so this self-corrects without extra logic.
-		if backend == "claude" {
-			workConv.ClaudeContextTokens = turnUsage.Total()
-		}
+	}
+	// Track the session's REAL context size so the NEXT turn can decide whether to
+	// reset the claude session (see claudeContextResetTokens): the prompt size of
+	// the turn's last API round-trip, not turnUsage.Total(). The latter sums the
+	// context once per tool round-trip — a 10-tool turn on a 100k session read as
+	// ~1M and reset the session nearly every turn, discarding the prompt cache and
+	// re-inlining history each time. 0 (unknown — e.g. a runner that reports no
+	// per-message usage) never triggers a reset; the reactive context-overflow
+	// path below remains the backstop. A fresh/reset turn reports a small size on
+	// its own, so this self-corrects without extra logic.
+	if backend == "claude" {
+		workConv.ClaudeContextTokens = res.ContextTokens
 	}
 	convUsage := workConv.UsageTotal
+
+	// Model/screen bookkeeping and per-turn usage stats (get_usage_stats).
+	workConv.LastModel = workerModel
+	if res.ScreenToolUsed {
+		workConv.ScreenUsed = true
+	}
+	ctxTokens := res.ContextTokens
+	if backend == "codex" {
+		ctxTokens = res.InputTokens
+	}
+	recordTurnStat(workConv, TurnStat{
+		At:            time.Now().UTC(),
+		Backend:       backend,
+		Model:         workerModel,
+		Tier:          workerTier,
+		Input:         res.InputTokens,
+		CacheRead:     res.CacheReadTokens,
+		CacheWrite:    res.CacheCreationTokens,
+		Output:        res.OutputTokens,
+		CostUSD:       res.CostUSD,
+		ContextTokens: ctxTokens,
+		Reset:         claudeReset || codexReset,
+		Recovered:     sessionRecovered,
+		SummaryUsed:   summaryUsed,
+		DurationMs:    elapsed.Milliseconds(),
+		IsError:       res.IsError,
+	})
+	// Pick up a prewarmed rolling summary so it persists with this save, and a
+	// model pin set (set_conv_model / !model) while this turn was running — the
+	// save below writes this turn's copy and would otherwise clobber it.
+	m.adoptCachedSummary(sumKey, workConv)
+	if cur, ok := sink.current(workConv.ID); ok && cur != nil {
+		workConv.PinnedModel = cur.PinnedModel
+	}
 
 	if err := sink.save(workConv); err != nil {
 		log.Printf("[manager] update conversation: %v", err)
 	}
 	if err := sink.setActive(workConv); err != nil {
 		log.Printf("[manager] set active: %v", err)
+	}
+	// Session getting large → refresh the rolling summary in the background so a
+	// coming reset can use it without a synchronous call (convsummary.go).
+	switch backend {
+	case "claude":
+		m.maybePrewarmSummary(sumKey, workConv.ID, workConv, workConv.ClaudeContextTokens, claudeContextResetTokens)
+	case "codex":
+		m.maybePrewarmSummary(sumKey, workConv.ID, workConv, workConv.CodexContextTokens, codexContextResetTokens)
 	}
 
 	// Send only after the turn is durably in workConv.History and saved above —
@@ -1760,11 +1942,18 @@ const (
 	// (which stored history reconstructs anyway) for a bounded prompt.
 	codexContextResetTokens = 200000
 
-	// claudeContextResetTokens is the claude turn size (ClaudeContextTokens — the
-	// PREVIOUS turn's total billed usage; see runWorker) at or above which aglink
-	// stops resuming the claude CLI session and starts a fresh one instead,
-	// re-inlining recent stored history — the same trade codexContextResetTokens
-	// makes for codex.
+	// claudeContextResetTokens is the claude session context size
+	// (ClaudeContextTokens — the prompt size of the PREVIOUS turn's last API
+	// round-trip; see runWorker / streamTurnSignals) at or above which aglink stops
+	// resuming the claude CLI session and starts a fresh one instead, re-inlining
+	// the rolling summary + recent turns (or recent stored history) — the same
+	// trade codexContextResetTokens makes for codex.
+	//
+	// 2026-10 fix: this was compared against the turn's SUMMED usage, which counts
+	// the context once per tool round-trip. Logs showed "claude context 1042618
+	// tokens ≥ 150000 — resetting session" almost every turn: sessions were reset
+	// constantly, losing the prompt cache each time. The history below explains why
+	// a reset exists at all; the signal is now the real context size.
 	//
 	// This used to be unconditionally 0 for claude (see the old
 	// proactiveContinuationThreshold comment this replaces): the claimed reason was

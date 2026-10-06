@@ -779,6 +779,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleHistory(reply, chatID, fields)
 	case "!backend":
 		b.handleBackend(reply, chatID, fields)
+	case "!model":
+		b.handleModel(reply, chatID, fields, tgt)
 	case "!interactive":
 		b.handleInteractive(reply, chatID, fields, tgt)
 	case "!user":
@@ -2475,6 +2477,44 @@ func (b *Bot) handleInteractive(reply replySender, chatID int64, fields []string
 	}
 }
 
+// handleModel shows or sets this conversation's pinned worker model
+// ("!model", "!model sonnet", "!model default"). A pin overrides the configured
+// worker model and light/heavy tiering; see Manager.pickWorkerModel.
+func (b *Bot) handleModel(reply replySender, chatID int64, fields []string, tgt Target) {
+	if len(fields) < 2 {
+		pinned, last, backend, err := b.manager.ConvModelInfo(tgt)
+		if err != nil {
+			_ = reply.Send(chatID, "⚠️ "+err.Error())
+			return
+		}
+		state := "없음 (설정 따름"
+		if light := strings.TrimSpace(b.cfg().WorkerModelLight); light != "" && backend == "claude" {
+			state += ", 가벼운 요청은 " + light
+		}
+		state += ")"
+		if pinned != "" {
+			state = pinned
+		}
+		msg := "📌 고정 모델: " + state
+		if last != "" {
+			msg += "\n최근 사용 모델: " + last
+		}
+		msg += "\n사용법: !model <모델> (예: sonnet, opus) · !model default 로 해제"
+		_ = reply.Send(chatID, msg)
+		return
+	}
+	pinned, err := b.manager.SetConvModel(tgt, strings.Join(fields[1:], " "))
+	if err != nil {
+		_ = reply.Send(chatID, "⚠️ "+err.Error())
+		return
+	}
+	if pinned == "" {
+		_ = reply.Send(chatID, "✅ 모델 고정 해제 — 다음 메시지부터 설정된 모델을 씁니다.")
+		return
+	}
+	_ = reply.Send(chatID, "✅ 이 대화의 모델을 "+pinned+"(으)로 고정했습니다 — 다음 메시지부터 적용됩니다.")
+}
+
 // handleParallel dispatches multiple independent prompts concurrently.
 // Syntax: !parallel <prompt1> | <prompt2> | ...
 // Each |-separated prompt becomes its own worker; responses arrive independently.
@@ -2678,6 +2718,7 @@ func helpText() string {
 !cron add|list|remove        반복 작업 (구버전 호환)
 !backend [claude|codex|opencode]  AI 백엔드 전환
 !interactive [on|off]        상주 세션 모드 전환 (웹 대화 전용, 실험적)
+!model [모델|default]          이 대화의 작업 모델 고정 (예: !model sonnet). default 로 해제
                               처리 중에도 메시지를 보내면 끼워넣기(steering)됩니다
 !update                      새 버전 빌드 & 자동 재시작
 !help                        이 도움말

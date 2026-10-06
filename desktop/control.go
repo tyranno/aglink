@@ -53,6 +53,8 @@ type controlIn struct {
 	Filter  string          `json:"filter,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Target  json.RawMessage `json:"target,omitempty"`
+	Model   string          `json:"model,omitempty"` // set_conv_model: model to pin ("" | "default" → unpin)
+	Limit   int             `json:"limit,omitempty"` // get_usage_stats: recent turns per conversation (0 → default)
 }
 
 // ControlService is the Wails-bound service the Svelte frontend calls. It keeps a
@@ -586,6 +588,52 @@ func (c *ControlService) ListMCPServers() (string, error) {
 // and returns the {ok,error} control reply as a JSON string.
 func (c *ControlService) SaveMCPServers(payload string) (string, error) {
 	data, err := c.request(controlIn{Type: "save_mcp_servers", Payload: json.RawMessage(payload)})
+	return string(data), err
+}
+
+// --- 사용량 통계 / 대화별 모델 고정 --------------------------------------------
+
+// usageReq is the frontend's request payload for GetUsageStats/SetConvModel:
+// {"target":{"kind","id"}?, "limit"?, "model"?}. Target omitted → all
+// conversations (get_usage_stats) or the telegram conversation (set_conv_model).
+type usageReq struct {
+	Target json.RawMessage `json:"target,omitempty"`
+	Limit  int             `json:"limit,omitempty"`
+	Model  string          `json:"model,omitempty"`
+}
+
+func parseUsageReq(payload string) (usageReq, error) {
+	var r usageReq
+	if strings.TrimSpace(payload) == "" {
+		return r, nil
+	}
+	err := json.Unmarshal([]byte(payload), &r)
+	if string(r.Target) == "null" {
+		r.Target = nil
+	}
+	return r, err
+}
+
+// GetUsageStats returns the host's get_usage_stats reply as a JSON string.
+// payload: {"target"?,"limit"?} (may be empty → all conversations).
+func (c *ControlService) GetUsageStats(payload string) (string, error) {
+	r, err := parseUsageReq(payload)
+	if err != nil {
+		return "", err
+	}
+	data, err := c.request(controlIn{Type: "get_usage_stats", Target: r.Target, Limit: r.Limit})
+	return string(data), err
+}
+
+// SetConvModel pins (or with ""/"default" unpins) a conversation's worker
+// model and returns the {ok,model,error} reply as a JSON string.
+// payload: {"target"?,"model"} — target omitted means the telegram conversation.
+func (c *ControlService) SetConvModel(payload string) (string, error) {
+	r, err := parseUsageReq(payload)
+	if err != nil {
+		return "", err
+	}
+	data, err := c.request(controlIn{Type: "set_conv_model", Target: r.Target, Model: r.Model})
 	return string(data), err
 }
 

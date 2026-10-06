@@ -7,6 +7,7 @@
   import PlaybookPanel from "./PlaybookPanel.svelte";
   import ReservationPanel from "./ReservationPanel.svelte";
   import MCPServerPanel from "./MCPServerPanel.svelte";
+  import UsagePanel from "./UsagePanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import {
     chat,
@@ -65,7 +66,7 @@
   let settingsTab = $state("settings");
   // 알려진 탭 값만 복원한다 — 저장된 값이 낯설면 "chat"으로 떨어뜨려야, 렌더링
   // 분기의 마지막 else(MCP)가 알 수 없는 값을 떠안는 일이 없다.
-  const SIDEBAR_TABS = ["chat", "playbook", "reservation", "mcp"];
+  const SIDEBAR_TABS = ["chat", "playbook", "reservation", "mcp", "usage"];
   let sidebarTab = $state(
     SIDEBAR_TABS.includes(sidebarPrefs.tab) ? sidebarPrefs.tab : "chat",
   ); // 대화 목록 / 업무 관리 / 예약 / MCP
@@ -588,6 +589,10 @@
                 class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "mcp" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "mcp")}
               >MCP</button>
+              <button
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "usage" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
+                onclick={() => (sidebarTab = "usage")}
+              >사용량</button>
             </div>
             {#if sidebarTab === "chat"}
             <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 dark:border-slate-700 px-3">
@@ -792,6 +797,8 @@
               <PlaybookPanel />
             {:else if sidebarTab === "reservation"}
               <ReservationPanel />
+            {:else if sidebarTab === "usage"}
+              <UsagePanel />
             {:else}
               <MCPServerPanel />
             {/if}

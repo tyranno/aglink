@@ -78,12 +78,22 @@ const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"strin
 // OAuth/keychain auth is unaffected (unlike --bare). Big cold-start + noise reduction.
 var isolationArgs = []string{"--strict-mcp-config", "--setting-sources", "project,local"}
 
+// toolLessArgs strip a one-shot manager call (Route, Summarize) down to the
+// prompt itself: no built-in tools and a one-line system prompt instead of the
+// Claude Code default. Those calls never use tools, yet by default each one
+// shipped the full agent system prompt + tool schemas (~25k tokens) — measured
+// on haiku: ~25k → ~0.4k input tokens per call, cost roughly 1/6–1/9. The task
+// instructions live in the user prompt (buildRoutePrompt / summary prompt), and
+// --json-schema structured output still works without tools.
+var toolLessArgs = []string{"--tools", "", "--system-prompt", "You are a concise helper inside aglink. Follow the instructions in the user message exactly."}
+
 // Route asks the Manager model to decide routing. Runs in a neutral cwd with no tools/permissions.
 func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
 	prompt := buildRoutePrompt(req)
 	// Prompt via stdin, not argv (Windows command-line length limit).
 	args := []string{"-p", "--output-format", "json", "--json-schema", routeJSONSchema}
 	args = append(args, isolationArgs...)
+	args = append(args, toolLessArgs...)
 	if r.cfg().ManagerModel != "" {
 		args = append(args, "--model", r.cfg().ManagerModel)
 	}
@@ -116,11 +126,17 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin, goonoBin str
 	// otherwise blow past the Windows command-line length limit (~32767 chars),
 	// failing with "The filename or extension is too long".
 	args := []string{"-p"}
-	if req.OnProgress != nil || req.OnImage != nil {
+	if req.Stream || req.OnProgress != nil || req.OnImage != nil {
 		// Realtime NDJSON stream so tool-use activity (and tool_result images) can
 		// be relayed as it happens (see execStream/formatProgressEvent/
 		// extractToolResultImages), instead of one envelope at the end.
-		args = append(args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
+		if req.OnProgress != nil || req.OnImage != nil {
+			args = append(args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
+		} else {
+			// Stream only for the per-message usage (RunRequest.Stream): partial
+			// deltas would just bloat stdout.
+			args = append(args, "--output-format", "stream-json", "--verbose")
+		}
 	} else {
 		args = append(args, "--output-format", "json")
 	}
@@ -142,7 +158,7 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin, goonoBin str
 	default:
 		args = append(args, "--session-id", req.SessionID)
 	}
-	args = append(args, pluginWorkerArgs(cfg, screenBin, webBin, goonoBin)...)
+	args = append(args, pluginWorkerArgsOpts(cfg, screenBin, webBin, goonoBin, req.ScreenBrief)...)
 	return args
 }
 
@@ -151,13 +167,18 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin, goonoBin str
 // and OnProgress is called with a short human-readable line for each tool-use
 // event as it happens, instead of waiting for the single end-of-turn envelope.
 func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	// Always stream: the single-envelope "json" format only carries the turn's
+	// SUMMED usage, which over-counts the context once per tool round-trip. The
+	// per-message usage in stream-json is the only way to learn the real context
+	// size (RunResult.ContextTokens) that the session-reset decision needs.
+	req.Stream = true
 	selfExe, _ := os.Executable()
 	screenBin := resolveScreenBinaryPath(r.cfg(), selfExe)
 	webBin := resolveWebBinaryPath(r.cfg(), selfExe)
 	goonoBin := resolveGoonoBinaryPath(r.cfg(), selfExe)
 	args := workerBaseArgs(r.cfg(), req, screenBin, webBin, goonoBin)
 
-	if req.OnProgress != nil || req.OnImage != nil {
+	if req.Stream || req.OnProgress != nil || req.OnImage != nil {
 		// Deliver progress text and images on a dedicated consumer goroutine (via
 		// small buffered channels) so a slow callback — e.g. a Telegram send — can
 		// never backpressure the stdout reader and stall the worker. Text is dropped
@@ -387,9 +408,88 @@ func parseStreamResult(stdout string) (RunResult, error) {
 		if err := json.Unmarshal([]byte(line), &env); err != nil {
 			return RunResult{}, fmt.Errorf("claude stream-json 결과 파싱 실패: %w", err)
 		}
-		return runResultWithUsage(env), nil
+		res := runResultWithUsage(env)
+		res.ContextTokens, res.ScreenToolUsed = streamTurnSignals(lines[:i])
+		return res, nil
 	}
 	return RunResult{}, fmt.Errorf("claude stream-json: result 라인을 찾지 못함")
+}
+
+// streamTurnSignals scans a turn's stream-json lines for two per-message facts
+// the terminal result envelope doesn't carry:
+//
+//   - contextTokens: the prompt size (input + cache read + cache write) of the
+//     LAST main-thread assistant message — i.e. the context the final API
+//     round-trip actually sent, which is the session's real size going into the
+//     next turn. The result envelope's usage is the SUM over every round-trip of
+//     the turn (one per tool call), so a 10-tool turn on a 100k context reports
+//     ~1M; using that as "context size" reset the session almost every turn.
+//     Sub-agent messages (parent_tool_use_id set) run in their own context and
+//     are skipped. An assistant message is emitted once per content block with
+//     the same message-level usage, so taking the last one is correct.
+//   - screenUsed: whether any main-thread or sub-agent tool_use named a screen
+//     MCP tool (mcp__screen__*).
+func streamTurnSignals(lines []string) (contextTokens int, screenUsed bool) {
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || !strings.Contains(line, `"assistant"`) {
+			continue // cheap pre-filter: partial deltas/tool results are the bulk
+		}
+		var m struct {
+			Type            string  `json:"type"`
+			ParentToolUseID *string `json:"parent_tool_use_id"`
+			Message         *struct {
+				Content []streamContentBlock `json:"content"`
+				Usage   *struct {
+					InputTokens              int `json:"input_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &m) != nil || m.Type != "assistant" || m.Message == nil {
+			continue
+		}
+		for _, b := range m.Message.Content {
+			if b.Type == "tool_use" && strings.HasPrefix(b.Name, "mcp__screen__") {
+				screenUsed = true
+			}
+		}
+		if m.ParentToolUseID != nil && *m.ParentToolUseID != "" {
+			continue
+		}
+		if u := m.Message.Usage; u != nil {
+			if n := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens; n > 0 {
+				contextTokens = n
+			}
+		}
+	}
+	return contextTokens, screenUsed
+}
+
+// Summarize runs a one-shot, tool-less manager-model (haiku) call and returns
+// its text. Used for the per-conversation rolling summary (convsummary.go).
+// Same isolation and neutral cwd as Route.
+func (r *claudeRunner) Summarize(ctx context.Context, prompt string) (string, error) {
+	args := []string{"-p", "--output-format", "json"}
+	args = append(args, isolationArgs...)
+	args = append(args, toolLessArgs...)
+	if r.cfg().ManagerModel != "" {
+		args = append(args, "--model", r.cfg().ManagerModel)
+	}
+	home, _ := os.UserHomeDir()
+	stdout, stderr, err := r.exec(ctx, home, args, prompt, "")
+	if err != nil {
+		return "", fmt.Errorf("요약 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
+	}
+	res, perr := parseRunResult(stdout)
+	if perr != nil {
+		return "", perr
+	}
+	if res.IsError || isAuthFailure(res.Text) {
+		return "", fmt.Errorf("요약 실패: %s", truncate(res.Text, 200))
+	}
+	return res.Text, nil
 }
 
 // streamContentBlock is the subset of a stream-json "assistant" message's

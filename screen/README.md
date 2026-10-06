@@ -8,7 +8,12 @@ LLM 에이전트가 Windows 화면(UIA/Win32/GDI)을 직접 조작하게 해주�
 teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 이 실행파일을 자식
 프로세스로 호출만 하고, 실제 화면 조작 로직은 여기 전부 들어있다.
 
-- **UIA 우선** — `snapshot`/`invoke`/`set_value`/`get_value`로 대부분의 네이티브 앱을 좌표 없이 조작
+- **UIA 우선** — `snapshot`/`invoke`/`set_value`/`get_value`/`get_text`로 대부분의 네이티브 앱을 좌표 없이 조작
+- **읽기 출력 상한(토큰 절약)** — 도구 결과는 같은 턴의 이후 API 왕복마다 재전송되므로, 읽기 도구는 기본 상한과 이어읽기(`offset`)를 둔다. 잘리면 응답 끝에 `…[잘림: 전체 N자 중 a–b 표시. 이어 읽으려면 offset=b …]` 형태로 다음 offset을 알려준다.
+  - `get_text`: `offset`(음수면 끝에서부터 tail, 예: `-3000`) · `max_chars`(기본 8000, 최대 50000)
+  - `snapshot`: `offset`(요소 인덱스) · `max_elements`(기본 150, 최대 1000; 구 이름 `max`도 허용) · `max_chars`(기본 10000, 최대 50000) · 요소별 내용 미리보기 120자
+  - `win_controls`: `offset` · `max`(기본 200) · 라벨 80자
+  - `get_value`: 2000자 (넘으면 `get_text` offset으로 이어 읽으라고 안내)
 - **Win32 자식창 폴백** — `win_controls`/`click_control`, UIA가 비어도 정확한 좌표 확보
 - **GDI 캡처** — `screenshot`/`capture_window`/`capture_region`, 비전 다운스케일을 피해 정확한 좌표 매핑
 - **입력** — `click`/`double_click`/`triple_click`/`drag`/`move`/`type`/`key`(hold_ms 지원)/`scroll` (+ modifier 조합), `get_cursor_position`으로 현재 좌표 확인

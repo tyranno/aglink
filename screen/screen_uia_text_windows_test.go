@@ -29,19 +29,3 @@ func TestOnelinePreview(t *testing.T) {
 		t.Error("empty stays empty")
 	}
 }
-
-// clampTextValue is the belt-and-suspenders bound on get_text output on top of the
-// server-side GetText truncation.
-func TestClampTextValue(t *testing.T) {
-	if got := clampTextValue("short"); got != "short" {
-		t.Errorf("under-cap text unchanged, got %q", got)
-	}
-	over := strings.Repeat("y", maxTextChars+500)
-	got := clampTextValue(over)
-	if !strings.Contains(got, "truncated") {
-		t.Errorf("over-cap text should be marked truncated")
-	}
-	if len([]rune(got)) <= maxTextChars {
-		t.Errorf("truncated output should still carry maxTextChars of content plus a marker")
-	}
-}

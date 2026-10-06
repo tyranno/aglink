@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	ole "github.com/go-ole/go-ole"
@@ -404,8 +405,6 @@ func onelinePreview(s string, max int) string {
 	return s
 }
 
-// uiaSnapshot walks the foreground window's element subtree (children-first,
-// breadth-limited) and returns a compact textual listing capped at maxElems.
 // uiaSnapshotSparseThreshold is the FindAll element count below which
 // uiaSnapshot suspects the target hasn't finished building its accessibility
 // tree yet and retries once. Chromium/Electron apps (VS Code, Chrome) often
@@ -419,10 +418,14 @@ const uiaSnapshotSparseThreshold = 10
 // uiaSnapshotRetryDelay is how long uiaSnapshot waits before its one retry.
 var uiaSnapshotRetryDelay = 250 * time.Millisecond
 
-func uiaSnapshot(maxElems int) (string, error) {
-	if maxElems <= 0 {
-		maxElems = 200
-	}
+// uiaSnapshot walks the foreground window's element subtree (FindAll order)
+// starting at raw element index offset and returns a compact textual listing of
+// up to maxElems shown elements / maxChars characters, ending with a
+// continuation note (offset=N) when the tree was not exhausted. Elements within
+// one page are sorted by control type then name.
+func uiaSnapshot(offset, maxElems, maxChars int) (string, error) {
+	maxElems = clampLimit(maxElems, defaultSnapshotMaxElements, ceilingSnapshotMaxElements)
+	maxChars = clampLimit(maxChars, defaultSnapshotMaxChars, ceilingSnapshotMaxChars)
 	return uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := foregroundElement(uia)
 		if err != nil {
@@ -468,18 +471,39 @@ func uiaSnapshot(maxElems int) (string, error) {
 		}
 		defer release(arr)
 
-		truncated := false
-		n := int(length)
-		if n > maxElems {
-			n = maxElems
-			truncated = true
+		total := int(length)
+		start := offset
+		if start < 0 {
+			start = 0
 		}
+		if start > total {
+			start = total
+		}
+		// Bound the COM walk too: anonymous/contentless elements are skipped from the
+		// output but still cost round-trips, so a page scans at most this many.
+		scanLimit := maxElems * snapshotScanFactor
 
-		var nodes []uiaNode
-		for i := 0; i < n; i++ {
+		type shown struct {
+			nd   uiaNode
+			line string
+		}
+		var nodes []shown
+		chars := 0
+		next := start
+		reason := ""
+		for i := start; i < total; i++ {
+			if len(nodes) >= maxElems {
+				reason = fmt.Sprintf("max_elements=%d", maxElems)
+				break
+			}
+			if i-start >= scanLimit {
+				reason = "scan limit"
+				break
+			}
 			var el *ole.IUnknown
 			hr := vcall(arr, arrGetElement, uintptr(int32(i)), uintptr(unsafe.Pointer(&el)))
 			if failed(hr) || el == nil {
+				next = i + 1
 				continue
 			}
 			name := elemString(el, elemGetCurrentName)
@@ -509,9 +533,10 @@ func uiaSnapshot(maxElems int) (string, error) {
 
 			// Skip wholly anonymous, non-interactive, contentless nodes to save tokens.
 			if strings.TrimSpace(name) == "" && autoId == "" && !canInvoke && !canValue && !canText {
+				next = i + 1
 				continue
 			}
-			nodes = append(nodes, uiaNode{
+			nd := uiaNode{
 				name:     name,
 				ctrlType: ct,
 				autoId:   autoId,
@@ -520,52 +545,71 @@ func uiaSnapshot(maxElems int) (string, error) {
 				value:    canValue,
 				text:     canText,
 				preview:  onelinePreview(preview, snapshotPreviewChars),
-			})
+			}
+			line := snapshotLine(nd)
+			// Character budget: stop BEFORE the line that would overflow it (but
+			// always emit at least one line so a page makes progress).
+			if len(nodes) > 0 && chars+len([]rune(line))+1 > maxChars {
+				reason = fmt.Sprintf("max_chars=%d", maxChars)
+				break
+			}
+			nodes = append(nodes, shown{nd, line})
+			chars += len([]rune(line)) + 1
+			next = i + 1
 		}
 
-		// Stable, readable order: by control type then name.
+		// Stable, readable order within the page: by control type then name.
 		sort.SliceStable(nodes, func(i, j int) bool {
-			if nodes[i].ctrlType != nodes[j].ctrlType {
-				return nodes[i].ctrlType < nodes[j].ctrlType
+			if nodes[i].nd.ctrlType != nodes[j].nd.ctrlType {
+				return nodes[i].nd.ctrlType < nodes[j].nd.ctrlType
 			}
-			return nodes[i].name < nodes[j].name
+			return nodes[i].nd.name < nodes[j].nd.name
 		})
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "UIA elements of foreground window (%d shown of %d):\n", len(nodes), length)
-		for _, nd := range nodes {
-			caps := ""
-			if nd.invoke {
-				caps += " [invokable]"
-			}
-			if nd.value {
-				caps += " [editable]"
-			}
-			if nd.text {
-				caps += " [text]"
-			}
-			if !nd.enabled {
-				caps += " [disabled]"
-			}
-			name := nd.name
-			if name == "" {
-				name = "(unnamed)"
-			}
-			fmt.Fprintf(&b, "- %s | %q", controlTypeName(nd.ctrlType), name)
-			if nd.autoId != "" {
-				fmt.Fprintf(&b, " | id=%s", nd.autoId)
-			}
-			b.WriteString(caps)
-			if nd.preview != "" {
-				fmt.Fprintf(&b, " = %q", nd.preview)
-			}
+		fmt.Fprintf(&b, "UIA elements of foreground window (%d shown; scanned %d–%d of %d):\n", len(nodes), start, next, total)
+		for _, s := range nodes {
+			b.WriteString(s.line)
 			b.WriteString("\n")
 		}
-		if truncated {
-			fmt.Fprintf(&b, "(truncated to %d elements; increase 'max' to see more)\n", maxElems)
-		}
+		b.WriteString(pageNote("elements", start, next, total, reason))
 		return strings.TrimRight(b.String(), "\n"), nil
 	})
+}
+
+// snapshotScanFactor bounds how many raw UIA elements one snapshot page walks,
+// as a multiple of max_elements (most skipped elements are anonymous panes).
+const snapshotScanFactor = 8
+
+// snapshotLine renders one snapshot element line.
+func snapshotLine(nd uiaNode) string {
+	caps := ""
+	if nd.invoke {
+		caps += " [invokable]"
+	}
+	if nd.value {
+		caps += " [editable]"
+	}
+	if nd.text {
+		caps += " [text]"
+	}
+	if !nd.enabled {
+		caps += " [disabled]"
+	}
+	name := nd.name
+	if name == "" {
+		name = "(unnamed)"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "- %s | %q", controlTypeName(nd.ctrlType), name)
+	if nd.autoId != "" {
+		fmt.Fprintf(&b, " | id=%s", nd.autoId)
+	}
+	b.WriteString(caps)
+	if nd.preview != "" {
+		fmt.Fprintf(&b, " = %q", nd.preview)
+	}
+	return b.String()
 }
 
 // uiaElementAtPoint resolves the UIA element under absolute screen point
@@ -936,8 +980,13 @@ func uiaSetValue(name, text string) error {
 // updated, or to check the current value before deciding what to set it to).
 // A pure read, not synthetic input, so unlike uiaSetValue this does not go
 // through beginSyntheticInput.
-func uiaGetValue(name string) (string, error) {
-	return uiaDo(func(uia *ole.IUnknown) (string, error) {
+//
+// The value comes back raw (the caller bounds it with clampFieldValue). For the
+// Text-pattern fallback only maxFieldValueChars+1 units are fetched; totalKnown
+// reports false when that fetch was cut, so the note can say "N자 이상".
+func uiaGetValue(name string) (value string, totalKnown bool, err error) {
+	totalKnown = true
+	value, err = uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := foregroundElement(uia)
 		if err != nil {
 			return "", err
@@ -958,43 +1007,39 @@ func uiaGetValue(name string) (string, error) {
 		defer release(el)
 
 		if s, ok := elemValue(el); ok {
-			return clampFieldValue(s), nil
+			return s, nil
 		}
 		// Documents / read-only text areas expose content via the Text pattern, not
 		// Value — fall back so get_value reads them too instead of erroring out and
 		// pushing the caller to a screenshot.
-		if s, ok := elemText(el, maxFieldValueChars); ok {
-			return clampFieldValue(s), nil
+		if s, ok := elemText(el, maxFieldValueChars+1); ok {
+			totalKnown = len(utf16.Encode([]rune(s))) <= maxFieldValueChars
+			return s, nil
 		}
 		return "", fmt.Errorf("element %q supports neither the Value nor Text pattern (nothing to read; try get_text or snapshot)", name)
 	})
+	return value, totalKnown, err
 }
 
 // ---- get_text ----
 
-// maxTextChars bounds get_text. Larger than a single field's value cap because
-// reading a document/editor pane is the whole point — but still bounded so a huge
-// document can't flood the prompt (the caller can re-read with a named sub-element
-// or capture_region if it truly needs more).
-const maxTextChars = 8000
+// textFetchCeiling bounds how much text get_text pulls from the provider in one
+// UIA GetText call (UTF-16 units). This is LOCAL memory only — what reaches the
+// prompt is the offset/max_chars window cut by runeWindow — but it still keeps a
+// pathological multi-megabyte document from stalling the read. Fetching the
+// whole (bounded) document lets the truncation note report the real total length
+// so the caller knows how far there is to go.
+const textFetchCeiling = 1_000_000
 
-// clampTextValue trims get_text output to maxTextChars runes with a marker, a
-// belt-and-suspenders bound on top of the server-side GetText truncation.
-func clampTextValue(s string) string {
-	r := []rune(s)
-	if len(r) <= maxTextChars {
-		return s
-	}
-	return string(r[:maxTextChars]) + fmt.Sprintf("… [truncated, %d chars total]", len(r))
-}
-
-// uiaGetText reads a control's full textual content via the UIA Text pattern
-// (with a Value-pattern fallback) so a worker can read documents, editors and
-// read-only text panes BY HANDLE instead of screenshotting them. name is an
-// element Name/AutomationId; an empty name targets the foreground window element
-// itself (useful when the whole window is one text document). A pure read — no
-// synthetic input.
-func uiaGetText(name string) (string, error) {
+// uiaGetText reads a control's textual content via the UIA Text pattern (with a
+// Value-pattern fallback) so a worker can read documents, editors and read-only
+// text panes BY HANDLE instead of screenshotting them. name is an element
+// Name/AutomationId; an empty name targets the foreground window element itself
+// (useful when the whole window is one text document). Only the window selected
+// by offset/maxChars (runes; negative offset = tail) is returned, followed by a
+// continuation note when the text was cut — see runeWindow. Returns "" when the
+// element holds no text. A pure read — no synthetic input.
+func uiaGetText(name string, offset, maxChars int) (string, error) {
 	return uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := foregroundElement(uia)
 		if err != nil {
@@ -1017,33 +1062,25 @@ func uiaGetText(name string) (string, error) {
 			target = found
 		}
 
-		if s, ok := elemText(target, maxTextChars); ok {
-			return clampTextValue(s), nil
+		full, totalKnown, ok := "", true, false
+		if s, got := elemText(target, textFetchCeiling); got {
+			full, ok = s, true
+			totalKnown = len(utf16.Encode([]rune(s))) < textFetchCeiling
+		} else if s, got := elemValue(target); got {
+			full, ok = s, true
 		}
-		if s, ok := elemValue(target); ok {
-			return clampTextValue(s), nil
+		if !ok {
+			if strings.TrimSpace(name) == "" {
+				return "", fmt.Errorf("the foreground window exposes no Text pattern at its root; name a specific element from snapshot, or use capture_window as a last resort")
+			}
+			return "", fmt.Errorf("element %q supports neither the Text nor Value pattern", name)
 		}
-		if strings.TrimSpace(name) == "" {
-			return "", fmt.Errorf("the foreground window exposes no Text pattern at its root; name a specific element from snapshot, or use capture_window as a last resort")
+		if strings.TrimSpace(full) == "" {
+			return "", nil
 		}
-		return "", fmt.Errorf("element %q supports neither the Text nor Value pattern", name)
+		body, note := runeWindow(full, offset, maxChars, totalKnown)
+		return body + note, nil
 	})
-}
-
-// maxFieldValueChars bounds a single UIA field value returned by get_value. The
-// element COUNT is already capped (snapshot max=200), but a single control — a
-// text editor, a document, a huge read-only box — could return its entire
-// contents (tens of thousands of tokens) in one read. This is the missing
-// per-element length cap; the value is trimmed with a marker so the caller knows
-// it was cut.
-const maxFieldValueChars = 2000
-
-func clampFieldValue(s string) string {
-	r := []rune(s)
-	if len(r) <= maxFieldValueChars {
-		return s
-	}
-	return string(r[:maxFieldValueChars]) + fmt.Sprintf("… [truncated, %d chars total]", len(r))
 }
 
 // ---- wait_for_control ----

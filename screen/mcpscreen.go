@@ -868,10 +868,11 @@ func newScreenMCPServer() *server.MCPServer {
 	// more reliable than screenshot+vision for clicking by label.
 	s.AddTool(
 		mcp.NewTool("win_controls",
-			mcp.WithDescription("List a window's Win32 child controls with EXACT screen coordinates: 'class | \"label\" | center(x,y) | WxH'. Use the reported center as click(x,y), or click_control to click by label. Works for native apps even when snapshot/UIA is empty. Only visible controls unless include_hidden=true. Large trees are capped by 'max' (default 400)."),
+			mcp.WithDescription(fmt.Sprintf("List a window's Win32 child controls with EXACT screen coordinates: 'class | \"label\" | center(x,y) | WxH'. Use the reported center as click(x,y), or click_control to click by label. Works for native apps even when snapshot/UIA is empty. Only visible controls unless include_hidden=true. Paged to save tokens: at most 'max' (default %d) controls per call, labels cut to %d chars; when cut, the reply ends with the offset=N for the next page.", defaultWinControlsMax, winControlLabelChars)),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd (e.g. 'NetGuard')."), mcp.Required()),
 			mcp.WithBoolean("include_hidden", mcp.Description("Include controls that are not currently visible (other tabs/panels). Default false.")),
-			mcp.WithNumber("max", mcp.Description("Max controls to return (default 400); a big list/tree is truncated with a note. Symmetry with snapshot's cap so a huge tree can't flood the prompt.")),
+			mcp.WithNumber("max", mcp.Description(fmt.Sprintf("Max controls to return (default %d).", defaultWinControlsMax))),
+			mcp.WithNumber("offset", mcp.Description("Control index to start from — pass the offset=N from a previous truncated reply. Default 0.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			window, err := req.RequireString("window")
@@ -879,7 +880,7 @@ func newScreenMCPServer() *server.MCPServer {
 				return mcp.NewToolResultError("missing required argument 'window'"), nil
 			}
 			includeHidden := req.GetBool("include_hidden", false)
-			maxControls := req.GetInt("max", 400)
+			maxControls := clampLimit(req.GetInt("max", 0), defaultWinControlsMax, ceilingSnapshotMaxElements)
 			ctrls, err := listControls(window, includeHidden)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("win_controls failed", err), nil
@@ -887,25 +888,23 @@ func newScreenMCPServer() *server.MCPServer {
 			if len(ctrls) == 0 {
 				return mcp.NewToolResultText("(no child controls found)"), nil
 			}
-			// Cap the count so a SysListView32/SysTreeView32 with thousands of rows
-			// can't dump its whole tree into the prompt. snapshot already caps its
-			// element count; this closes the same gap for win_controls.
-			note := ""
-			if maxControls > 0 && len(ctrls) > maxControls {
-				note = fmt.Sprintf("\n… [%d of %d controls shown; raise 'max' or narrow the window]", maxControls, len(ctrls))
-				ctrls = ctrls[:maxControls]
-			}
+			// Page the list so a SysListView32/SysTreeView32 with thousands of rows
+			// can't dump its whole tree into the prompt (same paging as snapshot).
+			total := len(ctrls)
+			start, end := pageBounds(req.GetInt("offset", 0), maxControls, total)
 			var b strings.Builder
-			for _, c := range ctrls {
+			for _, c := range ctrls[start:end] {
 				vis := ""
 				if !c.Visible {
 					vis = " [hidden]"
 				}
+				// An Edit control's window text is its whole content — keep it a label.
 				fmt.Fprintf(&b, "%s | %q | center(%d,%d) | %dx%d%s\n",
-					c.Class, c.Text, c.CenterX(), c.CenterY(),
+					c.Class, onelinePreview(c.Text, winControlLabelChars), c.CenterX(), c.CenterY(),
 					c.Right-c.Left, c.Bottom-c.Top, vis)
 			}
-			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n") + note), nil
+			b.WriteString(pageNote("controls", start, end, total, ""))
+			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
 		},
 	)
 
@@ -970,14 +969,21 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot — read the foreground window's UIA element tree as text.
 	s.AddTool(
 		mcp.NewTool("snapshot",
-			mcp.WithDescription("Read the foreground window's UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Optional 'max' caps the number of elements (default 200)."),
-			mcp.WithNumber("max",
-				mcp.Description("Maximum number of elements to return (default 200)."),
+			mcp.WithDescription(fmt.Sprintf("Read the foreground window's UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page.", defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
+			mcp.WithNumber("max_elements",
+				mcp.Description(fmt.Sprintf("Max elements to show (default %d, max %d).", defaultSnapshotMaxElements, ceilingSnapshotMaxElements)),
+			),
+			mcp.WithNumber("max_chars",
+				mcp.Description(fmt.Sprintf("Max output characters (default %d, max %d).", defaultSnapshotMaxChars, ceilingSnapshotMaxChars)),
+			),
+			mcp.WithNumber("offset",
+				mcp.Description("Element index to start from — pass the offset=N from a previous truncated reply to continue. Default 0."),
 			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			max := req.GetInt("max", 200)
-			text, err := uiaSnapshot(max)
+			// 'max' is the pre-paging name of max_elements; still honored.
+			maxElems := req.GetInt("max_elements", req.GetInt("max", 0))
+			text, err := uiaSnapshot(req.GetInt("offset", 0), maxElems, req.GetInt("max_chars", 0))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("snapshot failed", err), nil
 			}
@@ -1069,7 +1075,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot's truncated label.
 	s.AddTool(
 		mcp.NewTool("get_value",
-			mcp.WithDescription("Find an editable element by its Name (or AutomationId) in the foreground window and read its CURRENT text via the UIA Value pattern. The read-side counterpart to set_value — use this to confirm what a field actually holds now (e.g. after autocomplete rewrote it, or a calculated field updated) instead of guessing from snapshot's truncated label."),
+			mcp.WithDescription(fmt.Sprintf("Find an editable element by its Name (or AutomationId) in the foreground window and read its CURRENT text via the UIA Value pattern. The read-side counterpart to set_value — use this to confirm what a field actually holds now (e.g. after autocomplete rewrote it, or a calculated field updated) instead of guessing from snapshot's truncated label. Returns at most %d chars; for longer content use get_text (offset/max_chars).", maxFieldValueChars)),
 			mcp.WithString("name",
 				mcp.Description("The element Name or AutomationId of the input field."),
 				mcp.Required(),
@@ -1080,11 +1086,12 @@ func newScreenMCPServer() *server.MCPServer {
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
-			value, err := uiaGetValue(name)
+			value, totalKnown, err := uiaGetValue(name)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("%q = %q", name, value)), nil
+			value, note := clampFieldValue(value, totalKnown)
+			return mcp.NewToolResultText(fmt.Sprintf("%q = %q%s", name, value, note)), nil
 		},
 	)
 
@@ -1093,17 +1100,27 @@ func newScreenMCPServer() *server.MCPServer {
 	// TEXT instead of capturing them as a screenshot (10–100× cheaper, exact, and
 	// not re-billed every turn as a retained image). Uses the UIA Text pattern with
 	// a Value fallback — the read path for content-heavy controls that snapshot
-	// only previews and get_value (Value-only) used to reject.
+	// only previews and get_value (Value-only) used to reject. Paged by
+	// offset/max_chars (same naming as web's get_page_text) because a tool result
+	// is re-sent on every later round-trip of the turn.
 	s.AddTool(
 		mcp.NewTool("get_text",
-			mcp.WithDescription(fmt.Sprintf("Read a window/control's full TEXT content by handle (UIA Text pattern, Value fallback) — use this to READ a document, editor, log pane, article, or read-only text area instead of a screenshot. Give 'name' (element Name/AutomationId from snapshot) to read one element; omit it to read the foreground window's document text. Returns up to %d chars (bounded). Prefer this and snapshot over capture_window for reading text; capture only for genuinely visual content.", maxTextChars)),
+			mcp.WithDescription(fmt.Sprintf("Read a window/control's TEXT content by handle (UIA Text pattern, Value fallback) — use this to READ a document, editor, log pane, article, or read-only text area instead of a screenshot. Give 'name' (element Name/AutomationId from snapshot) to read one element; omit it to read the foreground window's document text. Returns at most max_chars (default %d) characters starting at 'offset'; when cut, the reply ends with a note '…[잘림: 전체 N자 중 a–b 표시. 이어 읽으려면 offset=b …]' — pass that offset to read the next part. A NEGATIVE offset reads from the END (tail): offset=-3000 = the last 3000 chars (newest log lines). Prefer this and snapshot over capture_window for reading text; capture only for genuinely visual content.", defaultTextMaxChars)),
 			mcp.WithString("name",
 				mcp.Description("Optional element Name/AutomationId to read. Omit to read the foreground window's own text content."),
+			),
+			mcp.WithNumber("offset",
+				mcp.Description("Start character offset (default 0). NEGATIVE reads from the end (tail): -3000 = last 3000 chars. To continue a truncated read, pass the offset from the reply's note."),
+			),
+			mcp.WithNumber("max_chars",
+				mcp.Description(fmt.Sprintf("Max characters to return (default %d, max %d). Raise only when you truly need a bigger chunk.", defaultTextMaxChars, ceilingTextMaxChars)),
 			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name := req.GetString("name", "")
-			text, err := uiaGetText(name)
+			offset := req.GetInt("offset", 0)
+			maxChars := clampLimit(req.GetInt("max_chars", 0), defaultTextMaxChars, ceilingTextMaxChars)
+			text, err := uiaGetText(name, offset, maxChars)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_text failed", err), nil
 			}

@@ -21,12 +21,12 @@ func TestManualUIASnapshotTiming(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		start := time.Now()
-		text, err := uiaSnapshot(200)
+		text, err := uiaSnapshot(0, 200, 0)
 		elapsed := time.Since(start)
 		if err != nil {
 			t.Fatalf("uiaSnapshot failed: %v", err)
 		}
-		t.Logf("run %d: uiaSnapshot(200) took %v, %d bytes of output", i+1, elapsed, len(text))
+		t.Logf("run %d: uiaSnapshot(0, 200, 0) took %v, %d bytes of output", i+1, elapsed, len(text))
 	}
 }
 

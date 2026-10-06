@@ -1694,6 +1694,11 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// conversation on EACH round-trip, and the CLI's reported usage for the turn is
 	// the sum over those round-trips. That is the real cost of the turn, not an
 	// artifact — so it's added straight into the conversation's running total.
+	// Cost is the exception: claude's total_cost_usd accumulates over the session.
+	turnCost := res.CostUSD
+	if backend == "claude" && res.CostUSD > 0 {
+		turnCost = claudeTurnCost(workConv, workConv.SessionID, res.CostUSD, !resume || sessionRecovered)
+	}
 	var turnUsage CumUsage
 	if !res.IsError && (res.CacheReadTokens > 0 || res.CacheCreationTokens > 0 || res.OutputTokens > 0) {
 		turnUsage = CumUsage{
@@ -1701,7 +1706,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			Read:   res.CacheReadTokens,
 			Write:  res.CacheCreationTokens,
 			Output: res.OutputTokens,
-			Cost:   res.CostUSD,
+			Cost:   turnCost,
 		}
 		workConv.UsageTotal = workConv.UsageTotal.add(turnUsage)
 	}
@@ -1737,7 +1742,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		CacheRead:     res.CacheReadTokens,
 		CacheWrite:    res.CacheCreationTokens,
 		Output:        res.OutputTokens,
-		CostUSD:       res.CostUSD,
+		CostUSD:       turnCost,
 		ContextTokens: ctxTokens,
 		Reset:         claudeReset || codexReset,
 		Recovered:     sessionRecovered,

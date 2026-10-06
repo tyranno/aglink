@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -256,14 +257,25 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 	return parseRunResult(stdout)
 }
 
+// workerMCPOutputTokens caps a single MCP tool result (CLI default 25000). Some
+// servers echo huge payloads — notion's update-page-markdown returns the whole
+// page on every edit (~29k chars each; six edits grew one session 25k→267k), and
+// every later round-trip re-reads it. Over the cap the CLI saves the result to a
+// file and hands the model a preview + path, so nothing is lost.
+const workerMCPOutputTokens = 8000
+
 // workerCmdEnv builds the environment for a worker subprocess: the parent env
 // plus the claude OAuth token (when configured) and AGLINK_OWNER_LABEL (when a
 // conversation label was supplied, so the aglink-screen control lease can name
 // which channel holds the screen — see aglink-screen docs/control-ownership.md
-// §5). Returns nil when there is nothing to add, meaning "inherit the parent
-// environment unchanged".
+// §5). It also caps MCP tool output at workerMCPOutputTokens unless the parent
+// env already sets MAX_MCP_OUTPUT_TOKENS. Returns nil when there is nothing to
+// add, meaning "inherit the parent environment unchanged".
 func workerCmdEnv(oauthToken, ownerLabel string) []string {
 	var extra []string
+	if os.Getenv("MAX_MCP_OUTPUT_TOKENS") == "" {
+		extra = append(extra, "MAX_MCP_OUTPUT_TOKENS="+strconv.Itoa(workerMCPOutputTokens))
+	}
 	if oauthToken != "" {
 		extra = append(extra, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
 	}

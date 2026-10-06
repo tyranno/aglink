@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -496,5 +497,29 @@ func TestSettings_TokenSavingKeys(t *testing.T) {
 	off, err := unmarshalConfigYAML([]byte(base + "context:\n  summary_on_reset: false\nscreen_control:\n  adaptive_prompt: false\n"))
 	if err != nil || off.SummaryOnReset || off.ScreenPromptAdaptive {
 		t.Errorf("explicit false must stick: %v", err)
+	}
+}
+
+func TestClaudeTurnCost_DiffsCumulativeSessionCost(t *testing.T) {
+	c := &Conversation{}
+	// Measured CLI values: 0.0016345 → 0.0026594 → 0.0036443 over three resumes.
+	if got := claudeTurnCost(c, "s1", 0.0016345, true); got != 0.0016345 {
+		t.Fatalf("fresh turn = %v, want full cumulative", got)
+	}
+	if got := claudeTurnCost(c, "s1", 0.0026594, false); math.Abs(got-0.0010249) > 1e-9 {
+		t.Fatalf("resumed turn = %v, want 0.0010249", got)
+	}
+	// Session reset → new id: cumulative restarts, taken as-is.
+	if got := claudeTurnCost(c, "s2", 0.5, false); got != 0.5 {
+		t.Fatalf("new session turn = %v, want 0.5", got)
+	}
+	// Same id but the CLI started over (lower cumulative): taken as-is.
+	if got := claudeTurnCost(c, "s2", 0.1, false); got != 0.1 {
+		t.Fatalf("restarted session turn = %v, want 0.1", got)
+	}
+	// Session-loss recovery reuses the id but is fresh.
+	claudeTurnCost(c, "s3", 2.0, false)
+	if got := claudeTurnCost(c, "s3", 2.5, true); got != 2.5 {
+		t.Fatalf("recovered turn = %v, want 2.5", got)
 	}
 }

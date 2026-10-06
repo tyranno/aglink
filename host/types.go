@@ -9,42 +9,42 @@ import (
 
 // Config holds runtime settings loaded from %USERPROFILE%\.aglink\config.txt.
 type Config struct {
-	TelegramBotToken      string
-	AllowedUserIDs        []int64
-	ManagerModel          string   // default "haiku"
-	WorkerModel           string   // "" = claude default (the "heavy" model for complex/coding turns)
-	WorkerModelLight      string   // cheaper claude model for trivial conversational turns; "" = disabled (always WorkerModel). See classifyWorkerTier.
-	ClaudePath            string   // "" = auto-detect
-	ClaudeOauthToken      string   // CLAUDE_CODE_OAUTH_TOKEN injected into worker env ("" = use claude's own login)
-	TimeoutMinutes        int      // default 10
-	ManagerAlways         bool     // default true (route every text via manager)
-	CodexPath             string   // "" = auto-detect
-	CodexModel            string   // worker model (powerful) — "" = codex built-in default
-	CodexManagerModel     string   // routing model (fast/cheap) — "" = same as CodexModel
-	OpencodePath          string   // opencode CLI 경로 — "" = auto-detect
-	OpencodeModel         string   // worker model 참조 "provider/model" (예 anthropic/claude, ollama/qwen2.5) — "" = opencode 기본
-	OpencodeManagerModel  string   // routing model 참조 — "" = OpencodeModel와 동일
-	OpencodeConfigPath    string   // opencode.json 경로. provider baseURL/apiKey는 opencode가 이 파일에서 관리 — "" = opencode 기본 탐색
-	DefaultBackend        string   // "claude" | "codex" | "opencode" — "" = "claude"
-	HomeDir               string   // 서비스 기본 작업 홈 (yaml home_dir); "" → <userHome>/aglink
-	MaxWorkers            int      // max concurrent Worker goroutines, default 3
-	RateLimitPerMin       int      // max user messages per minute, 0 = unlimited, default 20
-	AllowScripts          bool     // permit --script in !task add/update, default false
-	AllowedScriptCommands []string // whitelist of allowed script first-tokens; empty = any
-	AllowedUsernames      []string // Telegram usernames (without @) allowed to use the bot
-	ScreenControl         bool     // screen-control MCP 활성화 (Windows). 기본 false
-	ScreenPresetsFile     string   // 좌표 프리셋 파일 경로. 빈 값이면 <data dir>/presets.json
-	ScreenElevated        bool     // 관리자 권한으로 실행해 관리자 대상 앱도 제어 (Windows UIPI 우회). 기본 false
-	ScreenKeepAwake       bool     // 화면 유휴 잠금/화면보호기 방지 (SetThreadExecutionState, Windows). 기본 false
-	ScreenBinaryPath      string   // aglink-screen 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
-	ScreenMaxScreenshotLongEdge int // 전체 screenshot 긴 변 최대 px (vision 토큰 절감용). 0 = 기본값(1280). 낮출수록 이미지 토큰↓·글자 가독성↓. capture_window/region은 영향 없음
-	ScreenPromptAdaptive  bool     // screen 안내 시스템 프롬프트를 대화별로 조절(화면을 안 쓴 대화엔 축약본만). yaml 기본 true. See Manager.screenBriefFor
-	WebControl           bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
-	WebBinaryPath         string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
-	NotionControl         bool     // Notion MCP(@notionhq/notion-mcp-server, npx로 실행) 활성화. 기본 false
-	NotionToken           string   // Notion internal integration token (ntn_...). 비어있으면 비활성
-	GoonoControl          bool     // 구노(goono) 문서 업로드/검색 MCP(goono-mcp) 활성화. 기본 false
-	GoonoBinaryPath       string   // goono-mcp 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
+	TelegramBotToken            string
+	AllowedUserIDs              []int64
+	ManagerModel                string   // default "haiku"
+	WorkerModel                 string   // "" = claude default (the "heavy" model for complex/coding turns)
+	WorkerModelLight            string   // cheaper claude model for trivial conversational turns; "" = disabled (always WorkerModel). See classifyWorkerTier.
+	ClaudePath                  string   // "" = auto-detect
+	ClaudeOauthToken            string   // CLAUDE_CODE_OAUTH_TOKEN injected into worker env ("" = use claude's own login)
+	TimeoutMinutes              int      // default 10
+	ManagerAlways               bool     // default true (route every text via manager)
+	CodexPath                   string   // "" = auto-detect
+	CodexModel                  string   // worker model (powerful) — "" = codex built-in default
+	CodexManagerModel           string   // routing model (fast/cheap) — "" = same as CodexModel
+	OpencodePath                string   // opencode CLI 경로 — "" = auto-detect
+	OpencodeModel               string   // worker model 참조 "provider/model" (예 anthropic/claude, ollama/qwen2.5) — "" = opencode 기본
+	OpencodeManagerModel        string   // routing model 참조 — "" = OpencodeModel와 동일
+	OpencodeConfigPath          string   // opencode.json 경로. provider baseURL/apiKey는 opencode가 이 파일에서 관리 — "" = opencode 기본 탐색
+	DefaultBackend              string   // "claude" | "codex" | "opencode" — "" = "claude"
+	HomeDir                     string   // 서비스 기본 작업 홈 (yaml home_dir); "" → <userHome>/aglink
+	MaxWorkers                  int      // max concurrent Worker goroutines, default 3
+	RateLimitPerMin             int      // max user messages per minute, 0 = unlimited, default 20
+	AllowScripts                bool     // permit --script in !task add/update, default false
+	AllowedScriptCommands       []string // whitelist of allowed script first-tokens; empty = any
+	AllowedUsernames            []string // Telegram usernames (without @) allowed to use the bot
+	ScreenControl               bool     // screen-control MCP 활성화 (Windows). 기본 false
+	ScreenPresetsFile           string   // 좌표 프리셋 파일 경로. 빈 값이면 <data dir>/presets.json
+	ScreenElevated              bool     // 관리자 권한으로 실행해 관리자 대상 앱도 제어 (Windows UIPI 우회). 기본 false
+	ScreenKeepAwake             bool     // 화면 유휴 잠금/화면보호기 방지 (SetThreadExecutionState, Windows). 기본 false
+	ScreenBinaryPath            string   // aglink-screen 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
+	ScreenMaxScreenshotLongEdge int      // 전체 screenshot 긴 변 최대 px (vision 토큰 절감용). 0 = 기본값(1280). 낮출수록 이미지 토큰↓·글자 가독성↓. capture_window/region은 영향 없음
+	ScreenPromptAdaptive        bool     // screen 안내 시스템 프롬프트를 대화별로 조절(화면을 안 쓴 대화엔 축약본만). yaml 기본 true. See Manager.screenBriefFor
+	WebControl                  bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
+	WebBinaryPath               string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
+	NotionControl               bool     // Notion MCP(@notionhq/notion-mcp-server, npx로 실행) 활성화. 기본 false
+	NotionToken                 string   // Notion internal integration token (ntn_...). 비어있으면 비활성
+	GoonoControl                bool     // 구노(goono) 문서 업로드/검색 MCP(goono-mcp) 활성화. 기본 false
+	GoonoBinaryPath             string   // goono-mcp 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
 
 	// MCPServers is a generic, config-driven registry of additional stdio MCP
 	// servers (config.yaml `mcp_servers:` — name/command/args/env/system_prompt).
@@ -58,11 +58,11 @@ type Config struct {
 	// true. 요약 실패 시 기존 방식으로 폴백. See convsummary.go.
 	SummaryOnReset bool
 
-	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
-	WebChat               bool     // local web chat transport enabled
-	WebChatAddr           string   // web chat bind address (localhost only), default 127.0.0.1:27271
-	WebChatToken          string   // web chat auth token; empty → auto-generated + persisted
-	WebChatOwnerChatID    int64    // chatID web actions run as; 0 → first AllowedUserIDs
+	ConversationTTLDays int    // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
+	WebChat             bool   // local web chat transport enabled
+	WebChatAddr         string // web chat bind address (localhost only), default 127.0.0.1:27271
+	WebChatToken        string // web chat auth token; empty → auto-generated + persisted
+	WebChatOwnerChatID  int64  // chatID web actions run as; 0 → first AllowedUserIDs
 
 	// chat_control: loopback control API a separate aglink-chat process connects to.
 	// Off by default — enabling it never affects the embedded web_chat above.
@@ -175,6 +175,13 @@ type Conversation struct {
 	// resuming. Only meaningful for the claude backend; 0 = unknown / not yet
 	// observed. See runWorker.
 	ClaudeContextTokens int `json:"claudeContextTokens,omitempty"`
+
+	// ClaudeCostSession / ClaudeCostSeen: the claude CLI's total_cost_usd is
+	// CUMULATIVE over a session's invocations (usage is not), so a resumed turn's
+	// own cost is the difference from the last value seen for the same session.
+	// See claudeTurnCost.
+	ClaudeCostSession string  `json:"claudeCostSession,omitempty"`
+	ClaudeCostSeen    float64 `json:"claudeCostSeen,omitempty"`
 
 	// PinnedModel is a per-conversation worker model override ("!model <name>" /
 	// control verb set_conv_model). Non-empty wins over the configured worker

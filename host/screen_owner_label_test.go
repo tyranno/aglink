@@ -55,7 +55,9 @@ func TestWorkerCmdEnv_BothTokensAndLabel(t *testing.T) {
 }
 
 func TestWorkerCmdEnv_NilWhenNothingToAdd(t *testing.T) {
-	// No token, no label → inherit the parent environment unchanged (nil).
+	// No token, no label, MCP output cap already set by the parent → inherit the
+	// parent environment unchanged (nil).
+	t.Setenv("MAX_MCP_OUTPUT_TOKENS", "25000")
 	if env := workerCmdEnv("", ""); env != nil {
 		t.Errorf("workerCmdEnv(\"\", \"\") = non-nil (%d entries), want nil (inherit unchanged)", len(env))
 	}
@@ -75,4 +77,11 @@ func tailEnv(env []string, n int) []string {
 		return env
 	}
 	return env[len(env)-n:]
+}
+
+func TestWorkerCmdEnv_CapsMCPOutput(t *testing.T) {
+	t.Setenv("MAX_MCP_OUTPUT_TOKENS", "")
+	if env := workerCmdEnv("", ""); !hasEnv(env, "MAX_MCP_OUTPUT_TOKENS=8000") {
+		t.Errorf("workerCmdEnv did not cap MCP output: MAX_MCP_OUTPUT_TOKENS=8000 missing")
+	}
 }

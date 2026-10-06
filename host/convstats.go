@@ -257,3 +257,19 @@ func isClaudeModelName(model string) bool {
 	}
 	return false
 }
+
+// claudeTurnCost converts the claude CLI's session-cumulative total_cost_usd
+// into this turn's own cost and remembers the cumulative value for the next
+// turn. fresh marks a run that started a new CLI session (no --resume, or a
+// session-loss recovery that recreated the id) — its cumulative IS the turn
+// cost. A cumulative lower than the last seen value means the CLI started over
+// under the same id, so it is taken as-is too.
+func claudeTurnCost(c *Conversation, sessionID string, cumulative float64, fresh bool) float64 {
+	turn := cumulative
+	if !fresh && sessionID != "" && c.ClaudeCostSession == sessionID && cumulative >= c.ClaudeCostSeen {
+		turn = cumulative - c.ClaudeCostSeen
+	}
+	c.ClaudeCostSession = sessionID
+	c.ClaudeCostSeen = cumulative
+	return turn
+}

@@ -82,6 +82,10 @@ Section "Install"
     File /r "${STAGE}\chrome-extension\*.*"
     SetOutPath "$INSTDIR"
 
+    StrCpy $McpEnvArgs ""
+    !insertmacro McpEnvSetting "aglink-web" "AGLINK_WEB_STEP_DELAY_MS" $OptStepDelay $HasStepDelay
+    !insertmacro McpEnvSetting "aglink-web" "AGLINK_WEB_CDP_PORTS" $OptCdpPorts $HasCdpPorts
+    !insertmacro McpEnvSetting "aglink-web" "AGLINK_WEB_INSECURE_HOSTS" $OptInsecureHosts $HasInsecureHosts
     !insertmacro RegisterClaudeMCP "aglink-web" "$INSTDIR\aglink-web.exe"
 
     ${If} $OptNoVSCode == "1"
@@ -130,6 +134,7 @@ Section "Uninstall"
     DetailPrint "실행 중인 aglink-web 종료..."
     !insertmacro StopFromInstDir "aglink-web"
     !insertmacro UnregisterClaudeMCP "aglink-web"
+    DeleteRegKey HKCU "Software\aglink\mcp-env\aglink-web"
 
     nsExec::ExecToStack 'cmd /c where code'
     Pop $0

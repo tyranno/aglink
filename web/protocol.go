@@ -42,4 +42,7 @@ type callRequest struct {
 	// Params is forwarded verbatim to the extension, which knows nothing about
 	// profiles — routing ends at the daemon.
 	Profile string `json:"profile,omitempty"`
+	// Env carries the bridge's AGLINK_WEB_* settings (see settings.go): the MCP
+	// registration sets them on the bridge, and the daemon would never see them.
+	Env map[string]string `json:"env,omitempty"`
 }

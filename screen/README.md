@@ -25,6 +25,26 @@ teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 �
 
 Windows 전용 (`GOOS=windows` 빌드 태그). 다른 OS에서는 스텁이 명확한 에러를 반환한다.
 
+## 연속 동작 — `run_sequence`
+
+좌표·컨트롤이 정해진 여러 동작을 한 호출로 실행한다(단계 사이 모델 왕복이 사라진다).
+첫 실패에서 멈춘다.
+
+```
+run_sequence  step_delay_ms=150  steps=
+  [{"action":"click_control","window":"설정","text":"네트워크"},
+   {"action":"wait_for_control","name":"Wi-Fi","timeout_ms":3000},
+   {"action":"click","x":420,"y":310,"wait_ms":400},
+   {"action":"type","text":"hello"},
+   {"action":"wait","ms":500}]
+```
+
+- 어느 단계든 `wait_ms` 로 그 단계 뒤에 쉰다(화면 전환·애니메이션). `wait{ms}` 는 그냥 기다린다.
+  기다릴 대상이 있으면 `wait_for_control`/`wait_for_window` 가 정확하다.
+- 단계 사이 기본 대기: `step_delay_ms`, 없으면 `AGLINK_SCREEN_STEP_DELAY_MS`
+  (설치 프로그램 `/STEPDELAY=` 가 MCP 등록에 넣는다). 한 번의 대기는 60초로 제한.
+- Electron/Wails 창과 웹 페이지는 aglink-web 의 `run_steps` 가 좌표 대신 선택자로 한다.
+
 ## 실행 모드
 
 ```

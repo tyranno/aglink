@@ -53,6 +53,17 @@ var commands = []command{
 		desc: "List what aglink-web can drive: the connected Chrome profiles ('account | connected Xs ago | default', oldest first — the first line is where a call with no 'profile' goes), then any Electron/Wails app window that has a DevTools port open ('app:<name> | cdp:<port> | url | N window(s)'), then any VS Code window running the aglink-vscode extension ('vscode:<workspace>@<host> | SSH <host> | folder | connected …' — drive those with the vscode_* tools). Pass an account — or a unique prefix such as \"doowon.lab.02\" — or an app:/cdp: name as 'profile' on another tool to drive that target instead. App windows are driven like web pages, as text, which is far cheaper than screen capture.",
 	},
 	{
+		name: "run_steps",
+		desc: `Run several of these tools in one call — the way to do a known sequence of UI actions (open a screen, fill a form, press a button, wait for the result) without a round trip per step. Works the same in a Chrome tab and in an Electron/Wails app window (profile app:/cdp:). Each step is {"tool": <any tool name>, ...that tool's own arguments}, plus optional "wait_ms" (pause after the step) and "full": true (keep the step's whole output instead of a one-line summary). Two extra step kinds: {"tool":"wait","ms":500} and {"tool":"expect","selector":"…" | "text":"…", "gone": true?, "timeout_ms"?} — expect waits until the element is visible (or, with gone, until it disappears) and fails the batch if it does not happen in time (default 5000ms). Steps without a tabId follow the batch: a navigate that opens a tab, or an activate_tab, carries the following steps with it. Stops at the first failed step and reports how far it got; with snapshot="text" or "elements" the page's state (when it finished, or where it stopped) is appended, so no extra call is needed to see the result. Example: [{"tool":"click","selector":"text=설정"},{"tool":"expect","selector":"role=dialog"},{"tool":"type","selector":"label=이름","text":"홍길동"},{"tool":"click","selector":"role=button[name=\"저장\"]"},{"tool":"expect","text":"저장됨"}]. Keep an irreversible final action (send, delete, pay) out of the batch and do it separately once the state is confirmed.`,
+		args: []argSpec{
+			{name: "steps", typ: argString, required: true, desc: `JSON array of steps, each {"tool": "<tool name>", ...its arguments, "wait_ms"?: n, "full"?: true}.`},
+			{name: "snapshot", typ: argString, desc: `Append the page's state afterwards: "text" (last 4000 chars of page text), "elements" (visible interactive elements with selectors), or "none" (default).`},
+			{name: "continue_on_error", typ: argString, desc: `"true" runs every step even after a failure and reports each; default stops at the first failure.`},
+			{name: "tabId", typ: argInt, desc: "Tab (or app window number) for steps that do not name one. Omit for the active tab / first window."},
+			{name: "step_delay_ms", typ: argInt, desc: "Pause between steps in ms (default from AGLINK_WEB_STEP_DELAY_MS, else 0). Use when the UI animates between screens."},
+		},
+	},
+	{
 		name: "list_tabs",
 		desc: "List the open tabs in the user's Chrome browser as 'tabId | [active] title | url' lines. For an app profile (app:/cdp:), lists that app's windows as 'N | title | url' instead; N is what tabId means for that app. Use a tabId with navigate or get_page_text to target a specific tab.",
 	},

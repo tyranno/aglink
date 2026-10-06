@@ -62,6 +62,21 @@ aglink-web-Setup.exe /S /D=C:\Tools\aglink-web        설치 위치 지정 (/D �
 uninstall.exe /S                                      조용히 제거
 ```
 
+MCP 등록에 환경변수로 함께 넣는 설정(`claude mcp add … -e KEY=VALUE`):
+
+```
+/STEPDELAY=<ms>        배치 단계 사이 기본 대기 — web: AGLINK_WEB_STEP_DELAY_MS (run_steps),
+                       screen: AGLINK_SCREEN_STEP_DELAY_MS (run_sequence)
+/CDPPORTS=<spec>       Electron/Wails 앱 탐색 포트 (web: AGLINK_WEB_CDP_PORTS)
+/INSECUREHOSTS=<list>  인증서 경고 자동 통과 호스트 (web: AGLINK_WEB_INSECURE_HOSTS)
+```
+
+- 준 값은 `HKCU\Software\aglink\mcp-env\<제품>` 에 기억되어, 다음 업데이트 때 옵션을
+  다시 주지 않아도 유지된다. 빈 값(`/STEPDELAY=`)이면 지운다. 제거하면 함께 지운다.
+- aglink-web 데몬은 보통 로그온 때 따로 떠 있어서 MCP 등록의 환경변수를 직접 받지
+  못한다. 그래서 브리지가 호출마다 이 값들을 데몬에 실어 보낸다(`web/settings.go`) —
+  등록을 바꾸면 데몬을 재시작하지 않아도 다음 호출부터 적용된다.
+
 `/NOCLAUDE /NOVSCODE /NOAUTOSTART` 로 임시 폴더에 설치했다가 지우면, 개발 PC 의 설정을
 건드리지 않고 설치 프로그램 자체를 시험할 수 있다.
 

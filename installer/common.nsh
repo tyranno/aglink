@@ -9,6 +9,18 @@
 ;   /NOCLAUDE     do not register the MCP server with Claude Code
 ;   /NOVSCODE     do not install the VS Code extension (aglink-web only)
 ;   /NOAUTOSTART  do not start at logon or start now (aglink-web only)
+;
+; Settings written into the Claude Code MCP registration as environment
+; variables (`claude mcp add … -e KEY=VALUE`). Each is remembered under
+; HKCU\Software\aglink\mcp-env\<product>, so running the next setup to update
+; keeps them without repeating the switch; give it empty (/STEPDELAY=) to clear.
+;   /STEPDELAY=<ms>       pause between batch steps — aglink-web run_steps
+;                         (AGLINK_WEB_STEP_DELAY_MS) and aglink-screen
+;                         run_sequence (AGLINK_SCREEN_STEP_DELAY_MS)
+;   /CDPPORTS=<spec>      ports searched for Electron/Wails windows, e.g.
+;                         9222-9240,9333 (aglink-web: AGLINK_WEB_CDP_PORTS)
+;   /INSECUREHOSTS=<list> hosts to continue past certificate warnings, e.g.
+;                         nas.local,10.0.0.5:8443 (aglink-web: AGLINK_WEB_INSECURE_HOSTS)
 
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
@@ -16,6 +28,13 @@
 Var OptNoClaude
 Var OptNoVSCode
 Var OptNoAutostart
+Var OptStepDelay
+Var OptCdpPorts
+Var OptInsecureHosts
+Var HasStepDelay
+Var HasCdpPorts
+Var HasInsecureHosts
+Var McpEnvArgs
 
 !macro ReadOptions
     ${GetParameters} $R0
@@ -34,6 +53,36 @@ Var OptNoAutostart
     ${IfNot} ${Errors}
         StrCpy $OptNoAutostart "1"
     ${EndIf}
+    ClearErrors
+    ${GetOptions} $R0 "/STEPDELAY=" $OptStepDelay
+    ${IfNot} ${Errors}
+        StrCpy $HasStepDelay "1"
+    ${EndIf}
+    ClearErrors
+    ${GetOptions} $R0 "/CDPPORTS=" $OptCdpPorts
+    ${IfNot} ${Errors}
+        StrCpy $HasCdpPorts "1"
+    ${EndIf}
+    ClearErrors
+    ${GetOptions} $R0 "/INSECUREHOSTS=" $OptInsecureHosts
+    ${IfNot} ${Errors}
+        StrCpy $HasInsecureHosts "1"
+    ${EndIf}
+!macroend
+
+; McpEnvSetting resolves one setting for PRODUCT — the switch if it was given
+; (and remembers it), else what an earlier install remembered — and appends it
+; to $McpEnvArgs as `-e "KEY=VALUE"` when non-empty.
+!macro McpEnvSetting PRODUCT KEY VALUEVAR HASVAR
+    ${If} ${HASVAR} == "1"
+        WriteRegStr HKCU "Software\aglink\mcp-env\${PRODUCT}" "${KEY}" "${VALUEVAR}"
+    ${Else}
+        ReadRegStr ${VALUEVAR} HKCU "Software\aglink\mcp-env\${PRODUCT}" "${KEY}"
+    ${EndIf}
+    ${If} ${VALUEVAR} != ""
+        StrCpy $McpEnvArgs '$McpEnvArgs -e "${KEY}=${VALUEVAR}"'
+        DetailPrint "  MCP 설정: ${KEY}=${VALUEVAR}"
+    ${EndIf}
 !macroend
 
 ; StopFromInstDir ends running copies of EXE that live in $INSTDIR — and only
@@ -50,6 +99,9 @@ Var OptNoAutostart
 ; scope, replacing any earlier registration of the same name. Claude Code may be
 ; installed as a native claude.exe or an npm claude.cmd; `cmd /c` finds either
 ; on PATH. Missing Claude Code is reported, not fatal.
+;
+; $McpEnvArgs (built with McpEnvSetting) goes after NAME: `-e` takes several
+; values, so placed before NAME it would swallow the name as one of them.
 !macro RegisterClaudeMCP NAME EXEPATH
     ${If} $OptNoClaude == "1"
         DetailPrint "Claude Code 등록 건너뜀 (/NOCLAUDE)"
@@ -61,18 +113,18 @@ Var OptNoAutostart
             DetailPrint "Claude Code 에 MCP 서버 '${NAME}' 등록..."
             nsExec::ExecToLog 'cmd /c claude mcp remove ${NAME} -s user'
             Pop $0
-            nsExec::ExecToLog 'cmd /c claude mcp add --scope user ${NAME} -- "${EXEPATH}" mcp'
+            nsExec::ExecToLog 'cmd /c claude mcp add --scope user ${NAME}$McpEnvArgs -- "${EXEPATH}" mcp'
             Pop $0
             ${If} $0 == "0"
                 ; Remember that WE registered this name, from THIS folder, so the
                 ; uninstaller can tell our registration from someone else's.
                 WriteRegStr HKCU "Software\aglink\mcp" "${NAME}" "$INSTDIR"
             ${Else}
-                DetailPrint "  [경고] 등록 실패(코드 $0) — 수동: claude mcp add --scope user ${NAME} -- $\"${EXEPATH}$\" mcp"
+                DetailPrint "  [경고] 등록 실패(코드 $0) — 수동: claude mcp add --scope user ${NAME}$McpEnvArgs -- $\"${EXEPATH}$\" mcp"
             ${EndIf}
         ${Else}
             DetailPrint "  [안내] claude CLI 를 찾지 못했습니다. Claude Code 설치 후 다음을 실행하세요:"
-            DetailPrint "         claude mcp add --scope user ${NAME} -- $\"${EXEPATH}$\" mcp"
+            DetailPrint "         claude mcp add --scope user ${NAME}$McpEnvArgs -- $\"${EXEPATH}$\" mcp"
         ${EndIf}
     ${EndIf}
 !macroend

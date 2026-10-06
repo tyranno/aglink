@@ -256,7 +256,17 @@ async function navigate(params) {
   if (params.tabId) {
     tab = await chrome.tabs.update(params.tabId, { url });
   } else {
-    tab = await chrome.tabs.create({ url });
+    try {
+      tab = await chrome.tabs.create({ url });
+    } catch (e) {
+      // Chrome left running in the background (no window open, e.g. after
+      // closing the last one with "continue running background apps") has
+      // nowhere to put a tab; open a window for it instead.
+      if (!/no current window/i.test(String(e && e.message ? e.message : e))) throw e;
+      const win = await chrome.windows.create({ url, focused: true });
+      tab = win.tabs && win.tabs[0];
+      if (!tab) throw e;
+    }
   }
   await waitForComplete(tab.id);
   const updated = await chrome.tabs.get(tab.id);

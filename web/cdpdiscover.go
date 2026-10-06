@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,7 +52,7 @@ const defaultCDPPorts = "9222-9240,9333"
 // cdpPorts reads AGLINK_WEB_CDP_PORTS ("9222-9240", "9333", or a comma list of
 // either), defaulting to defaultCDPPorts.
 func cdpPorts() []int {
-	spec := strings.TrimSpace(os.Getenv("AGLINK_WEB_CDP_PORTS"))
+	spec := strings.TrimSpace(webGetenv("AGLINK_WEB_CDP_PORTS"))
 	if spec == "" {
 		spec = defaultCDPPorts
 	}
@@ -240,7 +239,7 @@ func appNames(apps []appInfo) string {
 }
 
 func portSpecLabel() string {
-	if s := strings.TrimSpace(os.Getenv("AGLINK_WEB_CDP_PORTS")); s != "" {
+	if s := strings.TrimSpace(webGetenv("AGLINK_WEB_CDP_PORTS")); s != "" {
 		return "ports " + s
 	}
 	return "ports " + defaultCDPPorts

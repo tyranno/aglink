@@ -12,6 +12,8 @@ Two kinds of target, chosen with the 'profile' argument on any tool:
 
 Prefer this over screen-capture tools (aglink-screen) for any Electron/Wails window: it reads the real DOM as text, uses the same selectors as Chrome (CSS, or role=/text=/label=/placeholder=/testid=), and costs a fraction of the tokens.
 
+For a sequence of actions whose targets you already know — click through to a screen, fill a form, press a button, wait for the result — use run_steps: one call runs them all (in Chrome or an app window), with "expect" steps to wait for the UI to change and snapshot="text"/"elements" to see the outcome in the same reply. It removes a model round trip per step. Stop the batch before an irreversible action (send, delete, pay) and do that one on its own after checking the state.
+
 An app shows up only if it was launched with a debugging port: Electron with --remote-debugging-port=9222; a Wails app needs AdditionalBrowserArgs set from AGLINK_WEBVIEW_DEBUG_PORT (the WEBVIEW2_* environment variable does not work for Wails). Ports 9222-9240 and 9333 on 127.0.0.1 are searched.
 
 VS Code windows: with the aglink-vscode extension installed, every open VS Code window (including Remote-SSH windows) appears in list_profiles as vscode:<workspace>@<host>. Use the vscode_* tools on it — vscode_workspace to see what it is doing, vscode_read / vscode_problems / vscode_terminal_read to inspect, vscode_open / vscode_terminal_run / vscode_command to act. This reads another window's files, errors and terminal output as text, which screen capture cannot. vscode_terminal_run in a Remote-SSH window runs on the remote machine. The web-page tools do not work on vscode: profiles, and the Claude chat panel of another window is not readable this way.

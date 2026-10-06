@@ -36,6 +36,22 @@
   <li>그래도 안 되면 <code>capture_window</code> (이미지 — 가장 비쌈)</li>
 </ol>
 
+<h2>연속 동작은 한 번에 — <code>run_sequence</code></h2>
+<p>클릭·입력·키 같은 동작을 Claude 가 단계마다 왕복하지 않고 <b>한 번의 호출</b>로 처리합니다. 실패하면 그 단계에서 멈춥니다.</p>
+<pre>run_sequence  step_delay_ms=150
+  [{"action":"click_control", "window":"설정", "text":"네트워크"},
+   {"action":"wait_for_control", "name":"Wi-Fi", "timeout_ms":3000},
+   {"action":"click", "x":420, "y":310, "wait_ms":400},     ← 클릭 후 화면 전환 대기
+   {"action":"type",  "text":"hello"},
+   {"action":"wait",  "ms":500}]</pre>
+<ul>
+  <li>어느 단계든 <code>"wait_ms"</code> 로 그 단계 뒤에 쉴 수 있고, <code>wait</code> 동작으로 정해진 시간 기다릴 수 있습니다. 기다릴 대상이 있으면 <code>wait_for_control</code> / <code>wait_for_window</code> 가 더 정확합니다.</li>
+  <li>Electron/Wails 앱이나 웹 페이지는 aglink-web 의 <code>run_steps</code> 가 좌표 대신 선택자로 해서, 창 크기나 배치가 바뀌어도 그대로 됩니다.</li>
+</ul>
+
+<h2>설치 옵션 (MCP 등록에 함께 들어감)</h2>
+<p><code>aglink-screen-Setup.exe /STEPDELAY=150</code> — <code>run_sequence</code> 단계 사이 기본 대기(ms)가 MCP 등록에 <code>AGLINK_SCREEN_STEP_DELAY_MS</code> 로 들어갑니다. 다음 업데이트 때도 유지되고, <code>/STEPDELAY=</code> 로 지웁니다.</p>
+
 <h2>관리자 권한으로 뜬 프로그램</h2>
 <p>대상 앱이 관리자 권한이면 윈도우가 일반 프로그램의 클릭을 조용히 막습니다(UIPI). 결과에 경고가 붙으면 Claude Code 를 관리자 권한으로 실행해야 합니다.</p>
 

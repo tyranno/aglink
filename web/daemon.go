@@ -306,6 +306,9 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if method == listProfilesMethod {
 		return d.listProfiles()
 	}
+	if method == "run_steps" {
+		return d.runSteps(params, profile)
+	}
 	if strings.HasPrefix(method, "vscode_") {
 		return d.callVSCode(method, params, profile)
 	}
@@ -388,6 +391,7 @@ func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, CallResult{Error: "missing method"})
 		return
 	}
+	setClientEnv(body.Env)
 	writeJSON(w, d.call(body.Method, body.Params, body.Profile))
 }
 

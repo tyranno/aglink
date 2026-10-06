@@ -973,3 +973,20 @@ test("handle_dialog with no dialog says so, not 'needs the keyboard'", async () 
   const { sb } = dialogChrome();
   await assert.rejects(() => sb.handleDialog({ tabId: 7 }), /^Error: no dialog open$/);
 });
+
+test("navigate opens a window when Chrome has none (running in the background)", async () => {
+  let created = null;
+  const sb = loadBackground(
+    makeChrome({
+      tabs: {
+        create: async () => { throw new Error("No current window"); },
+        get: async (id) => ({ id, status: "complete", title: "Example", url: "https://example.com/" }),
+      },
+      windows: { create: async (opts) => { created = opts; return { tabs: [{ id: 9 }] }; } },
+      scripting: { executeScript: async () => [{ result: 1 }] },
+    })
+  );
+  const out = await sb.navigate({ url: "https://example.com/" });
+  assert.match(out, /^ok: navigated tab 9 /);
+  assert.strictEqual(created.url, "https://example.com/");
+});

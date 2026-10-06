@@ -68,6 +68,8 @@ Section "Install"
     File "${STAGE}\aglink-screen.exe"
     File "${STAGE}\guide.html"
 
+    StrCpy $McpEnvArgs ""
+    !insertmacro McpEnvSetting "aglink-screen" "AGLINK_SCREEN_STEP_DELAY_MS" $OptStepDelay $HasStepDelay
     !insertmacro RegisterClaudeMCP "aglink-screen" "$INSTDIR\aglink-screen.exe"
 
     CreateDirectory "$SMPROGRAMS\aglink-screen"
@@ -82,6 +84,7 @@ Section "Uninstall"
     DetailPrint "실행 중인 aglink-screen 종료..."
     !insertmacro StopFromInstDir "aglink-screen"
     !insertmacro UnregisterClaudeMCP "aglink-screen"
+    DeleteRegKey HKCU "Software\aglink\mcp-env\aglink-screen"
     Delete "$INSTDIR\aglink-screen.exe"
     Delete "$INSTDIR\guide.html"
     Delete "$INSTDIR\uninstall.exe"

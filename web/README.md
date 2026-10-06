@@ -323,6 +323,38 @@ vscode_terminal_run   profile="vscode:backend"   command="go test ./..."   → �
   원격 세션도 이 도구를 쓸 수 있다 — aglink-screen 과 같은 수준의 권한이다.
 - 다른 확장의 화면(Claude 채팅 패널 등)은 읽지 못한다. Claude 대화는 `!attach`.
 
+## 연속 동작 — `run_steps`
+
+UI 를 한 단계씩 다루면 시간의 대부분은 동작 자체(클릭은 수 ms)가 아니라 단계 사이의
+모델 왕복이다. 다음 동작이 정해져 있으면 `run_steps` 한 번으로 묶는다. 데몬 안에서
+각 도구를 그대로(`d.call`) 부르므로 **크롬 탭과 Electron/Wails 창에서 똑같이** 되고,
+대화창·인증서 경고 처리도 단계마다 그대로 적용된다.
+
+```
+run_steps  profile="app:mytool"  snapshot="text"  steps=
+  [{"tool":"click",  "selector":"text=설정"},
+   {"tool":"expect", "selector":"role=dialog"},
+   {"tool":"type",   "selector":"label=이름", "text":"홍길동"},
+   {"tool":"click",  "selector":"role=button[name=\"저장\"]", "wait_ms":300},
+   {"tool":"expect", "text":"저장됨"}]
+```
+
+- 단계는 `{"tool": <도구 이름>, ...그 도구의 인자}`. 선택 키: `wait_ms`(그 단계 뒤
+  대기), `full: true`(그 단계 출력을 한 줄 요약 대신 통째로).
+- 추가 단계 둘: `{"tool":"wait","ms":500}`, `{"tool":"expect","selector"|"text":…,
+  "gone":true?, "timeout_ms"?}` — 보일 때까지(또는 사라질 때까지) 기다리고, 시간 안에
+  안 되면 배치를 실패시킨다(기본 5초).
+- `tabId` 없는 단계는 배치를 따라간다 — `navigate` 가 연 새 탭, `activate_tab` 한 탭으로
+  이후 단계가 이어진다.
+- 첫 실패에서 멈추고 몇 단계까지 됐는지 알려 준다(`continue_on_error="true"` 면 끝까지).
+  `snapshot="text"`(본문 끝 4000자) / `"elements"`(클릭 가능한 요소)를 주면 끝난 —
+  또는 멈춘 — 화면 상태가 같은 응답에 붙는다.
+- 단계 사이 기본 대기: `step_delay_ms`, 없으면 `AGLINK_WEB_STEP_DELAY_MS`.
+- 되돌릴 수 없는 마지막 동작(전송·삭제·결제)은 배치 밖에서 상태를 확인한 뒤 따로 한다.
+
+2026-10-07 크롬 실측: navigate → expect → get_attribute → click → expect 5단계가 한
+호출로 성공했고, 새 탭 이어받기와 클릭 후 바뀐 페이지의 snapshot 까지 확인했다.
+
 ## 크롬의 alert · confirm · prompt
 
 대화창이 뜨면 페이지 JS 가 멈춰 `executeScript` 가 돌아오지 않는다. 예전에는 그 탭의
@@ -428,10 +460,17 @@ nas.local            # 포트 무관
 
 ## Config
 
+`AGLINK_WEB_CDP_PORTS`, `AGLINK_WEB_INSECURE_HOSTS`, `AGLINK_WEB_STEP_DELAY_MS` can be
+set on the MCP registration (`claude mcp add … -e KEY=VALUE`, which the installer's
+`/CDPPORTS=` `/INSECUREHOSTS=` `/STEPDELAY=` switches do). The daemon is usually
+already running and never sees that environment, so the bridge forwards these keys
+with every call (`settings.go`); a changed registration applies from the next call.
+
 | Env var | Default | Meaning |
 |---|---|---|
 | `AGLINK_WEB_PORT` | `48219` | Daemon/bridge port. If you change it, also set the matching port in the extension's options page (see below) — the extension can't read env vars. |
 | `AGLINK_WEB_EXT_ID` | *(unset)* | Pin the accepted extension ID. Unset = accept any `chrome-extension://` origin. |
+| `AGLINK_WEB_STEP_DELAY_MS` | `0` | Default pause between `run_steps` steps. |
 | `AGLINK_WEB_INSECURE_HOSTS` | *(unset)* | Hosts to continue past certificate warnings automatically, in addition to `~/.aglink/aglink-web-insecure-hosts`. See "인증서 경고 넘기기". |
 
 The daemon writes its live port to `~/.teleclaude/aglink-web.port` so the **bridge**

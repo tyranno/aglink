@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -1145,15 +1146,20 @@ func newScreenMCPServer() *server.MCPServer {
 	// or may not appear) belong outside the batch, split at that point.
 	s.AddTool(
 		mcp.NewTool("run_sequence",
-			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name}, set_value{name,text}, click_control{window,text,nth?}, wait_for_control{name,timeout_ms?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state.`),
-			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
+			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name}, set_value{name,text}, click_control{window,text,nth?}, wait_for_control{name,timeout_ms?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}, wait{ms}. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
+			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200,"wait_ms":300},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
+			mcp.WithNumber("step_delay_ms", mcp.Description("Pause between every two steps, in ms (default from AGLINK_SCREEN_STEP_DELAY_MS, else 0).")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			stepsJSON, err := req.RequireString("steps")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'steps'"), nil
 			}
-			results, rerr := runSequence(stepsJSON)
+			delay := seqDelayFromEnv()
+			if ms := req.GetFloat("step_delay_ms", -1); ms >= 0 {
+				delay = time.Duration(ms) * time.Millisecond
+			}
+			results, rerr := runSequence(stepsJSON, delay)
 			// Compact (not indented) JSON: this is machine-read step output, so the
 			// pretty-print newlines/spaces were pure token overhead every call.
 			b, _ := json.Marshal(results)

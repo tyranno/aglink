@@ -37,7 +37,7 @@ const (
 // navigate is rare, and an edit takes effect without restarting the daemon.
 func insecureHostPatterns() []string {
 	var out []string
-	for _, f := range strings.FieldsFunc(os.Getenv(insecureHostsEnv), func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
+	for _, f := range strings.FieldsFunc(webGetenv(insecureHostsEnv), func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
 		out = append(out, f)
 	}
 	if dir, err := dataDir(); err == nil {

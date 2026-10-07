@@ -10,18 +10,21 @@
   the Telegram host).
 
   Files are staged in %TEMP% rather than in the repo, so a build leaves nothing
-  for git to pick up. The setups land in the repo root (*.exe is gitignored).
+  for git to pick up. The setups land in the repo root (*.exe is gitignored),
+  and are also gathered with the AI install guide into dist\ (gitignored) —
+  that folder is what to hand out.
 
   Messages are ASCII-only so Windows PowerShell 5.1 parses this file whatever
   the console codepage.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setup.ps1 -Product web
+  powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setup.ps1 -Product team   # web + screen -> dist\
   powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setup.ps1 -Product all
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('web', 'screen', 'aglink', 'all')]
+    [ValidateSet('web', 'screen', 'team', 'aglink', 'all')]
     [string] $Product = 'all'
 )
 
@@ -109,6 +112,23 @@ function Build-Aglink {
 switch ($Product) {
     'web'    { Build-Web }
     'screen' { Build-Screen }
+    'team'   { Build-Web; Build-Screen }
     'aglink' { Build-Aglink }
     'all'    { Build-Web; Build-Screen; Build-Aglink }
+}
+
+# dist\ is what gets handed to a teammate: the per-user setups plus README.md,
+# the install guide written for the teammate's AI agent (AI-INSTALL.md). Each
+# build replaces dist\ with only what this build made, so a setup left over from
+# an older build is never handed out next to a newer one.
+if ($Product -ne 'aglink') {
+    $dist = Join-Path $root 'dist'
+    if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
+    New-Item -ItemType Directory -Path $dist | Out-Null
+    $both = @('aglink-web-Setup.exe', 'aglink-screen-Setup.exe')
+    $built = @{ web = @('aglink-web-Setup.exe'); screen = @('aglink-screen-Setup.exe'); team = $both; all = $both }[$Product]
+    foreach ($name in $built) { Copy-Item (Join-Path $root $name) $dist -Force }
+    Copy-Item (Join-Path $here 'AI-INSTALL.md') (Join-Path $dist 'README.md') -Force
+    Set-Content -Path (Join-Path $dist 'VERSION.txt') -Value "$version ($hash)" -Encoding ASCII
+    Write-Host "dist: $dist"
 }

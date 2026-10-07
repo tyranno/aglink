@@ -29,3 +29,6 @@ Thumbs.db
 
 # Host-specific operational notes (this repo is public — never commit these)
 *.local.md
+
+# Hand-out folder made by installer/build-product-setup.ps1
+dist/

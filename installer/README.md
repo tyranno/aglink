@@ -16,6 +16,7 @@ aglink 의 세 제품은 **각각 따로** 설치·배포할 수 있다.
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setup.ps1 -Product web
 powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setup.ps1 -Product screen
+powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setup.ps1 -Product team  # web + screen (팀 배포용)
 powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setup.ps1 -Product all   # 셋 다
 ```
 
@@ -23,6 +24,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setu
 - 결과는 저장소 루트에 생긴다(`*.exe` 는 gitignore). 준비물은 `%TEMP%` 에 모아서
   저장소에 아무것도 남기지 않는다.
 - 버전은 `1.0.<커밋 수>` — 늘기만 하므로 나중 빌드가 항상 업그레이드로 설치된다.
+- `-Product web|screen|team|all` 빌드는 **배포용 폴더 `dist\`** 도 새로 만든다(gitignore).
+  이번에 만든 Setup 과 `README.md`(= [`AI-INSTALL.md`](./AI-INSTALL.md)), `VERSION.txt`
+  가 들어 있다. **팀원에게는 이 폴더째 준다.** 받은 사람은 자기 AI 툴에게 "이 폴더의
+  README.md 대로 aglink 설치해줘" 라고만 하면 된다 — 설치·등록·확인·권한까지 AI 가 하고,
+  사람이 할 일은 크롬 확장 불러오기 3클릭뿐이다.
+- 설치 동작(옵션, 등록 방식, 확인 방법)을 바꾸면 `AI-INSTALL.md` 도 같이 고칠 것 —
+  받는 쪽 AI 는 그 문서만 보고 움직인다.
 - `-Product aglink` 는 기존 `build-installer.ps1`(전체 묶음)을 부른다.
 
 ## 설치할 때 일어나는 일
@@ -84,7 +92,8 @@ MCP 등록에 환경변수로 함께 넣는 설정(`claude mcp add … -e KEY=VA
 
 | 파일 | 역할 |
 |---|---|
-| `build-product-setup.ps1` | 제품별 빌드 |
+| `build-product-setup.ps1` | 제품별 빌드 (+ `dist\` 배포 폴더) |
+| `AI-INSTALL.md` | 받는 사람의 AI 에이전트가 따라 하는 설치 지침 — `dist\README.md` 로 들어감 |
 | `common.nsh` | 공용: 옵션, 설치 폴더의 프로세스만 끝내기, Claude 등록/해제, 앱 목록 등록 |
 | `aglink-web-setup.nsi`, `aglink-screen-setup.nsi` | 제품별 설치 스크립트 |
 | `start-web-daemon.vbs` | 창 없이 데몬 시작(로그온 자동 시작용) |

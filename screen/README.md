@@ -22,6 +22,7 @@ teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 �
 - **창 배치** — `move_window`(정확한 좌표/크기), `window_state`(최소화/최대화/복원), `get_window_rect`(현재 위치/크기/상태 확인), `close_window`(특정 창을 정확히 지정해서 닫기 — foreground에 의존하는 `key("alt+f4")`보다 안전)
 - **좌표 프리셋** — `preset_save`/`preset_click`/`preset_list`
 - **관리자 권한 대상 앱** — UIPI 감지 + 경고 (`screen_control.elevated`로 우회)
+- **보안 경고 자동 통과** — `launch_app`(`elevated`/`unblock`) + `pass_security_prompts` (아래 "보안 경고 통과")
 
 Windows 전용 (`GOOS=windows` 빌드 태그). 다른 OS에서는 스텁이 명확한 에러를 반환한다.
 
@@ -44,6 +45,40 @@ run_sequence  step_delay_ms=150  steps=
 - 단계 사이 기본 대기: `step_delay_ms`, 없으면 `AGLINK_SCREEN_STEP_DELAY_MS`
   (설치 프로그램 `/STEPDELAY=` 가 MCP 등록에 넣는다). 한 번의 대기는 60초로 제한.
 - Electron/Wails 창과 웹 페이지는 aglink-web 의 `run_steps` 가 좌표 대신 선택자로 한다.
+
+## 보안 경고 통과
+
+무인(사람이 컴퓨터 앞에 없는) 자동 제어에서, 윈도우가 끼워 넣는 "실행하시겠습니까?"
+류의 창에 막히지 않게 한다.
+
+**`launch_app`** 옵션:
+- `elevated=true` — 관리자 권한으로 실행. **aglink-screen 자신이 관리자 권한으로 떠 있으면
+  자식이 그대로 물려받아 UAC 가 뜨지 않는다.** 일반 권한이면 `runas`(UAC 프롬프트)로 떨어진다.
+  실행한 관리자 앱을 이어서 클릭하려면 aglink-screen 도 관리자여야 한다(UIPI).
+- `unblock=true` — 실행 전에 파일의 "인터넷에서 받음" 표시(NTFS `Zone.Identifier`)를 지운다.
+  PowerShell `Unblock-File` 과 같고, 이 파일을 믿는다는 선언이다. 대상이 구체 경로로
+  풀릴 때 적용. 기본 꺼짐.
+
+**`pass_security_prompts`** — 지금 화면에 떠 있는 보안·확인 창을 찾아 긍정 버튼을 누른다.
+**아는 창에만** 손댄다:
+- "파일 열기 - 보안 경고"(다운로드한 exe 실행 확인) → `실행`
+- SmartScreen "Windows의 PC 보호" → `추가 정보` → `실행`(UI Automation 경유). *실제 창으로는 미검증.*
+- 사용자가 `~/.aglink/aglink-screen-prompts` 에 등록한 앱 창. 한 줄에 `제목 | 버튼[ + 버튼…]`,
+  `#` 주석:
+  ```
+  # 사내 인증 모듈이 띄우는 허용 창
+  INISAFE | 허용 + 예
+  ```
+- **UAC 창은 누를 수 없다** — 윈도우가 보안 데스크톱에 띄워 합성 입력이 닿지 않는다.
+  누르는 대신 "사람이 승인해야 함"으로 보고한다. 즉 UAC 를 아예 안 뜨게 하려면
+  aglink-screen 데몬을 관리자 권한으로 띄우는 수밖에 없다(위 `elevated` 설명).
+- `accept` 로 긍정 버튼 라벨을 더 보탤 수 있고, `max`(기본 5)로 연속 처리 개수를 정한다.
+- 같은 창을 두 번 누르지 않는다(처리한 hwnd 는 건너뜀). `launch_app` 직후에 쓰면 좋다.
+
+> **보안상 유의** — 데몬을 관리자 권한으로 상시 띄우면, `127.0.0.1:48220` 에 붙는 다른
+> 프로그램이나 (SSH 역터널로 연결된) 원격 계정도 이 PC 에서 관리자 권한으로 프로그램을
+> 실행할 수 있게 된다. 사실상 이 계정의 UAC 를 끄는 것과 비슷한 범위다. 무인 제어의
+> 편의와 맞바꾸는 위험이므로, 필요한 PC 에서만 켠다.
 
 ## 실행 모드
 

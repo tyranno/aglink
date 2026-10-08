@@ -155,7 +155,10 @@ func newScreenMCPServer() *server.MCPServer {
 				mcp.Required(),
 			),
 			mcp.WithBoolean("elevated",
-				mcp.Description("Launch with administrator rights via a UAC prompt (the user approves it). NOTE: to then click/control the elevated app, teleclaude itself must also be elevated (Windows UIPI). Default false."),
+				mcp.Description("Launch with administrator rights. If aglink-screen itself runs elevated the child inherits it with no UAC prompt; otherwise this falls back to a UAC prompt (runas) the user approves. To then click/control the elevated app, aglink-screen must also be elevated (Windows UIPI). Default false."),
+			),
+			mcp.WithBoolean("unblock",
+				mcp.Description("Before launching, clear the file's downloaded-from-the-internet mark (NTFS Zone.Identifier) so Windows does not raise the 'Open File - Security Warning'. Equivalent to PowerShell Unblock-File — a statement that the file is trusted. Applies when the target resolves to a concrete path. Default false."),
 			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -164,11 +167,37 @@ func newScreenMCPServer() *server.MCPServer {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
 			elevated := req.GetBool("elevated", false)
-			desc, err := launchApp(name, elevated)
+			unblock := req.GetBool("unblock", false)
+			desc, err := launchApp(name, elevated, unblock)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("launch_app failed", err), nil
 			}
 			return mcp.NewToolResultText("ok: " + desc), nil
+		},
+	)
+
+	// pass_security_prompts — click through Windows security/confirmation windows
+	// so an unattended run is not stuck at one. Recognized windows only.
+	s.AddTool(
+		mcp.NewTool("pass_security_prompts",
+			mcp.WithDescription("Click through Windows security/confirmation windows currently on screen so an unattended run proceeds: the 'Open File - Security Warning' on a downloaded exe (clicks Run), SmartScreen 'Windows protected your PC' (More info -> Run anyway, via UI Automation), and any app popup the user registered in ~/.aglink/aglink-screen-prompts as 'title | button'. Acts ONLY on a recognized window; the UAC consent window CANNOT be clicked (Windows isolates it on the secure desktop) and is reported instead. Returns one line per window handled, empty if none. Use right after launch_app, or whenever a known prompt may be blocking."),
+			mcp.WithString("accept", mcp.Description("Optional '+'-separated extra affirmative button labels to also try (case-insensitive), added to the built-in/registered ones.")),
+			mcp.WithNumber("max", mcp.Description("Max consecutive windows to handle (default 5).")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var accept []string
+			if a := strings.TrimSpace(req.GetString("accept", "")); a != "" {
+				accept = strings.Split(a, "+")
+			}
+			maxN := req.GetInt("max", 5)
+			handled, err := passSecurityPrompts(accept, maxN)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("pass_security_prompts failed", err), nil
+			}
+			if len(handled) == 0 {
+				return mcp.NewToolResultText("ok: no security prompts detected"), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: %d window(s):\n", len(handled)) + strings.Join(handled, "\n")), nil
 		},
 	)
 

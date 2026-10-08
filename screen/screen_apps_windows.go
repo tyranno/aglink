@@ -661,10 +661,25 @@ var appAliases = map[string]string{
 // inherit elevation and this flag is unnecessary.
 //
 // CGO-free; uses os/exec.
-func launchApp(name string, elevated bool) (string, error) {
+//
+// When unblock is true and the resolved target is a concrete file path, its
+// downloaded-from-the-internet mark is cleared first (see unblockFile) so the
+// Open-File security warning does not appear — a trust statement the caller
+// makes explicitly, off by default.
+func launchApp(name string, elevated, unblock bool) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("launch_app: empty name")
+	}
+
+	maybeUnblock := func(target string) string {
+		if !unblock {
+			return ""
+		}
+		if err := unblockFile(target); err != nil {
+			return fmt.Sprintf(" (unblock failed: %v)", err)
+		}
+		return " (unblocked)"
 	}
 
 	if elevated {
@@ -679,10 +694,11 @@ func launchApp(name string, elevated bool) (string, error) {
 		} else if p, err := exec.LookPath(name + ".exe"); err == nil {
 			target = p
 		}
+		note := maybeUnblock(target)
 		if err := runAsAdmin(target, ""); err != nil {
 			return "", fmt.Errorf("launch_app(elevated): runas %q failed: %w", target, err)
 		}
-		return fmt.Sprintf("launched as administrator (UAC) : %s", target), nil
+		return fmt.Sprintf("launched as administrator (UAC) : %s%s", target, note), nil
 	}
 
 	var tried []string
@@ -705,11 +721,13 @@ func launchApp(name string, elevated bool) (string, error) {
 		tried = append(tried, "no Start Menu .lnk match")
 	}
 
-	// 3) PATH lookup of <name> and <name>.exe.
+	// 3) PATH lookup of <name> and <name>.exe. A full path passed as name also
+	//    resolves here, which is the case where unblock matters (a downloaded exe).
 	for _, cand := range []string{name, name + ".exe"} {
 		if p, err := exec.LookPath(cand); err == nil {
+			note := maybeUnblock(p)
 			if rerr := runDetached(p); rerr == nil {
-				return fmt.Sprintf("launched via PATH: %s", p), nil
+				return fmt.Sprintf("launched via PATH: %s%s", p, note), nil
 			}
 			tried = append(tried, "PATH "+p)
 		}

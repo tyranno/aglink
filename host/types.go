@@ -18,6 +18,8 @@ type Config struct {
 	ClaudeOauthToken            string   // CLAUDE_CODE_OAUTH_TOKEN injected into worker env ("" = use claude's own login)
 	TimeoutMinutes              int      // default 10 — idle window: a turn is stopped after this many minutes WITHOUT stream activity (floored at minTurnIdleMinutes, see turnwatch.go)
 	MaxTurnMinutes              int      // absolute per-turn cap in minutes, even while active; 0 = 3× TimeoutMinutes (see Config.turnLimits)
+	PersistentWorker            bool     // keep one resident claude process per conversation (--input-format stream-json) instead of spawning one per turn. yaml 기본 true. See runner_persistent.go
+	PersistentWorkerIdleMinutes int      // retire a resident claude process after this many idle minutes; 0 = 10
 	ManagerAlways               bool     // DEPRECATED, unused: parsed from config.yaml (models.manager_always) for backward compatibility only; nothing routes on it
 	CodexPath                   string   // "" = auto-detect
 	CodexModel                  string   // worker model (powerful) — "" = codex built-in default

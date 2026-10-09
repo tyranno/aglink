@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -87,11 +89,15 @@ func pluginWorkerArgsOpts(cfg *Config, screenBin, webBin, goonoBin string, scree
 	// spurious 'C:\Program' "not a recognized command" error instead of loading
 	// the plugin. A temp-file path (no spaces, no quotes) survives cmd.exe intact,
 	// and claude accepts `--mcp-config <file>` on every platform. The content is
-	// deterministic for a given config, so one stable file is safe even with
-	// concurrent workers (they all write/read identical bytes).
+	// deterministic for a given config and the file is named by its content hash,
+	// so concurrent workers write/read identical bytes, and conversations whose
+	// configs differ (e.g. ScreenBrief) never rewrite each other's file — a
+	// persistent worker (runner_persistent.go) compares this file's content to
+	// decide reuse, so a shared file would make them restart each other.
 	mcpArg := string(inline)
 	if dir, derr := dataDir(); derr == nil {
-		p := filepath.Join(dir, "worker-mcp.json")
+		sum := sha256.Sum256(inline)
+		p := filepath.Join(dir, "worker-mcp-"+hex.EncodeToString(sum[:4])+".json")
 		if werr := os.WriteFile(p, inline, 0o600); werr == nil {
 			mcpArg = p
 		}

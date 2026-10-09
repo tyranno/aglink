@@ -440,6 +440,7 @@ func writeConfigFile(path string, o writeConfigOpts) error {
 		ManagerAlways:    true,
 		MaxWorkers:       3,
 		RateLimitPerMin:  20,
+		PersistentWorker: true,
 		ClaudeOauthToken: o.claudeToken,
 		DefaultBackend:   o.backend,
 		AglinkChat:       o.aglinkChat,

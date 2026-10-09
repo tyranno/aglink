@@ -109,6 +109,11 @@ func (m *Manager) CloseInteractive() {
 	if c, ok := m.interactiveClient.(interactiveCloser); ok {
 		c.Close()
 	}
+	// The claude runner's resident worker processes (runtime.persistent_worker)
+	// need the same treatment before an os.Exit.
+	if c, ok := m.clientForBackend("claude").(interactiveCloser); ok {
+		c.Close()
+	}
 }
 
 // clientFor returns the ClaudeClient a turn should run on: the interactive

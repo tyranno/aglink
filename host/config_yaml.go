@@ -48,6 +48,10 @@ type yamlConfig struct {
 		MaxWorkers          *int `yaml:"max_workers"`
 		RateLimitPerMin     *int `yaml:"rate_limit_per_min"`
 		ConversationTTLDays *int `yaml:"conversation_ttl_days"`
+		// PersistentWorker keeps one resident claude process per conversation
+		// (nil → true). See runner_persistent.go.
+		PersistentWorker            *bool `yaml:"persistent_worker,omitempty"`
+		PersistentWorkerIdleMinutes *int  `yaml:"persistent_worker_idle_minutes,omitempty"` // nil/0 → 10
 	} `yaml:"runtime"`
 	// Context controls how conversation context is carried across a CLI session
 	// reset/recovery. See convsummary.go.
@@ -135,6 +139,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 		ConversationTTLDays:  30,
 		SummaryOnReset:       true,
 		ScreenPromptAdaptive: true,
+		PersistentWorker:     true,
 	}
 	c.HomeDir = y.HomeDir
 	c.TelegramBotToken = y.Telegram.BotToken
@@ -176,6 +181,12 @@ func yamlToConfig(y *yamlConfig) *Config {
 	}
 	if y.Runtime.ConversationTTLDays != nil {
 		c.ConversationTTLDays = *y.Runtime.ConversationTTLDays
+	}
+	if y.Runtime.PersistentWorker != nil {
+		c.PersistentWorker = *y.Runtime.PersistentWorker
+	}
+	if y.Runtime.PersistentWorkerIdleMinutes != nil {
+		c.PersistentWorkerIdleMinutes = *y.Runtime.PersistentWorkerIdleMinutes
 	}
 	c.AllowScripts = y.Scripts.Allow
 	for _, cmd := range y.Scripts.AllowedCommands {
@@ -270,6 +281,12 @@ func configToYAML(c *Config) *yamlConfig {
 	if c.MaxTurnMinutes > 0 {
 		mt := c.MaxTurnMinutes
 		y.Runtime.MaxTurnMinutes = &mt
+	}
+	pw := c.PersistentWorker
+	y.Runtime.PersistentWorker = &pw
+	if c.PersistentWorkerIdleMinutes > 0 {
+		pi := c.PersistentWorkerIdleMinutes
+		y.Runtime.PersistentWorkerIdleMinutes = &pi
 	}
 	y.Scripts.Allow = c.AllowScripts
 	y.Scripts.AllowedCommands = c.AllowedScriptCommands

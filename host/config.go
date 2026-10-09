@@ -272,6 +272,7 @@ func LoadConfig(path string) (*Config, error) {
 		ConversationTTLDays:  30,
 		SummaryOnReset:       true,
 		ScreenPromptAdaptive: true,
+		PersistentWorker:     true,
 	}
 
 	sc := bufio.NewScanner(f)
@@ -334,6 +335,16 @@ func applyConfigKV(cfg *Config, key, val string) error {
 				return fmt.Errorf("MAX_TURN_MINUTES는 0 이상의 정수여야 합니다: %q", val)
 			}
 			cfg.MaxTurnMinutes = n
+		}
+	case "PERSISTENT_WORKER":
+		cfg.PersistentWorker = parseBool(val, true)
+	case "PERSISTENT_WORKER_IDLE_MINUTES":
+		if val != "" {
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				return fmt.Errorf("PERSISTENT_WORKER_IDLE_MINUTES는 0 이상의 정수여야 합니다: %q", val)
+			}
+			cfg.PersistentWorkerIdleMinutes = n
 		}
 	case "MANAGER_ALWAYS":
 		cfg.ManagerAlways = parseBool(val, true)

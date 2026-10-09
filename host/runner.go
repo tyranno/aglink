@@ -23,11 +23,39 @@ import (
 type claudeRunner struct {
 	claudePath string
 	cfgh       *ConfigHolder
+	// pool holds the resident worker processes (runtime.persistent_worker, see
+	// runner_persistent.go). nil = always one-shot.
+	pool *persistentPool
 }
 
 // NewClaudeRunner builds a ClaudeClient backed by the local claude CLI.
 func NewClaudeRunner(claudePath string, cfgh *ConfigHolder) *claudeRunner {
-	return &claudeRunner{claudePath: claudePath, cfgh: cfgh}
+	r := &claudeRunner{claudePath: claudePath, cfgh: cfgh}
+	r.pool = newPersistentPool(startCLIProc, r.persistentLimits)
+	return r
+}
+
+// persistentLimits reports the live runtime.persistent_worker settings: enabled,
+// the idle eviction time, and the pool cap (one process per concurrently running
+// conversation — MaxWorkers).
+func (r *claudeRunner) persistentLimits() (enabled bool, idle time.Duration, max int) {
+	c := r.cfg()
+	if c == nil {
+		return false, defaultPersistentIdle, 1
+	}
+	idle = defaultPersistentIdle
+	if c.PersistentWorkerIdleMinutes > 0 {
+		idle = time.Duration(c.PersistentWorkerIdleMinutes) * time.Minute
+	}
+	return c.PersistentWorker, idle, c.MaxWorkers
+}
+
+// Close retires every resident worker process (host shutdown). Matches the
+// interactiveCloser hook Manager.CloseInteractive calls before os.Exit.
+func (r *claudeRunner) Close() {
+	if r.pool != nil {
+		r.pool.Close()
+	}
 }
 
 func (r *claudeRunner) cfg() *Config { return r.cfgh.Get() }
@@ -235,7 +263,7 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 			}
 			close(consumerDone)
 		}()
-		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, req.Prompt, req.OwnerLabel, func(line string) {
+		stdout, stderr, err := r.streamTurn(ctx, req, args, func(line string) {
 			if req.OnProgress != nil {
 				if msg := formatProgressEvent(line); msg != "" {
 					select {
@@ -340,6 +368,32 @@ func ignoreWaitDelay(err error, tag string) error {
 		return nil
 	}
 	return err
+}
+
+// streamTurn runs one stream-json worker turn: on the conversation's resident
+// claude process when runtime.persistent_worker is on (runner_persistent.go),
+// otherwise — or when the pool can't serve the turn — as a one-shot execStream.
+// Both return the same (stdout, stderr, err) shape, so Run's result handling is
+// shared. Route/Summarize never come here: they call exec directly.
+func (r *claudeRunner) streamTurn(ctx context.Context, req RunRequest, args []string, onLine func(line string)) (stdout, stderr string, err error) {
+	if r.pool != nil {
+		cfg := r.cfg()
+		if cfg == nil || !cfg.PersistentWorker {
+			r.pool.retireIdle("disabled")
+		} else if key := persistentKey(req); key != "" && req.Prompt != "" {
+			spec := persistentSpec{
+				path: r.claudePath,
+				dir:  req.WorkDir,
+				args: persistentArgs(args),
+				env:  workerCmdEnv(cfg.ClaudeOauthToken, req.OwnerLabel),
+			}
+			stdout, stderr, err = r.pool.runTurn(ctx, key, spec, req.Prompt, onLine)
+			if !errors.Is(err, errPersistentUnavailable) {
+				return stdout, stderr, err
+			}
+		}
+	}
+	return r.execStream(ctx, req.WorkDir, args, req.Prompt, req.OwnerLabel, onLine)
 }
 
 // exec runs the claude CLI with process-tree cancellation (Windows-aware).

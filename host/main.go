@@ -577,6 +577,10 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	}
 
 	bot.Run() // blocks
+	// Retire the resident claude worker processes (runtime.persistent_worker).
+	if c, ok := claudeRunner.(interactiveCloser); ok {
+		c.Close()
+	}
 	return nil
 }
 

@@ -298,7 +298,8 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "interactive_claude.enabled", Label: "Interactive Claude (실험적)", Desc: "상주 ConPTY 세션 백엔드. 대화별로 \"!interactive on\"으로 켜야 실제 사용됨. Windows 전용. (변경 시 재시작 필요)", Type: "bool", Value: cfg.InteractiveClaude},
 		}},
 		{Title: "동작 한도", Group: settingsGroupLimits, Advanced: true, Desc: "봇이 얼마나 많이·오래 일할지 제한합니다. 기본값으로 두어도 잘 동작합니다.", Fields: []settingField{
-			{Key: "runtime.timeout_minutes", Label: "작업 제한 시간(분)", Desc: "한 작업이 이 시간을 넘기면 취소합니다.", Type: "int", Value: cfg.TimeoutMinutes},
+			{Key: "runtime.timeout_minutes", Label: "무응답 제한 시간(분)", Desc: "작업이 이 시간 동안 아무 진행(출력·도구 호출)도 없으면 멈춘 것으로 보고 취소합니다. 진행 중인 작업은 끊지 않습니다. 긴 도구 실행을 고려해 최소 12분이 적용됩니다.", Type: "int", Value: cfg.TimeoutMinutes},
+			{Key: "runtime.max_turn_minutes", Label: "최대 작업 시간(분)", Desc: "진행 중이어도 한 작업이 이 시간을 넘기면 취소합니다. 0이면 무응답 제한 시간의 3배.", Type: "int", Value: cfg.MaxTurnMinutes},
 			{Key: "runtime.max_workers", Label: "동시 작업 수", Desc: "한 번에 돌릴 수 있는 작업 개수.", Type: "int", Value: cfg.MaxWorkers},
 			{Key: "runtime.rate_limit_per_min", Label: "분당 메시지 제한", Desc: "사용자당 1분에 허용하는 일반 메시지 수.", Type: "int", Value: cfg.RateLimitPerMin},
 			{Key: "runtime.conversation_ttl_days", Label: "대화 보관 기간(일)", Desc: "이 기간 동안 활동 없는 대화를 자동 정리. 0이면 정리 안 함.", Type: "int", Value: cfg.ConversationTTLDays},
@@ -379,6 +380,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.SSHEnabled = asBool(v)
 		case "runtime.timeout_minutes":
 			cfg.TimeoutMinutes = asInt(v)
+		case "runtime.max_turn_minutes":
+			cfg.MaxTurnMinutes = asInt(v)
 		case "runtime.max_workers":
 			cfg.MaxWorkers = asInt(v)
 		case "runtime.rate_limit_per_min":

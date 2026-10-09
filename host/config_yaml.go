@@ -44,6 +44,7 @@ type yamlConfig struct {
 	} `yaml:"opencode"`
 	Runtime struct {
 		TimeoutMinutes      *int `yaml:"timeout_minutes"`
+		MaxTurnMinutes      *int `yaml:"max_turn_minutes,omitempty"` // absolute per-turn cap; nil/0 = 3× timeout_minutes
 		MaxWorkers          *int `yaml:"max_workers"`
 		RateLimitPerMin     *int `yaml:"rate_limit_per_min"`
 		ConversationTTLDays *int `yaml:"conversation_ttl_days"`
@@ -164,6 +165,9 @@ func yamlToConfig(y *yamlConfig) *Config {
 	if y.Runtime.TimeoutMinutes != nil {
 		c.TimeoutMinutes = *y.Runtime.TimeoutMinutes
 	}
+	if y.Runtime.MaxTurnMinutes != nil {
+		c.MaxTurnMinutes = *y.Runtime.MaxTurnMinutes
+	}
 	if y.Runtime.MaxWorkers != nil {
 		c.MaxWorkers = *y.Runtime.MaxWorkers
 	}
@@ -263,6 +267,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Runtime.MaxWorkers = &mw
 	y.Runtime.RateLimitPerMin = &rl
 	y.Runtime.ConversationTTLDays = &ttl
+	if c.MaxTurnMinutes > 0 {
+		mt := c.MaxTurnMinutes
+		y.Runtime.MaxTurnMinutes = &mt
+	}
 	y.Scripts.Allow = c.AllowScripts
 	y.Scripts.AllowedCommands = c.AllowedScriptCommands
 	y.ScreenControl.Enabled = c.ScreenControl

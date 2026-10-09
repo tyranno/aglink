@@ -327,6 +327,14 @@ func applyConfigKV(cfg *Config, key, val string) error {
 			}
 			cfg.TimeoutMinutes = n
 		}
+	case "MAX_TURN_MINUTES":
+		if val != "" {
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				return fmt.Errorf("MAX_TURN_MINUTES는 0 이상의 정수여야 합니다: %q", val)
+			}
+			cfg.MaxTurnMinutes = n
+		}
 	case "MANAGER_ALWAYS":
 		cfg.ManagerAlways = parseBool(val, true)
 	case "CODEX_PATH":

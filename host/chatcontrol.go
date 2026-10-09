@@ -238,7 +238,7 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		if s.bot != nil && s.bot.manager != nil {
 			workers = s.bot.manager.ActiveWorkers()
 		}
-		data, err := json.Marshal(buildActiveWorkersResponse(workers, s.bot.cfg().TimeoutMinutes))
+		data, err := json.Marshal(buildActiveWorkersResponse(workers, s.bot.baseCapMinutes()))
 		if err != nil {
 			log.Printf("[chatcontrol] get_active_workers marshal: %v", err)
 			return

@@ -622,12 +622,16 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 	// codex can't unblock it — the turn hangs indefinitely with no completion and
 	// no timeout. Fix: allow large lines, and ALWAYS drain any remainder so the
 	// copier can never block.
+	// Each --json event line is progress for the turn watchdog (turnwatch.go),
+	// same as claude's stream-json lines.
+	act := turnActivityFrom(ctx)
 	logDone := make(chan struct{})
 	go func() {
 		defer close(logDone)
 		scanner := bufio.NewScanner(pr)
 		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		for scanner.Scan() {
+			act.Touch()
 			logCodexEvent(scanner.Text())
 		}
 		// If Scan stopped early (line still over the cap, or a read error), keep

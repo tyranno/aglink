@@ -523,3 +523,20 @@ func TestClaudeTurnCost_DiffsCumulativeSessionCost(t *testing.T) {
 		t.Fatalf("recovered turn = %v, want 2.5", got)
 	}
 }
+
+func TestSessionNearReset(t *testing.T) {
+	c := &Conversation{ClaudeContextTokens: claudeContextResetTokens * 3 / 4}
+	if !sessionNearReset("claude", c) {
+		t.Fatal("claude at 75% of reset threshold should be near reset")
+	}
+	c.ClaudeContextTokens = claudeContextResetTokens / 2
+	if sessionNearReset("claude", c) {
+		t.Fatal("claude at 50% should not be near reset")
+	}
+	if sessionNearReset("opencode", &Conversation{ClaudeContextTokens: 1 << 30}) {
+		t.Fatal("backends without a reset threshold are never near reset")
+	}
+	if r := memoryFlushReminder("m.md"); !strings.Contains(r, "m.md") || !strings.Contains(r, "<system-reminder>") {
+		t.Fatalf("reminder = %q", r)
+	}
+}

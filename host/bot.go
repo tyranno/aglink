@@ -30,6 +30,13 @@ type queuedMsg struct {
 	origin  string  // "telegram"|"web" — channel that sent it (tags new conversations)
 	target  *Target // non-nil for web sends with an explicit target (telegram stream vs web topic)
 	laneKey string
+	// noMerge keeps this message a turn of its own even when it queues behind
+	// a running turn next to other messages (e.g. !parallel prompts, playbook
+	// runs — each was meant as a separate task). See mergeQueuedHead.
+	noMerge bool
+	// merged is how many user messages this entry carries (>1 after
+	// mergeQueuedHead combined a backlog; 0/1 = a single message).
+	merged int
 }
 
 // conversation is where this message's queue/timeout/cancel notices belong: the
@@ -60,8 +67,8 @@ type Bot struct {
 	rateLimiter *RateLimiter
 	userStore   *UserStore
 	playbooks   *PlaybookStore // reusable work routines (업무 관리); nil in tests that don't need it
-	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
-	out         *Hub   // output fan-out: telegram (global) + web channels (per-chat)
+	onReady     func()         // called once after GetUpdatesChan starts (handoff signal)
+	out         *Hub           // output fan-out: telegram (global) + web channels (per-chat)
 
 	// attach maps a conversation lane to the remote Claude session it is
 	// talking to (!attach). Nil-safe: only the session commands touch it.
@@ -79,6 +86,8 @@ type Bot struct {
 	dispatchHook func(chatID int64, text string) // test seam; nil in production
 	commandHook  func(chatID int64, text string) // test seam; nil in production
 
+	turnLimitsHook func() (idle, maxTotal time.Duration) // test seam; nil = config
+
 	// Per-conversation lanes. Each conversation (the telegram stream, or a web
 	// topic) is a lane: turns within a lane run strictly one at a time and in
 	// order (a turn's context depends on the previous turn's result), while
@@ -88,9 +97,9 @@ type Bot struct {
 	mu           sync.Mutex
 	workerSeq    int                  // monotonic counter for worker IDs
 	cancels      map[int]*cancelEntry // workerID → (laneKey, cancel, deadline) for !cancel / !timeout
-	lanes        map[string]*lane    // laneKey → its queue + running flag
-	readyLanes   []string            // idle lanes with queued work, waiting for a global slot (FIFO)
-	runningLanes int                 // lanes currently executing a turn (== global concurrency)
+	lanes        map[string]*lane     // laneKey → its queue + running flag
+	readyLanes   []string             // idle lanes with queued work, waiting for a global slot (FIFO)
+	runningLanes int                  // lanes currently executing a turn (== global concurrency)
 
 	// cmdMu serializes handleCommand. Telegram's Run() loop already calls
 	// handleCommand from a single goroutine, so this is uncontended there.
@@ -151,16 +160,39 @@ type lane struct {
 
 // cancelEntry ties a running worker's cancel func to the lane it belongs to, so
 // !cancel can target only the caller's own conversation instead of every lane.
-// It also carries a resettable enforcement timer so !timeout can push (or pull,
-// down to the base) a single running turn's deadline. All fields are guarded by
-// Bot.mu; the timer's AfterFunc callback re-locks Bot.mu before touching them.
+// It also carries the turn's watchdog (see turnwatch.go): a resettable timer
+// that cancels the turn after an idle window with no stream activity, or at
+// the absolute cap (deadline), which !timeout can push (or pull, down to the
+// base cap) for a single running turn. All fields are guarded by Bot.mu; the
+// timer's AfterFunc callback re-locks Bot.mu before touching them. act is
+// touched lock-free by the runner.
 type cancelEntry struct {
 	key      string
 	cancel   context.CancelFunc
-	timer    *time.Timer // enforcement timer; !timeout calls Reset on it
-	start    time.Time   // when this turn started, anchor for the effective total
-	deadline time.Time   // current enforcement deadline (moves when !timeout fires)
-	timedOut bool        // set by the timer before it cancels, to tell timeout apart from !cancel
+	timer    *time.Timer   // watchdog timer; re-armed on each check and by !timeout
+	start    time.Time     // when this turn started, anchor for the effective total
+	deadline time.Time     // absolute cap (moves when !timeout fires)
+	act      *turnActivity // stream-activity tracker (nil in some tests)
+	timedOut bool          // set by the timer before it cancels, to tell timeout apart from !cancel
+	cause    string        // turnTimeoutIdle | turnTimeoutCap once timedOut
+}
+
+// lastActivity is when the turn last showed stream activity (its start if the
+// entry has no tracker). Caller holds Bot.mu (for start).
+func (e *cancelEntry) lastActivity() time.Time {
+	if e.act == nil {
+		return e.start
+	}
+	return e.act.Last()
+}
+
+// idleWindow is the entry's idle limit; without a tracker, idleness can't be
+// observed, so only the cap applies.
+func (e *cancelEntry) idleWindow() time.Duration {
+	if e.act == nil {
+		return 100 * 365 * 24 * time.Hour
+	}
+	return e.act.idle
 }
 
 // laneKeyOf maps a message's conversation to its lane key. All non-web targets
@@ -175,6 +207,22 @@ func laneKeyOf(t Target) string {
 }
 
 func (b *Bot) cfg() *Config { return b.cfgh.Get() }
+
+// turnLimits is the idle window and absolute cap for a worker turn (see
+// turnwatch.go). turnLimitsHook lets tests use sub-second limits.
+func (b *Bot) turnLimits() (idle, maxTotal time.Duration) {
+	if b.turnLimitsHook != nil {
+		return b.turnLimitsHook()
+	}
+	return b.cfg().turnLimits()
+}
+
+// baseCapMinutes is the configured absolute cap in whole minutes — the base
+// that !timeout adjusts and never goes below.
+func (b *Bot) baseCapMinutes() int {
+	_, maxTotal := b.turnLimits()
+	return int(maxTotal.Round(time.Minute) / time.Minute)
+}
 
 // isAllowed checks all auth sources: config IDs, config usernames, and runtime UserStore.
 func (b *Bot) isAllowed(userID int64, username string) bool {
@@ -410,6 +458,12 @@ func (b *Bot) Run() {
 // dispatchText routes a free-text message through the Manager.
 // Up to cfg.MaxWorkers can run in parallel; extras are queued.
 func (b *Bot) dispatchText(chatID int64, text, origin string) {
+	b.dispatchTextOpt(chatID, text, origin, false)
+}
+
+// dispatchTextOpt is dispatchText with control over queue merging: noMerge
+// keeps the message a turn of its own (see mergeQueuedHead).
+func (b *Bot) dispatchTextOpt(chatID int64, text, origin string, noMerge bool) {
 	// Mirror the user's input to the OTHER channel so both web and Telegram show
 	// what was typed, wherever it was entered. Each channel no-ops for its own
 	// origin (ChannelSender.EchoUser), so the origin channel never double-echoes.
@@ -421,7 +475,7 @@ func (b *Bot) dispatchText(chatID int64, text, origin string) {
 		b.dispatchHook(chatID, text)
 		return
 	}
-	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: origin})
+	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: origin, noMerge: noMerge})
 }
 
 // dispatchTargeted routes a web message to its explicit target: the global
@@ -432,6 +486,12 @@ func (b *Bot) dispatchText(chatID int64, text, origin string) {
 // TimeoutMinutes deadline, !cancel registration, and panic recovery as every
 // other dispatch — rather than calling the Manager directly.
 func (b *Bot) dispatchTargeted(chatID int64, text string, tgt *Target) {
+	b.dispatchTargetedOpt(chatID, text, tgt, false)
+}
+
+// dispatchTargetedOpt is dispatchTargeted with control over queue merging (see
+// mergeQueuedHead).
+func (b *Bot) dispatchTargetedOpt(chatID int64, text string, tgt *Target, noMerge bool) {
 	t := TelegramTarget()
 	if tgt != nil {
 		t = *tgt
@@ -442,7 +502,7 @@ func (b *Bot) dispatchTargeted(chatID int64, text string, tgt *Target) {
 	if b.out != nil {
 		b.out.EchoUser(t, chatID, text, OriginWeb)
 	}
-	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: OriginWeb, target: &t})
+	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: OriginWeb, target: &t, noMerge: noMerge})
 }
 
 // dispatchScheduledTask runs a pre-scheduled task bypassing Manager LLM routing.
@@ -490,10 +550,16 @@ func (b *Bot) dispatch(msg queuedMsg) {
 	if l.running {
 		ahead := len(l.queue) - 1 // turns of THIS conversation still ahead of it
 		b.mu.Unlock()
-		if !msg.isTask {
+		switch {
+		case msg.mergeable():
+			// Queued follow-ups are folded into one turn when the running one ends
+			// (finishTurn → mergeQueuedHead), so a per-message position is moot.
+			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID,
+				"📋 이 대화가 처리 중입니다 — 지금 작업이 끝나면 이어서 실행됩니다 (그 사이 보낸 메시지는 순서대로 하나로 합쳐 처리됩니다).")
+		case !msg.isTask:
 			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
 				"📋 이 대화가 처리 중입니다 — 앞선 요청 %d건 뒤에 이어서 실행됩니다.", ahead))
-		} else {
+		default:
 			log.Printf("[scheduler] 예약 작업: 대화 처리 중 — 뒤에 대기")
 		}
 		return
@@ -620,6 +686,10 @@ func (b *Bot) finishTurn(key string, wid int, queued bool) (queuedMsg, bool) {
 		l.queue = l.queue[1:] // pop the completed head
 	}
 	if len(l.queue) > 0 {
+		// Everything that piled up for this conversation while the turn ran
+		// becomes ONE next turn rather than N back-to-back ones (see
+		// mergeQueuedHead).
+		l.queue = mergeQueuedHead(l.queue)
 		return l.queue[0], true // same lane, same slot — next turn in order
 	}
 	// Lane drained: release the slot and hand it to a waiting conversation.
@@ -634,28 +704,35 @@ func (b *Bot) finishTurn(key string, wid int, queued bool) (queuedMsg, bool) {
 // slot pass to a waiting conversation. queued must match how msg was
 // dispatched — see finishTurn's doc comment.
 func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
-	// A plain WithTimeout deadline is immutable, so instead we cancel manually
-	// from a resettable timer: this lets !timeout push the deadline out (or pull
-	// it back to the base) for just this one running turn. The timer re-checks
-	// the current deadline when it fires, so a deadline moved out from under it
-	// (by an extend racing the fire) re-arms instead of killing live work.
+	// Activity-based watchdog (turnwatch.go): the turn is cancelled only after
+	// an idle window with no stream activity from the CLI, or at the absolute
+	// cap. A plain WithTimeout deadline is immutable, so instead we cancel
+	// manually from a resettable timer that re-checks on each fire: activity
+	// since it was armed (or a cap moved out by !timeout) re-arms it instead of
+	// killing live work.
+	idle, maxTotal := b.turnLimits()
 	b.mu.Lock()
 	b.workerSeq++
 	wid := b.workerSeq
-	ctx, cancel := context.WithCancel(context.Background())
 	start := time.Now()
-	base := time.Duration(b.cfg().TimeoutMinutes) * time.Minute
-	entry := &cancelEntry{key: key, cancel: cancel, start: start, deadline: start.Add(base)}
-	entry.timer = time.AfterFunc(base, func() {
+	act := newTurnActivity(start, idle, start.Add(maxTotal))
+	baseCtx, cancel := context.WithCancel(context.Background())
+	ctx := withTurnActivity(baseCtx, act)
+	entry := &cancelEntry{key: key, cancel: cancel, start: start, deadline: start.Add(maxTotal), act: act}
+	first, _ := turnTimeoutCheck(start, start, idle, entry.deadline)
+	entry.timer = time.AfterFunc(first, func() {
 		b.mu.Lock()
-		if time.Now().Before(entry.deadline) {
-			// Deadline was extended after this timer was armed — reschedule.
-			entry.timer.Reset(time.Until(entry.deadline))
+		wait, cause := turnTimeoutCheck(time.Now(), entry.lastActivity(), entry.idleWindow(), entry.deadline)
+		if cause == "" {
+			entry.timer.Reset(wait) // activity since arming, or the cap was extended
 			b.mu.Unlock()
 			return
 		}
 		entry.timedOut = true
+		entry.cause = cause
 		b.mu.Unlock()
+		log.Printf("[bot] turn wid=%d timed out (%s) after %s, last activity %s ago",
+			wid, cause, time.Since(start).Round(time.Second), time.Since(entry.lastActivity()).Round(time.Second))
 		cancel()
 	})
 	b.cancels[wid] = entry
@@ -671,7 +748,11 @@ func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 		next, ok := b.finishTurn(key, wid, queued)
 		if ok {
 			if !next.isTask {
-				_ = b.ReplyTo(next.conversation()).Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
+				notice := "▶️ 대기 중이던 요청을 시작합니다."
+				if next.merged > 1 {
+					notice = fmt.Sprintf("▶️ 대기 중이던 메시지 %d건을 하나로 합쳐 시작합니다.", next.merged)
+				}
+				_ = b.ReplyTo(next.conversation()).Send(next.chatID, notice)
 			}
 			go b.runTurn(key, next, true)
 		}
@@ -686,18 +767,17 @@ func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 	}
 
 	// The timer cancels the same ctx as !cancel, so ctx.Err() alone can't tell a
-	// deadline from a manual cancel — entry.timedOut disambiguates. The reported
-	// limit is the effective total (base plus any !timeout extension), not the
-	// raw config value.
+	// deadline from a manual cancel — entry.timedOut disambiguates, and
+	// entry.cause tells an idle stop from the absolute cap. The reported cap is
+	// the effective total (base plus any !timeout extension), not the raw config
+	// value.
 	b.mu.Lock()
-	timedOut := entry.timedOut
-	effMinutes := int(entry.deadline.Sub(entry.start).Round(time.Minute) / time.Minute)
+	timedOut, cause := entry.timedOut, entry.cause
+	effCap := entry.deadline.Sub(entry.start)
 	b.mu.Unlock()
 	switch {
 	case timedOut:
-		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
-			"⏱ 제한 시간(%d분)을 초과해 작업을 중단했습니다 — 죽은 게 아니라 시간 안에 못 끝낸 것입니다. 다시 메시지를 보내시면 이어서 진행됩니다(같은 대화 세션이라 지금까지 맥락은 유지됩니다).",
-			effMinutes))
+		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, turnTimeoutMessage(cause, idle, effCap))
 	case ctx.Err() == context.Canceled:
 		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "🛑 작업이 취소되었습니다.")
 	}
@@ -1048,14 +1128,15 @@ type timeoutOp struct {
 	delta    time.Duration // otherwise: add this (may be negative) to the current deadline
 }
 
-// adjustTimeout moves the enforcement deadline of every running worker in the
-// caller's own lane (key). The effective total (deadline minus turn start) is
-// never allowed below the base TimeoutMinutes — reducing only claws back an
-// earlier extension, it can't cut a turn below its configured budget. Already
-// timed-out entries are skipped. Returns how many workers were adjusted and the
-// resulting effective total (minutes) of the last one, for the reply.
+// adjustTimeout moves the absolute cap (deadline) of every running worker in
+// the caller's own lane (key); the idle window is unaffected. The effective
+// total (deadline minus turn start) is never allowed below the base cap
+// (Config.turnLimits) — reducing only claws back an earlier extension, it can't
+// cut a turn below its configured budget. Already timed-out entries are
+// skipped. Returns how many workers were adjusted and the resulting effective
+// total (minutes) of the last one, for the reply.
 func (b *Bot) adjustTimeout(key string, op timeoutOp) (n, effMinutes int) {
-	base := time.Duration(b.cfg().TimeoutMinutes) * time.Minute
+	_, base := b.turnLimits()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, e := range b.cancels {
@@ -1075,10 +1156,12 @@ func (b *Bot) adjustTimeout(key string, op timeoutOp) (n, effMinutes int) {
 			nd = floor // 기본 설정 미만으로는 줄이지 않는다
 		}
 		e.deadline = nd
-		rem := time.Until(nd)
-		if rem < 0 {
-			rem = 0 // deadline already past → fire (and thus time out) immediately
+		if e.act != nil {
+			e.act.deadline.Store(nd.UnixNano()) // heartbeat reads the cap from here
 		}
+		// Re-arm for the next due check; a cap already past fires (and thus
+		// times out) immediately.
+		rem, _ := turnTimeoutCheck(time.Now(), e.lastActivity(), e.idleWindow(), nd)
 		e.timer.Reset(rem)
 		n++
 		effMinutes = int(nd.Sub(e.start).Round(time.Minute) / time.Minute)
@@ -1091,8 +1174,9 @@ func (b *Bot) adjustTimeout(key string, op timeoutOp) (n, effMinutes int) {
 // or a bare "N" (분 절대값). The desktop status-bar dropdown sends the +/-/reset
 // forms; a bare number is convenient when typed directly.
 func (b *Bot) handleTimeout(reply replySender, chatID int64, fields []string, key string) {
-	base := b.cfg().TimeoutMinutes
-	usage := fmt.Sprintf("사용법: !timeout +<분> | -<분> | reset  (실행 중인 작업의 제한 시간을 조절, 기본 %d분 미만으로는 줄지 않습니다)", base)
+	idleD, baseD := b.turnLimits()
+	base := int(baseD.Round(time.Minute) / time.Minute)
+	usage := fmt.Sprintf("사용법: !timeout +<분> | -<분> | reset  (실행 중인 작업의 최대 작업 시간을 조절, 기본 %d분 미만으로는 줄지 않습니다. 무응답 %s 중단 기준은 그대로)", base, formatLimit(idleD))
 	if len(fields) < 2 {
 		_ = reply.Send(chatID, usage)
 		return
@@ -1122,7 +1206,7 @@ func (b *Bot) handleTimeout(reply replySender, chatID int64, fields []string, ke
 		_ = reply.Send(chatID, "조절할 실행 중 작업이 없습니다.")
 		return
 	}
-	_ = reply.Send(chatID, fmt.Sprintf("⏱ 이 작업의 제한 시간을 %d분으로 조절했습니다 (이 작업에만 적용, 기본 설정 %d분은 그대로).", eff, base))
+	_ = reply.Send(chatID, fmt.Sprintf("⏱ 이 작업의 최대 작업 시간을 %d분으로 조절했습니다 (이 작업에만 적용, 기본 설정 %d분은 그대로).", eff, base))
 }
 
 // handleProject: !project add <name> <path> | remove <name> | list
@@ -2545,12 +2629,13 @@ func (b *Bot) handleParallel(reply replySender, chatID int64, text, origin strin
 		prompts = prompts[:maxP]
 	}
 	if len(prompts) == 1 {
-		b.dispatchText(chatID, prompts[0], origin)
+		b.dispatchTextOpt(chatID, prompts[0], origin, true)
 		return
 	}
 	_ = reply.Send(chatID, fmt.Sprintf("🔀 %d개 병렬 작업 시작합니다...", len(prompts)))
 	for _, p := range prompts {
-		b.dispatchText(chatID, p, origin)
+		// Each prompt is a task of its own — never merge them into one turn.
+		b.dispatchTextOpt(chatID, p, origin, true)
 	}
 }
 
@@ -2665,7 +2750,7 @@ func helpText() string {
 !chat use <id|프로젝트 id>    대화 수동 전환
 !status                      실행 중 작업 + 활성 대화 + 백엔드
 !cancel                      진행 중 작업 취소
-!timeout +<분>|-<분>|reset    진행 중 작업의 제한 시간 조절 (이 작업만, 기본값 미만 불가)
+!timeout +<분>|-<분>|reset    진행 중 작업의 최대 작업 시간 조절 (이 작업만, 기본값 미만 불가)
 
 병렬 작업:
 !parallel <p1> | <p2> | ...  여러 프롬프트를 동시에 Claude에 전달

@@ -160,9 +160,11 @@ type webActiveWorker struct {
 
 type webActiveWorkersResponse struct {
 	Workers []webActiveWorker `json:"workers"`
-	// BaseTimeoutMinutes is the configured per-turn timeout. Clients show it as
-	// the running task's current limit and mirror its clamp when the user nudges
-	// the limit with !timeout (which never drops the effective total below it).
+	// BaseTimeoutMinutes is the configured absolute per-turn cap (Config.turnLimits;
+	// turns are otherwise stopped only after an idle window without progress).
+	// Clients show it as the running task's current limit and mirror its clamp
+	// when the user nudges the limit with !timeout (which moves this cap and never
+	// drops the effective total below it).
 	BaseTimeoutMinutes int `json:"baseTimeoutMinutes,omitempty"`
 }
 

@@ -16,7 +16,8 @@ type Config struct {
 	WorkerModelLight            string   // cheaper claude model for trivial conversational turns; "" = disabled (always WorkerModel). See classifyWorkerTier.
 	ClaudePath                  string   // "" = auto-detect
 	ClaudeOauthToken            string   // CLAUDE_CODE_OAUTH_TOKEN injected into worker env ("" = use claude's own login)
-	TimeoutMinutes              int      // default 10
+	TimeoutMinutes              int      // default 10 — idle window: a turn is stopped after this many minutes WITHOUT stream activity (floored at minTurnIdleMinutes, see turnwatch.go)
+	MaxTurnMinutes              int      // absolute per-turn cap in minutes, even while active; 0 = 3× TimeoutMinutes (see Config.turnLimits)
 	ManagerAlways               bool     // DEPRECATED, unused: parsed from config.yaml (models.manager_always) for backward compatibility only; nothing routes on it
 	CodexPath                   string   // "" = auto-detect
 	CodexModel                  string   // worker model (powerful) — "" = codex built-in default

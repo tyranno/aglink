@@ -324,6 +324,14 @@ func (r *opencodeRunner) exec(ctx context.Context, dir string, args []string, ow
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
+	if act := turnActivityFrom(ctx); act != nil {
+		// opencode's stdout isn't consumed line by line, so count any stdout
+		// write as progress for the turn watchdog (turnwatch.go). Whether that
+		// is incremental depends on opencode flushing as it goes (--format json
+		// streams events); output that only arrives at exit leaves just the
+		// idle window and absolute cap, i.e. the old wall-clock behaviour.
+		cmd.Stdout = activityWriter{w: &outBuf, a: act}
+	}
 	cmd.Stderr = &errBuf
 	// Don't let a process this turn spawned outlive opencode and pin Wait() on the
 	// inherited output pipes forever — see workerWaitDelay.

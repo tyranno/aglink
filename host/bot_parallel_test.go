@@ -66,10 +66,12 @@ func TestBot_CancelOnlyOwnLane(t *testing.T) {
 }
 
 // TestBot_AdjustTimeout checks the deadline math of !timeout: extend/reduce move
-// the deadline, the effective total never drops below the base TimeoutMinutes,
+// the absolute cap, the effective total never drops below the base cap,
 // reset snaps back to the base, and only the caller's own lane is touched.
 func TestBot_AdjustTimeout(t *testing.T) {
-	b := newParallelTestBot(3) // base TimeoutMinutes = 1
+	b := newParallelTestBot(3)
+	// Base cap = 1 minute (the idle window is irrelevant to !timeout).
+	b.turnLimitsHook = func() (time.Duration, time.Duration) { return time.Minute, time.Minute }
 	base := time.Minute
 	start := time.Now()
 

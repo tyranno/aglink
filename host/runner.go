@@ -400,10 +400,14 @@ func (r *claudeRunner) execStream(ctx context.Context, dir string, args []string
 		return "", "", serr
 	}
 
+	// Every stdout line (system/assistant/tool_use/tool_result/partial delta) is
+	// progress: it resets the turn watchdog's idle window (turnwatch.go).
+	act := turnActivityFrom(ctx)
 	var outBuf bytes.Buffer
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // tool output lines can be large
 	for scanner.Scan() {
+		act.Touch()
 		line := scanner.Text()
 		outBuf.WriteString(line)
 		outBuf.WriteByte('\n')

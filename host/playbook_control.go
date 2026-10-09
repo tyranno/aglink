@@ -115,6 +115,6 @@ func (b *Bot) runPlaybook(chatID int64, id string) (string, error) {
 		_ = b.setChannelBackend(tgt, backend)
 	}
 	_ = b.store.SetActive("", conv.ID)
-	go b.dispatchTargeted(chatID, prompt, &tgt)
+	go b.dispatchTargetedOpt(chatID, prompt, &tgt, true) // a playbook run is its own task: never merged with queued messages
 	return conv.ID, nil
 }

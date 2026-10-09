@@ -32,6 +32,11 @@ func pluginWorkerArgs(cfg *Config, screenBin, webBin, goonoBin string) []string 
 
 // pluginWorkerArgsOpts is pluginWorkerArgs with the screen guidance optionally
 // condensed (screenBrief — see screenSystemPromptBrief / RunRequest.ScreenBrief).
+// longWritePrompt: a single huge Write (15–26k tokens) streams nothing for
+// minutes and loses everything if the turn fails midway. Writing in sections
+// keeps progress visible to the turn watchdog and saved on disk.
+const longWritePrompt = "긴 문서나 큰 파일(수백 줄 이상)을 새로 쓸 때는 한 번의 Write로 전부 쓰지 말고, 뼈대를 먼저 저장한 뒤 섹션별로 나눠 Edit로 채우세요. 중간에 실패해도 써둔 부분이 남습니다."
+
 func pluginWorkerArgsOpts(cfg *Config, screenBin, webBin, goonoBin string, screenBrief bool) []string {
 	if cfg == nil {
 		return nil
@@ -67,6 +72,7 @@ func pluginWorkerArgsOpts(cfg *Config, screenBin, webBin, goonoBin string, scree
 	if hasScreen && hasWeb {
 		prompts = append([]string{screenWebArbitrationPrompt()}, prompts...)
 	}
+	prompts = append(prompts, longWritePrompt)
 
 	inline, err := json.Marshal(mcpConfig{McpServers: servers})
 	if err != nil {

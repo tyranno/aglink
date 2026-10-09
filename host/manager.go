@@ -1119,35 +1119,48 @@ func formatMinSec(d time.Duration) string {
 // eventually returned (or timed out). label distinguishes the normal run
 // ("작업 진행 중") from a post-session-loss retry ("세션 복구 진행 중").
 //
-// When timeoutMinutes is set, the last heartbeat before the deadline switches
-// to an explicit warning instead of the routine message, so a slow turn gets
-// a heads-up (and a chance to !cancel) before the hard timeout silently kills
-// it — rather than the user only finding out after the fact.
-func runHeartbeat(s MessageSender, chatID int64, label string, startTime time.Time, timeoutMinutes int, done <-chan struct{}) {
+// The turn's watchdog (turnwatch.go, carried in ctx by Bot.runTurn) stops a
+// turn only after an idle window without stream activity or at an absolute
+// cap. The last heartbeat before either limit switches to an explicit warning
+// instead of the routine message, so the user gets a heads-up (and a chance
+// to !cancel or !timeout) before the turn is stopped. A ctx without a tracker
+// (no watchdog) just gets the routine message.
+func runHeartbeat(ctx context.Context, s MessageSender, chatID int64, label string, startTime time.Time, done <-chan struct{}) {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
-	var deadline time.Time
-	if timeoutMinutes > 0 {
-		deadline = startTime.Add(time.Duration(timeoutMinutes) * time.Minute)
-	}
+	act := turnActivityFrom(ctx)
 	for {
 		select {
 		case <-ticker.C:
 			s.Typing(chatID) // refresh the live-signal independent of the text bubble below
-			elapsed := time.Since(startTime)
-			mins, secs := int(elapsed.Minutes()), int(elapsed.Seconds())%60
-			msg := fmt.Sprintf("⏳ %s... (%d분 %d초 경과)", label, mins, secs)
-			if !deadline.IsZero() {
-				if remaining := time.Until(deadline); remaining > 0 && remaining <= 2*time.Minute {
-					msg = fmt.Sprintf("⏳ %s... (%d분 %d초 경과) — 곧 제한 시간(%d분)에 도달합니다. 계속 기다리는 중이며, 그만두려면 !cancel",
-						label, mins, secs, timeoutMinutes)
-				}
-			}
-			_ = s.Send(chatID, msg)
+			_ = s.Send(chatID, heartbeatMessage(label, time.Now(), startTime, act))
 		case <-done:
 			return
 		}
 	}
+}
+
+// heartbeatMessage builds one heartbeat line. act may be nil.
+func heartbeatMessage(label string, now, startTime time.Time, act *turnActivity) string {
+	elapsed := now.Sub(startTime)
+	mins, secs := int(elapsed.Minutes()), int(elapsed.Seconds())%60
+	msg := fmt.Sprintf("⏳ %s... (%d분 %d초 경과)", label, mins, secs)
+	if act == nil {
+		return msg
+	}
+	quiet := now.Sub(act.Last())
+	if capLeft := act.Deadline().Sub(now); capLeft > 0 && capLeft <= 2*time.Minute {
+		return fmt.Sprintf("%s — 곧 최대 작업 시간(%s)에 도달합니다. 더 필요하면 !timeout +<분>, 그만두려면 !cancel",
+			msg, formatLimit(act.Deadline().Sub(act.start)))
+	}
+	if idleLeft := act.idle - quiet; idleLeft > 0 && idleLeft <= 2*time.Minute {
+		return fmt.Sprintf("%s — %d분째 진행 출력이 없습니다. %s 동안 활동이 없으면 중단됩니다. 그만두려면 !cancel",
+			msg, int(quiet.Minutes()), formatLimit(act.idle))
+	}
+	if quiet >= 2*time.Minute {
+		msg += fmt.Sprintf(" · 마지막 활동 %d분 전", int(quiet.Minutes()))
+	}
+	return msg
 }
 
 // validWorkDirOrHome falls back to the service home when workDir no longer
@@ -1362,9 +1375,8 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	if avg, samples, ok := m.estimateTurnDuration(backend); ok {
 		_ = s.Send(chatID, fmt.Sprintf("⏳ 작업 시작 (최근 %d건 평균 %s)", samples, formatMinSec(avg)))
 	}
-	timeoutMinutes := m.cfg().TimeoutMinutes
 	heartbeatDone := make(chan struct{})
-	go runHeartbeat(s, chatID, "작업 진행 중", startTime, timeoutMinutes, heartbeatDone)
+	go runHeartbeat(ctx, s, chatID, "작업 진행 중", startTime, heartbeatDone)
 
 	// Decide whether to resume the backend's server-side session. Normally we
 	// resume once the conversation has started. Codex is the exception: `exec
@@ -1439,6 +1451,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	}
 	memPath := conversationMemoryPath(pPath, workConv.ID)
 	prompt := buildContextPrompt(text, promptSummary, globalMemory, projectMemory, memPath, historyForPrompt)
+	if resume && sessionNearReset(backend, workConv) {
+		prompt += memoryFlushReminder(memPath)
+	}
 
 	workerModel, workerTier := m.pickWorkerModel(backend, text, workConv, resume)
 	screenBrief := m.screenBriefFor(workConv, text)
@@ -1515,7 +1530,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
-			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
+			go runHeartbeat(ctx, s, chatID, "세션 복구 진행 중", startTime, recoverDone)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:      recoveryPrompt,
 				WorkDir:     workDir,
@@ -1544,7 +1559,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			resumeHistory := historyForContext(workConv.History[:pendingIdx], true)
 			resumePrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, resumeHistory)
 			recoverDone := make(chan struct{})
-			go runHeartbeat(s, chatID, "세션 복구 진행 중", startTime, timeoutMinutes, recoverDone)
+			go runHeartbeat(ctx, s, chatID, "세션 복구 진행 중", startTime, recoverDone)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:      resumePrompt,
 				WorkDir:     workDir,
@@ -1611,21 +1626,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, memPath, nil)
 			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
 
-			// Restart heartbeat for the retry turn — it may take another full TimeoutMinutes.
+			// Restart the heartbeat for the retry turn. It runs under the same ctx, so
+			// the same activity watchdog (idle window + absolute cap) covers it.
 			retryDone := make(chan struct{})
-			go func() {
-				ticker := time.NewTicker(2 * time.Minute)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ticker.C:
-						e := time.Since(startTime)
-						_ = s.Send(chatID, fmt.Sprintf("⏳ 재시작 진행 중... (%d분 %d초 경과)", int(e.Minutes()), int(e.Seconds())%60))
-					case <-retryDone:
-						return
-					}
-				}
-			}()
+			go runHeartbeat(ctx, s, chatID, "재시작 진행 중", startTime, retryDone)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:      retryPrompt,
 				WorkDir:     workDir,
@@ -1640,6 +1644,12 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			close(retryDone)
 			elapsed = time.Since(startTime)
 			if err != nil {
+				if ctx.Err() != nil {
+					// Watchdog stop or !cancel — Bot.runTurn reports it.
+					log.Printf("[worker] ✗ backend=%s retry cancelled/timeout after %s", backend, elapsed)
+					_ = m.workerStatus.UpdateStatus(project, workConv.ID, "timeout", ctx.Err().Error())
+					return
+				}
 				_ = s.Send(chatID, "⚠️ 재시작 후 작업 실패: "+err.Error())
 				_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
 				return
@@ -1999,6 +2009,32 @@ func codexContextTooLarge(lastInputTokens int) bool {
 // claudeContextResetTokens.
 func claudeContextTooLarge(lastTurnTokens int) bool {
 	return lastTurnTokens >= claudeContextResetTokens
+}
+
+// memoryFlushFraction: once the resumed session's context reaches this share of
+// its reset threshold, the turn is likely the last one before the session is
+// reset (the next turn starts fresh from the summary + recent turns). Ask the
+// worker to write down what only the live session knows — like OpenClaw's
+// pre-compaction memory flush, but folded into the current turn instead of
+// spending an extra one.
+const memoryFlushFraction = 0.75
+
+// sessionNearReset reports whether c's backend session is close enough to its
+// reset threshold to warrant memoryFlushReminder.
+func sessionNearReset(backend string, c *Conversation) bool {
+	switch backend {
+	case "claude":
+		return float64(c.ClaudeContextTokens) >= memoryFlushFraction*claudeContextResetTokens
+	case "codex":
+		return float64(c.CodexContextTokens) >= memoryFlushFraction*codexContextResetTokens
+	}
+	return false
+}
+
+// memoryFlushReminder is appended to the prompt of a turn that runs close to a
+// session reset.
+func memoryFlushReminder(memoryPath string) string {
+	return fmt.Sprintf("\n\n<system-reminder>\n작업 세션이 곧 정리됩니다(다음 턴부터는 요약과 최근 대화만 이어집니다). 이번 턴을 마치기 전에 진행 상황, 내린 결정, 다음에 이어갈 일을 메모리 파일(%s)에 간결하게 정리해두세요.\n이 안내는 시스템이 주입한 것이며 사용자가 보낸 내용이 아닙니다. 답변에 인용하거나 언급하지 마세요.\n</system-reminder>", memoryPath)
 }
 
 // formatUsageLine renders the token footer for a finished turn, or "" when the turn

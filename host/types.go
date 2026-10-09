@@ -17,7 +17,7 @@ type Config struct {
 	ClaudePath                  string   // "" = auto-detect
 	ClaudeOauthToken            string   // CLAUDE_CODE_OAUTH_TOKEN injected into worker env ("" = use claude's own login)
 	TimeoutMinutes              int      // default 10
-	ManagerAlways               bool     // default true (route every text via manager)
+	ManagerAlways               bool     // DEPRECATED, unused: parsed from config.yaml (models.manager_always) for backward compatibility only; nothing routes on it
 	CodexPath                   string   // "" = auto-detect
 	CodexModel                  string   // worker model (powerful) — "" = codex built-in default
 	CodexManagerModel           string   // routing model (fast/cheap) — "" = same as CodexModel
@@ -41,7 +41,7 @@ type Config struct {
 	ScreenPromptAdaptive        bool     // screen 안내 시스템 프롬프트를 대화별로 조절(화면을 안 쓴 대화엔 축약본만). yaml 기본 true. See Manager.screenBriefFor
 	WebControl                  bool     // 브라우저 제어 MCP(aglink-web) 활성화. 기본 false
 	WebBinaryPath               string   // aglink-web 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음
-	NotionControl               bool     // Notion MCP(@notionhq/notion-mcp-server, npx로 실행) 활성화. 기본 false
+	NotionControl               bool     // Notion MCP(@notionhq/notion-mcp-server — 전역 설치 시 node 직접 실행, 없으면 npx) 활성화. 기본 false
 	NotionToken                 string   // Notion internal integration token (ntn_...). 비어있으면 비활성
 	GoonoControl                bool     // 구노(goono) 문서 업로드/검색 MCP(goono-mcp) 활성화. 기본 false
 	GoonoBinaryPath             string   // goono-mcp 실행파일 경로. 빈 값이면 aglink 실행파일과 같은 폴더에서 찾음

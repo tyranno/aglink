@@ -86,18 +86,43 @@ var isolationArgs = []string{"--strict-mcp-config", "--setting-sources", "projec
 // on haiku: ~25k → ~0.4k input tokens per call, cost roughly 1/6–1/9. The task
 // instructions live in the user prompt (buildRoutePrompt / summary prompt), and
 // --json-schema structured output still works without tools.
-var toolLessArgs = []string{"--tools", "", "--system-prompt", "You are a concise helper inside aglink. Follow the instructions in the user message exactly."}
+//
+// They also turn extended thinking off (noThinkingSettings): with it on, most of
+// haiku's output was thinking — measured on the rolling summary, 1.9–5k output
+// tokens for a 1.3–1.6k-char summary and 20–27s on the reset turn's critical
+// path. Verified on claude CLI 2.1.283: this flag gives thinking_tokens=0 for
+// both plain and --json-schema calls (env MAX_THINKING_TOKENS=0 works too, but an
+// arg keeps it with the other one-shot args, out of workerCmdEnv). --settings is
+// a flag-level source, so it applies despite --setting-sources project,local.
+var toolLessArgs = []string{
+	"--tools", "",
+	"--system-prompt", "You are a concise helper inside aglink. Follow the instructions in the user message exactly.",
+	"--settings", noThinkingSettings,
+}
+
+// noThinkingSettings is the inline --settings JSON that disables extended
+// thinking for one-shot manager calls.
+const noThinkingSettings = `{"alwaysThinkingEnabled":false}`
+
+// oneShotManagerArgs builds the argv for a tool-less manager-model call (Route,
+// Summarize): JSON output, isolation, toolLessArgs, the extra args, and the
+// manager model when configured.
+func oneShotManagerArgs(cfg *Config, extra ...string) []string {
+	args := []string{"-p", "--output-format", "json"}
+	args = append(args, extra...)
+	args = append(args, isolationArgs...)
+	args = append(args, toolLessArgs...)
+	if cfg != nil && cfg.ManagerModel != "" {
+		args = append(args, "--model", cfg.ManagerModel)
+	}
+	return args
+}
 
 // Route asks the Manager model to decide routing. Runs in a neutral cwd with no tools/permissions.
 func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
 	prompt := buildRoutePrompt(req)
 	// Prompt via stdin, not argv (Windows command-line length limit).
-	args := []string{"-p", "--output-format", "json", "--json-schema", routeJSONSchema}
-	args = append(args, isolationArgs...)
-	args = append(args, toolLessArgs...)
-	if r.cfg().ManagerModel != "" {
-		args = append(args, "--model", r.cfg().ManagerModel)
-	}
+	args := oneShotManagerArgs(r.cfg(), "--json-schema", routeJSONSchema)
 
 	home, _ := os.UserHomeDir()
 	stdout, stderr, err := r.exec(ctx, home, args, prompt, "") // router never drives the screen — no owner label
@@ -483,12 +508,7 @@ func streamTurnSignals(lines []string) (contextTokens int, screenUsed bool) {
 // its text. Used for the per-conversation rolling summary (convsummary.go).
 // Same isolation and neutral cwd as Route.
 func (r *claudeRunner) Summarize(ctx context.Context, prompt string) (string, error) {
-	args := []string{"-p", "--output-format", "json"}
-	args = append(args, isolationArgs...)
-	args = append(args, toolLessArgs...)
-	if r.cfg().ManagerModel != "" {
-		args = append(args, "--model", r.cfg().ManagerModel)
-	}
+	args := oneShotManagerArgs(r.cfg())
 	home, _ := os.UserHomeDir()
 	stdout, stderr, err := r.exec(ctx, home, args, prompt, "")
 	if err != nil {

@@ -1306,7 +1306,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	}
 
 	s.Typing(chatID)
-	isNewConv := !workConv.Started
+	// A not-yet-Started conversation that already has history is an existing one
+	// whose CLI session was dropped (in-place continuation, a reset turn that
+	// failed — markSessionReset), not a new topic.
+	isNewConv := !workConv.Started && len(workConv.History) == 0
 	// Show the "📂 project · 💬 conversation" header only when a genuinely new topic
 	// begins — never on a resume, and never for an internal continuation (a
 	// context-length series split). This keeps Telegram feeling like one continuous
@@ -1391,6 +1394,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		log.Printf("[worker] codex context %d tokens ≥ %d — resetting session for conv %s",
 			workConv.CodexContextTokens, codexContextResetTokens, workConv.ID)
 		_ = s.Send(chatID, fmt.Sprintf("♻️ codex 세션 컨텍스트가 커져서(약 %dk 토큰) 새 세션으로 정리했습니다 — 대화는 그대로 이어집니다.", workConv.CodexContextTokens/1000))
+		markSessionReset(workConv)
 	}
 	claudeReset := false
 	if resume && backend == "claude" && claudeContextTooLarge(workConv.ClaudeContextTokens) {
@@ -1405,6 +1409,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		log.Printf("[worker] claude context %d tokens ≥ %d — resetting session for conv %s",
 			workConv.ClaudeContextTokens, claudeContextResetTokens, workConv.ID)
 		_ = s.Send(chatID, fmt.Sprintf("♻️ claude 세션 컨텍스트가 커져서(약 %dk 토큰) 새 세션으로 정리했습니다 — 대화는 그대로 이어집니다.", workConv.ClaudeContextTokens/1000))
+		markSessionReset(workConv)
 	}
 
 	// Pass history in the prompt sized to whether the CLI carries the session.
@@ -2077,6 +2082,28 @@ func historyForContext(history []ConversationTurn, resume bool) []ConversationTu
 		return tailTurns(history, maxHistoryInPromptResume, 0)
 	}
 	return tailTurns(history, maxHistoryOnRecovery, maxHistoryCharsOnRecovery)
+}
+
+// markSessionReset records a decided context reset (claude/codex) on c so it
+// survives a failed turn. runWorker persists c with the pending prompt before
+// the run, but only updates the context counters after a successful one — so a
+// reset turn that timed out used to leave the old, over-threshold counter (and
+// Started=true) in store.json, and the next turn reset AGAIN, re-running the
+// synchronous summary. Zeroing the counters and clearing Started makes the next
+// turn after a failure start fresh exactly once more:
+//   - claude: the caller already minted a new SessionID; with Started=false the
+//     next turn uses --session-id <new id>. If the failed turn did create that
+//     session, the CLI answers "already in use" and the existing in-use recovery
+//     resumes it; if not, it is simply created. Never a --resume of a session
+//     that may not exist.
+//   - codex: a fresh run ignores SessionID and returns the new thread id, which
+//     replaces the stored one (!wasStarted).
+//
+// A successful turn sets Started=true and the real counters as before.
+func markSessionReset(c *Conversation) {
+	c.Started = false
+	c.ClaudeContextTokens = 0
+	c.CodexContextTokens = 0
 }
 
 // tailTurns returns the last turns of history: at most maxTurns, and — when

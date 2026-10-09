@@ -269,7 +269,6 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			modelField("models.worker_light", "가벼운 작업 모델(선택)", "채우면 짧고 단순한 메시지만 이 모델이 처리하고, 진짜 작업은 위 '작업 모델'이 맡습니다(비용 절감). 비우면 항상 작업 모델을 씁니다 — 작업 모델을 바꿨는데 답이 다른 모델로 나오는 것 같으면 이 값을 확인하세요. 이미 길어진 대화(약 2만 토큰 이상)는 캐시 손실을 피하려고 작업 모델을 유지합니다. 대화별 고정은 !model.", cfg.WorkerModelLight, claudeModelAliases),
 			modelField("backend.codex_model", "Codex 작업 모델", "codex를 쓸 때의 작업 모델. 설치된 codex에서 실제 확인한 목록입니다.", cfg.CodexModel, codexModels),
 			modelField("backend.codex_manager_model", "Codex 매니저 모델", "codex를 쓸 때의 매니저 모델.", cfg.CodexManagerModel, codexModels),
-			{Key: "models.manager_always", Label: "항상 매니저 먼저", Desc: "켜면 모든 메시지를 매니저 모델이 먼저 훑어 분배합니다. 끄면 간단한 메시지는 바로 작업 모델로 갑니다.", Type: "bool", Value: cfg.ManagerAlways},
 		}},
 
 		{Title: "토큰 절약", Group: settingsGroupAI, Desc: "긴 대화의 비용을 줄이는 옵션입니다. 기본값(켜짐)을 권장합니다. 대화별 모델 고정은 채팅에서 !model 로 합니다.", Fields: []settingField{
@@ -352,8 +351,6 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.WorkerModel = asString(v)
 		case "models.worker_light":
 			cfg.WorkerModelLight = asString(v)
-		case "models.manager_always":
-			cfg.ManagerAlways = asBool(v)
 		case "backend.default":
 			cfg.DefaultBackend = strings.ToLower(asString(v))
 		case "backend.codex_model":

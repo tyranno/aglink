@@ -31,10 +31,6 @@ WORKER_MODEL=claude-sonnet-4-6
 # 작업 타임아웃 (분, 기본 10)
 TIMEOUT_MINUTES=10
 
-# true = 매 메시지마다 Manager가 프로젝트/대화를 라우팅 (더 정확, 토큰 소비↑)
-# false = 활성 대화가 있으면 바로 Worker 호출 (빠름, 토큰 절약)
-MANAGER_ALWAYS=true
-
 # ─── Codex 백엔드 (선택, !backend codex 로 전환) ──────────────────────────────
 
 # DEFAULT_BACKEND=codex

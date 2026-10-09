@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // MCPServerDef is a generic, config-driven MCP server definition. Adding a new
@@ -65,13 +72,15 @@ func buildMCPServerListOpts(cfg *Config, screenBin, webBin, goonoBin string, scr
 		out = append(out, MCPServerDef{Name: "goono", Command: goonoBin, Args: []string{}, SystemPrompt: goonoSystemPrompt()})
 	}
 	if cfg.NotionControl && cfg.NotionToken != "" {
-		// Official Notion-maintained MCP server, run via npx rather than a bundled
-		// binary — there's no OS-level control surface to implement, so nothing
-		// custom to build. npx caches the package after the first fetch.
+		// Official Notion-maintained MCP server — there's no OS-level control
+		// surface to implement, so nothing custom to build. Launched with node
+		// straight from a global install when there is one, else via npx (see
+		// notionMCPLaunch).
+		cmd, args := notionMCPLaunch()
 		out = append(out, MCPServerDef{
 			Name:    "notion",
-			Command: "npx",
-			Args:    []string{"-y", "@notionhq/notion-mcp-server"},
+			Command: cmd,
+			Args:    args,
 			Env:     map[string]string{"NOTION_TOKEN": cfg.NotionToken},
 		})
 	}
@@ -128,4 +137,118 @@ func codexMCPServerArgs(cfg *Config, screenBin, webBin, goonoBin string) []strin
 		}
 	}
 	return args
+}
+
+// notionMCPPackage is the npm package of the official Notion MCP server.
+const notionMCPPackage = "@notionhq/notion-mcp-server"
+
+var (
+	notionLaunchOnce sync.Once
+	notionLaunchCmd  string
+	notionLaunchArgs []string
+)
+
+// notionMCPLaunch returns the command that starts the Notion MCP server,
+// resolved once per process. `npx -y <pkg>` on Windows goes npx.cmd → node and
+// checks the npm registry on every start — i.e. every worker turn, since each
+// turn spawns its own MCP servers. When the package is installed globally
+// (`npm i -g @notionhq/notion-mcp-server`), run `node <its bin entry>` directly
+// instead; otherwise keep npx. A package installed after aglink started is
+// picked up on the next restart.
+func notionMCPLaunch() (string, []string) {
+	notionLaunchOnce.Do(func() {
+		notionLaunchCmd, notionLaunchArgs = "npx", []string{"-y", notionMCPPackage}
+		node, err := exec.LookPath("node")
+		if err != nil {
+			return
+		}
+		entry, ok := findGlobalPackageBin(npmGlobalRootCandidates(node), notionMCPPackage)
+		if !ok {
+			// Cheap guesses missed (custom npm prefix): ask npm once.
+			if root := npmRootGlobal(); root != "" {
+				entry, ok = findGlobalPackageBin([]string{root}, notionMCPPackage)
+			}
+		}
+		if ok {
+			notionLaunchCmd, notionLaunchArgs = node, []string{entry}
+			log.Printf("[mcp] notion: 전역 설치 사용 (node %s)", entry)
+		} else {
+			log.Printf("[mcp] notion: 전역 설치 없음 — npx로 실행 (npm i -g %s 권장)", notionMCPPackage)
+		}
+	})
+	return notionLaunchCmd, append([]string(nil), notionLaunchArgs...)
+}
+
+// npmGlobalRootCandidates lists likely global node_modules dirs without running
+// npm: %APPDATA%\npm\node_modules (default Windows prefix), <node dir>\node_modules
+// (Windows prefix = the node install dir) and <node dir>/../lib/node_modules (Unix).
+func npmGlobalRootCandidates(nodePath string) []string {
+	var dirs []string
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dirs = append(dirs, filepath.Join(appData, "npm", "node_modules"))
+	}
+	if nodePath != "" {
+		d := filepath.Dir(nodePath)
+		dirs = append(dirs, filepath.Join(d, "node_modules"), filepath.Join(d, "..", "lib", "node_modules"))
+	}
+	return dirs
+}
+
+// npmRootGlobal returns `npm root -g`, or "" if npm is unavailable.
+func npmRootGlobal() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "npm", "root", "-g").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// findGlobalPackageBin looks for pkg under each root and returns the absolute
+// path of its executable entry, taken from package.json "bin": a string, or a
+// map — the entry named after the package's last path segment, else the only /
+// alphabetically first one. ok is false when no root has the package or the
+// entry file is missing.
+func findGlobalPackageBin(roots []string, pkg string) (string, bool) {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		dir := filepath.Join(root, filepath.FromSlash(pkg))
+		data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			Bin json.RawMessage `json:"bin"`
+		}
+		if json.Unmarshal(data, &meta) != nil || len(meta.Bin) == 0 {
+			continue
+		}
+		rel := ""
+		var single string
+		var many map[string]string
+		if json.Unmarshal(meta.Bin, &single) == nil {
+			rel = single
+		} else if json.Unmarshal(meta.Bin, &many) == nil && len(many) > 0 {
+			rel = many[pkg[strings.LastIndex(pkg, "/")+1:]]
+			if rel == "" {
+				keys := make([]string, 0, len(many))
+				for k := range many {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				rel = many[keys[0]]
+			}
+		}
+		if rel == "" {
+			continue
+		}
+		entry := filepath.Join(dir, filepath.FromSlash(rel))
+		if fi, err := os.Stat(entry); err == nil && !fi.IsDir() {
+			return entry, true
+		}
+	}
+	return "", false
 }

@@ -46,8 +46,14 @@ const (
 	// summaryPrewarmMinTurns: don't spend a call until at least this many turns
 	// accumulated beyond the existing summary (and the verbatim tail).
 	summaryPrewarmMinTurns = 3
-	summarySyncTimeout     = 90 * time.Second
-	summaryAsyncTimeout    = 3 * time.Minute
+	// summaryReuseMaxTurns / summaryReuseMaxChars: a fresh session reuses an
+	// existing summary without a synchronous refresh when the turns it does not
+	// cover number at most this many, or their raw text fits this budget
+	// (summaryGapReusable); those turns are injected verbatim instead.
+	summaryReuseMaxTurns = 6
+	summaryReuseMaxChars = 12000
+	summarySyncTimeout   = 90 * time.Second
+	summaryAsyncTimeout  = 3 * time.Minute
 )
 
 // convSummaryState is a summary computed off the turn path (prewarm), held by
@@ -167,18 +173,38 @@ func buildSummaryPrompt(old string, turns []ConversationTurn) string {
 }
 
 // summaryForFreshSession builds the context for a turn that runs on a fresh CLI
-// session over an existing conversation: the rolling summary (brought up to date
-// synchronously if needed) plus the last summaryTailTurns turns of history. ok is
-// false when the feature is off, the history is short enough that the old path
-// is already cheap, or summarizing failed — the caller then falls back to
-// historyForContext(history, false). On success c.RollingSummary/UpTo are updated
-// (persisted with the turn's save).
+// session over an existing conversation: the rolling summary plus recent history
+// verbatim. ok is false when the feature is off, the history is short enough
+// that the old path is already cheap, or summarizing failed — the caller then
+// falls back to historyForContext(history, false). On success
+// c.RollingSummary/UpTo are updated (persisted with the turn's save).
+//
+// Three cases, by how many turns the existing summary does not yet cover
+// (excluding the last summaryTailTurns, which are always injected verbatim):
+//   - none: summary + tail, no call.
+//   - a small gap (summaryGapReusable): summary + the uncovered turns + tail,
+//     verbatim, with no synchronous call — the haiku call used to put 20–27s on
+//     the reset turn's critical path. The summary is refreshed in the background
+//     (refreshSummaryAsync) so the next fresh session finds it current.
+//   - no summary yet, or a large gap: bring it up to date synchronously
+//     (bounded by summarySyncTimeout).
 func (m *Manager) summaryForFreshSession(ctx context.Context, key string, c *Conversation, history []ConversationTurn) (summary string, tail []ConversationTurn, ok bool) {
 	if !m.cfg().SummaryOnReset || len(history) <= summaryTailTurns {
 		return "", nil, false
 	}
 	summary, upTo := m.bestSummary(key, c)
-	if pending := turnsToSummarize(history, upTo, summaryTailTurns); len(pending) > 0 {
+	pending := turnsToSummarize(history, upTo, summaryTailTurns)
+	if len(pending) > 0 && summary != "" && summaryGapReusable(pending) {
+		// pending is the contiguous run just before the tail, so pending + tail
+		// is everything after the summary's coverage.
+		c.RollingSummary, c.RollingSummaryUpTo = summary, upTo
+		if s := m.summarizerClient(); s != nil {
+			m.refreshSummaryAsync(s, key, c.ID, summary, pending)
+		}
+		log.Printf("[summary] conv %s 요약 재사용 (미반영 %d턴 원문 첨부, 비동기 갱신)", c.ID, len(pending))
+		return summary, history[len(history)-summaryTailTurns-len(pending):], true
+	}
+	if len(pending) > 0 {
 		s := m.summarizerClient()
 		if s == nil {
 			return "", nil, false
@@ -202,6 +228,23 @@ func (m *Manager) summaryForFreshSession(ctx context.Context, key string, c *Con
 	return summary, tailTurns(history, summaryTailTurns, maxHistoryCharsOnRecovery), true
 }
 
+// summaryGapReusable reports whether the turns an existing summary doesn't cover
+// are few enough to inject verbatim instead of summarizing them synchronously:
+// at most summaryReuseMaxTurns turns, or raw text within summaryReuseMaxChars.
+func summaryGapReusable(pending []ConversationTurn) bool {
+	if len(pending) <= summaryReuseMaxTurns {
+		return true
+	}
+	chars := 0
+	for _, t := range pending {
+		chars += len(t.Prompt) + len(t.Response)
+		if chars > summaryReuseMaxChars {
+			return false
+		}
+	}
+	return true
+}
+
 // maybePrewarmSummary refreshes the rolling summary in the background once the
 // session's context nears its reset threshold, so the eventual reset turn finds
 // it current and needs no synchronous call. history must be a snapshot the
@@ -218,6 +261,18 @@ func (m *Manager) maybePrewarmSummary(key, convID string, c *Conversation, conte
 	}
 	s := m.summarizerClient()
 	if s == nil {
+		return
+	}
+	m.refreshSummaryAsync(s, key, convID, old, pending)
+}
+
+// refreshSummaryAsync folds pending into old in the background and caches the
+// result on the Manager (storeSummary); the conversation picks it up on its
+// next save (adoptCachedSummary). At most one refresh per conversation is in
+// flight; a call while one runs is a no-op. pending is copied, so the caller may
+// keep mutating its history.
+func (m *Manager) refreshSummaryAsync(s textSummarizer, key, convID, old string, pending []ConversationTurn) {
+	if len(pending) == 0 {
 		return
 	}
 	m.summaryMu.Lock()
@@ -244,11 +299,11 @@ func (m *Manager) maybePrewarmSummary(key, convID string, c *Conversation, conte
 		out, err := s.Summarize(ctx, buildSummaryPrompt(old, turns))
 		out = strings.TrimSpace(out)
 		if err != nil || out == "" {
-			log.Printf("[summary] conv %s 사전 요약 실패 (리셋 시 재시도): %v", convID, err)
+			log.Printf("[summary] conv %s 비동기 요약 실패 (다음 리셋 시 재시도): %v", convID, err)
 			return
 		}
 		m.storeSummary(key, truncate(out, summaryMaxChars), newUpTo)
-		log.Printf("[summary] conv %s 사전 요약 완료 (%d턴 반영)", convID, len(turns))
+		log.Printf("[summary] conv %s 비동기 요약 완료 (%d턴 반영)", convID, len(turns))
 	}()
 }
 

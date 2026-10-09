@@ -328,8 +328,10 @@ func TestApplySettings_WhitelistAndTypes(t *testing.T) {
 	if cfg.MaxWorkers != 7 {
 		t.Errorf("MaxWorkers = %d, want 7 (float64 coerced to int)", cfg.MaxWorkers)
 	}
-	if !cfg.ManagerAlways {
-		t.Errorf("ManagerAlways = false, want true")
+	// manager_always is dead config (nothing routes on it) — no longer settable
+	// from the settings form; a stale client sending it is ignored.
+	if cfg.ManagerAlways {
+		t.Errorf("models.manager_always should be ignored by applySettings")
 	}
 	if cfg.AglinkChatAddr != "127.0.0.1:27271" {
 		t.Errorf("AglinkChatAddr = %q", cfg.AglinkChatAddr)

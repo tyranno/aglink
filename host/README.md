@@ -77,7 +77,6 @@ WORKER_MODEL=claude-sonnet-4-6
 
 # 선택
 TIMEOUT_MINUTES=10
-MANAGER_ALWAYS=true
 # CLAUDE_PATH=/usr/bin/claude
 ```
 
@@ -353,5 +352,5 @@ journalctl --user -u aglink -f
 ## 한계 (현재)
 
 - 한 번에 한 작업만 처리 (직렬화). 진행 중 새 메시지는 `!cancel` 후 재시도.
-- claude 콜드스타트 지연 (호출당 수~십수 초). `MANAGER_ALWAYS=false`로 완화 가능.
+- claude 콜드스타트 지연 (호출당 수~십수 초). 라우터는 텔레그램 예약 키워드에만 호출되며, 원샷 매니저 호출은 도구·thinking 없이 실행해 완화.
 - `!update` (hot-swap 업데이트)는 현재 Windows 전용. Linux는 `deploy-linux.sh` 사용.

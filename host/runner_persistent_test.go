@@ -56,6 +56,13 @@ func (f *fakeProc) send(line []byte) error {
 	f.sent = append(f.sent, string(line))
 	turn := len(f.sent)
 	f.mu.Unlock()
+	// Like --replay-user-messages: echo the message (with its uuid) first.
+	var m struct {
+		UUID string `json:"uuid"`
+	}
+	if json.Unmarshal(line, &m) == nil && m.UUID != "" {
+		f.out <- `{"type":"user","uuid":"` + m.UUID + `","isReplay":true}`
+	}
 	if f.respond != nil {
 		f.respond(f, turn, string(line))
 	}
@@ -192,14 +199,14 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 
 func TestPersistentArgsInsertsInputFormat(t *testing.T) {
 	got := persistentArgs([]string{"-p", "--output-format", "stream-json", "--resume", "x"})
-	want := "-p --input-format stream-json --output-format stream-json --resume x"
+	want := "-p --input-format stream-json --replay-user-messages --output-format stream-json --resume x"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("persistentArgs = %q, want %q", strings.Join(got, " "), want)
 	}
 }
 
 func TestPersistentUserMessageFormat(t *testing.T) {
-	b, err := persistentUserMessage("안녕 \"q\"\nline2")
+	b, err := persistentUserMessage("안녕 \"q\"\nline2", "u-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +635,7 @@ func TestClaudeRunner_PersistentRun(t *testing.T) {
 		t.Fatalf("spawns = %d, want 1", sp.count())
 	}
 	args := strings.Join(sp.specs[0].args, " ")
-	if !strings.HasPrefix(args, "-p --input-format stream-json --output-format stream-json") || !strings.Contains(args, "--session-id S") {
+	if !strings.HasPrefix(args, "-p --input-format stream-json --replay-user-messages --output-format stream-json") || !strings.Contains(args, "--session-id S") {
 		t.Errorf("args = %q", args)
 	}
 	mu.Lock()
@@ -651,6 +658,11 @@ func TestHelperFakePersistentClaude(t *testing.T) {
 	n := 0
 	for sc.Scan() {
 		n++
+		var m struct {
+			UUID string `json:"uuid"`
+		}
+		_ = json.Unmarshal(sc.Bytes(), &m)
+		fmt.Printf("{\"type\":\"user\",\"uuid\":%q,\"isReplay\":true}\n", m.UUID)
 		fmt.Printf("{\"type\":\"system\",\"subtype\":\"init\"}\n")
 		if strings.Contains(sc.Text(), "orphan") {
 			c := exec.Command(os.Args[0], "-test.run=^TestHelperOrphanHolder$")
@@ -763,5 +775,25 @@ func TestCLIProc_OrphanHoldingStdoutDoesNotBlockRetire(t *testing.T) {
 	p.Close() // helper exits on stdin EOF; its orphan still holds stdout for 3s
 	if el := time.Since(start); el > 2*time.Second {
 		t.Fatalf("Close blocked %v on the orphan's stdout", el)
+	}
+}
+
+// A resumed session with pending background-task notices answers them first,
+// with a result of its own, before reading our message. That result must not
+// end our turn (the turn used to come back empty while the real answer arrived
+// later as "output between turns").
+func TestPersistentPool_SkipsTurnsBeforeOwnMessage(t *testing.T) {
+	sp := &fakeSpawner{respond: okTurn, onSpawn: func(f *fakeProc) {
+		f.emit(`{"type":"system","subtype":"init"}`)
+		f.emit(`{"type":"result","subtype":"success","is_error":false,"result":"No response requested."}`)
+	}}
+	p := testPool(sp, time.Minute, 3)
+	defer p.Close()
+	out, _, err := p.runTurn(context.Background(), "conv", workerSpec("opus", "--resume", "S"), "hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "No response requested.") || !strings.Contains(out, "hello") {
+		t.Fatalf("out = %q", out)
 	}
 }

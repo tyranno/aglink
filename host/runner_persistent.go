@@ -126,13 +126,15 @@ func persistentKey(req RunRequest) string {
 }
 
 // persistentArgs turns one-shot stream-json worker args into resident ones: the
-// same argv plus --input-format stream-json right after -p.
+// same argv plus --input-format stream-json and --replay-user-messages right
+// after -p. The replay echoes each stdin message back (with the uuid we sent),
+// which marks where this turn's output starts — see persistentPool.turn.
 func persistentArgs(args []string) []string {
-	out := make([]string, 0, len(args)+2)
+	out := make([]string, 0, len(args)+3)
 	for i, a := range args {
 		out = append(out, a)
 		if i == 0 && a == "-p" {
-			out = append(out, "--input-format", "stream-json")
+			out = append(out, "--input-format", "stream-json", "--replay-user-messages")
 		}
 	}
 	return out
@@ -179,10 +181,12 @@ func persistentSignature(spec persistentSpec) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// persistentUserMessage renders a prompt as one stream-json stdin line.
-func persistentUserMessage(prompt string) ([]byte, error) {
+// persistentUserMessage renders a prompt as one stream-json stdin line tagged
+// with uuid; the CLI echoes that uuid back on the replayed message.
+func persistentUserMessage(prompt, uuid string) ([]byte, error) {
 	b, err := json.Marshal(map[string]any{
 		"type": "user",
+		"uuid": uuid,
 		"message": map[string]any{
 			"role":    "user",
 			"content": []map[string]string{{"type": "text", "text": prompt}},
@@ -211,6 +215,23 @@ func resultLineStatus(line string) (isResult, isError bool) {
 	return true, probe.IsError || (probe.Subtype != "" && probe.Subtype != "success")
 }
 
+// replayLineUUID returns the uuid of a replayed user message line
+// (--replay-user-messages), or "" when line is not one.
+func replayLineUUID(line string) string {
+	if !strings.Contains(line, `"isReplay"`) {
+		return "" // cheap pre-filter
+	}
+	var probe struct {
+		Type     string `json:"type"`
+		UUID     string `json:"uuid"`
+		IsReplay bool   `json:"isReplay"`
+	}
+	if json.Unmarshal([]byte(line), &probe) != nil || probe.Type != "user" || !probe.IsReplay {
+		return ""
+	}
+	return probe.UUID
+}
+
 // runTurn runs one worker turn on key's resident process and returns the same
 // (stdout, stderr, err) triple execStream would, stdout holding only this turn's
 // lines. errPersistentUnavailable means the caller must run the one-shot path.
@@ -220,7 +241,8 @@ func resultLineStatus(line string) (isResult, isError bool) {
 // is replaced by a fresh spawn once — nothing of the turn has run yet, so that is
 // the same as a one-shot run.
 func (p *persistentPool) runTurn(ctx context.Context, key string, spec persistentSpec, prompt string, onLine func(string)) (stdout, stderr string, err error) {
-	msg, merr := persistentUserMessage(prompt)
+	id := newUUID()
+	msg, merr := persistentUserMessage(prompt, id)
 	if merr != nil {
 		return "", "", errPersistentUnavailable
 	}
@@ -230,7 +252,7 @@ func (p *persistentPool) runTurn(ctx context.Context, key string, spec persisten
 		if aerr != nil {
 			return "", "", errPersistentUnavailable
 		}
-		out, serr, terr, retry := p.turn(ctx, e, reused, msg, onLine)
+		out, serr, terr, retry := p.turn(ctx, e, reused, msg, id, onLine)
 		if retry && attempt == 0 && ctx.Err() == nil {
 			log.Printf("[worker] persistent claude conv=%s: reused process failed before output (%v) — respawning", key, terr)
 			continue
@@ -320,9 +342,17 @@ func (p *persistentPool) acquire(key, sig string, spec persistentSpec) (*persist
 	return e, false, nil
 }
 
-// turn feeds msg to e's process and reads this turn's lines up to its result.
-// retry reports a reused process that failed before emitting anything.
-func (p *persistentPool) turn(ctx context.Context, e *persistentEntry, reused bool, msg []byte, onLine func(string)) (stdout, stderr string, err error, retry bool) {
+// turn feeds msg (tagged msgID) to e's process and reads this turn's lines up
+// to its result. retry reports a reused process that failed before emitting
+// anything.
+//
+// The CLI can run turns of its own: a resumed session with pending background
+// task notifications (e.g. agents stopped when an earlier process ended) is
+// answered first, with its own result ("No response requested."). Lines before
+// the replay of OUR message belong to such turns — they are skipped, and their
+// result does not end this turn, which would otherwise come back empty while
+// the real answer arrived later as "output between turns".
+func (p *persistentPool) turn(ctx context.Context, e *persistentEntry, reused bool, msg []byte, msgID string, onLine func(string)) (stdout, stderr string, err error, retry bool) {
 	proc := e.proc
 	if reused {
 		// Anything waiting on stdout means the process did something on its own
@@ -354,13 +384,25 @@ func (p *persistentPool) turn(ctx context.Context, e *persistentEntry, reused bo
 	// (turnwatch.go), exactly as in execStream.
 	act := turnActivityFrom(ctx)
 	var outBuf bytes.Buffer
+	started := false // the replay of msgID was seen (see the doc comment)
+	// pre holds lines from before the replay. They are not this turn's output,
+	// but when the process dies before ever reading our message (e.g. --resume
+	// of a missing session) they are all there is, and the caller's recovery
+	// matching needs them exactly as a one-shot run would have printed them.
+	var pre bytes.Buffer
+	stdoutText := func() string {
+		if started {
+			return outBuf.String()
+		}
+		return pre.String() + outBuf.String()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			// Watchdog stop or !cancel: kill the tree and forget the process; the
 			// next turn respawns with --resume.
 			p.drop(e, "cancelled")
-			return outBuf.String(), proc.takeStderr(), ctx.Err(), false
+			return stdoutText(), proc.takeStderr(), ctx.Err(), false
 		case werr := <-sendErr:
 			sendErr = nil
 			if werr == nil {
@@ -375,22 +417,33 @@ func (p *persistentPool) turn(ctx context.Context, e *persistentEntry, reused bo
 			proc.closeStdin()
 			p.drainUntilExit(ctx, proc, &outBuf, onLine)
 			if ctx.Err() != nil {
-				return outBuf.String(), proc.takeStderr(), ctx.Err(), false
+				return stdoutText(), proc.takeStderr(), ctx.Err(), false
 			}
 			err := proc.exitErr()
 			if err == nil {
 				err = fmt.Errorf("stdin write: %w", werr)
 			}
-			return outBuf.String(), proc.takeStderr(), err, reused && outBuf.Len() == 0
+			return stdoutText(), proc.takeStderr(), err, reused && outBuf.Len() == 0
 		case line, ok := <-proc.lines():
 			if !ok {
 				// Exited before this turn's result: report it like a one-shot run
 				// whose process ended (exit error + stderr, partial stdout).
 				p.forget(e)
 				<-proc.done()
-				return outBuf.String(), proc.takeStderr(), proc.exitErr(), reused && outBuf.Len() == 0
+				return stdoutText(), proc.takeStderr(), proc.exitErr(), reused && outBuf.Len() == 0
 			}
 			act.Touch()
+			if id := replayLineUUID(line); id != "" {
+				if id == msgID {
+					started = true
+				}
+				continue
+			}
+			if !started {
+				pre.WriteString(line)
+				pre.WriteByte(10)
+				continue
+			}
 			outBuf.WriteString(line)
 			outBuf.WriteByte('\n')
 			if onLine != nil {

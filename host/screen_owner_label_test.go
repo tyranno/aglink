@@ -55,9 +55,10 @@ func TestWorkerCmdEnv_BothTokensAndLabel(t *testing.T) {
 }
 
 func TestWorkerCmdEnv_NilWhenNothingToAdd(t *testing.T) {
-	// No token, no label, MCP output cap already set by the parent → inherit the
-	// parent environment unchanged (nil).
+	// No token, no label, MCP output cap and background-task switch already set
+	// by the parent → inherit the parent environment unchanged (nil).
 	t.Setenv("MAX_MCP_OUTPUT_TOKENS", "25000")
+	t.Setenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1")
 	if env := workerCmdEnv("", ""); env != nil {
 		t.Errorf("workerCmdEnv(\"\", \"\") = non-nil (%d entries), want nil (inherit unchanged)", len(env))
 	}

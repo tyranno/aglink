@@ -329,6 +329,13 @@ func workerCmdEnv(oauthToken, ownerLabel string) []string {
 	if os.Getenv("MAX_MCP_OUTPUT_TOKENS") == "" {
 		extra = append(extra, "MAX_MCP_OUTPUT_TOKENS="+strconv.Itoa(workerMCPOutputTokens))
 	}
+	if os.Getenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS") == "" {
+		// Background agents/commands outlive a one-shot turn (they are stopped when
+		// the process exits, then replayed as "didn't finish" notices on the next
+		// resume) and make a persistent process answer on its own between turns.
+		// With this set, subagents run to completion inside the turn.
+		extra = append(extra, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1")
+	}
 	if oauthToken != "" {
 		extra = append(extra, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
 	}

@@ -257,13 +257,19 @@ async function navigate(params) {
     tab = await chrome.tabs.update(params.tabId, { url });
   } else {
     try {
-      tab = await chrome.tabs.create({ url });
+      // active:false — open in the background so the agent's navigation does not
+      // yank the user's current tab away. The daemon remembers this tab id and
+      // targets it for later tabId-less calls, so working in the background tab
+      // still flows naturally (see extConn.navTab).
+      tab = await chrome.tabs.create({ url, active: false });
     } catch (e) {
       // Chrome left running in the background (no window open, e.g. after
       // closing the last one with "continue running background apps") has
-      // nowhere to put a tab; open a window for it instead.
+      // nowhere to put a tab; open a window for it instead. A window must take
+      // focus to exist usefully, but this path only happens when Chrome had no
+      // visible window at all, so nothing is being yanked away.
       if (!/no current window/i.test(String(e && e.message ? e.message : e))) throw e;
-      const win = await chrome.windows.create({ url, focused: true });
+      const win = await chrome.windows.create({ url, focused: false });
       tab = win.tabs && win.tabs[0];
       if (!tab) throw e;
     }

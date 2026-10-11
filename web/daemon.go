@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,29 @@ type extConn struct {
 	// that resolved it a moment earlier fails at once instead of parking on a
 	// connection nothing will ever answer from.
 	gone bool
+
+	// navTab is the id of the tab the last navigate opened on this connection, or
+	// 0. navigate now opens its tab in the BACKGROUND (active:false) so it does
+	// not steal the user's view; to keep "navigate then act" working without an
+	// explicit tabId, a later tabId-less page call is aimed at this tab instead of
+	// Chrome's active tab. Guarded by d.mu. Cleared when that tab turns out to be
+	// gone. See navTargetMethods.
+	navTab int
+}
+
+// navTargetMethods are the Chrome page tools that act on a single tab and
+// default to the active one. For these, a call that omits tabId is redirected to
+// the connection's navTab (the last backgrounded navigate) when one is known, so
+// the agent keeps working the tab it opened without bringing it to the front.
+// Connection-level tools (list_tabs, get_console_logs, …) and tools where a
+// silent redirect would surprise (close_tab, activate_tab) are deliberately out.
+var navTargetMethods = map[string]bool{
+	"get_page_text": true, "element_exists": true, "click": true,
+	"double_click": true, "hover": true, "drag": true, "get_html": true,
+	"query_all": true, "eval": true, "get_attribute": true, "list_elements": true,
+	"wait_for_element": true, "type": true, "get_value": true, "key": true,
+	"scroll": true, "select_option": true, "dialog_status": true,
+	"proceed_insecure": true, "handle_dialog": true, "screenshot": true,
 }
 
 // Daemon is the persistent process (`aglink-web serve`). It holds one live
@@ -321,21 +345,62 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 
 	d.mu.Lock()
 	ec, err := d.resolve(profile)
+	var navTab int
+	if ec != nil {
+		navTab = ec.navTab
+	}
 	d.mu.Unlock()
 	if err != nil {
 		return CallResult{Error: err.Error()}
 	}
-	if method == "proceed_insecure" {
-		return d.proceedChrome(ec, params)
+
+	// Aim a tabId-less page call at the last backgrounded navigate's tab.
+	if navTab != 0 && navTargetMethods[method] && intp(params, "tabId", 0) == 0 {
+		if params == nil {
+			params = map[string]any{}
+		}
+		params["tabId"] = navTab
 	}
-	if method == "handle_dialog" {
-		return d.handleDialogChrome(ec, params)
+
+	var res CallResult
+	switch method {
+	case "proceed_insecure":
+		res = d.proceedChrome(ec, params)
+	case "handle_dialog":
+		res = d.handleDialogChrome(ec, params)
+	default:
+		res = d.roundTrip(ec, method, params, callTimeout, "browser")
+		if method == "navigate" && res.OK {
+			res = d.autoProceed(ec, params, res)
+		}
 	}
-	res := d.roundTrip(ec, method, params, callTimeout, "browser")
-	if method == "navigate" && res.OK {
-		res = d.autoProceed(ec, params, res)
-	}
+
+	d.rememberNavTab(ec, method, res)
 	return res
+}
+
+// rememberNavTab keeps ec.navTab in step with reality: a successful navigate
+// sets it to the new tab, and any call that reports the remembered tab is gone
+// clears it so the next tabId-less call falls back to Chrome's active tab.
+func (d *Daemon) rememberNavTab(ec *extConn, method string, res CallResult) {
+	if ec == nil {
+		return
+	}
+	if method == "navigate" && res.OK {
+		if m := navigatedTabRE.FindStringSubmatch(res.Text); m != nil {
+			if id, err := strconv.Atoi(m[1]); err == nil {
+				d.mu.Lock()
+				ec.navTab = id
+				d.mu.Unlock()
+			}
+		}
+		return
+	}
+	if !res.OK && strings.Contains(res.Error, "No tab with id") {
+		d.mu.Lock()
+		ec.navTab = 0
+		d.mu.Unlock()
+	}
 }
 
 // listProfiles renders the connected profiles, oldest first — the same order

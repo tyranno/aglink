@@ -51,7 +51,7 @@
 #>
 [CmdletBinding()]
 param(
-    # Required for the server/tunnel mode; ignored (and unnecessary) with -Host_,
+    # Required for the server/tunnel mode; ignored (and unnecessary) with -Host_/-Screen_,
     # which touches nothing remote. Validated in the body rather than declared
     # Mandatory so the host task's command line carries no address at all.
     [string[]] $SshHost,
@@ -74,9 +74,18 @@ param(
     # Off by default and driven by its OWN scheduled task, because the host
     # re-launches itself elevated when screen_control.elevated is set. Started
     # from an unelevated task it would raise a UAC prompt on every check, so its
-    # task runs at RunLevel Highest — and that cannot be the task that starts
-    # aglink-web/aglink-screen, which are meant to stay unelevated.
+    # task runs at RunLevel Highest — which is why it is a separate task from the
+    # one that starts aglink-web (which stays unelevated).
     [switch] $Host_,
+
+    # Keep ONLY the aglink-screen daemon alive, and expect to be run elevated.
+    #
+    # Its own scheduled task at RunLevel Highest, like -Host_. aglink-screen runs
+    # elevated so that launch_app's children inherit administrator rights with no
+    # UAC prompt — the whole point of unattended control. aglink-web deliberately
+    # does NOT move here: an elevated browser bridge would open the user's Chrome
+    # and apps elevated, which breaks more than it helps.
+    [switch] $Screen_,
 
     # Path to the host binary; only read when -Host_ is given.
     [string] $HostExe,
@@ -256,27 +265,39 @@ function Test-RemotePort([string] $Target, [int] $Port) {
 # tunnel the opposite is right: if it cannot bind, it should die immediately so
 # the next run retries, rather than sit there pretending to forward.
 function Start-Tunnel([string] $Target, [int] $Port) {
+    # NO -f. Windows OpenSSH does not background with -f the way OpenSSH on Unix
+    # does: the parent never exits, so the old "run with -f, wait 20s, kill if it
+    # has not exited" logic killed the very tunnel it had just set up — every
+    # tick (observed as a steady stream of "TIMEOUT ... killed" with the port
+    # never staying up). Instead we start a long-lived ssh that HOLDS the tunnel
+    # and never expect it to exit; we poll the far end to see the forward come up
+    # and leave ssh running when it does. ExitOnForwardFailure makes ssh quit by
+    # itself when the remote port is already held, which the HasExited check sees.
     $sshArgs = @(
-        '-f', '-N',
+        '-N',
         '-o', 'BatchMode=yes',
         '-o', 'ExitOnForwardFailure=yes',
+        '-o', 'ConnectTimeout=10',
         '-o', 'ServerAliveInterval=30',
         '-o', 'ServerAliveCountMax=3',
         '-R', "${Port}:127.0.0.1:$Port",
         $Target
     )
-    # Bounded for the same reason as the probe: -f forks to the background only
-    # AFTER authentication and forwarding are set up, so a wedged link stalls
-    # here just as readily.
     $p = Start-Process -FilePath 'ssh' -ArgumentList $sshArgs -NoNewWindow -PassThru
-    Wait-Process -Id $p.Id -Timeout $ProbeTimeoutSec -ErrorAction SilentlyContinue
+    # Give auth + forwarding time to establish, polling the far end. As soon as
+    # the port answers we return success and LEAVE ssh running — it is the tunnel.
+    for ($i = 0; $i -lt 8; $i++) {
+        Start-Sleep -Seconds 2
+        if ($p.HasExited) { return $false } # ExitOnForwardFailure: port held / far end down
+        if (Test-RemotePort $Target $Port) { return $true }
+    }
+    # Never came up within the window — a wedged link. Kill it so the next tick
+    # retries from a clean slate rather than leaking stalled ssh processes.
     if (-not $p.HasExited) {
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-        Write-Act "TIMEOUT  ssh -R $Port to $Target exceeded ${ProbeTimeoutSec}s — killed"
-        return $false
+        Write-Act "TIMEOUT  ssh -R $Port to $Target did not come up within $((8*2))s — killed"
     }
-    Start-Sleep -Seconds 2
-    return (Test-RemotePort $Target $Port)
+    return $false
 }
 
 # ---- 0: the aglink host (Telegram), when asked -------------------------------
@@ -312,21 +333,36 @@ if ($Host_) {
             }
         }
     }
-    # The host task does only the host: the servers belong to the unelevated task.
+    # The host task does only the host: the web server belongs to the unelevated
+    # task, the screen server to its own -Screen_ task.
+    $mutex.ReleaseMutex()
+    exit 0
+}
+
+# ---- aglink-screen, elevated, when asked -------------------------------------
+#
+# Started from the RunLevel=Highest "aglink screen always-on" task so the daemon
+# is elevated and the programs it launches inherit that without a UAC prompt.
+# Start-Daemon inherits this process's elevation, so nothing else is needed here.
+if ($Screen_) {
+    Start-Daemon (Join-Path $RepoRoot 'screen\aglink-screen.exe') @('serve') 48220 'aglink-screen'
     $mutex.ReleaseMutex()
     exit 0
 }
 
 if (-not $SshHost) {
-    Write-Act "USAGE    -SshHost is required unless -Host_ is given"
+    Write-Act "USAGE    -SshHost is required unless -Host_ or -Screen_ is given"
     $mutex.ReleaseMutex()
     exit 2
 }
 
-# ---- 1 & 2: the local servers -------------------------------------------------
+# ---- 1: the local web server --------------------------------------------------
+#
+# aglink-screen is NOT started here — it runs elevated under its own task
+# (-Screen_). This task still forwards its port 48220 through the tunnel below;
+# the tunnel does not care which process, or which elevation, owns the listener.
 
-Start-Daemon (Join-Path $RepoRoot 'web\aglink-web.exe')       @('serve') 48219 'aglink-web'
-Start-Daemon (Join-Path $RepoRoot 'screen\aglink-screen.exe') @('serve') 48220 'aglink-screen'
+Start-Daemon (Join-Path $RepoRoot 'web\aglink-web.exe') @('serve') 48219 'aglink-web'
 
 # ---- 3: the tunnel ------------------------------------------------------------
 #

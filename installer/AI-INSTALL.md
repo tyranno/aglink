@@ -4,11 +4,13 @@
 > 그대로 실행하도록 쓴 것이다. 사용자에게는 설치 결과와, 사람이 꼭 해야 하는
 > 한 가지(크롬 확장 불러오기)만 알려 주면 된다.
 >
-> 사용자가 이렇게 말하면 시작한다: "이 폴더의 README.md 대로 aglink 설치해줘"
+> 사용자가 이렇게 말하면 시작한다:
+> - "https://github.com/tyranno/aglink/releases/latest 의 README 대로 aglink 설치해줘"
+> - 또는 파일을 이미 받았다면 "이 폴더의 README.md 대로 aglink 설치해줘"
 
 ## 0. 무엇을 설치하나
 
-이 폴더에 함께 있는 파일:
+설치 파일 두 개 (이 README 와 같은 폴더에 있거나, 아래 §0-1 처럼 릴리스에서 받는다):
 
 | 파일 | 설치되는 것 | 설치 위치 (관리자 권한 불필요) |
 |---|---|---|
@@ -17,6 +19,35 @@
 
 사용자가 따로 말하지 않으면 **둘 다** 설치한다. 웹·앱 작업만 한다고 하면 web 만 설치한다.
 이미 설치돼 있어도 같은 절차로 다시 실행하면 새 버전으로 바뀐다(업데이트).
+
+설치하면 Claude 가 할 수 있게 되는 것 (사용자에게 설명할 때 참고):
+
+- **aglink-web** — 크롬 탭을 화면을 가져오지 않고 텍스트로 읽고·클릭·입력(새 탭은 뒤에서 열려
+  사용자 작업을 방해하지 않음), 연속 동작 한 번에(`run_steps`), alert/confirm/prompt 응답,
+  사내 사이트 인증서 경고 넘기기, Electron/Wails 앱 창과 다른 VS Code 창(Remote-SSH 포함) 조작.
+- **aglink-screen** — 일반 윈도우 프로그램을 접근성 트리로 읽고 조작·캡처, 연속 동작
+  (`run_sequence`), 프로그램 실행(`launch_app`, 인터넷에서 받은 파일 표시 지우기 `unblock`),
+  "파일 열기 - 보안 경고" 같은 확인 창 자동 통과(`pass_security_prompts`). UAC 창은 윈도우가
+  막아 누를 수 없다.
+
+### 0-1. 설치 파일 받기 (파일이 아직 없을 때)
+
+최신 릴리스에서 받는다. 아래 주소는 항상 최신 버전을 가리킨다.
+
+```powershell
+$dir = Join-Path $env:TEMP 'aglink-setup'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$base = 'https://github.com/tyranno/aglink/releases/latest/download'
+foreach ($f in 'aglink-web-Setup.exe', 'aglink-screen-Setup.exe') {
+    Invoke-WebRequest -UseBasicParsing "$base/$f" -OutFile (Join-Path $dir $f)
+}
+Set-Location $dir
+Get-ChildItem $dir
+```
+
+받은 파일에는 "인터넷에서 받음" 표시가 붙어 있어, 실행할 때 윈도우가 보안 경고를 띄울 수
+있다. 조용히 설치(`/S`)가 멈춰 있으면 사용자에게 경고 창에서 "실행"을 눌러 달라고 하거나,
+설치 전에 `Unblock-File .\aglink-*-Setup.exe` 로 표시를 지운다(사용자 동의 후).
 
 ## 1. 사전 확인
 
@@ -44,7 +75,7 @@ claude mcp list
 
 ## 2. 설치 (조용히)
 
-이 README 가 있는 폴더에서 실행한다. `/S` 는 창 없이 설치한다.
+설치 파일이 있는 폴더(이 README 옆, 또는 §0-1 의 `$dir`)에서 실행한다. `/S` 는 창 없이 설치한다.
 
 ```powershell
 Start-Process .\aglink-web-Setup.exe    -ArgumentList '/S' -Wait

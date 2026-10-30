@@ -36,6 +36,9 @@ func configNeedsRestart(old, nw *Config) (bool, string) {
 		name    string
 	}{
 		{old.InteractiveClaude != nw.InteractiveClaude, "interactive_claude"},
+		// Headless turns read the token per run; the interactive sessions keep
+		// the one they were started with.
+		{nw.InteractiveClaude && old.ClaudeOauthToken != nw.ClaudeOauthToken, "claude 토큰(interactive_claude 세션)"},
 		{old.TelegramBotToken != nw.TelegramBotToken, "telegram 토큰"},
 		{old.ScreenBinaryPath != nw.ScreenBinaryPath, "screen 바이너리 경로"},
 		{old.WebBinaryPath != nw.WebBinaryPath, "web 바이너리 경로"},

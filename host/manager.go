@@ -1606,8 +1606,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// existed — every later turn would then die on --resume.
 	if isAuthFailure(res.Text) {
 		log.Printf("[worker] ✗ backend=%s auth failure after %s: %s", backend, elapsed, strings.TrimSpace(res.Text))
+		noteClaudeAuthFailure(res.Text)
 		_ = s.Send(chatID, "⚠️ 작업 실패: Claude CLI 인증 만료 — 토큰을 갱신해 주세요.\n"+
-			"`claude setup-token` 으로 발급한 값을 config의 CLAUDE_CODE_OAUTH_TOKEN 에 넣고 재시작하면 됩니다.")
+			"데스크톱 앱: 설정 → 'Claude 로그인' → [토큰 새로 받기] 를 누르면 브라우저 승인만으로 끝납니다.\n"+
+			"(서버라면 다른 PC 에서 claude setup-token 으로 발급한 값을 config 의 claude.oauth_token 에 넣으세요.)")
 		_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", "auth: "+strings.TrimSpace(res.Text))
 		return
 	}

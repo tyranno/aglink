@@ -398,6 +398,12 @@ func promptClaudeToken(in *bufio.Reader, claudePath string) (string, error) {
 func verifyClaudeToken(claudePath, token string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	return verifyClaudeTokenCtx(ctx, claudePath, token)
+}
+
+// verifyClaudeTokenCtx is verifyClaudeToken under the caller's deadline, so the
+// desktop's "연결 확인" can be cancelled.
+func verifyClaudeTokenCtx(ctx context.Context, claudePath, token string) error {
 	cmd := exec.CommandContext(ctx, claudePath, "-p", "hi", "--output-format", "json")
 	cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+token)
 	out, err := cmd.Output()

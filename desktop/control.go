@@ -637,6 +637,55 @@ func (c *ControlService) SetConvModel(payload string) (string, error) {
 	return string(data), err
 }
 
+// --- Claude 로그인 (인증 토큰) ------------------------------------------------
+// Relayed opaquely like the rest; the host runs `claude setup-token`, validates
+// and stores the token (host/claudeauth.go). Issue and verify return at once and
+// run in the background — ClaudeAuthStatus reports their progress.
+
+// ClaudeAuthStatus returns {tokenSet, tokenTail, lastFailureAt, canIssue, job}.
+func (c *ControlService) ClaudeAuthStatus() (string, error) {
+	data, err := c.request(controlIn{Type: "claude_auth_status"})
+	return string(data), err
+}
+
+// ClaudeAuthIssue starts `claude setup-token`; the browser opens for approval.
+func (c *ControlService) ClaudeAuthIssue() (string, error) {
+	data, err := c.request(controlIn{Type: "claude_auth_issue"})
+	return string(data), err
+}
+
+// ClaudeAuthCode passes the code the browser showed, when setup-token asks.
+func (c *ControlService) ClaudeAuthCode(code string) (string, error) {
+	p, _ := json.Marshal(map[string]string{"code": code})
+	data, err := c.request(controlIn{Type: "claude_auth_code", Payload: p})
+	return string(data), err
+}
+
+// ClaudeAuthSave stores a pasted token.
+func (c *ControlService) ClaudeAuthSave(token string) (string, error) {
+	p, _ := json.Marshal(map[string]string{"token": token})
+	data, err := c.request(controlIn{Type: "claude_auth_save", Payload: p})
+	return string(data), err
+}
+
+// ClaudeAuthVerify checks the stored token with a tiny real call.
+func (c *ControlService) ClaudeAuthVerify() (string, error) {
+	data, err := c.request(controlIn{Type: "claude_auth_verify"})
+	return string(data), err
+}
+
+// ClaudeAuthClear removes the token (claude's own login is used instead).
+func (c *ControlService) ClaudeAuthClear() (string, error) {
+	data, err := c.request(controlIn{Type: "claude_auth_clear"})
+	return string(data), err
+}
+
+// ClaudeAuthCancel stops a running issue/verify.
+func (c *ControlService) ClaudeAuthCancel() (string, error) {
+	data, err := c.request(controlIn{Type: "claude_auth_cancel"})
+	return string(data), err
+}
+
 // PickFile opens a native OS file picker and returns the chosen absolute path.
 func (c *ControlService) PickFile() (string, error) {
 	return application.Get().Dialog.OpenFile().

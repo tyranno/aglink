@@ -7,6 +7,7 @@
   import PlaybookPanel from "./PlaybookPanel.svelte";
   import ReservationPanel from "./ReservationPanel.svelte";
   import MCPServerPanel from "./MCPServerPanel.svelte";
+  import ClaudeAuthPanel from "./ClaudeAuthPanel.svelte";
   import UsagePanel from "./UsagePanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import {
@@ -917,6 +918,8 @@
                   </div>
                 </div>
               {/snippet}
+
+              <ClaudeAuthPanel />
 
               <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">

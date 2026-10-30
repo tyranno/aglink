@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,7 +34,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | get_mcp_servers | save_mcp_servers | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel | get_usage_stats | set_conv_model
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | get_mcp_servers | save_mcp_servers | claude_auth_status | claude_auth_issue | claude_auth_code | claude_auth_save | claude_auth_verify | claude_auth_clear | claude_auth_cancel | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel | get_usage_stats | set_conv_model
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -340,6 +341,47 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "save_mcp_servers":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: applyMCPServersUpdate(s.cfgPath, s.bot.cfg(), m.Payload)})
+	// Claude CLI sign-in (claudeauth.go). Issue and verify only start a
+	// background job; the UI polls claude_auth_status for its progress.
+	case "claude_auth_status":
+		data, _ := json.Marshal(buildClaudeAuthStatus(s.bot.cfg()))
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "claude_auth_save":
+		var p struct {
+			Token string `json:"token"`
+		}
+		_ = json.Unmarshal(m.Payload, &p)
+		if strings.TrimSpace(p.Token) == "" {
+			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: settingsFail("토큰을 붙여넣어 주세요.")})
+			break
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: saveClaudeToken(s.cfgPath, s.bot.cfg(), p.Token)})
+	case "claude_auth_clear":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: saveClaudeToken(s.cfgPath, s.bot.cfg(), "")})
+	case "claude_auth_verify":
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: startClaudeVerify(s.bot.cfg())})
+	case "claude_auth_issue":
+		save := func(token string) error {
+			var r struct {
+				OK    bool   `json:"ok"`
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(saveClaudeToken(s.cfgPath, s.bot.cfg(), token), &r)
+			if !r.OK {
+				return errors.New(r.Error)
+			}
+			return nil
+		}
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: startClaudeIssue(s.bot.cfg(), save)})
+	case "claude_auth_code":
+		var p struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(m.Payload, &p)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: sendClaudeAuthCode(p.Code)})
+	case "claude_auth_cancel":
+		claudeAuthJob.stop()
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: authReply(true, "")})
 	case "playbook_list":
 		data, err := json.Marshal(buildPlaybooksResponse(s.bot.playbooks))
 		if err != nil {

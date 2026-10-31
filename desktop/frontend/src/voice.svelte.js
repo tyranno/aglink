@@ -30,6 +30,7 @@ import {
   setAssistantTextListener,
   setTurnDoneListener,
 } from "./paneStore.svelte.js";
+import { alarms, parseAlarm, addAlarm, removeAlarm, clearAlarms, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
 
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
 const BARGE_STORAGE_KEY = "aglink.voice.barge"; // "0": take turns, the mic waits for the reading
@@ -63,14 +64,20 @@ const ENROLL_RE = /^(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(등록|저장|
 const UNENROLL_RE = /목소리\s*(등록\s*)?(해제|취소|지워|삭제|지우기)/;
 const MAX_CLIP_MS = 60000;
 const PREROLL_MS = 300; // kept before the first speech so the onset is not cut
-const MAX_SPEAK_CHARS = 600; // a spoken summary; the full reply is on screen
-const MAX_SPEAK_SENTENCES = 3; // of the opening paragraph
-const MAX_SPEAK_POINTS = 6; // list items summarized by their first sentence
+// How much of a reply is read: "short" (the voice setting "요약만 읽기") keeps
+// to the point, "gist" is the longer spoken summary; "자세히 읽어 줘" reads it
+// all ("full") but code, tables and links.
+const SPEAK_LIMITS = {
+  short: { chars: 220, sentences: 2, points: 3 },
+  gist: { chars: 600, sentences: 3, points: 6 },
+};
+const MAX_FULL_CHARS = 4000;
+const CUT_MARGIN = 80; // a full reading this much longer than the summary means it was cut
 const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
 const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, wake: true, wakeIdleMin: 3 };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, wake: true, wakeIdleMin: 3, summary: true };
 export const WAKE_IDLE_CHOICES = [0, 1, 3, 5, 10]; // minutes without talk before conversation goes back to waiting; 0 = never
 export const SPEED_RANGE = [0.7, 2.0];
 export const SPEAKER_MIN_RANGE = [0.1, 0.7];
@@ -93,6 +100,7 @@ function loadSettings() {
     speakerMin: Number.isFinite(s.speakerMin) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
     wake: typeof s.wake === "boolean" ? s.wake : VOICE_DEFAULTS.wake,
     wakeIdleMin: WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
+    summary: typeof s.summary === "boolean" ? s.summary : VOICE_DEFAULTS.summary,
   };
 }
 
@@ -135,7 +143,7 @@ export const voice = $state({
   flash: "", // conversation mode: a passing note on the indicator
   heardLog: [], // recent clips: {at, text, score, kept, why}
   waking: false, // conversation is off and the mic waits for "아글링크"
-  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, wake, wakeIdleMin
+  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, wake, wakeIdleMin, summary
 });
 
 let flashTimer = null;
@@ -160,6 +168,7 @@ export function setVoiceSettings(patch) {
   if (Number.isFinite(patch.speakerMin)) voice.speakerMin = Math.round(clamp(patch.speakerMin, SPEAKER_MIN_RANGE) * 100) / 100;
   if (typeof patch.wake === "boolean") voice.wake = patch.wake;
   if (WAKE_IDLE_CHOICES.includes(patch.wakeIdleMin)) voice.wakeIdleMin = patch.wakeIdleMin;
+  if (typeof patch.summary === "boolean") voice.summary = patch.summary;
   try {
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
@@ -169,6 +178,7 @@ export function setVoiceSettings(patch) {
         speakerMin: voice.speakerMin,
         wake: voice.wake,
         wakeIdleMin: voice.wakeIdleMin,
+        summary: voice.summary,
       }),
     );
   } catch {}
@@ -806,6 +816,10 @@ const FIND_RE = /(대화|얘기|이야기|채팅|채팅방)\s*(를|을)?\s*(좀\
 const LIST_RE = cmdRE(String.raw`(최근\s*)?(대화|채팅|채팅방)\s*(목록|리스트)\s*(을|를|좀)?\s*(읽어|알려|말해|불러|보여)`);
 const NOW_RE = cmdRE(String.raw`(지금|여기)\s*(은|는)?\s*(무슨|어떤|어느|뭔)\s*(대화|채팅|채팅방)\s*(야|이야|예요|이에요|지|인가|인지\s*알려)?\??`);
 const NTH_RE = cmdRE(String.raw`(\d+|일|이|삼|사|오|첫|두|세|네|다섯)\s*번\s*(째)?\s*(대화|채팅)?\s*(으로|로|를|을)?\s*(열어|가|가자|바꿔|옮겨|들어가)`);
+const DETAIL_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\s*)?(더\s*)?(자세히|전부|전체|끝까지|나머지|다)\s*(다\s*)?(읽어|말해|들려|얘기해)`);
+const ALARM_LIST_RE = cmdRE(String.raw`((맡긴|예약한|맞춘|남은)\s*)?(알림|알람)\s*(목록|들)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)|(알림|알람)\s*(뭐|뭐가|몇\s*개)\s*(있어|있지|있나|남았어)`);
+const ALARM_CANCEL_RE = cmdRE(String.raw`((\S+)\s*번\s*(째\s*)?|방금\s*(맡긴\s*)?)?(알림|알람)\s*(을|를)?\s*(다|전부|모두)?\s*(취소|취소해|지워|꺼|없애|빼)`);
+const MAX_ALARM_CHARS = 80; // "내일 아침 9시에 …라고 알려 줘" runs longer than a command
 const LIST_COUNT = 5; // conversations read out by "대화 목록 읽어 줘"
 const MAX_COMMAND_CHARS = 40; // longer sentences are always meant for the AI
 const FIND_SCAN_CONVS = 40; // recent conversations whose text is searched when no title matches
@@ -1015,7 +1029,12 @@ function changeSpeed(paneId, delta) {
 // it is to be sent as usual.
 async function runVoiceCommand(paneId, text) {
   const t = text.trim();
+  if (t.length <= MAX_ALARM_CHARS && runAlarmCommand(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
+  if (DETAIL_RE.test(t)) {
+    speakDetail();
+    return true;
+  }
   if (ENROLL_RE.test(t) || UNENROLL_RE.test(t)) {
     if (UNENROLL_RE.test(t)) {
       await VoiceService.ClearSpeaker().catch(() => {});
@@ -1090,6 +1109,68 @@ async function runVoiceCommand(paneId, text) {
     return true;
   }
   return false;
+}
+
+// ---- reminders ----
+//
+// "30분 뒤에 회의 알려 줘" is set here rather than sent (alarms.js parses it),
+// and read out when its time comes — in conversation, waiting for the wake
+// word, or with the window in the tray.
+
+function alarmLine(a) {
+  const when = a.daily ? `매일 ${timeLabel(a.at).replace(/^(내일|모레) /, "")}` : timeLabel(a.at);
+  return `${when}${a.msg ? `, ${a.msg}` : a.wake ? ", 깨우기" : ""}`;
+}
+
+// runAlarmCommand sets, reads out or cancels reminders; false means text is
+// none of those.
+function runAlarmCommand(t) {
+  if (ALARM_LIST_RE.test(t)) {
+    if (!alarms.length) speak("맡기신 알림이 없어요.");
+    else speak(`알림이 ${alarms.length}개 있어요. ${alarms.map((a, i) => `${i + 1}번, ${alarmLine(a)}.`).join(" ")}`);
+    return true;
+  }
+  const cancel = ALARM_CANCEL_RE.exec(t);
+  if (cancel) {
+    if (!alarms.length) {
+      speak("취소할 알림이 없어요.");
+      return true;
+    }
+    const nthWord = cancel[3];
+    if (cancel[8]) {
+      const n = clearAlarms();
+      vlog(`alarms cleared (${n})`);
+      speak(`알림 ${n}개를 모두 취소했어요.`);
+      return true;
+    }
+    let target = null;
+    if (nthWord) {
+      const n = /^\d+$/.test(nthWord) ? Number(nthWord) : NTH_WORDS[nthWord];
+      target = alarms[n - 1];
+      if (!target) {
+        speak(`알림은 ${alarms.length}번까지 있어요. 다시 말씀해 주세요.`);
+        return true;
+      }
+    } else if (alarms.length === 1) target = alarms[0];
+    else target = alarms.reduce((x, y) => ((y.made || 0) > (x.made || 0) ? y : x)); // the one set last
+    removeAlarm(target.id);
+    vlog(`alarm cancelled ${quote(alarmLine(target))}`);
+    speak(`${alarmLine(target)} 알림을 취소했어요.`);
+    return true;
+  }
+  const a = parseAlarm(t);
+  if (!a) return false;
+  const item = addAlarm(a);
+  vlog(`alarm set ${new Date(item.at).toLocaleString()} ${quote(item.msg)}${item.daily ? " daily" : ""}`);
+  speak(confirmText(item));
+  return true;
+}
+
+function fireAlarm(a, late) {
+  vlog(`alarm ${late ? "(late) " : ""}${quote(alarmLine(a))}`);
+  if (voice.enrolling) return;
+  flash(`⏰ ${a.msg || "알림"}`);
+  void speak(fireText(a, late));
 }
 
 // ---- whose voice ----
@@ -1505,13 +1586,23 @@ function cleanProse(p) {
 // trailing "출처:" list never count.
 const ITEM_LABEL_RE = /^[^.!?:：\d]{1,20}[:：]\s*/; // no digits: "10:30" is not a label
 
-export function speechText(md) {
+function speakableParas(md) {
   let s = String(md || "").replace(/\r\n/g, "\n");
   s = s.replace(/^\s*(출처|참고|Sources?|References?)\s*:?\s*$[\s\S]*/im, ""); // trailing sources block
   s = s.replace(/```[\s\S]*?```/g, "\n\n");
   s = s.replace(/^\s*\|.*\|\s*$/gm, ""); // tables
   s = s.replace(/^\s{0,3}#{1,6}\s.*$/gm, "\n"); // headings
-  const paras = s.split(/\n\s*\n/);
+  return s.split(/\n\s*\n/);
+}
+
+function speechMode() {
+  return voice.summary ? "short" : "gist";
+}
+
+export function speechText(md, mode = speechMode()) {
+  const paras = speakableParas(md);
+  if (mode === "full") return fullSpeechText(paras);
+  const { chars: MAX_SPEAK_CHARS, sentences: MAX_SPEAK_SENTENCES, points: MAX_SPEAK_POINTS } = SPEAK_LIMITS[mode] || SPEAK_LIMITS.gist;
   let opening = "";
   let i = 0;
   for (; i < paras.length && opening.length < MIN_GIST_CHARS; i++) {
@@ -1519,7 +1610,11 @@ export function speechText(md) {
     const prose = cleanProse(paras[i]);
     if (prose) opening = opening ? `${opening} ${prose}` : prose;
   }
-  let out = sentencesOf(opening).slice(0, MAX_SPEAK_SENTENCES).join("");
+  let out = "";
+  for (const x of sentencesOf(opening).slice(0, MAX_SPEAK_SENTENCES)) {
+    if (out && (out + x).length > MAX_SPEAK_CHARS) break;
+    out += x;
+  }
   const points = [];
   let closing = "";
   for (const para of paras.slice(i)) {
@@ -1546,6 +1641,22 @@ export function speechText(md) {
   if (ask && !out.includes(ask.trim())) out += ` ${ask}`;
   out = out.replace(/\s+/g, " ").trim();
   if (out.length > MAX_SPEAK_CHARS + 120) out = out.slice(0, MAX_SPEAK_CHARS + 120);
+  return out;
+}
+
+// fullSpeechText is the whole reply as speech for "자세히 읽어 줘": every prose
+// paragraph and every list item in full, still without code, tables or links.
+function fullSpeechText(paras) {
+  const parts = [];
+  for (const para of paras) {
+    const items = para.split(/\n(?=[ ]{0,3}(?:[-*+]|\d+[.)])\s)/);
+    for (const item of items) {
+      const prose = cleanProse(item.replace(/\n+/g, " ")).replace(ITEM_LABEL_RE, "");
+      if (prose) parts.push(/[.!?。？！]$/.test(prose) ? prose : `${prose}.`);
+    }
+  }
+  let out = parts.join(" ").replace(/\s+/g, " ").trim();
+  if (out.length > MAX_FULL_CHARS) out = sentencesOf(out.slice(0, MAX_FULL_CHARS)).slice(0, -1).join("").trim();
   return out;
 }
 
@@ -1704,17 +1815,33 @@ function speakWindows(sentences) {
   });
 }
 
-let lastReply = ""; // the last assistant reply read out, for "다시 읽어 줘"
+let lastReply = ""; // the last assistant reply read out, for "다시 읽어 줘" / "자세히 읽어 줘"
+let detailHinted = false; // "자세히 읽어 줘" is mentioned once a run, the first time a reply is cut
 
 function speakReply(md) {
   lastReply = md;
-  return speak(md);
+  let tail = "";
+  if (voice.summary && !detailHinted && voice.convPaneId) {
+    const cut = speechText(md, "full").length > speechText(md).length + CUT_MARGIN;
+    if (cut) {
+      detailHinted = true;
+      tail = "자세히 들으시려면 자세히 읽어 줘, 라고 하세요.";
+    }
+  }
+  return speak(md, speechMode(), tail);
 }
 
-export async function speak(md) {
+// speakDetail reads the last reply in full.
+function speakDetail() {
+  if (!lastReply) return speak("아직 읽어 드린 답변이 없어요.");
+  vlog("reading the last reply in full");
+  return speak(lastReply, "full");
+}
+
+export async function speak(md, mode = speechMode(), tail = "") {
   // The indicator shows the whole reply while only its gist is read.
   if (voice.convPaneId || savedConversationPane()) Events.Emit("voice:reply", { text: String(md || "").trim() });
-  const text = speechText(md);
+  const text = [speechText(md, mode), tail].filter(Boolean).join(" ");
   if (!text) return;
   stopSpeaking();
   const gen = speakGen;
@@ -1931,3 +2058,4 @@ $effect.root(() => {
 // getVoices() is empty until the voice list loads; touching it starts the load.
 if (typeof speechSynthesis !== "undefined") speechSynthesis.getVoices();
 void refreshVoiceStatus().then(resumeSavedConversation);
+startAlarms(fireAlarm);

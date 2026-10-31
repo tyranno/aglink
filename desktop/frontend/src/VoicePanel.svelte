@@ -111,6 +111,19 @@
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
+          <div class={label}>긴 답변은 요약만 읽기</div>
+          <div class={desc}>켜면 답변의 핵심 두세 문장만 읽어요. “자세히 읽어 줘”라고 하시면 방금 답변을 처음부터 끝까지 읽어요. 끄면 조금 더 길게 읽어요.</div>
+        </div>
+        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input type="checkbox" checked={voice.summary} onchange={(e) => setVoiceSettings({ summary: e.currentTarget.checked })} />
+          사용
+        </label>
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
           <div class={label}>읽는 중 끼어들기</div>
           <div class={desc}>켜면 제가 읽는 중에 말씀하실 때 읽기를 멈추고 들어요. 끄면 다 읽은 뒤에 마이크가 켜져요.</div>
         </div>

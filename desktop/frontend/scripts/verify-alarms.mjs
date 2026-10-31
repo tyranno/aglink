@@ -1,0 +1,36 @@
+// node scripts/verify-alarms.mjs — tries the spoken reminder parsing.
+import { parseAlarm, timeLabel, fireText, confirmText } from "../src/alarms.js";
+
+const now = new Date(2026, 9, 31, 21, 5, 0); // Sat 21:05
+const cases = [
+  ["30분 뒤에 회의 알려 줘", "오후 9시 35분", "회의"],
+  ["한 시간 반 뒤에 알려 줘", "오후 10시 35분", ""],
+  ["1시간 30분 후에 빨래 꺼내라고 알려 줘", "오후 10시 35분", "빨래 꺼내라고"],
+  ["삼십 분 있다가 불 끄라고 해 줘", "오후 9시 35분", "불 끄라고"],
+  ["내일 아침 9시에 약 먹으라고 알려 줘", "내일 오전 9시", "약 먹으라고"],
+  ["내일 3시에 회의 알려 줘", "내일 오후 3시", "회의"],
+  ["10시에 알려 줘", "오후 10시", ""],
+  ["9시 반에 전화하라고 알려 줘", "오후 9시 30분", "전화하라고"],
+  ["오전 8시 반에 출근 준비 알려 줘", "내일 오전 8시 30분", "출근 준비"],
+  ["모레 오후 2시에 병원 가라고 알려 줘", "모레 오후 2시", "병원 가라고"],
+  ["2시간 뒤에 깨워 줘", "오후 11시 5분", ""],
+  ["매일 7시에 깨워 줘", "내일 오전 7시", ""],
+  ["밤 12시에 알람 맞춰 줘", "밤 12시", ""],
+  ["5분 뒤에 알려 줘요", "오후 9시 10분", ""],
+  ["내일 3시 날씨 알려 줘", null],
+  ["3시에 회의 준비해 줘", null],
+  ["3시까지 보고서 정리해서 알려 줘", null],
+  ["오늘 날씨 알려 줘", null],
+  ["나노파이 얘기한 대화 찾아 줘", null],
+];
+let bad = 0;
+for (const [text, when, msg] of cases) {
+  const a = parseAlarm(text, now);
+  const got = a ? timeLabel(a.at, now) : null;
+  const ok = when === null ? a === null : a && got === when && a.msg === msg;
+  if (!ok) bad++;
+  console.log(ok ? "ok " : "BAD", text, "→", a ? `${got} "${a.msg}"${a.daily ? " daily" : ""}` : "null",
+    a ? `| ${confirmText({ ...a, at: a.at })} | ${fireText(a)}` : "");
+}
+console.log(bad ? `${bad} failed` : "all ok");
+process.exit(bad ? 1 : 0);

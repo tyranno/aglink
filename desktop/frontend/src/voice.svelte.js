@@ -54,6 +54,7 @@ const BARGE_MAX_SEGMENT_MS = 3000; // ...or this much speech without one
 const BARGE_MIN_SPEECH_MS =400; // shorter blips are not checked
 const BARGE_MIN_LOUD_CHUNKS = 5; // ~0.4s above the echo floor: our own voice only peaks over it now and then
 const ECHO_OVERLAP = 0.6; // share of a segment's syllable pairs found in the reply = our own voice
+const ECHO_TRUST_MARGIN = 0.1; // this far over the voice bar is the user, whatever the words
 // The enrolled voice scores about 0.5+ for the user, under 0.3 for others; the
 // bar (voice.speakerMin) is set in the voice settings. Short clips, or the user
 // over our own voice, score lower and get a bar this much lower.
@@ -817,7 +818,8 @@ const LIST_RE = cmdRE(String.raw`(최근\s*)?(대화|채팅|채팅방)\s*(목록
 const NOW_RE = cmdRE(String.raw`(지금|여기)\s*(은|는)?\s*(무슨|어떤|어느|뭔)\s*(대화|채팅|채팅방)\s*(야|이야|예요|이에요|지|인가|인지\s*알려)?\??`);
 const NTH_RE = cmdRE(String.raw`(\d+|일|이|삼|사|오|첫|두|세|네|다섯)\s*번\s*(째)?\s*(대화|채팅)?\s*(으로|로|를|을)?\s*(열어|가|가자|바꿔|옮겨|들어가)`);
 const DETAIL_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\s*)?(더\s*)?(자세히|전부|전체|끝까지|나머지|다)\s*(다\s*)?(읽어|말해|들려|얘기해)`);
-const ALARM_LIST_RE = cmdRE(String.raw`((맡긴|예약한|맞춘|남은)\s*)?(알림|알람)\s*(목록|들)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)|(알림|알람)\s*(뭐|뭐가|몇\s*개)\s*(있어|있지|있나|남았어)`);
+const SHORT_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\s*)?(요약|짧게|간단히|간단하게)\s*(해서\s*)?(다시\s*)?(읽어|말해|들려|얘기해)`);
+const ALARM_LIST_RE =cmdRE(String.raw`((맡긴|예약한|맞춘|남은)\s*)?(알림|알람)\s*(목록|들)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)|(알림|알람)\s*(뭐|뭐가|몇\s*개)\s*(있어|있지|있나|남았어)`);
 const ALARM_CANCEL_RE = cmdRE(String.raw`((\S+)\s*번\s*(째\s*)?|방금\s*(맡긴\s*)?)?(알림|알람)\s*(을|를)?\s*(다|전부|모두)?\s*(취소|취소해|지워|꺼|없애|빼)`);
 const MAX_ALARM_CHARS = 80; // "내일 아침 9시에 …라고 알려 줘" runs longer than a command
 const LIST_COUNT = 5; // conversations read out by "대화 목록 읽어 줘"
@@ -1025,6 +1027,15 @@ function changeSpeed(paneId, delta) {
   speak("이 빠르기로 읽을게요.");
 }
 
+// isCommandText tells a voice command, which the echo check must not drop.
+function isCommandText(text) {
+  const t = text.trim();
+  if (t.length > MAX_ALARM_CHARS) return false;
+  if (parseAlarm(t)) return true;
+  if (t.length > MAX_COMMAND_CHARS) return false;
+  return [DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+}
+
 // runVoiceCommand carries out text if it is one of the commands; false means
 // it is to be sent as usual.
 async function runVoiceCommand(paneId, text) {
@@ -1033,6 +1044,10 @@ async function runVoiceCommand(paneId, text) {
   if (t.length > MAX_COMMAND_CHARS) return false;
   if (DETAIL_RE.test(t)) {
     speakDetail();
+    return true;
+  }
+  if (SHORT_RE.test(t)) {
+    speak(lastReply || "아직 읽어 드린 답변이 없어요.", "short");
     return true;
   }
   if (ENROLL_RE.test(t) || UNENROLL_RE.test(t)) {
@@ -1311,7 +1326,15 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     // starts as the reading ends is most likely the last of it still coming out
     // of the speakers, so even a short, half-heard fragment of it is dropped.
     const tail = rec && rec.firstSpeechAt - readingEndedAt < ECHO_TAIL_MS;
-    if (conv() && heard && replyText && !CONV_STOP_RE.test(heard)) {
+    // The user often says back words the reply just used ("자세히 읽어 줘"
+    // right after it was suggested). Our voice from the speakers scores far
+    // under the bar, so a clip clearly in the enrolled voice, or one that is a
+    // voice command, is never taken for the echo.
+    const trusted = score >= 0 && score >= voice.speakerMin + ECHO_TRUST_MARGIN;
+    if (conv() && heard && replyText && (trusted || isCommandText(heard))) {
+      if (sentencesOf(heard).some((s) => isEcho(s, replyText, tail ? 0.4 : ECHO_OVERLAP)))
+        vlog(`echo check skipped (${trusted ? `voice ${score.toFixed(2)}` : "command"}) ${quote(heard)}`);
+    } else if (conv() && heard && replyText && !CONV_STOP_RE.test(heard)) {
       // Sentence by sentence: the user often starts talking while the reading's
       // last words are still coming out, and their part must survive.
       const thr = tail ? 0.4 : ECHO_OVERLAP;
@@ -2030,11 +2053,45 @@ async function wakeUp(rest) {
   voice.convPaneId = paneId;
   convActiveAt = Date.now();
   saveConversation(paneId);
+  await playChime(); // heard at once, before anything else
   if (rest.length >= 2) {
     await transcribeClip(paneId, null, null, rest); // sends it; the reply reopens the mic
     return;
   }
   void speak("네, 말씀하세요."); // the mic opens as the reading goes, as after any reply
+}
+
+// The wake chime: two short rising bell tones, made here so no sound file is
+// shipped. It plays through the OS like the readings, so it is heard with the
+// window in the tray.
+let chimeB64 = null;
+
+function chimeWav() {
+  if (chimeB64) return chimeB64;
+  const rate = 24000;
+  const notes = [
+    [880, 0, 0.16],
+    [1320, 0.11, 0.42],
+  ]; // Hz, start s, length s
+  const samples = new Float32Array(Math.ceil(rate * 0.56));
+  for (const [f, start, len] of notes) {
+    const from = Math.floor(start * rate);
+    for (let i = 0; i < len * rate && from + i < samples.length; i++) {
+      const t = i / rate;
+      const env = Math.min(1, t / 0.005) * Math.exp(-t * 9);
+      samples[from + i] += 0.32 * env * (Math.sin(2 * Math.PI * f * t) + 0.25 * Math.sin(4 * Math.PI * f * t));
+    }
+  }
+  chimeB64 = toBase64(encodeWav(samples, rate));
+  return chimeB64;
+}
+
+async function playChime() {
+  try {
+    await playWav(chimeWav(), speakGen);
+  } catch (err) {
+    vlog(`chime failed: ${err?.message || err}`);
+  }
 }
 
 // The wake listener runs whenever nothing else uses the voice.

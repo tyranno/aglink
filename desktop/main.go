@@ -66,6 +66,7 @@ func main() {
 		Logger: wailsLogger,
 		Services: []application.Service{
 			application.NewService(NewControlService()),
+			application.NewService(NewVoiceService()),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),

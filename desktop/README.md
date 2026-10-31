@@ -61,6 +61,23 @@ Without the variable no port is opened. It is passed through Wails'
 loader blanks `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` on purpose. See the
 aglink-web README, "앱 화면 다루기".
 
+## Voice
+
+The composer's 🎤 button (Ctrl+M) records, stops by itself after a ~1.3 s
+pause, and sends what was said; 🔊 reads assistant replies for the focused pane
+aloud.
+
+- **Speech-to-text** runs locally with whisper.cpp (`voice.go`) — no audio
+  leaves the PC. Neither the binary nor the model is bundled: the first 🎤
+  click asks, then downloads them into `<data dir>/whisper/` (~500 MB, the
+  `ggml-small` model). On a Ryzen 5 5600X a sentence takes ~3 s. The
+  `large-v3-turbo` model was no more accurate on test sentences and ~3× slower.
+- **Text-to-speech** is the WebView's `speechSynthesis` with the installed
+  Windows Korean voice (Microsoft Heami). Code blocks, URLs and markdown
+  symbols are flattened before speaking (`speechText` in `voice.svelte.js`).
+- The WebView's own `SpeechRecognition` is not an option: WebView2 does not
+  ship Google's speech service, so it fails with a network error.
+
 ## Logs
 
 Because the binary is GUI-subsystem it has no stderr, so all logging goes to a

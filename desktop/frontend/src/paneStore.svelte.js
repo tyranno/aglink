@@ -1105,9 +1105,17 @@ export function pushMessageToKey(key, message) {
   }
 }
 
+// The read-aloud hook (voice.svelte.js): called with each live assistant text
+// reply, never with history loaded from the host.
+let assistantTextListener = null;
+export function setAssistantTextListener(fn) {
+  assistantTextListener = fn;
+}
+
 function appendLiveFrameToKey(key, frame) {
   const message = messageFromFrame(frame);
   if (message) pushMessageToKey(key, message);
+  if (frame.type === "text" && frame.text) assistantTextListener?.(key, frame.text);
 }
 
 export function bufferFrame(key, frame) {

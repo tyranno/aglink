@@ -44,6 +44,7 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
+  import { voice, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote } from "./voice.svelte.js";
 
   let { node } = $props();
 
@@ -375,6 +376,25 @@
           </div>
         {/if}
 
+        {#if voice.paneId === p.id || (voice.status === "installing" && voice.notePaneId === p.id) || (voice.note && voice.notePaneId === p.id)}
+          <div class="mb-1 flex items-center gap-2 text-[12px] text-slate-600 dark:text-slate-400">
+            {#if voice.paneId === p.id && voice.phase === "listening"}
+              <span class="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500"></span>
+              <span>듣는 중… 말을 멈추면 자동으로 보냅니다</span>
+              <span class="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                <span class="block h-full bg-red-500 transition-[width] duration-75" style={`width:${Math.round(voice.level * 100)}%`}></span>
+              </span>
+            {:else if voice.paneId === p.id && voice.phase === "transcribing"}
+              <span>음성을 글자로 바꾸는 중…</span>
+            {:else if voice.status === "installing"}
+              <span>음성 인식 설치 중 · {voice.installStage} {voice.installPercent}%</span>
+            {:else}
+              <span class="min-w-0 flex-1 truncate" title={voice.note}>{voice.note}</span>
+              <button type="button" class="shrink-0 text-slate-400 hover:text-slate-600" onclick={clearVoiceNote} aria-label="닫기">✕</button>
+            {/if}
+          </div>
+        {/if}
+
         <div class="flex w-full items-end gap-2">
           <button
             class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
@@ -384,6 +404,16 @@
             aria-label="파일 첨부"
           >
             📎
+          </button>
+
+          <button
+            class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.paneId === p.id && voice.phase === "listening" ? "border-red-400 bg-red-50 text-red-600 dark:border-red-500 dark:bg-red-950/40" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
+            onclick={() => toggleVoiceInput(p.id)}
+            disabled={!p.target || (voice.phase !== "idle" && voice.paneId !== p.id) || (voice.paneId === p.id && voice.phase === "transcribing")}
+            title={voice.paneId === p.id && voice.phase === "listening" ? "녹음 멈추고 보내기" : "말로 입력 (Ctrl+M)"}
+            aria-label="음성 입력"
+          >
+            {voice.paneId === p.id && voice.phase === "transcribing" ? "…" : "🎤"}
           </button>
 
           {#each p.attachments as attachment, aIndex (attachment.id)}
@@ -418,10 +448,27 @@
             disabled={!p.target}
             rows="1"
             oninput={(event) => setPaneComposerValue(p.id, event.currentTarget.value)}
-            onkeydown={(event) => handleComposerKeydown(p.id, event)}
+            onkeydown={(event) => {
+              if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "m") {
+                event.preventDefault();
+                void toggleVoiceInput(p.id);
+                return;
+              }
+              handleComposerKeydown(p.id, event);
+            }}
             onpaste={(event) => handleComposerPaste(p.id, event)}
             onfocus={() => focusPane(p.id)}
           ></textarea>
+
+          <button
+            class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm ${voice.speakEnabled ? "border-blue-400 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-950/40 dark:text-blue-300" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
+            onclick={() => (voice.speaking ? stopSpeaking() : setSpeakEnabled(!voice.speakEnabled))}
+            title={voice.speaking ? "읽기 멈추기" : voice.speakEnabled ? "답변 읽어주기 켜짐 (끄려면 클릭)" : "답변 읽어주기 꺼짐 (켜려면 클릭)"}
+            aria-label="답변 읽어주기"
+            aria-pressed={voice.speakEnabled}
+          >
+            {voice.speaking ? "⏹" : voice.speakEnabled ? "🔊" : "🔇"}
+          </button>
 
           <button
             class="grid h-[34px] w-[40px] shrink-0 place-items-center rounded-md bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"

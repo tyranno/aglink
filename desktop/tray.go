@@ -22,16 +22,23 @@ var quitting atomic.Bool
 func setupTray(app *application.App, win *application.WebviewWindow) {
 	hide := func() {
 		win.Hide()
+		setWindowHidden(true)
 		voiceIndicator.setMainHidden(app, true)
 		app.Event.Emit("window:tray", map[string]bool{"hidden": true})
 	}
 	show := func() {
 		voiceIndicator.setMainHidden(app, false)
+		setWindowHidden(false)
 		win.Show()
 		if win.IsMinimised() {
 			win.Restore()
 		}
 		win.Focus()
+	}
+
+	// Started hidden because it was left in the tray: the indicator has to know.
+	if winState.Hidden {
+		voiceIndicator.setMainHidden(app, true)
 	}
 
 	app.Event.On("indicator:open", func(*application.CustomEvent) { show() })

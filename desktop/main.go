@@ -82,14 +82,18 @@ func main() {
 
 	loadWindowState()
 	win := app.Window.NewWithOptions(mainWindowOptions())
-	// Persist the window size / maximised state so a large view is restored next
-	// launch. Save on resize and on close (close covers the case where the last
-	// change was a maximise/restore).
+	// Persist the window size / position / maximised state so the window comes
+	// back as it was left. Save on resize, move and close (close covers the case
+	// where the last change was a maximise/restore).
 	saveGeo := func(*application.WindowEvent) { captureWindowGeometry(win) }
 	win.OnWindowEvent(events.Common.WindowDidResize, saveGeo)
+	win.OnWindowEvent(events.Common.WindowDidMove, saveGeo)
 	win.OnWindowEvent(events.Common.WindowClosing, saveGeo)
 	setupIndicator(app)
 	setupTray(app, win)
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		keepWindowOnScreen(app, win)
+	})
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

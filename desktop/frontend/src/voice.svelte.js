@@ -335,6 +335,14 @@ function savedConversationPane() {
 async function resumeSavedConversation() {
   const saved = savedConversationPane();
   if (!saved) return;
+  // With the wake word on, a restart waits for "아글링크" instead of listening
+  // right away; the remembered pane is the one the name opens.
+  if (voice.wake) {
+    rememberConvPane(saved);
+    saveConversation(null);
+    vlog("restart: conversation waits for the wake word");
+    return;
+  }
   for (let i = 0; i < 120 && !voice.convPaneId; i++) {
     const paneId = pane(saved) ? saved : chat.focusedPaneId;
     if (paneId && pane(paneId)?.target && chat.connected && voice.phase === "idle" && !voice.speaking) {
@@ -394,10 +402,15 @@ Events.On("tray:conversation", () => {
 });
 
 // Hiding the window to the tray starts conversation mode on the focused pane,
-// so the tray is a voice-only way of using the app.
+// so the tray is a voice-only way of using the app. With the wake word on it
+// only waits for "아글링크" (on the focused pane).
 Events.On("window:tray", (event) => {
   if (!event.data?.hidden || voice.convPaneId) return;
   const paneId = chat.focusedPaneId;
+  if (voice.wake) {
+    if (paneId && pane(paneId)?.target) rememberConvPane(paneId);
+    return;
+  }
   if (paneId && pane(paneId)?.target) void toggleConversation(paneId);
 });
 

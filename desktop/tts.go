@@ -124,7 +124,7 @@ func (v *VoiceService) Synthesize(text, voiceName string, speed float64) (string
 	if speed <= 0 {
 		speed = ttsSpeed
 	}
-	speed = min(max(speed, 0.7), 1.4)
+	speed = min(max(speed, 0.7), 2.0)
 	tmp, err := os.CreateTemp("", "aglink-tts-*.wav")
 	if err != nil {
 		return "", err

@@ -13,7 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,8 +41,17 @@ const (
 
 // whisperHallucinations are what whisper emits for silence or noise — mostly
 // YouTube outro lines from its training data. A clip that transcribes to only
-// one of these is treated as no speech.
+// these (possibly repeated, as "-감사합니다. -감사합니다.") is treated as no
+// speech.
+// bracketNoteRe matches a bracketed note whisper adds for sounds or silence.
+var bracketNoteRe = regexp.MustCompile(`\[[^\]]*\]`)
+
+// newsSignoffRe: "MBC 뉴스 김상현입니다." — a newscaster's sign-off whisper
+// makes up for noise, with a different name each time.
+var newsSignoffRe = regexp.MustCompile(`(MBC|KBS|SBS|YTN|JTBC)\s*뉴스\s*\S{0,6}(입니다|였습니다)[.!]?`)
+
 var whisperHallucinations = []string{
+	"감사합니다",
 	"시청해주셔서 감사합니다",
 	"시청해 주셔서 감사합니다",
 	"구독과 좋아요 부탁드립니다",
@@ -80,7 +91,8 @@ func fileExists(p string) bool {
 }
 
 // VoiceStatus reports whether speech recognition is ready, as JSON:
-// {"ready":bool,"installing":bool,"supported":bool}.
+// {"ready":bool,"installing":bool,"supported":bool,"fast":bool} — fast: the
+// resident GPU server is up, so a clip transcribes in a fraction of a second.
 func (v *VoiceService) VoiceStatus() (string, error) {
 	cli, model, err := whisperPaths()
 	if err != nil {
@@ -89,9 +101,15 @@ func (v *VoiceService) VoiceStatus() (string, error) {
 	v.mu.Lock()
 	installing := v.installing
 	v.mu.Unlock()
+	ready := fileExists(cli) && fileExists(model)
+	if ready {
+		warmWhisperServer()
+	}
+	warmTTSServer()
 	b, _ := json.Marshal(map[string]bool{
-		"ready":      fileExists(cli) && fileExists(model),
+		"ready":      ready,
 		"installing": installing,
+		"fast":       fastWhisperReady(),
 		"supported":  runtime.GOOS == "windows" && runtime.GOARCH == "amd64",
 	})
 	return string(b), nil
@@ -125,6 +143,7 @@ func (v *VoiceService) InstallVoice() error {
 		}
 		log.Printf("[voice] whisper installed")
 		emitVoiceInstall(map[string]any{"stage": "done"})
+		go installWhisperCUDA() // optional and large — speech recognition already works
 	}()
 	return nil
 }
@@ -150,7 +169,7 @@ func installWhisper() error {
 		if err := download(whisperBinURL, zipPath, "bin"); err != nil {
 			return fmt.Errorf("whisper.cpp 다운로드 실패: %w", err)
 		}
-		err := extractRelease(zipPath, filepath.Join(dir, "bin"))
+		err := extractRelease(zipPath, filepath.Join(dir, "bin"), "whisper-cli.exe")
 		os.Remove(zipPath)
 		if err != nil {
 			return fmt.Errorf("whisper.cpp 압축 해제 실패: %w", err)
@@ -210,9 +229,9 @@ func (p *progressWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// extractRelease unpacks the files under Release/ in the whisper.cpp zip flat
-// into dst (whisper-cli.exe needs its DLLs next to it).
-func extractRelease(zipPath, dst string) error {
+// extractRelease unpacks exe and the DLLs from Release/ in a whisper.cpp zip
+// flat into dst (the exe needs its DLLs next to it).
+func extractRelease(zipPath, dst, exe string) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
@@ -227,7 +246,7 @@ func extractRelease(zipPath, dst string) error {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(name))
-		if ext != ".dll" && name != "whisper-cli.exe" {
+		if ext != ".dll" && name != exe {
 			continue
 		}
 		if err := extractOne(f, filepath.Join(dst, name)); err != nil {
@@ -269,6 +288,15 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 		return "", fmt.Errorf("오디오 디코딩 실패: %w", err)
 	}
 
+	v.runMu.Lock()
+	defer v.runMu.Unlock()
+	started := time.Now()
+	if out, ok := transcribeFast(wav); ok {
+		text := cleanTranscript(out)
+		log.Printf("[voice] transcribed %d bytes on GPU in %s → %d chars", len(wav), time.Since(started).Round(time.Millisecond), len([]rune(text)))
+		return text, nil
+	}
+
 	tmp, err := os.MkdirTemp("", "aglink-voice-")
 	if err != nil {
 		return "", err
@@ -280,8 +308,6 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 	}
 	outBase := filepath.Join(tmp, "clip")
 
-	v.runMu.Lock()
-	defer v.runMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	// -otxt writes UTF-8 to a file; reading stdout instead would depend on the
@@ -289,10 +315,10 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 	cmd := exec.CommandContext(ctx, cli,
 		"-m", model, "-f", in, "-l", "ko",
 		"-t", fmt.Sprint(min(runtime.NumCPU(), 8)),
+		"-ac", fmt.Sprint(audioContext(len(wav))),
 		"-nt", "-np", "-otxt", "-of", outBase)
 	cmd.Dir = filepath.Dir(cli)
 	hideConsole(cmd)
-	started := time.Now()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("whisper 실행 실패: %v %s", err, strings.TrimSpace(string(out)))
 	}
@@ -307,12 +333,22 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 
 // cleanTranscript joins whisper's lines and drops silence hallucinations.
 func cleanTranscript(s string) string {
+	s = bracketNoteRe.ReplaceAllString(s, " ") // "[감사합니다]", "[음악]": whisper's non-speech notes
+	s = newsSignoffRe.ReplaceAllString(s, " ")
 	s = strings.Join(strings.Fields(s), " ")
-	bare := strings.Trim(s, " .!?,")
-	for _, h := range whisperHallucinations {
-		if bare == h {
-			return ""
+	phrases := strings.FieldsFunc(s, func(r rune) bool { return strings.ContainsRune(".!?,-", r) })
+	for _, p := range phrases {
+		if p = strings.TrimSpace(p); p != "" && !slices.Contains(whisperHallucinations, p) {
+			return s
 		}
 	}
-	return s
+	return ""
+}
+
+// audioContext sizes whisper's encoder window (-ac, 50 per second, 1500 = the
+// full 30 s) to the clip. A short reply-sized clip then transcribes in ~1.5 s
+// instead of ~2.5 s; the margin keeps accuracy. wav is 16 kHz mono 16-bit.
+func audioContext(wavLen int) int {
+	seconds := float64(max(0, wavLen-44)) / 32000
+	return min(1500, max(512, int(seconds*50)+256))
 }

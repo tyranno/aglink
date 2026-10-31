@@ -76,7 +76,7 @@ func main() {
 		},
 		Windows: application.WindowsOptions{
 			WebviewUserDataPath:   webviewUserDataPath(),
-			AdditionalBrowserArgs: devtoolsArgs(),
+			AdditionalBrowserArgs: append(backgroundArgs(), devtoolsArgs()...),
 		},
 	})
 
@@ -88,6 +88,8 @@ func main() {
 	saveGeo := func(*application.WindowEvent) { captureWindowGeometry(win) }
 	win.OnWindowEvent(events.Common.WindowDidResize, saveGeo)
 	win.OnWindowEvent(events.Common.WindowClosing, saveGeo)
+	setupIndicator(app)
+	setupTray(app, win)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
@@ -109,4 +111,19 @@ func devtoolsArgs() []string {
 		return []string{"--remote-debugging-port=" + p}
 	}
 	return nil
+}
+
+// backgroundArgs keeps the page running at full speed while the window is
+// hidden in the tray. Chromium otherwise throttles a hidden page's timers (down
+// to once a minute after a few minutes), which stalls voice conversation: the
+// mic re-opens on a timer after each reply is read. The autoplay policy is
+// lifted too: after a restart into the tray nobody has clicked the page, so
+// Chromium would refuse to play the spoken reply.
+func backgroundArgs() []string {
+	return []string{
+		"--autoplay-policy=no-user-gesture-required",
+		"--disable-background-timer-throttling",
+		"--disable-renderer-backgrounding",
+		"--disable-backgrounding-occluded-windows",
+	}
 }

@@ -2,6 +2,11 @@
 
 package main
 
-import "os/exec"
+import (
+	"os"
+	"os/exec"
+)
 
 func hideConsole(*exec.Cmd) {}
+
+func killWithApp(*os.Process) {}

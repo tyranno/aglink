@@ -1112,6 +1112,11 @@ export function setAssistantTextListener(fn) {
   assistantTextListener = fn;
 }
 
+let turnDoneListener = null;
+export function setTurnDoneListener(fn) {
+  turnDoneListener = fn;
+}
+
 function appendLiveFrameToKey(key, frame) {
   const message = messageFromFrame(frame);
   if (message) pushMessageToKey(key, message);
@@ -1563,7 +1568,10 @@ export function handleFrame(frame) {
     startWorking(key);
     chat.progressByKey = new Map(chat.progressByKey).set(key, []);
   }
-  if (frame.type === "done") stopWorking(key);
+  if (frame.type === "done") {
+    stopWorking(key);
+    turnDoneListener?.(key);
+  }
   if (frame.type === "progress") {
     appendProgress(key, frame.text || "");
     return;

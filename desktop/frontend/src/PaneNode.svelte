@@ -44,7 +44,7 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
-  import { voice, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote } from "./voice.svelte.js";
+  import { voice, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation } from "./voice.svelte.js";
 
   let { node } = $props();
 
@@ -376,18 +376,33 @@
           </div>
         {/if}
 
-        {#if voice.paneId === p.id || (voice.status === "installing" && voice.notePaneId === p.id) || (voice.note && voice.notePaneId === p.id)}
+        {#if voice.confirmPaneId === p.id}
+          <div class="mb-1 flex flex-wrap items-center gap-2 rounded-md border border-blue-300 bg-blue-50 px-2 py-1.5 text-[12px] text-slate-700 dark:border-blue-700 dark:bg-blue-950/40 dark:text-slate-300">
+            <span class="min-w-0 flex-1">음성 인식을 쓰려면 whisper 엔진과 한국어 모델(약 500MB)을 내려받아야 합니다. 인식은 이 PC 안에서만 이뤄집니다.</span>
+            <button type="button" class="shrink-0 rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-700" onclick={installVoice}>내려받기</button>
+            <button type="button" class="shrink-0 rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-600 dark:hover:bg-slate-700" onclick={cancelInstallVoice}>취소</button>
+          </div>
+        {/if}
+
+        {#if voice.paneId === p.id || voice.convPaneId === p.id || voice.status === "installing" || (voice.note && voice.notePaneId === p.id)}
           <div class="mb-1 flex items-center gap-2 text-[12px] text-slate-600 dark:text-slate-400">
             {#if voice.paneId === p.id && voice.phase === "listening"}
               <span class="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500"></span>
-              <span>듣는 중… 말을 멈추면 자동으로 보냅니다</span>
+              <span>{voice.convPaneId === p.id ? "음성 대화 · 듣는 중… (끝내려면 “그만”)" : "듣는 중… 말을 멈추면 자동으로 보냅니다"}</span>
               <span class="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                 <span class="block h-full bg-red-500 transition-[width] duration-75" style={`width:${Math.round(voice.level * 100)}%`}></span>
               </span>
             {:else if voice.paneId === p.id && voice.phase === "transcribing"}
               <span>음성을 글자로 바꾸는 중…</span>
+            {:else if voice.convPaneId === p.id}
+              <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500"></span>
+              <span>음성 대화 중 · {voice.speaking ? "답변을 읽는 중…" : "답변을 기다리는 중…"} 끝나면 다시 듣습니다</span>
             {:else if voice.status === "installing"}
-              <span>음성 인식 설치 중 · {voice.installStage} {voice.installPercent}%</span>
+              <span class="shrink-0">음성 인식 내려받는 중 · {voice.installStage}</span>
+              <span class="h-1.5 min-w-16 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                <span class="block h-full bg-blue-500 transition-[width]" style={`width:${voice.installPercent}%`}></span>
+              </span>
+              <span class="shrink-0 tabular-nums">{voice.installPercent}%{voice.installTotalMB ? ` (${voice.installDoneMB}/${voice.installTotalMB}MB)` : ""}</span>
             {:else}
               <span class="min-w-0 flex-1 truncate" title={voice.note}>{voice.note}</span>
               <button type="button" class="shrink-0 text-slate-400 hover:text-slate-600" onclick={clearVoiceNote} aria-label="닫기">✕</button>
@@ -414,6 +429,17 @@
             aria-label="음성 입력"
           >
             {voice.paneId === p.id && voice.phase === "transcribing" ? "…" : "🎤"}
+          </button>
+
+          <button
+            class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.convPaneId === p.id ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-950/40" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
+            onclick={() => toggleConversation(p.id)}
+            disabled={!p.target || (voice.convPaneId !== p.id && voice.phase !== "idle")}
+            title={voice.convPaneId === p.id ? "음성 대화 끝내기" : "음성 대화 (Ctrl+Shift+M) — 답변을 읽어 주고 끝나면 다시 듣습니다"}
+            aria-label="음성 대화"
+            aria-pressed={voice.convPaneId === p.id}
+          >
+            🗣
           </button>
 
           {#each p.attachments as attachment, aIndex (attachment.id)}
@@ -449,6 +475,11 @@
             rows="1"
             oninput={(event) => setPaneComposerValue(p.id, event.currentTarget.value)}
             onkeydown={(event) => {
+              if (event.ctrlKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === "m") {
+                event.preventDefault();
+                void toggleConversation(p.id);
+                return;
+              }
               if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "m") {
                 event.preventDefault();
                 void toggleVoiceInput(p.id);

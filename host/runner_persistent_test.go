@@ -483,6 +483,26 @@ func TestPersistentPool_StrayOutputBetweenTurnsRespawns(t *testing.T) {
 	}
 }
 
+// The CLI's "completed" lifecycle line after each result is not stray output:
+// the process is reused.
+func TestPersistentPool_LifecycleLineBetweenTurnsKeepsProcess(t *testing.T) {
+	sp := &fakeSpawner{respond: okTurn}
+	p := testPool(sp, time.Minute, 3)
+	defer p.Close()
+	ctx := context.Background()
+	if _, _, err := p.runTurn(ctx, "conv", workerSpec("opus", "--resume", "S"), "a", nil); err != nil {
+		t.Fatal(err)
+	}
+	sp.proc(0).emit(`{"type":"command_lifecycle","command_uuid":"x","state":"completed"}`)
+	out, _, err := p.runTurn(ctx, "conv", workerSpec("opus", "--resume", "S"), "b", nil)
+	if err != nil || !strings.Contains(out, "reply 2: b") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	if sp.proc(0).isKilled() || sp.count() != 1 {
+		t.Fatalf("process must be reused (spawns=%d)", sp.count())
+	}
+}
+
 // A fresh process that exits without a result (e.g. "--session-id … already in
 // use") reports exit error + stderr exactly like the one-shot path, so the
 // manager's recovery sees the same error text. No retry: it was not reused.
@@ -795,5 +815,19 @@ func TestPersistentPool_SkipsTurnsBeforeOwnMessage(t *testing.T) {
 	}
 	if strings.Contains(out, "No response requested.") || !strings.Contains(out, "hello") {
 		t.Fatalf("out = %q", out)
+	}
+}
+
+func TestSpecDiff_NamesWhatChanged(t *testing.T) {
+	base := persistentSpec{path: "claude", dir: "w", args: []string{"-p", "--resume", "s1", "--model", "opus"}, env: []string{"A=1", "TOKEN=x"}}
+	cur := base
+	cur.args = []string{"-p", "--session-id", "s1", "--model", "sonnet"}
+	if got := specDiff(base, cur); !strings.Contains(got, `"opus" → "sonnet"`) || !strings.Contains(got, "--model") {
+		t.Fatalf("args: %s", got)
+	}
+	cur = base
+	cur.env = []string{"A=1", "TOKEN=y"}
+	if got := specDiff(base, cur); got != "env TOKEN" {
+		t.Fatalf("env: %s", got)
 	}
 }

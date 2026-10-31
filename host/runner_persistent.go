@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -89,6 +90,7 @@ type persistentProc interface {
 type persistentEntry struct {
 	key      string
 	sig      string
+	spec     persistentSpec // what sig was made from — logged when a turn's spec differs
 	proc     persistentProc // nil while the spawn is in flight
 	busy     bool
 	turns    int
@@ -181,6 +183,87 @@ func persistentSignature(spec persistentSpec) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// specDiff names what differs between two specs, for the eviction log: the
+// first differing argument (shortened), the mcp-config content, or the names
+// of changed env variables — never their values, which may hold tokens.
+func specDiff(old, cur persistentSpec) string {
+	short := func(s string) string {
+		if r := []rune(s); len(r) > 60 {
+			return string(r[:60]) + "…"
+		}
+		return s
+	}
+	switch {
+	case old.path != cur.path:
+		return "binary " + short(old.path) + " → " + short(cur.path)
+	case old.dir != cur.dir:
+		return "workdir " + short(old.dir) + " → " + short(cur.dir)
+	}
+	norm := func(args []string) []string {
+		out := make([]string, 0, len(args))
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			if (a == "--resume" || a == "--session-id") && i+1 < len(args) {
+				out = append(out, "session="+args[i+1])
+				i++
+				continue
+			}
+			out = append(out, a)
+			if a == "--mcp-config" && i+1 < len(args) {
+				data, _ := os.ReadFile(args[i+1])
+				out = append(out, args[i+1]+"#"+hexSum8(data))
+				i++
+			}
+		}
+		return out
+	}
+	oa, ca := norm(old.args), norm(cur.args)
+	for i := 0; i < len(oa) || i < len(ca); i++ {
+		var o, c string
+		if i < len(oa) {
+			o = oa[i]
+		}
+		if i < len(ca) {
+			c = ca[i]
+		}
+		if o != c {
+			prev := ""
+			if i > 0 && i-1 < len(ca) {
+				prev = ca[i-1] + " "
+			}
+			return fmt.Sprintf("arg %d %s%q → %q", i, prev, short(o), short(c))
+		}
+	}
+	envMap := func(env []string) map[string]string {
+		m := map[string]string{}
+		for _, kv := range env {
+			k, v, _ := strings.Cut(kv, "=")
+			m[k] = v
+		}
+		return m
+	}
+	if (old.env == nil) != (cur.env == nil) {
+		return "env inherit ↔ explicit"
+	}
+	oe, ce := envMap(old.env), envMap(cur.env)
+	var keys []string
+	for k, v := range ce {
+		if ov, ok := oe[k]; !ok || ov != v {
+			keys = append(keys, k)
+		}
+	}
+	for k := range oe {
+		if _, ok := ce[k]; !ok {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) > 0 {
+		sort.Strings(keys)
+		return "env " + strings.Join(keys, ",")
+	}
+	return "mcp-config content"
+}
+
 // persistentUserMessage renders a prompt as one stream-json stdin line tagged
 // with uuid; the CLI echoes that uuid back on the replayed message.
 func persistentUserMessage(prompt, uuid string) ([]byte, error) {
@@ -230,6 +313,20 @@ func replayLineUUID(line string) string {
 		return ""
 	}
 	return probe.UUID
+}
+
+// isLifecycleLine reports a {"type":"command_lifecycle"} line. Newer CLIs (seen
+// on 2.1.283) emit one per stdin message — "queued", "started", and
+// "completed" right AFTER the turn's result — so the last one is always waiting
+// when the next turn comes. It is bookkeeping, not the process acting on its own.
+func isLifecycleLine(line string) bool {
+	if !strings.Contains(line, `"command_lifecycle"`) {
+		return false
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal([]byte(line), &probe) == nil && probe.Type == "command_lifecycle"
 }
 
 // runTurn runs one worker turn on key's resident process and returns the same
@@ -284,7 +381,7 @@ func (p *persistentPool) acquire(key, sig string, spec persistentSpec) (*persist
 			return nil, false, errPersistentUnavailable
 		case e.sig != sig:
 			p.removeLocked(e)
-			retire = append(retire, retiring{e, "args changed"})
+			retire = append(retire, retiring{e, "args changed: " + specDiff(e.spec, spec)})
 		case procExited(e.proc):
 			p.removeLocked(e)
 			retire = append(retire, retiring{e, "exited while idle"})
@@ -314,7 +411,7 @@ func (p *persistentPool) acquire(key, sig string, spec persistentSpec) (*persist
 		p.removeLocked(lru)
 		retire = append(retire, retiring{lru, "pool full (LRU)"})
 	}
-	e := &persistentEntry{key: key, sig: sig, busy: true, turns: 1}
+	e := &persistentEntry{key: key, sig: sig, spec: spec, busy: true, turns: 1}
 	p.entries[key] = e
 	p.mu.Unlock()
 	for _, r := range retire {
@@ -358,14 +455,22 @@ func (p *persistentPool) turn(ctx context.Context, e *persistentEntry, reused bo
 		// Anything waiting on stdout means the process did something on its own
 		// since its last result (or exited) — writing now could interleave our turn
 		// with that output. Start over on a fresh process instead.
-		select {
-		case _, ok := <-proc.lines():
-			p.drop(e, "output between turns")
-			if !ok {
-				return "", "", errors.New("process exited"), true
+		// The previous turn's "completed" lifecycle line is not such output.
+	idle:
+		for {
+			select {
+			case line, ok := <-proc.lines():
+				if ok && isLifecycleLine(line) {
+					continue
+				}
+				p.drop(e, "output between turns")
+				if !ok {
+					return "", "", errors.New("process exited"), true
+				}
+				return "", "", errors.New("unexpected output between turns"), true
+			default:
+				break idle
 			}
-			return "", "", errors.New("unexpected output between turns"), true
-		default:
 		}
 	}
 	if reused {
@@ -789,4 +894,9 @@ func (b *lockedBuffer) take() string {
 	s := b.buf.String()
 	b.buf.Reset()
 	return s
+}
+
+func hexSum8(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:4])
 }

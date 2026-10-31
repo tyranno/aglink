@@ -61,8 +61,11 @@ const ECHO_TRUST_MARGIN = 0.1; // this far over the voice bar is the user, whate
 const SPEAKER_MIXED_DROP = 0.1;
 const SPEAKER_SHORT_S = 1.2;
 const ENROLL_MS = 15000;
-const LISTEN_ALWAYS_RE = /^(항상|계속|늘)s*(듣기|들어|들어s*줘|켜s*(둬|놔|놓아))(s*(로|으로))?s*(해|바꿔|해s*줘|바꿔s*줘|줘)?[.!?~s]*$/;
-const LISTEN_WAKE_RE = /^(호출어|부르기|부르면|아글링크s*(로|하면))s*(로|으로)?s*(켜|켜기|시작|바꿔|해|하자)S*(s*줘)?[.!?~s]*$/;
+const LISTEN_ALWAYS_RE = /^(항상|계속|늘)\s*(듣기|들어|들어\s*줘|켜\s*(둬|놔|놓아))(\s*(로|으로))?\s*(해|바꿔|해\s*줘|바꿔\s*줘|줘)?[.!?~\s]*$/;
+const LISTEN_WAKE_RE = /^(호출어|부르기|부르면|아글링크\s*(로|하면))\s*(로|으로)?\s*(켜|켜기|시작|바꿔|해|하자)\S*(\s*줘)?[.!?~\s]*$/;
+// "부르는 이름을 아그라로 바꿔 줘": a name of the user's own to wake on.
+const WAKE_NAME_SET_RE = /^(부르는\s*|호출\s*|깨우는\s*)?(이름|호출어)\s*(을|를)?\s*["“']?(.{1,8}?)["”']?\s*(으로|로)\s*(바꿔|정해|해|지정해|설정해)\S*(\s*(줘|주세요))?[.!?~\s]*$/;
+const WAKE_NAME_ADD_RE = /^["“']?(.{1,8}?)["”']?\s*(이)?라고\s*(불러도|해도|하면|부르면)\s*(알아들어|대답해|깨어나|켜져|켜)\S*(\s*(줘|주세요))?[.!?~\s]*$/;
 const ENROLL_RE = /^(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(등록|저장|기억)/;
 const UNENROLL_RE = /목소리\s*(등록\s*)?(해제|취소|지워|삭제|지우기)/;
 const MAX_CLIP_MS = 60000;
@@ -80,7 +83,8 @@ const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
 const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, listenMode: "wake", wakeIdleMin: 3, summary: true };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true };
+const MAX_WAKE_NAMES = 5;
 // How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on
 // from the start and stays on; "manual" — only 🗣 / Ctrl+Shift+M / the tray.
 // Outside "manual", "아글링크" also brings back a conversation ended with "그만".
@@ -96,6 +100,16 @@ function clamp(v, [lo, hi]) {
   return Math.min(hi, Math.max(lo, v));
 }
 
+// cleanWakeNames keeps the user's own wake names: trimmed, 2–8 letters, no repeats.
+export function cleanWakeNames(list) {
+  const out = [];
+  for (const n of Array.isArray(list) ? list : []) {
+    const name = String(n || "").replace(/[\s,.!?~"“”']/g, "");
+    if (name.length >= 2 && name.length <= 8 && !out.includes(name)) out.push(name);
+  }
+  return out.slice(0, MAX_WAKE_NAMES);
+}
+
 function loadSettings() {
   let s = {};
   try {
@@ -107,6 +121,8 @@ function loadSettings() {
     speakerMin: Number.isFinite(s.speakerMin) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
     listenMode: LISTEN_MODES.includes(s.listenMode) ? s.listenMode : s.wake === false ? "manual" : VOICE_DEFAULTS.listenMode,
     wakeIdleMin: WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
+    wakeNames: cleanWakeNames(s.wakeNames),
+    wakeDefault: typeof s.wakeDefault === "boolean" ? s.wakeDefault : true,
     summary: typeof s.summary === "boolean" ? s.summary : VOICE_DEFAULTS.summary,
   };
 }
@@ -179,6 +195,9 @@ export function setVoiceSettings(patch) {
   const modeChanged = LISTEN_MODES.includes(patch.listenMode) && patch.listenMode !== voice.listenMode;
   if (modeChanged) voice.listenMode = patch.listenMode;
   if (WAKE_IDLE_CHOICES.includes(patch.wakeIdleMin)) voice.wakeIdleMin = patch.wakeIdleMin;
+  if (patch.wakeNames !== undefined) voice.wakeNames = cleanWakeNames(patch.wakeNames);
+  if (typeof patch.wakeDefault === "boolean") voice.wakeDefault = patch.wakeDefault;
+  if (!voice.wakeDefault && !voice.wakeNames.length) voice.wakeDefault = true; // always some name to wake on
   if (typeof patch.summary === "boolean") voice.summary = patch.summary;
   try {
     localStorage.setItem(
@@ -189,6 +208,8 @@ export function setVoiceSettings(patch) {
         speakerMin: voice.speakerMin,
         listenMode: voice.listenMode,
         wakeIdleMin: voice.wakeIdleMin,
+        wakeNames: voice.wakeNames,
+        wakeDefault: voice.wakeDefault,
         summary: voice.summary,
       }),
     );
@@ -1116,7 +1137,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [TAPE_START_RE, TAPE_FOLDER_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 // runVoiceCommand carries out text if it is one of the commands; false means
@@ -1134,10 +1155,24 @@ async function runVoiceCommand(paneId, text) {
     speak("녹음 폴더를 열었어요.");
     return true;
   }
+  const named = WAKE_NAME_SET_RE.exec(t) || WAKE_NAME_ADD_RE.exec(t);
+  if (named) {
+    const set = WAKE_NAME_SET_RE.test(t);
+    const name = cleanWakeNames([set ? named[4] : named[1]])[0];
+    if (!name) {
+      speak("부를 이름은 두 글자에서 여덟 글자로 정해 주세요.");
+      return true;
+    }
+    setVoiceSettings({ wakeNames: set ? [name] : [...voice.wakeNames, name] });
+    vlog(`wake names → ${voice.wakeNames.join(", ")}`);
+    const also = voice.wakeDefault ? " 아글링크라고 부르셔도 계속 돼요." : "";
+    speak(`이제 ${name}, 라고 부르시면 깨어날게요.${also}`);
+    return true;
+  }
   if (LISTEN_ALWAYS_RE.test(t) || LISTEN_WAKE_RE.test(t)) {
     const always = LISTEN_ALWAYS_RE.test(t);
     setVoiceSettings({ listenMode: always ? "always" : "wake" });
-    speak(always ? "이제 항상 듣고 있을게요. 앱을 켜면 바로 대화가 시작돼요." : "이제 아글링크라고 부르실 때만 들을게요.");
+    speak(always ? "이제 항상 듣고 있을게요. 앱을 켜면 바로 대화가 시작돼요." : `이제 ${wakeNameLabel()}, 라고 부르실 때만 들을게요.`);
     return true;
   }
   if (DETAIL_RE.test(t)) {
@@ -2090,6 +2125,72 @@ const WAKE_PREROLL_CHUNKS = 3;
 const WAKE_PAD_S = 0.4;
 const LAST_CONV_STORAGE_KEY = "aglink.voice.lastConversation"; // pane the wake word opens
 
+const WAKE_MAX_LEAD = 1; // letters allowed before the name ("어, 아그라")
+
+// Hangul split into its letters (초성/중성/종성), so "아구라" is one letter
+// off "아그라" rather than a whole syllable.
+function jamo(s) {
+  const out = [];
+  for (const ch of s) {
+    const c = ch.charCodeAt(0) - 0xac00;
+    if (c >= 0 && c < 11172) {
+      out.push(`L${Math.floor(c / 588)}`, `V${Math.floor((c % 588) / 28)}`);
+      if (c % 28) out.push(`T${c % 28}`);
+    } else out.push(ch.toLowerCase());
+  }
+  return out;
+}
+
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// matchWakeName finds a user-set name opening text, written a little
+// differently or not; it returns where the name ends in text, or -1. Short
+// names must come out exactly: one letter off "아그라" is already "아그래".
+export function matchWakeName(text, name) {
+  const letters = []; // [char, index in text] with spaces and marks left out
+  for (let i = 0; i < text.length; i++) if (/[\p{L}\p{N}]/u.test(text[i])) letters.push([text[i], i]);
+  const want = jamo(name);
+  const allowed = Math.floor((want.length - 1) / 6);
+  let best = null;
+  for (let from = 0; from <= WAKE_MAX_LEAD && from < letters.length; from++) {
+    for (const len of [name.length, name.length - 1, name.length + 1]) {
+      if (len < 1 || from + len > letters.length) continue;
+      const d = editDistance(jamo(letters.slice(from, from + len).map(([c]) => c).join("")), want);
+      if (d <= allowed && (!best || d < best.d)) best = { d, end: letters[from + len - 1][1] + 1 };
+    }
+    if (best) break; // the earliest place it starts
+  }
+  return best ? best.end : -1;
+}
+
+// wakeMatch: where the wake name ends in what was heard, or -1. The name has
+// to open the sentence (give or take a "어," before it), so a passing mention
+// in someone's talk does not count.
+function wakeMatch(text) {
+  if (voice.wakeDefault) {
+    const m = WAKE_RE.exec(text);
+    if (m && m.index <= 4) return m.index + m[0].length;
+  }
+  for (const name of voice.wakeNames) {
+    const end = matchWakeName(text, name);
+    if (end >= 0) return end;
+  }
+  return -1;
+}
+
+// wakeNameLabel is how the wake name is said in replies: the user's own first.
+export function wakeNameLabel() {
+  return voice.wakeNames[0] || "아글링크";
+}
+
 let wakeRec = null;
 let wakeOn = false; // the listener is wanted (voice.waking mirrors it for the UI)
 
@@ -2202,14 +2303,12 @@ async function checkWake(w, wav) {
     }
     const text = (await VoiceService.Transcribe(toBase64(wav))).trim();
     if (!text || wakeRec !== w) return;
-    const m = WAKE_RE.exec(text);
-    // The name has to open the sentence (give or take a "어," before it), so a
-    // passing mention in someone's talk does not count.
-    if (!m || m.index > 4) {
+    const end = wakeMatch(text);
+    if (end < 0) {
       vlog(`wake: not the name ${quote(text, 20)}`); // to see how the name gets written
       return;
     }
-    const rest = text.slice(m.index + m[0].length).replace(WAKE_TAIL_RE, "").trim();
+    const rest = text.slice(end).replace(WAKE_TAIL_RE, "").trim();
     vlog(`wake ${score >= 0 ? score.toFixed(2) + " " : ""}${quote(text)}`);
     await wakeUp(rest);
   } catch (err) {

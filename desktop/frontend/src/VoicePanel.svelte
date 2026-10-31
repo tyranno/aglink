@@ -163,6 +163,32 @@
       </div>
       <div class="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
+          <div class={label}>부르는 이름</div>
+          <div class={desc}>
+            “아글링크” 말고 직접 정한 이름으로도 부를 수 있어요. 쉼표로 나눠 다섯 개까지 적을 수 있어요. 짧은 이름은 적힌 그대로 들려야 깨어나니, 받아 적기가 다르게 나오면 그 모양도 함께 적어 두세요(예: 아그라, 아구라).
+            말로 “부르는 이름을 아그라로 바꿔 줘”라고 해도 돼요.
+          </div>
+        </div>
+        <div class="flex shrink-0 flex-col items-end gap-2">
+          <input
+            class="w-56 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300"
+            placeholder="예: 아그라, 자비스"
+            value={voice.wakeNames.join(", ")}
+            onchange={(e) => setVoiceSettings({ wakeNames: e.currentTarget.value.split(/[,，]/) })}
+          />
+          <label class="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={voice.wakeDefault}
+              disabled={!voice.wakeNames.length}
+              onchange={(e) => setVoiceSettings({ wakeDefault: e.currentTarget.checked })}
+            />
+            “아글링크”도 계속 쓰기
+          </label>
+        </div>
+      </div>
+      <div class="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
           <div class={label}>말이 없으면 대기로</div>
           <div class={desc}>“부르면 듣기”일 때, 음성 대화에서 이 시간 동안 아무 말이 없으면 대화를 끝내고 다시 부르기를 기다려요.</div>
         </div>

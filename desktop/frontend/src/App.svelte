@@ -18,6 +18,7 @@
     WORKING_GRACE_MS,
     parseJSON,
     findWebConv,
+    pane,
     backendLabel,
     addPane,
     focusedPane,
@@ -52,6 +53,13 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { theme, setTheme } from "./themeStore.svelte.js";
+  import { voice } from "./voice.svelte.js";
+
+  // The conversation voice chat is talking to, marked in the list.
+  function isVoiceConv(id) {
+    const t = voice.convPaneId && pane(voice.convPaneId)?.target;
+    return t?.kind === "web" && t.id === id;
+  }
 
   // Sidebar visibility/tab is a UI preference persisted (like the pane layout) so
   // hiding the conversation list survives a restart instead of always reopening.
@@ -702,6 +710,9 @@
                         <span class="min-w-0 flex-1 truncate text-sm font-semibold">{conversationLabel(conv)}</span>
                         <span class="shrink-0 font-mono text-[11px] text-slate-400 dark:text-slate-500">#{conv.id}</span>
                         <span class="shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:text-slate-300">{backendLabel(conv.backend)}</span>
+                        {#if isVoiceConv(conv.id)}
+                          <span class="shrink-0 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white" title="음성 대화 중인 대화">🎤 음성</span>
+                        {/if}
                         {#if isFocusedTarget({ kind: "web", id: conv.id })}
                           <span class="shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">현재</span>
                         {/if}

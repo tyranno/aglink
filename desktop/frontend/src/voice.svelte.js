@@ -767,7 +767,11 @@ const NEW_CONV_RE = cmdRE(String.raw`새\s*(로운\s*)?대화\s*(를)?\s*(시작
 const BACK_RE = cmdRE(String.raw`(아까|이전|전|원래|지난)\s*대화\s*(로|으로)?\s*(돌아가|돌아가자|가|가자|열어|옮겨|바꿔)`);
 const VOICE_WORD_RE = /목소리|음성|보이스/;
 const VOICE_CHANGE_RE = /(바꿔|바꾸자|변경|(으로|로)\s*해)\S*(\s*(줘|주세요|줄래|봐|봐\s*줘|요))?[.!?~\s]*$/;
-const FIND_RE = /(대화|얘기|이야기)\s*(를|을)?\s*(좀\s*)?(찾아|찾기|찾자|열어)\S*(\s*(줘|주세요|줄래|봐|봐\s*줘))?[.!?~\s]*$/;
+const FIND_RE = /(대화|얘기|이야기|채팅|채팅방)\s*(를|을)?\s*(좀\s*)?(찾아|찾기|찾자|열어)\S*(\s*(줘|주세요|줄래|봐|봐\s*줘))?[.!?~\s]*$/;
+const LIST_RE = cmdRE(String.raw`(최근\s*)?(대화|채팅|채팅방)\s*(목록|리스트)\s*(을|를|좀)?\s*(읽어|알려|말해|불러|보여)`);
+const NOW_RE = cmdRE(String.raw`(지금|여기)\s*(은|는)?\s*(무슨|어떤|어느|뭔)\s*(대화|채팅|채팅방)\s*(야|이야|예요|이에요|지|인가|인지\s*알려)?\??`);
+const NTH_RE = cmdRE(String.raw`(\d+|일|이|삼|사|오|첫|두|세|네|다섯)\s*번\s*(째)?\s*(대화|채팅)?\s*(으로|로|를|을)?\s*(열어|가|가자|바꿔|옮겨|들어가)`);
+const LIST_COUNT = 5; // conversations read out by "대화 목록 읽어 줘"
 const MAX_COMMAND_CHARS = 40; // longer sentences are always meant for the AI
 const FIND_SCAN_CONVS = 40; // recent conversations whose text is searched when no title matches
 const MAX_TRAIL = 10;
@@ -859,6 +863,39 @@ async function newConversation(paneId) {
   speak("새 대화를 시작했어요. 말씀하세요.");
 }
 
+// The conversations last read out by "대화 목록 읽어 줘", so "2번 열어 줘"
+// opens the one that was heard as number 2 even if the list has moved since.
+let listedConvs = [];
+
+function listConversations(paneId) {
+  listedConvs = chat.webConvs.slice(0, LIST_COUNT).map((c) => ({ id: c.id, title: c.title || "제목 없는" }));
+  if (!listedConvs.length) {
+    speak("대화 목록이 비어 있어요.");
+    return;
+  }
+  const cur = pane(paneId)?.target;
+  const items = listedConvs.map((c, i) => `${i + 1}번, ${c.title}.`).join(" ");
+  const now = cur ? ` 지금은 ${convTitle(cur)} 대화예요.` : "";
+  speak(`최근 대화예요. ${items}${now} 번호로 말씀하시면 열어 드릴게요.`);
+}
+
+const NTH_WORDS = { 일: 1, 첫: 1, 이: 2, 두: 2, 삼: 3, 세: 3, 사: 4, 네: 4, 오: 5, 다섯: 5 };
+
+async function openNthConversation(paneId, word) {
+  const n = /^\d+$/.test(word) ? Number(word) : NTH_WORDS[word];
+  if (!listedConvs.length) {
+    speak("먼저 대화 목록 읽어 줘, 라고 말씀해 주세요.");
+    return;
+  }
+  const c = listedConvs[n - 1];
+  if (!c || !findWebConv(c.id)) {
+    speak(`${listedConvs.length}번까지 있어요. 다시 말씀해 주세요.`);
+    return;
+  }
+  await selectTargetInPane(paneId, { kind: "web", id: c.id });
+  speak(`${c.title} 대화를 열었어요.`);
+}
+
 async function goBackConversation(paneId) {
   const cur = pane(paneId)?.target;
   const curKey = cur ? targetKey(cur) : "";
@@ -875,7 +912,7 @@ async function goBackConversation(paneId) {
 // The words to look for in "지난주에 나노파이 얘기한 대화 찾아 줘": what is
 // left once the time words, "얘기한", "대화", "찾아 줘" and particles are gone.
 const FIND_STOPWORDS = new Set(["지난주", "지난주에", "지난번", "지난번에", "저번", "저번에", "예전에", "어제", "그저께", "아까", "전에", "좀", "관련", "관련된", "관련해서", "대해", "대해서", "대한", "했던", "하던", "한", "줘", "주세요", "그", "그때"]);
-const FIND_STOP_PREFIX_RE = /^(얘기|이야기|애기|대화|찾|열어)/;
+const FIND_STOP_PREFIX_RE = /^(얘기|이야기|애기|대화|채팅|찾|열어)/;
 
 function findWords(text) {
   return text
@@ -986,6 +1023,20 @@ async function runVoiceCommand(paneId, text) {
     return true;
   }
   try {
+    if (LIST_RE.test(t)) {
+      listConversations(paneId);
+      return true;
+    }
+    if (NOW_RE.test(t)) {
+      const cur = pane(paneId)?.target;
+      speak(cur ? `지금은 ${convTitle(cur)} 대화예요.` : "지금 열린 대화가 없어요.");
+      return true;
+    }
+    const nth = NTH_RE.exec(t);
+    if (nth) {
+      await openNthConversation(paneId, nth[2]);
+      return true;
+    }
     if (NEW_CONV_RE.test(t)) {
       await newConversation(paneId);
       return true;

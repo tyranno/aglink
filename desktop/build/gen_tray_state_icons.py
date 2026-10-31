@@ -64,3 +64,13 @@ def record(d):
 im, d = base()
 record(d)
 im.resize((64, 64), Image.LANCZOS).save("trayicons/recording.png")
+
+
+def done(d):
+    d.ellipse((36, 36, 220, 220), outline=FG, width=W)
+    d.line((84, 132, 116, 164, 176, 96), fill=FG, width=W + 4, joint="curve")
+
+
+im, d = base()
+done(d)
+im.resize((64, 64), Image.LANCZOS).save("trayicons/done.png")

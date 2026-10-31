@@ -35,6 +35,8 @@ import { alarms, parseAlarm, addAlarm, removeAlarm, startAlarms, fireText, confi
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
 const BARGE_STORAGE_KEY = "aglink.voice.barge"; // "0": take turns, the mic waits for the reading
 const CONV_STORAGE_KEY = "aglink.voice.conversation"; // pane id while conversation is on
+const AWAIT_STORAGE_KEY = "aglink.voice.awaiting"; // pane whose spoken request is still being worked on
+const DONE_SHOW_MS = 8000; // "작업이 끝났어요" stays on the indicator this long
 const TARGET_RATE = 16000;
 const SILENCE_STOP_MS = 1300; // pause after speech that ends the clip
 const CONV_SILENCE_STOP_MS = 2200; // conversation mode: room for "음…" mid-sentence pauses
@@ -169,6 +171,8 @@ export const voice = $state({
   taping: false, // "녹음해 줘": recording until "녹음 끝내"
   tapeStartedAt: 0,
   tapeClock: "", // "03:12", shown while recording
+  done: null, // title of the chat whose work just finished, shown for a while
+  doneAt: 0,
   ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, listenMode, wakeIdleMin, summary
 });
 
@@ -390,6 +394,14 @@ async function resumeSavedConversation() {
   // right away; the remembered pane is the one the name opens.
   if (voice.listenMode === "wake") {
     rememberConvPane(saved);
+    // A request still being worked on keeps the conversation (and the
+    // indicator) on, so its end is seen and the answer read out.
+    if (awaitedPane() === saved) {
+      voice.convPaneId = saved;
+      convActiveAt = Date.now();
+      vlog("restart: conversation waits for the answer");
+      return;
+    }
     saveConversation(null);
     vlog("restart: conversation waits for the wake word");
     return;
@@ -436,18 +448,19 @@ export function endConversation(note) {
 // is in the tray) whether conversation mode is on and what it is doing.
 $effect.root(() => {
   $effect(() => {
-    const active = !!voice.convPaneId || voice.taping;
+    const active = !!voice.convPaneId || voice.taping || voice.done !== null;
     let phase = "waiting";
     // What was sent is shown while waiting, so a mishearing is caught at once.
     let label = voice.heard ? `${quote(voice.heard, 30)} 답변 기다리는 중` : "답변을 기다리는 중";
     if (voice.taping) [phase, label] = ["recording", `녹음 중 ${voice.tapeClock || "00:00"} — “녹음 끝내”라고 하면 멈춰요`];
     else if (voice.problem) [phase, label] = ["problem", voice.problem];
+    else if (voice.done !== null) [phase, label] = ["done", voice.speaking ? "작업이 끝났어요 — 답변을 읽어요" : "작업이 끝났어요"];
     else if (voice.flash) [phase, label] = ["note", voice.flash];
     else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
     else if (voice.phase === "listening") [phase, label] = ["listening", "듣는 중 — 말씀하세요"];
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
     // Which chat the conversation is talking to, shown under the status line.
-    const chatTitle = (active && paneConversationMeta(pane(voice.convPaneId)?.target)?.title) || "";
+    const chatTitle = (voice.done || (active && paneConversationMeta(pane(voice.convPaneId)?.target)?.title)) || "";
     Events.Emit("voice:state", {
       active,
       phase,
@@ -465,6 +478,10 @@ $effect.root(() => {
 Events.On("tray:conversation", () => {
   if (voice.taping) {
     void stopTape();
+    return;
+  }
+  if (!voice.convPaneId && voice.done !== null) {
+    voice.done = null; // ✕ on "작업이 끝났어요" only closes the notice
     return;
   }
   const paneId = voice.convPaneId || chat.focusedPaneId;
@@ -526,8 +543,44 @@ setTurnDoneListener((key) => {
   if (texts?.length) speakReply(texts[texts.length - 1]);
   convActiveAt = Date.now();
   const p = voice.convPaneId && pane(voice.convPaneId);
+  const awaited = awaitedPane();
+  const ap = awaited && pane(awaited);
+  if (ap?.target && targetKey(ap.target) === key) {
+    setAwaited(null);
+    noteDone(ap.target);
+  } else if (p?.target && targetKey(p.target) === key) noteDone(p.target);
   if (p?.target && targetKey(p.target) === key) resumeListening();
 });
+
+// The pane whose spoken request is being worked on, kept over a restart.
+function awaitedPane() {
+  try {
+    return localStorage.getItem(AWAIT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setAwaited(paneId) {
+  try {
+    if (paneId) localStorage.setItem(AWAIT_STORAGE_KEY, paneId);
+    else localStorage.removeItem(AWAIT_STORAGE_KEY);
+  } catch {}
+}
+
+let doneTimer = null;
+
+// noteDone shows "작업이 끝났어요" on the indicator (and the tray icon) for a
+// while, even if the conversation has ended meanwhile, so a long piece of
+// work is seen to finish while the window is in the tray.
+function noteDone(target) {
+  const title = paneConversationMeta(target)?.title || "";
+  voice.done = title;
+  voice.doneAt = Date.now();
+  clearTimeout(doneTimer);
+  doneTimer = setTimeout(() => (voice.done = null), DONE_SHOW_MS);
+  vlog(`turn done${title ? ` ${quote(title, 20)}` : ""}`);
+}
 
 // ---- recording ----
 
@@ -696,7 +749,7 @@ async function startRecording(paneId, barge = false) {
       if (voice.convPaneId === paneId) {
         // With the wake word on, a conversation nobody talks in goes back to
         // waiting for "아글링크" instead of listening forever.
-        if (voice.listenMode === "wake" && voice.wakeIdleMin > 0 && Date.now() - convActiveAt > voice.wakeIdleMin * 60000) {
+        if (voice.listenMode === "wake" && voice.wakeIdleMin > 0 && awaitedPane() !== paneId && Date.now() - convActiveAt > voice.wakeIdleMin * 60000) {
           vlog("conversation idle → waiting for the wake word");
           endConversation();
         } else resumeListening(0);
@@ -1556,7 +1609,10 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     setPaneComposerValue(paneId, existing ? `${existing} ${text}` : text);
     if (chat.connected) {
       vlog(`sent ${quote(text)}`);
-      if (conv()) voice.heard = text;
+      if (conv()) {
+        voice.heard = text;
+        setAwaited(paneId);
+      }
       convActiveAt = Date.now();
       await sendFromPane(paneId);
     }

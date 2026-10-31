@@ -45,6 +45,8 @@
           <path class="wave w2" d="M17.5 7a7 7 0 0 1 0 10" />
         {:else if phase === "problem"}
           <path d="M12 4 3 20h18z" /><path d="M12 10v4.5M12 17.2v.3" />
+        {:else if phase === "done"}
+          <circle cx="12" cy="12" r="8.5" /><path d="M8 12.5l2.8 2.8L16.5 9.5" />
         {:else if phase === "recording"}
           <circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4" class="fill dot" />
         {:else if phase === "note"}

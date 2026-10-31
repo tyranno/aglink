@@ -44,7 +44,8 @@ const (
 // these (possibly repeated, as "-감사합니다. -감사합니다.") is treated as no
 // speech.
 // bracketNoteRe matches a bracketed note whisper adds for sounds or silence.
-var bracketNoteRe = regexp.MustCompile(`\[[^\]]*\]`)
+// "(끝)", "(웃음)" come in parentheses; spoken words never do.
+var bracketNoteRe = regexp.MustCompile(`\[[^\]]*\]|\([^)]{0,10}\)`)
 
 // newsSignoffRe: "MBC 뉴스 김상현입니다." — a newscaster's sign-off whisper
 // makes up for noise, with a different name each time.

@@ -93,3 +93,12 @@ func TestCleanTranscript_DropsNewsSignoff(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestCleanTranscriptDropsParenNotes(t *testing.T) {
+	if got := cleanTranscript("(끝) (끝) 아들 이리 와봐 (끝)"); got != "아들 이리 와봐" {
+		t.Fatalf("got %q", got)
+	}
+	if got := cleanTranscript("(끝) (끝)"); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}

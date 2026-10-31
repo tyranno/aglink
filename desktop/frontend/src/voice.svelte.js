@@ -30,7 +30,7 @@ import {
   setAssistantTextListener,
   setTurnDoneListener,
 } from "./paneStore.svelte.js";
-import { alarms, parseAlarm, addAlarm, removeAlarm, clearAlarms, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
+import { alarms, parseAlarm, addAlarm, removeAlarm, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
 
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
 const BARGE_STORAGE_KEY = "aglink.voice.barge"; // "0": take turns, the mic waits for the reading
@@ -1040,7 +1040,7 @@ function isCommandText(text) {
 // it is to be sent as usual.
 async function runVoiceCommand(paneId, text) {
   const t = text.trim();
-  if (t.length <= MAX_ALARM_CHARS && runAlarmCommand(t)) return true;
+  if (t.length <= MAX_ALARM_CHARS && (await runAlarmCommand(t))) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
   if (DETAIL_RE.test(t)) {
     speakDetail();
@@ -1132,6 +1132,49 @@ async function runVoiceCommand(paneId, text) {
 // and read out when its time comes — in conversation, waiting for the wake
 // word, or with the window in the tray.
 
+const REMINDER_RE = /^\s*🔔\s*([\s\S]+)$/u;
+
+// The conversation a spoken reminder reports to: the one being talked to.
+function alarmTarget() {
+  const t = pane(voice.convPaneId || chat.focusedPaneId)?.target;
+  return t?.kind === "web" && t.id ? { kind: "web", id: t.id } : { kind: "telegram" };
+}
+
+// Reminders set by voice live in the 예약 scheduler on the host (so they show
+// in the 예약 panel and go off even with this app closed); the local list in
+// alarms.js is only the fallback when the host cannot be reached.
+async function saveAlarmTask(a) {
+  const d = new Date(a.at);
+  const payload = {
+    label: a.msg || (a.wake ? "깨우기" : "알림"),
+    isTask: false,
+    prompt: fireText(a),
+    cronExpr: a.daily ? `${d.getMinutes()} ${d.getHours()} * * *` : "",
+    fireAt: a.daily ? "" : d.toISOString(),
+    target: alarmTarget(),
+  };
+  const j = parseJSON(await ControlService.SaveTask(JSON.stringify(payload)), {});
+  if (j?.ok === false) throw new Error(j.error || "저장 실패");
+}
+
+// hostReminders lists the pending 🔔 reminders (not AI jobs) as alarm-like
+// items, soonest first; null when the host cannot be reached.
+async function hostReminders() {
+  try {
+    const list = parseJSON(await ControlService.ListTasks("pending"), []);
+    return (Array.isArray(list) ? list : [])
+      .filter((t) => !t.isTask)
+      .map((t) => {
+        const at = new Date(t.nextFire && !t.nextFire.startsWith("0001") ? t.nextFire : t.fireAt).getTime();
+        return { hostId: t.id, at, msg: t.label && !["알림", "깨우기"].includes(t.label) ? t.label : "", daily: !!t.cronExpr, wake: t.label === "깨우기", made: new Date(t.createdAt).getTime() || 0 };
+      })
+      .filter((a) => Number.isFinite(a.at))
+      .sort((x, y) => x.at - y.at);
+  } catch {
+    return null;
+  }
+}
+
 function alarmLine(a) {
   const when = a.daily ? `매일 ${timeLabel(a.at).replace(/^(내일|모레) /, "")}` : timeLabel(a.at);
   return `${when}${a.msg ? `, ${a.msg}` : a.wake ? ", 깨우기" : ""}`;
@@ -1139,45 +1182,51 @@ function alarmLine(a) {
 
 // runAlarmCommand sets, reads out or cancels reminders; false means text is
 // none of those.
-function runAlarmCommand(t) {
-  if (ALARM_LIST_RE.test(t)) {
-    if (!alarms.length) speak("맡기신 알림이 없어요.");
-    else speak(`알림이 ${alarms.length}개 있어요. ${alarms.map((a, i) => `${i + 1}번, ${alarmLine(a)}.`).join(" ")}`);
-    return true;
-  }
-  const cancel = ALARM_CANCEL_RE.exec(t);
-  if (cancel) {
-    if (!alarms.length) {
+async function runAlarmCommand(t) {
+  const listing = ALARM_LIST_RE.test(t);
+  const cancel = !listing && ALARM_CANCEL_RE.exec(t);
+  if (listing || cancel) {
+    const host = await hostReminders();
+    const all = [...(host || []), ...alarms].sort((x, y) => x.at - y.at);
+    if (listing) {
+      if (!all.length) speak("맡기신 알림이 없어요.");
+      else speak(`알림이 ${all.length}개 있어요. ${all.map((a, i) => `${i + 1}번, ${alarmLine(a)}.`).join(" ")}`);
+      return true;
+    }
+    if (!all.length) {
       speak("취소할 알림이 없어요.");
       return true;
     }
     const nthWord = cancel[3];
-    if (cancel[8]) {
-      const n = clearAlarms();
-      vlog(`alarms cleared (${n})`);
-      speak(`알림 ${n}개를 모두 취소했어요.`);
-      return true;
-    }
-    let target = null;
-    if (nthWord) {
-      const n = /^\d+$/.test(nthWord) ? Number(nthWord) : NTH_WORDS[nthWord];
-      target = alarms[n - 1];
-      if (!target) {
-        speak(`알림은 ${alarms.length}번까지 있어요. 다시 말씀해 주세요.`);
+    let picked;
+    if (cancel[8]) picked = all;
+    else if (nthWord) {
+      const n = /^d+$/.test(nthWord) ? Number(nthWord) : NTH_WORDS[nthWord];
+      if (!all[n - 1]) {
+        speak(`알림은 ${all.length}번까지 있어요. 다시 말씀해 주세요.`);
         return true;
       }
-    } else if (alarms.length === 1) target = alarms[0];
-    else target = alarms.reduce((x, y) => ((y.made || 0) > (x.made || 0) ? y : x)); // the one set last
-    removeAlarm(target.id);
-    vlog(`alarm cancelled ${quote(alarmLine(target))}`);
-    speak(`${alarmLine(target)} 알림을 취소했어요.`);
+      picked = [all[n - 1]];
+    } else picked = [all.length === 1 ? all[0] : all.reduce((x, y) => ((y.made || 0) > (x.made || 0) ? y : x))]; // the one set last
+    for (const a of picked) {
+      if (a.hostId) await ControlService.DeleteTask(a.hostId).catch(() => {});
+      else removeAlarm(a.id);
+    }
+    vlog(`alarms cancelled ${picked.length}`);
+    speak(picked.length > 1 ? `알림 ${picked.length}개를 모두 취소했어요.` : `${alarmLine(picked[0])} 알림을 취소했어요.`);
     return true;
   }
   const a = parseAlarm(t);
   if (!a) return false;
-  const item = addAlarm(a);
-  vlog(`alarm set ${new Date(item.at).toLocaleString()} ${quote(item.msg)}${item.daily ? " daily" : ""}`);
-  speak(confirmText(item));
+  try {
+    await saveAlarmTask(a);
+    vlog(`alarm set on the host ${new Date(a.at).toLocaleString()} ${quote(a.msg)}${a.daily ? " daily" : ""}`);
+  } catch (err) {
+    // The host is down: kept here and read out while this app runs.
+    addAlarm(a);
+    vlog(`alarm kept locally (${err?.message || err}) ${quote(a.msg)}`);
+  }
+  speak(confirmText(a));
   return true;
 }
 
@@ -1886,6 +1935,17 @@ export async function speak(md, mode = speechMode(), tail = "") {
 }
 
 setAssistantTextListener((key, text) => {
+  // A reminder from the 예약 scheduler ("🔔 회의 시간이에요.") is read out
+  // whichever conversation it lands in, as long as the voice is set up.
+  const bell = REMINDER_RE.exec(text);
+  if (bell) {
+    if (voice.status === "ready" && !voice.enrolling) {
+      vlog(`reminder ${quote(bell[1])}`);
+      flash(`⏰ ${quote(bell[1], 20)}`);
+      void speak(bell[1], "full");
+    }
+    return;
+  }
   if (STATUS_LINE_RE.test(text)) return;
   // A remembered conversation counts before it has resumed after a restart,
   // so a reply that lands in that gap is still read out.

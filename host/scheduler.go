@@ -28,6 +28,11 @@ type Scheduler struct {
 	done        chan struct{}            // closed by Stop() to unblock Run()
 	send        func(chatID int64, text string)
 	dispatch    func(chatID int64, text, project string)
+	// For tasks with a web Target: a reminder posted into that conversation,
+	// and a job sent as a turn of it.
+	webSend     func(chatID int64, tgt Target, text string)
+	webDispatch func(chatID int64, tgt Target, text string)
+	runPlaybook func(chatID int64, playbookID string) // tasks with a PlaybookID
 }
 
 func NewScheduler(tasksPath string) *Scheduler {
@@ -50,6 +55,20 @@ func (s *Scheduler) SetSend(f func(int64, string)) {
 func (s *Scheduler) SetDispatch(f func(int64, string, string)) {
 	s.mu.Lock()
 	s.dispatch = f
+	s.mu.Unlock()
+}
+
+// SetWebDelivery wires how tasks addressed to a web conversation report.
+func (s *Scheduler) SetWebDelivery(send, dispatch func(int64, Target, string)) {
+	s.mu.Lock()
+	s.webSend, s.webDispatch = send, dispatch
+	s.mu.Unlock()
+}
+
+// SetPlaybookRun wires how a task that names an 업무 루틴 runs it.
+func (s *Scheduler) SetPlaybookRun(f func(int64, string)) {
+	s.mu.Lock()
+	s.runPlaybook = f
 	s.mu.Unlock()
 }
 
@@ -200,8 +219,15 @@ func (s *Scheduler) fire(taskID string) bool {
 	}
 	t.LastFired = time.Now()
 	chatID, project, prompt, script, isTask := t.ChatID, t.Project, t.Prompt, t.Script, t.IsTask
+	var web *Target
+	if t.Target != nil && t.Target.IsWeb() && t.Target.ID != "" {
+		tgt := *t.Target
+		web = &tgt
+	}
+	playbookID := t.PlaybookID
 	_ = s.save()
 	sendFn, dispatchFn := s.send, s.dispatch
+	webSendFn, webDispatchFn, playbookFn := s.webSend, s.webDispatch, s.runPlaybook
 	s.mu.Unlock()
 
 	// Script pre-check: skip turn if wakeAgent == false
@@ -223,7 +249,13 @@ func (s *Scheduler) fire(taskID string) bool {
 		}
 	}
 
-	if isTask && dispatchFn != nil {
+	if playbookID != "" && playbookFn != nil {
+		go playbookFn(chatID, playbookID)
+	} else if web != nil && isTask && webDispatchFn != nil {
+		go webDispatchFn(chatID, *web, prompt)
+	} else if web != nil && !isTask && webSendFn != nil {
+		go webSendFn(chatID, *web, "🔔 "+prompt)
+	} else if isTask && dispatchFn != nil {
 		go dispatchFn(chatID, prompt, project)
 	} else if sendFn != nil {
 		go sendFn(chatID, "🔔 "+prompt)
@@ -349,18 +381,20 @@ func (s *Scheduler) UpsertTask(in *Task) (*Task, error) {
 
 	if in.ID == "" {
 		t := &Task{
-			ID:        newTaskID(),
-			ChatID:    in.ChatID,
-			Project:   in.Project,
-			Prompt:    in.Prompt,
-			Script:    in.Script,
-			CronExpr:  in.CronExpr,
-			FireAt:    in.FireAt,
-			Status:    "pending",
-			IsTask:    in.IsTask,
-			Label:     in.Label,
-			DependsOn: in.DependsOn,
-			CreatedAt: time.Now(),
+			ID:         newTaskID(),
+			ChatID:     in.ChatID,
+			Project:    in.Project,
+			Prompt:     in.Prompt,
+			Script:     in.Script,
+			CronExpr:   in.CronExpr,
+			FireAt:     in.FireAt,
+			Status:     "pending",
+			IsTask:     in.IsTask,
+			Label:      in.Label,
+			DependsOn:  in.DependsOn,
+			Target:     in.Target,
+			PlaybookID: in.PlaybookID,
+			CreatedAt:  time.Now(),
 		}
 		if err := s.register(t); err != nil {
 			return nil, err
@@ -393,6 +427,10 @@ func (s *Scheduler) UpsertTask(in *Task) (*Task, error) {
 	if in.DependsOn != nil {
 		t.DependsOn = in.DependsOn
 	}
+	if in.Target != nil {
+		t.Target = in.Target
+	}
+	t.PlaybookID = in.PlaybookID
 	t.Prompt = in.Prompt
 	t.Script = in.Script
 	t.CronExpr = in.CronExpr

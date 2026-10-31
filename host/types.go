@@ -354,6 +354,14 @@ type Task struct {
 	CreatedAt time.Time `json:"createdAt"`
 	LastFired time.Time `json:"lastFired,omitempty"`
 	DependsOn []string  `json:"dependsOn,omitempty"` // task IDs that must complete before this fires
+	// Target is the conversation the task reports to. Nil (tasks made on
+	// Telegram, and every task from before this field) means the telegram
+	// stream; a web target makes a reminder land in that desktop/web
+	// conversation and runs a job as a turn of it.
+	Target *Target `json:"target,omitempty"`
+	// PlaybookID makes the task run that 업무 루틴 (in a fresh conversation, with
+	// its work folder and backend, exactly like its ▶ button) instead of Prompt.
+	PlaybookID string `json:"playbookId,omitempty"`
 }
 
 // Target kinds. An empty or unrecognized Kind means the telegram stream: it is

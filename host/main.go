@@ -356,6 +356,18 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	// Wire scheduler send/dispatch after bot is created
 	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })
 	sched.SetDispatch(func(chatID int64, text, project string) { bot.dispatchScheduledTask(chatID, text, project) })
+	sched.SetWebDelivery(
+		func(chatID int64, tgt Target, text string) { _ = bot.ReplyTo(tgt).Send(chatID, text) },
+		func(chatID int64, tgt Target, text string) {
+			_ = bot.ReplyTo(tgt).Send(chatID, "⏰ 예약 작업 실행 중: "+truncate(text, 60))
+			bot.dispatchTargetedOpt(chatID, text, &tgt, true)
+		},
+	)
+	sched.SetPlaybookRun(func(chatID int64, id string) {
+		if _, err := bot.runPlaybook(chatID, id); err != nil {
+			log.Printf("[scheduler] scheduled playbook %s: %v", id, err)
+		}
+	})
 	manager.SetScheduler(sched)
 	go sched.Run()
 

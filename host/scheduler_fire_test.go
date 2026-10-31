@@ -126,3 +126,35 @@ func TestScheduler_FiredOneShotReleasesTimerBookkeeping(t *testing.T) {
 		t.Errorf("stopChs holds %d stale entry(ies) after every one-shot fired", left)
 	}
 }
+
+// A task saved with a web Target reports to that conversation, not Telegram:
+// a reminder is posted there and a job runs as a turn of it.
+func TestScheduler_WebTargetDelivery(t *testing.T) {
+	s, tg := newFireScheduler(t)
+	var mu sync.Mutex
+	var posted, ran []string
+	s.SetWebDelivery(
+		func(_ int64, tgt Target, text string) {
+			mu.Lock()
+			posted = append(posted, tgt.ID+"|"+text)
+			mu.Unlock()
+		},
+		func(_ int64, tgt Target, text string) { mu.Lock(); ran = append(ran, tgt.ID+"|"+text); mu.Unlock() },
+	)
+	web := WebTarget("conv1")
+	if _, err := s.UpsertTask(&Task{Prompt: "회의 시간이에요.", FireAt: time.Now().Add(30 * time.Millisecond), Target: &web}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertTask(&Task{Prompt: "서버 점검", IsTask: true, FireAt: time.Now().Add(30 * time.Millisecond), Target: &web}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(posted) == 1 && len(ran) == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if posted[0] != "conv1|🔔 회의 시간이에요." || ran[0] != "conv1|서버 점검" {
+		t.Errorf("posted %q, ran %q", posted, ran)
+	}
+	if tg.count() != 0 {
+		t.Errorf("a web task must not go to Telegram, sent %d", tg.count())
+	}
+}

@@ -65,6 +65,7 @@ func warmTTSServer() {
 		return
 	}
 	go func() {
+		defer warmOpenVoice(defaultTTSVoice) // after Supertonic: it reads the reference text
 		ttsMu.Lock()
 		defer ttsMu.Unlock()
 		if tts != nil || ttsBad() {
@@ -128,6 +129,10 @@ func (v *VoiceService) Synthesize(text, voiceName string) (string, error) {
 	ttsMu.Unlock()
 	if err != nil {
 		return "", err
+	}
+	if conv := convertVoice(path, voiceName); conv != "" {
+		defer os.Remove(conv)
+		path = conv
 	}
 	wav, err := os.ReadFile(path)
 	if err != nil {
@@ -231,6 +236,9 @@ func (v *VoiceService) ServiceShutdown() error {
 	ttsMu.Lock()
 	stopTTSServer()
 	ttsMu.Unlock()
+	ovMu.Lock()
+	stopOpenVoiceServer()
+	ovMu.Unlock()
 	stopWhisperServer()
 	return nil
 }

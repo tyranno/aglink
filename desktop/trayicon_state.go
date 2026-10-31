@@ -12,10 +12,11 @@ import (
 // bottom-right corner of the tray icon says what it is doing, so the state can
 // be told apart at a glance without hovering for the tooltip.
 var trayBadgeColours = map[string]color.RGBA{
-	"listening":    {34, 197, 94, 255},  // green: speak now
-	"transcribing": {245, 158, 11, 255}, // amber: working out what was said
-	"speaking":     {59, 130, 246, 255}, // blue: reading the reply
-	"problem":      {239, 68, 68, 255},  // red
+	"listening":    {34, 197, 94, 255},   // green: speak now
+	"transcribing": {245, 158, 11, 255},  // amber: working out what was said
+	"waiting":      {129, 140, 248, 255}, // indigo: waiting for the reply
+	"speaking":     {59, 130, 246, 255},  // blue: reading the reply
+	"problem":      {239, 68, 68, 255},   // red
 }
 
 // trayIconFor returns the tray icon for a voice phase ("" = plain icon), building

@@ -42,8 +42,10 @@ func main() {
 		runCmd(args[1:])
 	case "trust-cert":
 		runTrustCert(args[1:])
+	case "token":
+		runTokenCmd(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: aglink-web [mcp | serve | cmd <subcommand> [args...] | trust-cert <https-url> [--yes]]")
+		fmt.Fprintln(os.Stderr, "usage: aglink-web [mcp | serve | cmd <subcommand> [args...] | trust-cert <https-url> [--yes] | token [--off]]")
 		os.Exit(2)
 	}
 }

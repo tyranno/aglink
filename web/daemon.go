@@ -139,12 +139,14 @@ func (d *Daemon) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ext", d.handleExt)
 	mux.HandleFunc("/vscode", d.handleVSCode)
-	mux.HandleFunc("/call", d.handleCall)
+	// /call and /mcp drive the browser; with an access token configured they
+	// require it (authtoken.go). /health stays open: it says only "ok".
+	mux.Handle("/call", requireToken(http.HandlerFunc(d.handleCall)))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.Handle("/mcp", d.mcpHandler())
+	mux.Handle("/mcp", requireToken(d.mcpHandler()))
 	return mux
 }
 

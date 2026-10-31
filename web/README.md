@@ -207,6 +207,21 @@ claude mcp list      # aglink-web-remote: ... (HTTP) - ✔ Connected
 조작할 수 있다. 1인 전용 머신이면 문제 없지만, 공용 머신이라면 이 터널을
 상시로 두지 말 것.
 
+**접근 토큰으로 막기.** 터널은 포트 전체를 넘기므로 `/mcp` 뿐 아니라 로컬 브리지용
+`/call` 에도 닿는다. 이 PC 에서 한 번:
+
+```powershell
+aglink-web token          # ~/.aglink/aglink-web.token 생성, 원격 등록 명령을 출력
+aglink-web token --off    # 끄기
+```
+
+토큰 파일이 있는 동안 `/call` 과 `/mcp` 는 `Authorization: Bearer <토큰>` 이 있는
+요청만 받는다. 이 PC 의 Claude·`aglink-web cmd`·호스트의 `!flow` 는 같은 파일을 읽어
+알아서 붙이므로 바뀌는 게 없고, 원격은 출력된 명령대로 헤더를 넣어 다시 등록한다
+(`claude mcp add --transport http … /mcp --header "Authorization: Bearer …"`).
+파일을 만들거나 지우면 데몬 재시작 없이 몇 초 안에 적용된다. 기본은 꺼져 있다 —
+켜는 순간 기존 원격 등록이 거절되기 때문에, 원격 쪽 등록을 바꿀 때 함께 켠다.
+
 ## 앱 화면 다루기 (Electron · Wails)
 
 Electron 이나 Wails 로 만든 윈도우 앱의 UI 도 **일반 웹페이지처럼** 같은 도구로

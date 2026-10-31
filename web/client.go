@@ -38,7 +38,13 @@ func callDaemon(method string, params map[string]any, profile string) CallResult
 	}
 	port := readPort()
 	body, _ := json.Marshal(callRequest{Method: method, Params: params, Profile: profile, Env: bridgeEnv()})
-	resp, err := http.Post(daemonBaseURL(port)+"/call", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, daemonBaseURL(port)+"/call", bytes.NewReader(body))
+	if err != nil {
+		return CallResult{Error: err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addTokenHeader(req) // the daemon may require it (authtoken.go)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return CallResult{Error: fmt.Sprintf("browser daemon unavailable: %v", err)}
 	}

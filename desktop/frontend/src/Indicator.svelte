@@ -58,7 +58,7 @@
         <span class="label" title={label}>{label}</span>
         {#if chatTitle || speed}
           <span class="sub">
-            {#if chatTitle}<span class="chat" title={chatTitle}>{chatTitle}</span>{/if}
+            {#if chatTitle}<span class="chat" title={chatTitle}>💬 {chatTitle}</span>{/if}
             {#if chatTitle && speed}<span>·</span>{/if}
             {#if speed}<span class="speed">읽기 속도 {Math.round(speed * 100) / 100}배</span>{/if}
           </span>
@@ -150,11 +150,14 @@
     gap: 4px;
     min-width: 0;
     font-size: 11px;
-    opacity: 0.6;
+    color: rgba(238, 241, 255, 0.6);
     white-space: nowrap;
   }
   .chat {
     min-width: 0;
+    opacity: 1;
+    color: #fff;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
   }

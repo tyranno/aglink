@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -88,6 +89,10 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 			if active, _ := m["active"].(bool); active {
 				if label, _ := m["label"].(string); label != "" {
 					tip = "aglink — " + label
+				}
+				// Which chat the conversation is talking to.
+				if title, _ := m["chat"].(string); title != "" {
+					tip = "aglink · " + title + "\n" + strings.TrimPrefix(tip, "aglink — ")
 				}
 				phase, _ = m["phase"].(string)
 			}

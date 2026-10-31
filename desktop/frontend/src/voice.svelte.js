@@ -55,7 +55,7 @@ const MAX_SPEAK_SENTENCES = 3; // of the opening paragraph
 const MAX_SPEAK_POINTS = 6; // list items summarized by their first sentence
 const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
-const TTS_VOICE = "F2"; // Supertonic voice (M1–M5 male, F1–F5 female)
+const TTS_VOICE = "M2"; // Supertonic voice (M1–M5 male, F1–F5 female)
 
 function loadSpeakEnabled() {
   try {

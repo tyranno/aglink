@@ -23,7 +23,7 @@ import (
 // model (onnx/, voice_styles/) and stays running so the models load once.
 // Without it the frontend falls back to the Windows voice.
 
-const defaultTTSVoice = "F2"
+const defaultTTSVoice = "M2"
 
 // ttsSteps: Supertonic's denoising steps. 5 (the upstream examples' default)
 // takes ~35% less time than supertonic-server's own default of 8.

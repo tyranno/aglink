@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,6 +61,15 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 			if on, ok := m["barge"].(bool); ok && on != barge.Checked() {
 				barge.SetChecked(on)
 			}
+		}
+	})
+	// Recording runs in the frontend too; it answers with a spoken note.
+	menu.Add("녹음 시작 / 끝").OnClick(func(*application.Context) {
+		app.Event.Emit("tray:tape")
+	})
+	menu.Add("녹음 폴더 열기").OnClick(func(*application.Context) {
+		if dir, err := tapeDir(); err == nil {
+			_ = exec.Command("explorer.exe", dir).Start()
 		}
 	})
 	menu.Add("음성 설정").OnClick(func(*application.Context) {

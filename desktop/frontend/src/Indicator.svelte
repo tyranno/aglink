@@ -32,7 +32,7 @@
       <!-- Each phase is its own pictogram, the same as the tray icon, so the
            state is told by shape rather than colour: mic = listening, lines =
            working out the words, hourglass = waiting for the reply, speaker =
-           reading it out, ! = problem. -->
+           reading it out, ! = problem, ring and dot = recording. -->
       <svg class="icon {phase}" viewBox="0 0 24 24" aria-hidden="true">
         {#if phase === "listening"}
           <rect x="9" y="3" width="6" height="11" rx="3" class="fill" />
@@ -45,6 +45,8 @@
           <path class="wave w2" d="M17.5 7a7 7 0 0 1 0 10" />
         {:else if phase === "problem"}
           <path d="M12 4 3 20h18z" /><path d="M12 10v4.5M12 17.2v.3" />
+        {:else if phase === "recording"}
+          <circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4" class="fill dot" />
         {:else if phase === "note"}
           <circle cx="12" cy="12" r="8.5" /><path d="M12 11v5.5M12 7.8v.3" />
         {:else}
@@ -74,7 +76,7 @@
       title={barge ? "읽는 중에 말하면 멈추고 들어요 — 눌러서 주고받기로" : "다 읽은 뒤에 들어요 — 눌러서 끼어들기로"}
       >{barge ? "끼어들기" : "주고받기"}</button
     >
-    <button class="close" onclick={() => Events.Emit("tray:conversation")} title="음성 대화 끝내기">✕</button>
+    <button class="close" onclick={() => Events.Emit("tray:conversation")} title={phase === "recording" ? "녹음 끝내기" : "음성 대화 끝내기"}>✕</button>
   </div>
 </div>
 
@@ -183,6 +185,15 @@
   .icon .fill {
     fill: currentColor;
     stroke: none;
+  }
+  /* recording: the dot blinks */
+  .icon.recording .dot {
+    animation: blink 1.2s ease-in-out infinite;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0.25;
+    }
   }
   /* listening: the mic breathes */
   .icon.listening {

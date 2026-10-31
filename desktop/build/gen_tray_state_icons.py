@@ -54,3 +54,13 @@ for name, draw in (("listening", mic), ("transcribing", lines), ("waiting", hour
     im, d = base()
     draw(d)
     im.resize((64, 64), Image.LANCZOS).save(f"trayicons/{name}.png")
+
+
+def record(d):
+    d.ellipse((40, 40, 216, 216), outline=FG, width=W)
+    d.ellipse((84, 84, 172, 172), fill=FG)
+
+
+im, d = base()
+record(d)
+im.resize((64, 64), Image.LANCZOS).save("trayicons/recording.png")

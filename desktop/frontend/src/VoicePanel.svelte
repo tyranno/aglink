@@ -18,6 +18,9 @@
     enrollVoice,
     speakerStatus,
     clearSpeaker,
+    startTape,
+    stopTape,
+    openTapeFolder,
   } from "./voice.svelte.js";
 
   let speaker = $state({});
@@ -137,32 +140,58 @@
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <div class={label}>“아글링크”로 부르기</div>
+          <div class={label}>듣는 방식</div>
           <div class={desc}>
-            켜면 음성 대화가 꺼져 있을 때도 “아글링크”라고 부르면 대화를 시작해요. “아글링크, 오늘 날씨 어때?”처럼 이어서 말하면 바로 보내요.
+            {#if voice.listenMode === "wake"}
+              평소에는 쉬다가 “아글링크”라고 부르면 대화를 시작해요. “아글링크, 오늘 날씨 어때?”처럼 이어서 말하면 바로 보내요.
+            {:else if voice.listenMode === "always"}
+              앱을 켜면 바로 음성 대화가 시작되고 계속 들어요. “그만”이라고 하면 쉬고, “아글링크”라고 부르면 다시 들어요.
+            {:else}
+              🗣 버튼이나 Ctrl+Shift+M, 트레이 메뉴로 켤 때만 들어요.
+            {/if}
             {voice.waking ? "지금 부르기를 기다리는 중이에요." : ""}
           </div>
         </div>
-        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-          <input type="checkbox" checked={voice.wake} onchange={(e) => setVoiceSettings({ wake: e.currentTarget.checked })} />
-          사용
-        </label>
+        <div class="flex shrink-0 gap-3 text-sm font-medium text-slate-700 dark:text-slate-300">
+          {#each [["wake", "부르면 듣기"], ["always", "항상 듣기"], ["manual", "버튼으로만"]] as [mode, name] (mode)}
+            <label class="inline-flex items-center gap-1.5">
+              <input type="radio" name="listenMode" checked={voice.listenMode === mode} onchange={() => setVoiceSettings({ listenMode: mode })} />
+              {name}
+            </label>
+          {/each}
+        </div>
       </div>
       <div class="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <div class={label}>말이 없으면 대기로</div>
-          <div class={desc}>부르기를 켜 두었을 때, 음성 대화에서 이 시간 동안 아무 말이 없으면 대화를 끝내고 다시 부르기를 기다려요.</div>
+          <div class={desc}>“부르면 듣기”일 때, 음성 대화에서 이 시간 동안 아무 말이 없으면 대화를 끝내고 다시 부르기를 기다려요.</div>
         </div>
         <select
           class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300"
           value={voice.wakeIdleMin}
-          disabled={!voice.wake}
+          disabled={voice.listenMode !== "wake"}
           onchange={(e) => setVoiceSettings({ wakeIdleMin: Number(e.currentTarget.value) })}
         >
           {#each WAKE_IDLE_CHOICES as m (m)}
             <option value={m}>{m === 0 ? "끝내지 않음" : `${m}분`}</option>
           {/each}
         </select>
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div class={label}>녹음</div>
+          <div class={desc}>
+            “녹음해 줘”라고 하면 대답하지 않고 “녹음 끝내”라고 할 때까지 계속 녹음해요. 소리 파일과 받아 적은 글이 문서 폴더의 “aglink 녹음”에 함께 저장돼요.
+            {voice.taping ? `지금 녹음 중이에요 (${voice.tapeClock || "00:00"}).` : ""}
+          </div>
+        </div>
+        <div class="flex shrink-0 gap-2">
+          <button class={button} onclick={() => (voice.taping ? stopTape() : startTape())}>{voice.taping ? "녹음 끝내기" : "녹음 시작"}</button>
+          <button class={button} onclick={openTapeFolder}>폴더 열기</button>
+        </div>
       </div>
     </div>
 

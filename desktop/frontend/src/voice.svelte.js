@@ -61,6 +61,8 @@ const ECHO_TRUST_MARGIN = 0.1; // this far over the voice bar is the user, whate
 const SPEAKER_MIXED_DROP = 0.1;
 const SPEAKER_SHORT_S = 1.2;
 const ENROLL_MS = 15000;
+const LISTEN_ALWAYS_RE = /^(항상|계속|늘)s*(듣기|들어|들어s*줘|켜s*(둬|놔|놓아))(s*(로|으로))?s*(해|바꿔|해s*줘|바꿔s*줘|줘)?[.!?~s]*$/;
+const LISTEN_WAKE_RE = /^(호출어|부르기|부르면|아글링크s*(로|하면))s*(로|으로)?s*(켜|켜기|시작|바꿔|해|하자)S*(s*줘)?[.!?~s]*$/;
 const ENROLL_RE = /^(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(등록|저장|기억)/;
 const UNENROLL_RE = /목소리\s*(등록\s*)?(해제|취소|지워|삭제|지우기)/;
 const MAX_CLIP_MS = 60000;
@@ -78,7 +80,11 @@ const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
 const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, wake: true, wakeIdleMin: 3, summary: true };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, listenMode: "wake", wakeIdleMin: 3, summary: true };
+// How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on
+// from the start and stays on; "manual" — only 🗣 / Ctrl+Shift+M / the tray.
+// Outside "manual", "아글링크" also brings back a conversation ended with "그만".
+export const LISTEN_MODES = ["wake", "always", "manual"];
 export const WAKE_IDLE_CHOICES = [0, 1, 3, 5, 10]; // minutes without talk before conversation goes back to waiting; 0 = never
 export const SPEED_RANGE = [0.7, 2.0];
 export const SPEAKER_MIN_RANGE = [0.1, 0.7];
@@ -99,7 +105,7 @@ function loadSettings() {
     ttsVoice: TTS_VOICES.includes(s.ttsVoice) ? s.ttsVoice : VOICE_DEFAULTS.ttsVoice,
     ttsSpeed: Number.isFinite(s.ttsSpeed) ? clamp(s.ttsSpeed, SPEED_RANGE) : VOICE_DEFAULTS.ttsSpeed,
     speakerMin: Number.isFinite(s.speakerMin) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
-    wake: typeof s.wake === "boolean" ? s.wake : VOICE_DEFAULTS.wake,
+    listenMode: LISTEN_MODES.includes(s.listenMode) ? s.listenMode : s.wake === false ? "manual" : VOICE_DEFAULTS.listenMode,
     wakeIdleMin: WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
     summary: typeof s.summary === "boolean" ? s.summary : VOICE_DEFAULTS.summary,
   };
@@ -144,7 +150,10 @@ export const voice = $state({
   flash: "", // conversation mode: a passing note on the indicator
   heardLog: [], // recent clips: {at, text, score, kept, why}
   waking: false, // conversation is off and the mic waits for "아글링크"
-  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, wake, wakeIdleMin, summary
+  taping: false, // "녹음해 줘": recording until "녹음 끝내"
+  tapeStartedAt: 0,
+  tapeClock: "", // "03:12", shown while recording
+  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, listenMode, wakeIdleMin, summary
 });
 
 let flashTimer = null;
@@ -167,7 +176,8 @@ export function setVoiceSettings(patch) {
   if (patch.ttsVoice !== undefined && TTS_VOICES.includes(patch.ttsVoice)) voice.ttsVoice = patch.ttsVoice;
   if (Number.isFinite(patch.ttsSpeed)) voice.ttsSpeed = Math.round(clamp(patch.ttsSpeed, SPEED_RANGE) * 100) / 100;
   if (Number.isFinite(patch.speakerMin)) voice.speakerMin = Math.round(clamp(patch.speakerMin, SPEAKER_MIN_RANGE) * 100) / 100;
-  if (typeof patch.wake === "boolean") voice.wake = patch.wake;
+  const modeChanged = LISTEN_MODES.includes(patch.listenMode) && patch.listenMode !== voice.listenMode;
+  if (modeChanged) voice.listenMode = patch.listenMode;
   if (WAKE_IDLE_CHOICES.includes(patch.wakeIdleMin)) voice.wakeIdleMin = patch.wakeIdleMin;
   if (typeof patch.summary === "boolean") voice.summary = patch.summary;
   try {
@@ -177,13 +187,14 @@ export function setVoiceSettings(patch) {
         ttsVoice: voice.ttsVoice,
         ttsSpeed: voice.ttsSpeed,
         speakerMin: voice.speakerMin,
-        wake: voice.wake,
+        listenMode: voice.listenMode,
         wakeIdleMin: voice.wakeIdleMin,
         summary: voice.summary,
       }),
     );
   } catch {}
   prefetched.clear(); // made in the old voice
+  if (modeChanged && voice.listenMode === "always") void listenAlways();
 }
 
 // previewVoice reads a sample sentence with the current settings.
@@ -319,6 +330,10 @@ export async function toggleConversation(paneId) {
     return;
   }
   if (voice.phase !== "idle") return;
+  if (voice.taping) {
+    setNote(paneId, "녹음하는 중이에요. “녹음 끝내”라고 하거나 트레이 메뉴에서 끝낸 뒤에 대화할 수 있어요.");
+    return;
+  }
   if (voice.convPaneId) endConversation();
   voice.convPaneId = paneId;
   convActiveAt = Date.now();
@@ -344,11 +359,15 @@ function savedConversationPane() {
 }
 
 async function resumeSavedConversation() {
+  if (voice.listenMode === "always") {
+    await listenAlways();
+    return;
+  }
   const saved = savedConversationPane();
   if (!saved) return;
   // With the wake word on, a restart waits for "아글링크" instead of listening
   // right away; the remembered pane is the one the name opens.
-  if (voice.wake) {
+  if (voice.listenMode === "wake") {
     rememberConvPane(saved);
     saveConversation(null);
     vlog("restart: conversation waits for the wake word");
@@ -357,6 +376,20 @@ async function resumeSavedConversation() {
   for (let i = 0; i < 120 && !voice.convPaneId; i++) {
     const paneId = pane(saved) ? saved : chat.focusedPaneId;
     if (paneId && pane(paneId)?.target && chat.connected && voice.phase === "idle" && !voice.speaking) {
+      await toggleConversation(paneId);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+// listenAlways starts conversation mode on the last conversation pane (or the
+// focused one) once one is connected — "always" listening needs no 🗣.
+async function listenAlways() {
+  for (let i = 0; i < 120 && voice.listenMode === "always" && !voice.convPaneId && !voice.taping; i++) {
+    const paneId = wakePane();
+    if (paneId && chat.connected && voice.status === "ready" && voice.phase === "idle" && !voice.speaking && !voice.enrolling) {
+      vlog("always listening: conversation on");
       await toggleConversation(paneId);
       return;
     }
@@ -382,11 +415,12 @@ export function endConversation(note) {
 // is in the tray) whether conversation mode is on and what it is doing.
 $effect.root(() => {
   $effect(() => {
-    const active = !!voice.convPaneId;
+    const active = !!voice.convPaneId || voice.taping;
     let phase = "waiting";
     // What was sent is shown while waiting, so a mishearing is caught at once.
     let label = voice.heard ? `${quote(voice.heard, 30)} 답변 기다리는 중` : "답변을 기다리는 중";
-    if (voice.problem) [phase, label] = ["problem", voice.problem];
+    if (voice.taping) [phase, label] = ["recording", `녹음 중 ${voice.tapeClock || "00:00"} — “녹음 끝내”라고 하면 멈춰요`];
+    else if (voice.problem) [phase, label] = ["problem", voice.problem];
     else if (voice.flash) [phase, label] = ["note", voice.flash];
     else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
     else if (voice.phase === "listening") [phase, label] = ["listening", "듣는 중 — 말씀하세요"];
@@ -408,6 +442,10 @@ $effect.root(() => {
 // The tray menu's "음성 대화" works like 🗣 on the focused pane, so a
 // conversation can start while the window is hidden.
 Events.On("tray:conversation", () => {
+  if (voice.taping) {
+    void stopTape();
+    return;
+  }
   const paneId = voice.convPaneId || chat.focusedPaneId;
   if (paneId) void toggleConversation(paneId);
 });
@@ -418,7 +456,7 @@ Events.On("tray:conversation", () => {
 Events.On("window:tray", (event) => {
   if (!event.data?.hidden || voice.convPaneId) return;
   const paneId = chat.focusedPaneId;
-  if (voice.wake) {
+  if (voice.listenMode === "wake") {
     if (paneId && pane(paneId)?.target) rememberConvPane(paneId);
     return;
   }
@@ -637,7 +675,7 @@ async function startRecording(paneId, barge = false) {
       if (voice.convPaneId === paneId) {
         // With the wake word on, a conversation nobody talks in goes back to
         // waiting for "아글링크" instead of listening forever.
-        if (voice.wake && voice.wakeIdleMin > 0 && Date.now() - convActiveAt > voice.wakeIdleMin * 60000) {
+        if (voice.listenMode === "wake" && voice.wakeIdleMin > 0 && Date.now() - convActiveAt > voice.wakeIdleMin * 60000) {
           vlog("conversation idle → waiting for the wake word");
           endConversation();
         } else resumeListening(0);
@@ -1078,7 +1116,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, TAPE_FOLDER_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 // runVoiceCommand carries out text if it is one of the commands; false means
@@ -1087,6 +1125,21 @@ async function runVoiceCommand(paneId, text) {
   const t = text.trim();
   if (t.length <= MAX_ALARM_CHARS && (await runAlarmCommand(t))) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
+  if (TAPE_START_RE.test(t)) {
+    void startTape();
+    return true;
+  }
+  if (TAPE_FOLDER_RE.test(t)) {
+    void openTapeFolder();
+    speak("녹음 폴더를 열었어요.");
+    return true;
+  }
+  if (LISTEN_ALWAYS_RE.test(t) || LISTEN_WAKE_RE.test(t)) {
+    const always = LISTEN_ALWAYS_RE.test(t);
+    setVoiceSettings({ listenMode: always ? "always" : "wake" });
+    speak(always ? "이제 항상 듣고 있을게요. 앱을 켜면 바로 대화가 시작돼요." : "이제 아글링크라고 부르실 때만 들을게요.");
+    return true;
+  }
   if (DETAIL_RE.test(t)) {
     speakDetail();
     return true;
@@ -2223,7 +2276,7 @@ $effect.root(() => {
     if (voice.convPaneId) rememberConvPane(voice.convPaneId);
   });
   $effect(() => {
-    const want = voice.wake && voice.status === "ready" && !voice.convPaneId && voice.phase === "idle" && !voice.enrolling && !voice.speaking;
+    const want = voice.listenMode !== "manual" && voice.status === "ready" && !voice.convPaneId && !voice.taping && voice.phase === "idle" && !voice.enrolling && !voice.speaking;
     if (want && !wakeOn) {
       wakeOn = true;
       void startWake();
@@ -2234,6 +2287,251 @@ $effect.root(() => {
     voice.waking = want;
   });
 });
+
+// ---- recording ("녹음해 줘") ----
+//
+// "녹음해 줘" records everything from the mic, with no answer and no time limit,
+// until "녹음 끝내" (or the tray menu / the indicator's ✕). The sound goes to a
+// WAV file in Documents\aglink 녹음 (tape.go) a couple of seconds at a time,
+// and what is said is recognised piece by piece into a text file next to it —
+// which is also how "녹음 끝내" is heard. Conversation and the wake word are
+// off meanwhile; a conversation that was on comes back afterwards.
+
+const TAPE_START_RE = cmdRE(String.raw`(이거|이것|지금|지금부터|여기|이\s*내용|회의)?\s*(좀\s*)?(녹음|녹화)\s*(을|를|좀)?\s*(좀\s*)?(해|시작해|시작|켜|하자|해\s*봐|해\s*둬|떠|부탁해)`);
+const TAPE_STOP_RE = /녹음\s*(을|를|은|는)?\s*(좀\s*)?(이제\s*)?(끝|그만|멈춰|멈추|중지|종료|정지|꺼|끄|마쳐|마치|스톱)/;
+const TAPE_FOLDER_RE = cmdRE(String.raw`녹음\s*(한\s*(거|것|파일)|파일|폴더)\s*(을|를|좀)?\s*(열어|보여)`);
+const TAPE_STOP_MAX_CHARS = 30; // "녹음 끝내" is said on its own, not inside a long sentence
+const TAPE_FLUSH_MS = 2000; // sound reaches the file this often
+const TAPE_SEGMENT_END_MS = 700;
+const TAPE_MAX_SEGMENT_MS = 12000; // a long stretch of talk is written down in pieces this long
+const TAPE_MIN_SPEECH_MS = 300;
+const TAPE_PREROLL_CHUNKS = 3;
+
+let tapeRec = null;
+let tapeResume = null; // the conversation pane to go back to
+let tapeClockTimer = null;
+
+function tapeLength(sec) {
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return [h && `${h}시간`, m && `${m}분`, !h && (s % 60 || !m) && `${s % 60}초`].filter(Boolean).join(" ");
+}
+
+function tapeClock() {
+  const s = Math.floor((Date.now() - voice.tapeStartedAt) / 1000);
+  const mm = `${Math.floor((s % 3600) / 60)}`.padStart(2, "0");
+  const ss = `${s % 60}`.padStart(2, "0");
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function pcm16Base64(samples) {
+  const out = new Uint8Array(samples.length * 2);
+  const view = new DataView(out.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const v = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+  }
+  return toBase64(out);
+}
+
+async function waitSpeechDone() {
+  while (voice.speaking || (typeof speechSynthesis !== "undefined" && speechSynthesis.speaking)) await new Promise((r) => setTimeout(r, 150));
+}
+
+export async function startTape() {
+  if (voice.taping) {
+    void speak("이미 녹음하고 있어요. 끝내시려면 녹음 끝내, 라고 하세요.");
+    return;
+  }
+  let path;
+  try {
+    path = await VoiceService.TapeStart();
+  } catch (err) {
+    vlog(`tape start failed: ${err?.message || err}`);
+    void speak("녹음을 시작하지 못했어요.");
+    return;
+  }
+  tapeResume = voice.convPaneId;
+  voice.taping = true; // first, so ending the conversation does not start the wake word
+  voice.tapeStartedAt = Date.now();
+  voice.tapeClock = "00:00";
+  clearInterval(tapeClockTimer);
+  tapeClockTimer = setInterval(() => (voice.tapeClock = tapeClock()), 1000);
+  if (voice.convPaneId) endConversation();
+  vlog(`tape start ${path}`);
+  await speak("녹음을 시작할게요. 끝내시려면 녹음 끝내, 라고 말씀하세요.", "full");
+  await waitSpeechDone();
+  if (!voice.taping) return;
+  voice.tapeStartedAt = Date.now(); // the file starts here
+  await openTapeMic();
+}
+
+async function openTapeMic() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (error) {
+    vlog(`tape mic failed: ${error?.message || error}`);
+    await stopTape(false);
+    void speak("마이크를 열 수 없어서 녹음을 끝냈어요.");
+    return;
+  }
+  if (!voice.taping || tapeRec) {
+    stream.getTracks().forEach((tr) => tr.stop());
+    return;
+  }
+  const ctx = new AudioContext();
+  const source = ctx.createMediaStreamSource(stream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  const startedAt = performance.now();
+  const t = {
+    stream,
+    ctx,
+    source,
+    node,
+    pending: [], // not yet in the file
+    frames: 0, // input frames so far, for the time stamps
+    flushing: Promise.resolve(),
+    flushedAt: startedAt,
+    chunks: [],
+    first: -1,
+    firstAt: 0,
+    lastAt: 0,
+    loud: 0,
+    segFrames: 0,
+    noise: 0,
+    noiseN: 0,
+    notes: Promise.resolve(), // recognitions, one at a time and in order
+  };
+  tapeRec = t;
+  t.flush = () => {
+    if (!t.pending.length) return t.flushing;
+    const b64 = pcm16Base64(downsample(concat(t.pending), ctx.sampleRate, TARGET_RATE));
+    t.pending = [];
+    t.flushing = t.flushing.then(() => VoiceService.TapeAppend(b64)).catch((err) => vlog(`tape write failed: ${err?.message || err}`));
+    return t.flushing;
+  };
+  node.onaudioprocess = (e) => {
+    if (tapeRec !== t) return;
+    const input = new Float32Array(e.inputBuffer.getChannelData(0));
+    t.pending.push(input);
+    const chunkStart = t.frames;
+    t.frames += input.length;
+    const now = performance.now();
+    if (now - t.flushedAt >= TAPE_FLUSH_MS) {
+      t.flushedAt = now;
+      void t.flush();
+    }
+    // Pieces of talk, cut at pauses as for the wake word, are written down.
+    t.chunks.push(input);
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+    const rms = Math.sqrt(sum / input.length);
+    if (now - startedAt < 400) {
+      t.noise = (t.noise * t.noiseN + rms) / (t.noiseN + 1);
+      t.noiseN++;
+      return;
+    }
+    if (rms > Math.max(0.012, t.noise * 3)) {
+      if (t.first < 0) {
+        t.first = t.chunks.length - 1;
+        t.firstAt = now;
+        t.segFrames = Math.max(0, chunkStart - Math.min(t.first, TAPE_PREROLL_CHUNKS) * input.length);
+      }
+      t.lastAt = now;
+      t.loud++;
+    } else if (t.first < 0) t.noise = t.noise * 0.98 + rms * 0.02;
+    if (t.first < 0) {
+      if (t.chunks.length > TAPE_PREROLL_CHUNKS) t.chunks.splice(0, t.chunks.length - TAPE_PREROLL_CHUNKS);
+      return;
+    }
+    if (now - t.lastAt > TAPE_SEGMENT_END_MS || now - t.firstAt > TAPE_MAX_SEGMENT_MS) {
+      const long = t.lastAt - t.firstAt >= TAPE_MIN_SPEECH_MS && t.loud >= 3;
+      const from = Math.max(0, t.first - TAPE_PREROLL_CHUNKS);
+      const pad = new Float32Array(Math.round(ctx.sampleRate * WAKE_PAD_S));
+      const wav = long ? encodeWav(downsample(concat([...t.chunks.slice(from), pad]), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
+      const at = t.segFrames / ctx.sampleRate;
+      t.chunks = [];
+      t.first = -1;
+      t.loud = 0;
+      if (wav) t.notes = t.notes.then(() => noteTapePiece(t, wav, at));
+    }
+  };
+  source.connect(node);
+  node.connect(ctx.destination);
+  vlog("tape recording");
+}
+
+// noteTapePiece writes down one piece, or ends the recording on "녹음 끝내".
+async function noteTapePiece(t, wav, at) {
+  try {
+    const text = (await VoiceService.Transcribe(toBase64(wav))).trim();
+    if (!text || tapeRec !== t) return;
+    if (text.length <= TAPE_STOP_MAX_CHARS && TAPE_STOP_RE.test(text)) {
+      const score = await speakerScore(wav);
+      if (isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
+        vlog(`tape stop ${quote(text)}`);
+        void stopTape(true, false);
+        return;
+      }
+      vlog(`tape stop: other voice (${score.toFixed(2)}) ${quote(text)}`);
+    }
+    await VoiceService.TapeNote(at, text);
+  } catch (err) {
+    vlog(`tape note failed: ${err?.message || err}`);
+  }
+}
+
+// stopTape closes the recording; waitNotes lets the pieces still being
+// recognised reach the text file first (not when called from one of them).
+export async function stopTape(spoken = true, waitNotes = true) {
+  if (!voice.taping) return;
+  voice.taping = false;
+  clearInterval(tapeClockTimer);
+  tapeClockTimer = null;
+  const t = tapeRec;
+  tapeRec = null;
+  if (t) {
+    t.node.onaudioprocess = null;
+    try {
+      t.source.disconnect();
+      t.node.disconnect();
+    } catch {}
+    t.stream.getTracks().forEach((tr) => tr.stop());
+    await t.flush();
+    void t.ctx.close();
+    if (waitNotes) await Promise.race([t.notes, new Promise((r) => setTimeout(r, 4000))]);
+  }
+  let res = {};
+  try {
+    res = JSON.parse(await VoiceService.TapeStop());
+  } catch (err) {
+    vlog(`tape stop failed: ${err?.message || err}`);
+  }
+  vlog(`tape saved ${res.path || "?"} (${Math.round(res.seconds || 0)} s)`);
+  // Back to how it was: the conversation that was on, or listening always.
+  const back = tapeResume && pane(tapeResume)?.target ? tapeResume : voice.listenMode === "always" ? wakePane() : null;
+  tapeResume = null;
+  if (back && !voice.convPaneId) {
+    voice.convPaneId = back;
+    convActiveAt = Date.now();
+    saveConversation(back);
+  }
+  if (spoken) {
+    const len = res.seconds > 0 ? `${tapeLength(res.seconds)} 녹음해서 ` : "";
+    void speak(`녹음을 끝냈어요. ${len}문서 폴더의 aglink 녹음에 넣어 두었어요.`, "full");
+  }
+  if (back) resumeListening();
+}
+
+export function openTapeFolder() {
+  return VoiceService.OpenTapeFolder().catch((err) => vlog(`tape folder failed: ${err?.message || err}`));
+}
+
+Events.On("tray:tape", () => void (voice.taping ? stopTape() : startTape()));
 
 // getVoices() is empty until the voice list loads; touching it starts the load.
 if (typeof speechSynthesis !== "undefined") speechSynthesis.getVoices();

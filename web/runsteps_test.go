@@ -208,3 +208,58 @@ func TestCallCarriesTheBridgeSettings(t *testing.T) {
 		t.Fatal("a setting removed from the registration must stop applying")
 	}
 }
+
+func TestFlowSaveAndReplay(t *testing.T) {
+	t.Setenv("AGLINK_HOME", t.TempDir())
+	x := &stepsExtension{visible: map[string]int{"#done": 0}}
+	d := newStepsDaemon(t, x)
+
+	res := d.call("run_steps", map[string]any{
+		"steps":   `[{"tool":"click","selector":"#open"},{"tool":"expect","selector":"#done"}]`,
+		"save_as": "open-settings",
+	}, "a@b.com")
+	if !res.OK || !strings.Contains(res.Text, "saved as flow open-settings") {
+		t.Fatalf("save: %+v", res)
+	}
+	if l := d.call("list_flows", nil, ""); !l.OK || !strings.Contains(l.Text, "open-settings | 2 steps | a@b.com") {
+		t.Fatalf("list: %+v", l)
+	}
+
+	before := len(x.methods())
+	res = d.call("run_flow", map[string]any{"name": "open-settings"}, "")
+	if !res.OK || !strings.HasPrefix(res.Text, "flow open-settings: ok: 2/2 steps") {
+		t.Fatalf("replay: %+v", res)
+	}
+	if got := strings.Join(x.methods()[before:], ","); got != "click,element_exists" {
+		t.Fatalf("replayed calls = %s", got)
+	}
+}
+
+func TestFlowNotSavedWhenAStepFails(t *testing.T) {
+	t.Setenv("AGLINK_HOME", t.TempDir())
+	x := &stepsExtension{failOn: "type"}
+	d := newStepsDaemon(t, x)
+	res := d.call("run_steps", map[string]any{
+		"steps":             `[{"tool":"type","selector":"#x","text":"a"}]`,
+		"save_as":           "broken",
+		"continue_on_error": "true",
+	}, "")
+	if !strings.Contains(res.Text, "not saved as broken") {
+		t.Fatalf("got %+v", res)
+	}
+	if r := d.call("run_flow", map[string]any{"name": "broken"}, ""); r.OK || !strings.Contains(r.Error, "no flow named") {
+		t.Fatalf("a failed batch must not be saved: %+v", r)
+	}
+}
+
+func TestFlowNamesAreChecked(t *testing.T) {
+	t.Setenv("AGLINK_HOME", t.TempDir())
+	for _, bad := range []string{"../evil", "a/b", "", strings.Repeat("x", 65)} {
+		if _, err := flowPath(bad); err == nil {
+			t.Errorf("accepted flow name %q", bad)
+		}
+	}
+	if _, err := flowPath("로그인-staging_1.v2"); err != nil {
+		t.Errorf("rejected a normal name: %v", err)
+	}
+}

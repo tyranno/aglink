@@ -352,6 +352,26 @@ run_steps  profile="app:mytool"  snapshot="text"  steps=
 - 단계 사이 기본 대기: `step_delay_ms`, 없으면 `AGLINK_WEB_STEP_DELAY_MS`.
 - 되돌릴 수 없는 마지막 동작(전송·삭제·결제)은 배치 밖에서 상태를 확인한 뒤 따로 한다.
 
+### 저장해서 다시 쓰기 — `save_as` · `run_flow` · `!flow`
+
+같은 연속 동작(개발 중인 화면까지 가기, 스테이징 로그인 …)을 매번 AI 가 다시 계획하면
+그때마다 토큰이 든다. 한 번 성공한 배치는 이름으로 저장해 두고 재생한다.
+
+```
+run_steps  steps=[…]  save_as="settings-roundtrip"   ← 모든 단계가 성공했을 때만 저장
+run_flow   name="settings-roundtrip"                  ← 호출 한 번, 단계 사이 추론 없음
+list_flows
+!flow settings-roundtrip [text|elements]              ← 채팅에서: 모델을 전혀 안 씀
+```
+
+- 저장 위치: `~/.aglink/flows/<이름>.json` (손으로 고쳐도 된다). 녹화한 대상(`app:…`,
+  크롬 계정)이 함께 저장되고, 호출에 `profile` 을 주면 그쪽이 우선한다.
+- `!flow` 는 호스트가 `aglink-web cmd run_flow` 를 직접 실행해 단계 보고만 돌려준다 —
+  텔레그램·웹 채팅·데스크톱 어디서든 토큰 0.
+
+2026-10-31 실측: 데스크톱 앱(app:aglink)에서 설정 열기 → 로그인 카드 확인 → 돌아가기
+4단계를 저장한 뒤 이름만으로 재생해 4/4 성공.
+
 2026-10-07 크롬 실측: navigate → expect → get_attribute → click → expect 5단계가 한
 호출로 성공했고, 새 탭 이어받기와 클릭 후 바뀐 페이지의 snapshot 까지 확인했다.
 

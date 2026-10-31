@@ -59,9 +59,23 @@ var commands = []command{
 			{name: "steps", typ: argString, required: true, desc: `JSON array of steps, each {"tool": "<tool name>", ...its arguments, "wait_ms"?: n, "full"?: true}.`},
 			{name: "snapshot", typ: argString, desc: `Append the page's state afterwards: "text" (last 4000 chars of page text), "elements" (visible interactive elements with selectors), or "none" (default).`},
 			{name: "continue_on_error", typ: argString, desc: `"true" runs every step even after a failure and reports each; default stops at the first failure.`},
+			{name: "save_as", typ: argString, desc: `Save this batch under a name when every step succeeds, to replay later with run_flow (or "!flow <name>" in chat, which runs it without any model tokens). Letters, digits, - _ . only.`},
 			{name: "tabId", typ: argInt, desc: "Tab (or app window number) for steps that do not name one. Omit for the active tab / first window."},
 			{name: "step_delay_ms", typ: argInt, desc: "Pause between steps in ms (default from AGLINK_WEB_STEP_DELAY_MS, else 0). Use when the UI animates between screens."},
 		},
+	},
+	{
+		name: "run_flow",
+		desc: "Replay a saved run_steps batch by name — the cheapest way to repeat a known UI sequence (reach a screen, log in, reset a form): one call, no reasoning between steps. Same reporting and snapshot as run_steps. The flow runs on the target it was recorded on unless 'profile' says otherwise. list_flows shows what is saved.",
+		args: []argSpec{
+			{name: "name", typ: argString, required: true, desc: "Flow name (from list_flows)."},
+			{name: "snapshot", typ: argString, desc: `Override the saved snapshot: "text", "elements" or "none".`},
+			{name: "tabId", typ: argInt, desc: "Tab (or app window number) to run on, if not the flow's default."},
+		},
+	},
+	{
+		name: "list_flows",
+		desc: "List saved run_steps flows as 'name | N steps | target | saved time'.",
 	},
 	{
 		name: "list_tabs",

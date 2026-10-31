@@ -392,6 +392,9 @@ func TestListProfilesEmpty(t *testing.T) {
 // you where an unspecified call will go.
 func TestListProfilesMarksDefaultFirst(t *testing.T) {
 	d, _ := connectProfiles(t, "first@example.com", "second@example.com")
+	// Only the Chrome lines are under test: a real app with a DevTools port open
+	// on this machine (aglink-desktop on 9333) would otherwise add a line.
+	d.discover = func(context.Context) []appInfo { return nil }
 	res := d.call(listProfilesMethod, nil, "")
 	if !res.OK {
 		t.Fatalf("list_profiles: %+v", res)

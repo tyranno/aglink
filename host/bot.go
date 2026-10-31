@@ -871,6 +871,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleScreen(reply, chatID, fields)
 	case "!ssh":
 		b.handleSSH(reply, chatID, fields)
+	case "!flow":
+		b.handleFlow(reply, chatID, fields)
 	case "!sessions":
 		b.handleSessions(reply, chatID, laneKeyOf(tgt))
 	case "!attach":
@@ -2790,6 +2792,11 @@ func helpText() string {
 !ssh test <호스트>            원격 접속 확인
 !ssh put <호스트> <로컬> <원격>  로컬 파일을 원격으로 전송 (scp 대체)
 !ssh get <호스트> <원격> <로컬>  원격 파일을 로컬로 전송 (scp 대체)
+
+저장된 UI 흐름 (모델·토큰을 쓰지 않고 바로 실행):
+!flow                        저장된 흐름 목록
+!flow <이름> [text|elements]  흐름 실행 — run_steps 에 save_as 로 저장한 연속 동작
+                             (text/elements 를 붙이면 끝난 화면 상태도 함께 보여 줍니다)
 
 원격 Claude 세션에 붙기 (VS Code 등에서 돌고 있는 세션과 직접 대화):
 !sessions                    붙을 수 있는 세션 목록 (이름을 몰라도 번호로 고릅니다)

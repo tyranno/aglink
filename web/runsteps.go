@@ -172,6 +172,16 @@ func (d *Daemon) runSteps(params map[string]any, profile string) CallResult {
 	if stoppedAt >= 0 {
 		return CallResult{Error: out}
 	}
+	// Only a batch that fully worked is worth keeping to replay.
+	if name := strings.TrimSpace(str(params, "save_as")); name != "" {
+		if failed > 0 {
+			out += "\n(not saved as " + name + ": a step failed)"
+		} else if err := saveFlow(name, profile, params["steps"], snapshot); err != nil {
+			out += "\n(save_as failed: " + err.Error() + ")"
+		} else {
+			out += "\nsaved as flow " + name + " — run it again with run_flow name=" + name + " (or !flow " + name + " from chat, no model tokens)"
+		}
+	}
 	return CallResult{OK: true, Text: out}
 }
 

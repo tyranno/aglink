@@ -333,6 +333,12 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if method == "run_steps" {
 		return d.runSteps(params, profile)
 	}
+	if method == "run_flow" {
+		return d.runFlow(params, profile)
+	}
+	if method == "list_flows" {
+		return d.listFlows()
+	}
 	if strings.HasPrefix(method, "vscode_") {
 		return d.callVSCode(method, params, profile)
 	}

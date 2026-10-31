@@ -357,7 +357,7 @@ $effect.root(() => {
     else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
     else if (voice.phase === "listening") [phase, label] = ["listening", "듣는 중 — 말씀하세요"];
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
-    Events.Emit("voice:state", { active, phase, label: `🗣 ${label}`, barge: voice.bargeEnabled });
+    Events.Emit("voice:state", { active, phase, label: `🗣 ${label}`, barge: voice.bargeEnabled, speed: voice.ttsSpeed });
   });
 });
 

@@ -9,12 +9,14 @@
   let phase = $state("waiting");
   let barge = $state(true);
   let hasReply = $state(false);
+  let speed = $state(0);
 
   Events.On("voice:state", (event) => {
     const d = event.data || {};
     phase = d.phase || "waiting";
     label = (d.label || "음성 대화 중").replace(/^🗣\s*/u, ""); // the icon already says it
     if (typeof d.barge === "boolean") barge = d.barge;
+    if (Number.isFinite(d.speed)) speed = d.speed;
   });
 
   Events.On("voice:reply", (event) => {
@@ -50,7 +52,10 @@
           </g>
         {/if}
       </svg>
-      <span class="label" title={label}>{label}</span>
+      <span class="text">
+        <span class="label" title={label}>{label}</span>
+        {#if speed}<span class="speed">읽기 속도 {Math.round(speed * 100) / 100}배</span>{/if}
+      </span>
     </button>
     {#if hasReply}
       <button class="mode" onclick={() => Events.Emit("reply:toggle")} title="마지막 답변 원문 보기">원문</button>
@@ -125,6 +130,16 @@
   }
   .close:hover {
     opacity: 1;
+  }
+  .text {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .speed {
+    font-size: 11px;
+    opacity: 0.6;
   }
   .label {
     min-width: 0;

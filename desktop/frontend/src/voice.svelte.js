@@ -48,6 +48,12 @@ const BARGE_MAX_SEGMENT_MS = 3000; // ...or this much speech without one
 const BARGE_MIN_SPEECH_MS =400; // shorter blips are not checked
 const BARGE_MIN_LOUD_CHUNKS = 5; // ~0.4s above the echo floor: our own voice only peaks over it now and then
 const ECHO_OVERLAP = 0.6; // share of a segment's syllable pairs found in the reply = our own voice
+const SPEAKER_MIN = 0.3; // enrolled voice: about 0.5+ for the user, under 0.3 for others
+const SPEAKER_MIN_MIXED = 0.2; // short clips, or the user over our own voice, score lower
+const SPEAKER_SHORT_S = 1.2;
+const ENROLL_MS = 15000;
+const ENROLL_RE = /^(내\s*)?목소리\s*(등록|저장|기억)/;
+const UNENROLL_RE = /목소리\s*(등록\s*)?(해제|취소|지워|삭제|지우기)/;
 const MAX_CLIP_MS = 60000;
 const PREROLL_MS = 300; // kept before the first speech so the onset is not cut
 const MAX_SPEAK_CHARS = 600; // a spoken summary; the full reply is on screen
@@ -87,6 +93,7 @@ export const voice = $state({
   speakEnabled: loadSpeakEnabled(),
   bargeEnabled: loadBargeEnabled(), // conversation mode: talking over the reading interrupts it
   speaking: false,
+  enrolling: false, // recording the user's voice to tell it from others'
   fast: false, // recognition runs on the resident GPU server (~0.3 s a clip)
   heard: "", // conversation mode: what was last sent, shown while the reply is awaited
   problem: "", // conversation mode: why the mic is not listening (shown by the indicator)
@@ -306,7 +313,7 @@ function resumeListening(delay = 200) {
   resumeTimer = setTimeout(() => {
     resumeTimer = null;
     const paneId = voice.convPaneId;
-    if (!paneId || recorder) return; // a barge-in recorder keeps listening by itself
+    if (!paneId || recorder || voice.enrolling) return; // a barge-in recorder keeps listening by itself
     const busy =
       voice.speaking ||
       (typeof speechSynthesis !== "undefined" && (speechSynthesis.speaking || speechSynthesis.pending));
@@ -542,12 +549,18 @@ function checkBargeSegment(rec, wavBytes) {
   rec.bargeDone = rec.bargeDone.then(async () => {
     if (recorder !== rec && !rec.stopped) return;
     let text = "";
+    let score = -1;
     try {
-      text = (await VoiceService.Transcribe(toBase64(wavBytes))).trim();
+      [text, score] = await Promise.all([VoiceService.Transcribe(toBase64(wavBytes)).then((t) => t.trim()), speakerScore(wavBytes)]);
     } catch {
       return;
     }
     if (!text || (recorder !== rec && !rec.stopped)) return;
+    // Our own voice is mixed into these, so the bar is the low one.
+    if (!isUserVoice(score, SPEAKER_MIN_MIXED)) {
+      vlog(`other voice dropped (barge, ${score.toFixed(2)}) ${quote(text)}`);
+      return;
+    }
     if (BARGE_HUSH_RE.test(text)) {
       vlog(`barge-in hush ${quote(text)}`);
       stopSpeaking(); // "잠깐" only stops the reading
@@ -562,7 +575,7 @@ function checkBargeSegment(rec, wavBytes) {
       vlog(`echo dropped ${quote(text)}`);
       return;
     }
-    vlog(`barge-in ${quote(text)} (echo gain ${echoGain?.toFixed(3) ?? "unlearned"})`);
+    vlog(`barge-in ${quote(text)} (echo gain ${echoGain?.toFixed(3) ?? "unlearned"}, voice ${score.toFixed(2)})`);
     stopSpeaking();
     rec.prefix = rec.prefix ? `${rec.prefix} ${text}` : text;
     rec.lastSpeechAt = performance.now();
@@ -640,6 +653,90 @@ function isEcho(text, reply, overlap = ECHO_OVERLAP) {
   return pairShare >= overlap * 0.65 && charHit / t.length >= 0.7;
 }
 
+// ---- whose voice ----
+
+function clipSeconds(wav) {
+  return wav ? (wav.length - 44) / (TARGET_RATE * 2) : 0;
+}
+
+// speakerScore: how much a clip sounds like the enrolled user, -1 if unknown.
+function speakerScore(wav) {
+  return VoiceService.SpeakerScore(toBase64(wav)).catch(() => -1);
+}
+
+function isUserVoice(score, min) {
+  return score < 0 || score >= min;
+}
+
+// enrollVoice records ~15 s of the user talking ("목소리 등록") as the voice to
+// listen to; clips that do not sound like it are not sent from then on.
+async function enrollVoice() {
+  let status = {};
+  try {
+    status = JSON.parse(await VoiceService.SpeakerStatus());
+  } catch {}
+  if (!status.available) {
+    speak("목소리 구별 기능이 설치되어 있지 않아서 등록할 수 없어요.");
+    return;
+  }
+  voice.enrolling = true;
+  try {
+    await speak("지금부터 십오 초 동안 평소 말투로 아무 이야기나 해 주세요. 시작할게요.");
+    while (voice.speaking) await new Promise((r) => setTimeout(r, 100));
+    const wav = await recordFor(ENROLL_MS);
+    if (!wav) {
+      speak("마이크를 열지 못해서 등록하지 못했어요.");
+      return;
+    }
+    await VoiceService.EnrollSpeaker(toBase64(wav));
+    vlog(`speaker enrolled (${clipSeconds(wav).toFixed(1)} s)`);
+    speak("목소리를 등록했어요. 이제 다른 사람 말은 보내지 않아요. 지우고 싶으면 목소리 등록 해제라고 말씀해 주세요.");
+  } catch (err) {
+    vlog(`speaker enroll failed: ${err?.message || err}`);
+    speak("목소리 등록에 실패했어요.");
+  } finally {
+    voice.enrolling = false;
+  }
+}
+
+// recordFor records the mic for ms and returns it as 16 kHz WAV, or null.
+async function recordFor(ms) {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (error) {
+    vlog(`mic failed: ${error?.message || error}`);
+    return null;
+  }
+  const ctx = new AudioContext();
+  const source = ctx.createMediaStreamSource(stream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  node.onaudioprocess = (e) => {
+    const input = e.inputBuffer.getChannelData(0);
+    chunks.push(new Float32Array(input));
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+    voice.level = Math.min(1, Math.sqrt(sum / input.length) * 12);
+  };
+  source.connect(node);
+  node.connect(ctx.destination);
+  const phase = voice.phase;
+  voice.phase = "listening";
+  await new Promise((r) => setTimeout(r, ms));
+  node.onaudioprocess = null;
+  source.disconnect();
+  node.disconnect();
+  stream.getTracks().forEach((t) => t.stop());
+  const rate = ctx.sampleRate;
+  void ctx.close();
+  voice.level = 0;
+  voice.phase = phase;
+  return encodeWav(downsample(concat(chunks), rate, TARGET_RATE), TARGET_RATE);
+}
+
 // heard is the clip's text when tryEarlyStop already has it.
 function stopRecording(transcribe, heard = null) {
   const rec = recorder;
@@ -675,7 +772,15 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
   let retry = false;
   try {
     if (rec) await rec.bargeDone;
+    const scoring = conv() && wavBytes ? speakerScore(wavBytes) : Promise.resolve(-1);
     let heard = known ?? (wavBytes ? (await VoiceService.Transcribe(toBase64(wavBytes))).trim() : "");
+    // Someone else in the room (or the reply from the speakers) is not sent once
+    // the user has enrolled their voice.
+    const score = await scoring;
+    if (heard && !isUserVoice(score, clipSeconds(wavBytes) < SPEAKER_SHORT_S ? SPEAKER_MIN_MIXED : SPEAKER_MIN)) {
+      vlog(`other voice dropped (${score.toFixed(2)}) ${quote(heard)}`);
+      heard = "";
+    } else if (heard && score >= 0) vlog(`voice ${score.toFixed(2)} ${quote(heard, 20)}`);
     // Safety net: a clip that is just the reply read back through the speakers
     // (its tail, or all of it) is never sent as the user's words. Speech that
     // starts as the reading ends is most likely the last of it still coming out
@@ -698,6 +803,15 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     }
     if (conv() && CONV_STOP_RE.test(text)) {
       endConversation("음성 대화를 끝냈습니다.");
+      return;
+    }
+    if (conv() && (ENROLL_RE.test(text) || UNENROLL_RE.test(text))) {
+      if (UNENROLL_RE.test(text)) {
+        await VoiceService.ClearSpeaker().catch(() => {});
+        vlog("speaker enrollment cleared");
+        speak("등록한 목소리를 지웠어요. 이제 들리는 말은 모두 받아요.");
+      } else await enrollVoice();
+      relisten = true;
       return;
     }
     if (conv() && (BARGE_ON_RE.test(text) || BARGE_OFF_RE.test(text))) {
@@ -1169,7 +1283,9 @@ export async function speak(md) {
   // restart, or a !command answer); a recording with nothing said yet is
   // stopped, so it does not take in the whole reading.
   if (recorder && !recorder.barge && recorder.firstSpeechChunk < 0 && !recorder.prefix) stopRecording(false);
-  if (paneId && voice.bargeEnabled && !recorder && voice.phase === "idle") void startRecording(paneId, true);
+  if (paneId && voice.enrolling) {
+    // the enrollment records on its own
+  } else if (paneId && voice.bargeEnabled && !recorder && voice.phase === "idle") void startRecording(paneId, true);
   else if (paneId && !recorder) resumeListening(); // taking turns: the mic opens after the reading
   if ((await supertonicReady()) && (await speakSupertonic(sentences, gen))) return;
   if (gen !== speakGen) return;

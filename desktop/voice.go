@@ -106,6 +106,7 @@ func (v *VoiceService) VoiceStatus() (string, error) {
 		warmWhisperServer()
 	}
 	warmTTSServer()
+	warmSpeaker()
 	b, _ := json.Marshal(map[string]bool{
 		"ready":      ready,
 		"installing": installing,

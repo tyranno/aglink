@@ -180,7 +180,13 @@ func ovRequest(req map[string]any) error {
 }
 
 func startOpenVoiceServer(dir string) (*ttsServer, error) {
-	cmd := exec.Command(ovPython(dir), "-u", filepath.Join(dir, "server.py"))
+	return startPythonServer(dir, "server.py", "[openvoice]")
+}
+
+// startPythonServer runs a script of OpenVoice's Python environment that
+// answers one JSON line per request, and waits for its "ready" line.
+func startPythonServer(dir, script, tag string) (*ttsServer, error) {
+	cmd := exec.Command(ovPython(dir), "-u", filepath.Join(dir, script))
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	hideConsole(cmd)
@@ -201,9 +207,9 @@ func startOpenVoiceServer(dir string) (*ttsServer, error) {
 	if !scanWithin(sc, 2*time.Minute) || !strings.Contains(sc.Text(), `"ready": true`) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return nil, fmt.Errorf("OpenVoice 시작 실패: %s", sc.Text())
+		return nil, fmt.Errorf("%s 시작 실패: %s", script, sc.Text())
 	}
-	log.Printf("[openvoice] server started (pid %d) %s", cmd.Process.Pid, sc.Text())
+	log.Printf("%s server started (pid %d) %s", tag, cmd.Process.Pid, sc.Text())
 	return &ttsServer{cmd: cmd, in: in, out: sc}, nil
 }
 

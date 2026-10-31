@@ -75,18 +75,21 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 	tray.SetIcon(trayIcon)
 	tray.SetTooltip("aglink")
 	tray.SetMenu(menu)
-	// The tooltip says what voice conversation is doing, like the indicator.
+	// The tooltip and a coloured dot on the icon say what voice conversation is
+	// doing, like the indicator.
 	var (
-		tipMu   sync.Mutex
-		lastTip string
+		tipMu     sync.Mutex
+		lastTip   string
+		lastPhase string
 	)
 	app.Event.On("voice:state", func(e *application.CustomEvent) {
-		tip := "aglink"
+		tip, phase := "aglink", ""
 		if m, ok := e.Data.(map[string]any); ok {
 			if active, _ := m["active"].(bool); active {
 				if label, _ := m["label"].(string); label != "" {
 					tip = "aglink — " + label
 				}
+				phase, _ = m["phase"].(string)
 			}
 		}
 		tipMu.Lock()
@@ -94,6 +97,11 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 		if tip != lastTip {
 			lastTip = tip
 			tray.SetTooltip(tip)
+		}
+		// A passing note keeps the dot it had.
+		if phase != "note" && phase != lastPhase {
+			lastPhase = phase
+			tray.SetIcon(trayIconFor(phase))
 		}
 	})
 	tray.OnClick(func() {

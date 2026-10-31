@@ -491,6 +491,17 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		}
 		return formatEvalValue(r), nil
 
+	case "page_snapshot":
+		raw, err := p.CallPage(ctx, "snapshot", []any{intp(params, "maxLines", 200)})
+		if err != nil {
+			return "", err
+		}
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return "", errors.New("page_snapshot returned no result")
+		}
+		return s, nil
+
 	case "upload_file":
 		paths := toStrings(params["paths"])
 		if sel == "" || len(paths) == 0 {

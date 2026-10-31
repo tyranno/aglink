@@ -710,7 +710,7 @@ test("page-actions.js defines every shared page function", () => {
   vm.runInContext(src, sb);
   const want = ["getPageText", "elementExists", "click", "doubleClick", "hover", "drag", "getHtml",
     "queryAll", "evalExpression", "getAttribute", "listElements", "waitForElement", "typeText",
-    "getValue", "keyCombo", "scroll", "selectOption"];
+    "getValue", "keyCombo", "scroll", "selectOption", "snapshot"];
   for (const n of want) assert.strictEqual(typeof sb.__aglinkPage[n], "function", n);
   assert.strictEqual(sb.__aglinkPage.constants.KEY_SPECS.f5.key, "F5", "F-key table must be complete");
 });

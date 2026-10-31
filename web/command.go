@@ -57,11 +57,19 @@ var commands = []command{
 		desc: `Run several of these tools in one call — the way to do a known sequence of UI actions (open a screen, fill a form, press a button, wait for the result) without a round trip per step. Works the same in a Chrome tab and in an Electron/Wails app window (profile app:/cdp:). Each step is {"tool": <any tool name>, ...that tool's own arguments}, plus optional "wait_ms" (pause after the step) and "full": true (keep the step's whole output instead of a one-line summary). Two extra step kinds: {"tool":"wait","ms":500} and {"tool":"expect","selector":"…" | "text":"…", "gone": true?, "timeout_ms"?} — expect waits until the element is visible (or, with gone, until it disappears) and fails the batch if it does not happen in time (default 5000ms). Steps without a tabId follow the batch: a navigate that opens a tab, or an activate_tab, carries the following steps with it. Stops at the first failed step and reports how far it got; with snapshot="text" or "elements" the page's state (when it finished, or where it stopped) is appended, so no extra call is needed to see the result. Example: [{"tool":"click","selector":"text=설정"},{"tool":"expect","selector":"role=dialog"},{"tool":"type","selector":"label=이름","text":"홍길동"},{"tool":"click","selector":"role=button[name=\"저장\"]"},{"tool":"expect","text":"저장됨"}]. Keep an irreversible final action (send, delete, pay) out of the batch and do it separately once the state is confirmed.`,
 		args: []argSpec{
 			{name: "steps", typ: argString, required: true, desc: `JSON array of steps, each {"tool": "<tool name>", ...its arguments, "wait_ms"?: n, "full"?: true}.`},
-			{name: "snapshot", typ: argString, desc: `Append the page's state afterwards: "text" (last 4000 chars of page text), "elements" (visible interactive elements with selectors), or "none" (default).`},
+			{name: "snapshot", typ: argString, desc: `Append the page's state afterwards: "tree" (page_snapshot outline with ref=eN numbers — usually best), "text" (last 4000 chars of page text), "elements" (visible interactive elements with selectors), or "none" (default).`},
 			{name: "continue_on_error", typ: argString, desc: `"true" runs every step even after a failure and reports each; default stops at the first failure.`},
 			{name: "save_as", typ: argString, desc: `Save this batch under a name when every step succeeds, to replay later with run_flow (or "!flow <name>" in chat, which runs it without any model tokens). Letters, digits, - _ . only.`},
 			{name: "tabId", typ: argInt, desc: "Tab (or app window number) for steps that do not name one. Omit for the active tab / first window."},
 			{name: "step_delay_ms", typ: argInt, desc: "Pause between steps in ms (default from AGLINK_WEB_STEP_DELAY_MS, else 0). Use when the UI animates between screens."},
+		},
+	},
+	{
+		name: "page_snapshot",
+		desc: `Compact outline of what is on screen — headings, dialogs/landmarks, every visible control with its state (value, checked, disabled, expanded) and short text — with each control numbered: '- button "저장" [ref=e7]'. Then act on it with selector "ref=e7" in click/type/select_option/… (valid until the next page_snapshot). Usually the cheapest way to see a screen and decide what to do: far smaller than get_page_text or get_html, and it keeps structure that list_elements drops (which dialog a button belongs to). Works in Chrome tabs and app windows.`,
+		args: []argSpec{
+			{name: "tabId", typ: argInt, desc: "Tab (or app window number). Omit for the active tab / first window."},
+			{name: "maxLines", typ: argInt, desc: "Cap on output lines (default 200, max 1000)."},
 		},
 	},
 	{

@@ -110,8 +110,8 @@ func (d *Daemon) runSteps(params map[string]any, profile string) CallResult {
 		return CallResult{Error: err.Error()}
 	}
 	snapshot := strings.ToLower(strings.TrimSpace(str(params, "snapshot")))
-	if snapshot != "" && snapshot != "none" && snapshot != "text" && snapshot != "elements" {
-		return CallResult{Error: fmt.Sprintf("snapshot must be text, elements or none, not %q", snapshot)}
+	if snapshot != "" && snapshot != "none" && snapshot != "text" && snapshot != "elements" && snapshot != "tree" {
+		return CallResult{Error: fmt.Sprintf("snapshot must be tree, text, elements or none, not %q", snapshot)}
 	}
 	keepGoing := isTrue(str(params, "continue_on_error"))
 	delay := time.Duration(intp(params, "step_delay_ms", defaultStepDelayMs())) * time.Millisecond
@@ -272,6 +272,13 @@ func (d *Daemon) stepsSnapshot(kind string, tab int, profile string) string {
 		q["tabId"] = tab
 	}
 	switch kind {
+	case "tree":
+		q["maxLines"] = 150
+		res := d.call("page_snapshot", q, profile)
+		if !res.OK {
+			return "--- snapshot (tree) unavailable: " + oneLine(res.Error, stepDetailMax)
+		}
+		return "--- snapshot (tree) ---\n" + res.Text
 	case "text":
 		q["offset"] = -snapshotTextChars
 		res := d.call("get_page_text", q, profile)

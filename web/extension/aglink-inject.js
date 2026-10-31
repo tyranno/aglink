@@ -28,7 +28,10 @@
 // __aglink.resolve(...). background.js still falls back to document.querySelector
 // if this global is somehow absent.
 (function () {
-  if (globalThis.__aglink && globalThis.__aglink.__v === 1) return;
+  // Bump __v whenever this file changes: a page that already holds an older
+  // copy keeps it until reload otherwise, and a new locator kind would be
+  // silently missing there.
+  if (globalThis.__aglink && globalThis.__aglink.__v === 2) return;
 
   // isVisible mirrors the rendered-check used elsewhere (non-zero rect) plus a
   // computed-style gate, so semantic locators prefer the element a human would
@@ -162,7 +165,9 @@
     return hay.toLowerCase().includes(String(needle).toLowerCase());
   }
 
-  const LOCATOR_KINDS = ["role", "text", "label", "placeholder", "testid"];
+  // ref=e12 targets an element by the number the last snapshot gave it
+  // (page-actions.js P.snapshot marks them data-aglink-ref).
+  const LOCATOR_KINDS = ["role", "text", "label", "placeholder", "testid", "ref"];
 
   // resolveAll returns every element matching the selector spec, visible ones
   // first (stable within each group). A leading `<kind>=` picks a semantic
@@ -182,6 +187,8 @@
           cands = deepAll().filter((el) => roleOf(el) === wantRole)
             .filter((el) => !nameSpec || matchText(accessibleName(el), nameSpec.text, nameSpec.exact));
         }
+      } else if (kind === "ref") {
+        cands = deepQueryAll(`[data-aglink-ref="${cssEscape(unquote(rest).text.trim())}"]`);
       } else if (kind === "testid") {
         const v = unquote(rest).text;
         const e = cssEscape(v);
@@ -218,7 +225,7 @@
   }
 
   globalThis.__aglink = {
-    __v: 1,
+    __v: 2,
     resolve,
     resolveAll,
     deepQueryAll,

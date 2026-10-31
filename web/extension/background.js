@@ -206,6 +206,8 @@ async function dispatch(method, params) {
       return await proceedInsecure(params);
     case "upload_file":
       return await uploadFile(params);
+    case "page_snapshot":
+      return await pageSnapshot(params);
     case "dialog_status":
       return await dialogStatus(params);
     case "handle_dialog":
@@ -1271,6 +1273,21 @@ async function proceedInsecure(params) {
   if (tried.length) why += ` after trying: ${tried.join(", ")}`;
   if (attachError) why += ` (the browser's debugger cannot reach its warning page: ${attachError})`;
   throw new Error(bypassFallback(tabId, why));
+}
+
+// pageSnapshot runs the shared outline (page-actions.js P.snapshot): visible
+// structure and controls, each control numbered for "ref=eN" selectors.
+async function pageSnapshot(params) {
+  const tabId = await activeTabId(params);
+  await ensureHelpers(tabId);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["snapshot", [params.maxLines || 200]],
+  });
+  const r = results && results[0] && results[0].result;
+  if (typeof r !== "string") throw new Error("page_snapshot returned no result (the page may block script injection)");
+  return r;
 }
 
 // ---- file upload -------------------------------------------------------------

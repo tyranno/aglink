@@ -206,6 +206,9 @@ func (a *appTarget) EvalResult(ctx context.Context, expr string) (*evalResult, e
 // does not have the shared scripts yet — first use, or the app reloaded since.
 const needInjectMarker = "__aglinkNeedInject"
 
+// pageActionsVersion must equal P.__v in extension/page-actions.js.
+const pageActionsVersion = 3
+
 // CallPage runs globalThis.__aglinkPage[name](...args) in the page. The check
 // for the shared scripts is folded into the same round trip, so an already
 // prepared page costs one evaluation; only a fresh page pays for injection.
@@ -218,8 +221,10 @@ func (a *appTarget) CallPage(ctx context.Context, name string, args []any) (json
 	if err != nil {
 		return nil, fmt.Errorf("encode args: %w", err)
 	}
-	expr := fmt.Sprintf(`(typeof globalThis.__aglinkPage === "undefined") ? {%q: true} : globalThis.__aglinkPage[%s](...%s)`,
-		needInjectMarker, nameJSON, argsJSON)
+	// An older copy (injected before this daemon was updated) lacks newer
+	// functions; treat it as missing so it is replaced.
+	expr := fmt.Sprintf(`(typeof globalThis.__aglinkPage === "undefined" || globalThis.__aglinkPage.__v !== %d) ? {%q: true} : globalThis.__aglinkPage[%s](...%s)`,
+		pageActionsVersion, needInjectMarker, nameJSON, argsJSON)
 
 	raw, err := a.Eval(ctx, expr)
 	if err != nil || !isNeedInject(raw) {

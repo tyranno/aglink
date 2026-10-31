@@ -272,6 +272,105 @@
         return { found: true, tag, present: el.hasAttribute(attr), value: el.getAttribute(attr) };
       };
 
+  // snapshot renders the visible page as a compact outline — headings,
+  // landmarks/dialogs, interactive controls with their state, short text — and
+  // numbers every control (ref=eN, marked data-aglink-ref) so the next call can
+  // target it as selector "ref=eN". Cheaper than get_page_text for deciding
+  // what to click, and unlike list_elements it keeps the structure (which
+  // dialog a button is in, which heading a field sits under).
+  P.snapshot = (maxLines) => {
+    const A = globalThis.__aglink;
+    if (!A) return "(page helpers missing)";
+    for (const el of A.deepQueryAll("[data-aglink-ref]")) el.removeAttribute("data-aglink-ref");
+    const max = Math.max(20, Math.min(maxLines || 200, 1000));
+    const CONTROL = new Set(["button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox", "slider",
+      "tab", "menuitem", "menuitemcheckbox", "option", "switch", "spinbutton"]);
+    const GROUP = new Set(["dialog", "alertdialog", "navigation", "main", "form", "tablist", "menu", "listbox",
+      "banner", "complementary", "region", "toolbar"]);
+    const SKIP = new Set(["script", "style", "noscript", "template", "svg", "iframe", "head"]);
+    const lines = [];
+    let ref = 0;
+    let cut = false;
+    const q = (s, n) => JSON.stringify(String(s).trim().replace(/\s+/g, " ").slice(0, n));
+    const emit = (depth, s) => {
+      if (lines.length >= max) { cut = true; return false; }
+      lines.push("  ".repeat(depth) + "- " + s);
+      return true;
+    };
+    const hiddenStyle = (el) => {
+      const st = getComputedStyle(el);
+      return st.display === "none" || st.visibility === "hidden" || el.getAttribute("aria-hidden") === "true";
+    };
+    const kids = (node) => {
+      const out = [];
+      if (node.shadowRoot) out.push(...node.shadowRoot.childNodes);
+      out.push(...node.childNodes);
+      return out;
+    };
+    const walk = (node, depth) => {
+      for (const child of kids(node)) {
+        if (cut) return;
+        if (child.nodeType === Node.TEXT_NODE) {
+          const t = child.textContent.trim();
+          if (t.length >= 2) emit(depth, "text " + q(t, 80));
+          continue;
+        }
+        if (child.nodeType !== Node.ELEMENT_NODE) continue;
+        const el = child;
+        const tag = el.tagName.toLowerCase();
+        if (SKIP.has(tag) || hiddenStyle(el)) continue;
+        const role = A.roleOf(el);
+        if (CONTROL.has(role) || (tag === "input" && role)) {
+          if (!A.isVisible(el)) continue;
+          ref++;
+          el.setAttribute("data-aglink-ref", "e" + ref);
+          // A <select>'s text is every option run together; its name is only
+          // what labels it (the chosen option shows as value= below).
+          const name = tag === "select"
+            ? (el.getAttribute("aria-label") || (el.labels && el.labels[0] && el.labels[0].textContent) || el.getAttribute("title") || "")
+            : A.accessibleName(el);
+          let s = role + " " + q(name, 60);
+          const st = [];
+          if (role === "textbox" || role === "searchbox" || role === "spinbutton") {
+            if (el.value) st.push("value=" + q(el.type === "password" ? "••••" : el.value, 40));
+          }
+          if (role === "combobox" && tag === "select" && el.selectedOptions && el.selectedOptions[0]) {
+            st.push("value=" + q(el.selectedOptions[0].textContent, 40));
+          }
+          if (el.checked || el.getAttribute("aria-checked") === "true") st.push("checked");
+          if (el.getAttribute("aria-selected") === "true") st.push("selected");
+          if (el.getAttribute("aria-expanded") === "true") st.push("expanded");
+          if (el.disabled || el.getAttribute("aria-disabled") === "true") st.push("disabled");
+          st.push("ref=e" + ref);
+          emit(depth, s + " [" + st.join(", ") + "]");
+          continue; // a control's own text is its name
+        }
+        if (role === "heading") {
+          if (A.isVisible(el)) {
+            const lvl = /^h([1-6])$/.exec(tag);
+            emit(depth, "heading " + q(el.textContent, 80) + (lvl ? " [level=" + lvl[1] + "]" : ""));
+          }
+          continue;
+        }
+        if (role === "img") {
+          const alt = A.accessibleName(el);
+          if (alt && A.isVisible(el)) emit(depth, "img " + q(alt, 60));
+          continue;
+        }
+        if (GROUP.has(role)) {
+          const name = el.getAttribute("aria-label") || "";
+          if (!emit(depth, role + (name ? " " + q(name, 60) : "") + ":")) return;
+          walk(el, depth + 1);
+          continue;
+        }
+        walk(el, depth);
+      }
+    };
+    walk(document.body || document.documentElement, 0);
+    const head = `[snapshot ${lines.length} lines, ${ref} refs — act on one with selector "ref=eN"]`;
+    return head + "\n" + lines.join("\n") + (cut ? `\n… [truncated at ${max} lines — raise maxLines, or scope with get_page_text selector]` : "");
+  };
+
   P.listElements = (selectorList, idAttr, maxEls) => {
         // Pierce open shadow roots when the helper is present, so web-component
         // internals (buttons/inputs inside a custom element) are listed too;
@@ -428,5 +527,8 @@
   P.listElementsDefault = (max) => P.listElements(INTERACTIVE_SELECTOR, AGLINK_ID_ATTR, max);
 
   P.constants = { AGLINK_ID_ATTR, INTERACTIVE_SELECTOR, KEY_SPECS, MOD_PROPS };
+  // Version of this file. The daemon re-injects into an app window whose copy
+  // is older (apptarget.go pageActionsVersion); bump both together.
+  P.__v = 3;
   globalThis.__aglinkPage = P;
 })();

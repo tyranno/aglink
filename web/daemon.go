@@ -338,6 +338,21 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if method == "run_flow" {
 		return d.runFlow(params, profile)
 	}
+	if method == "upload_file" {
+		paths, err := uploadPaths(params["paths"])
+		if err != nil {
+			return CallResult{Error: err.Error()}
+		}
+		if str(params, "selector") == "" {
+			return CallResult{Error: "upload_file requires 'selector' (the <input type=\"file\">, e.g. input[type=file])"}
+		}
+		p := map[string]any{}
+		for k, v := range params {
+			p[k] = v
+		}
+		p["paths"] = paths
+		params = p
+	}
 	if method == "list_flows" {
 		return d.listFlows()
 	}

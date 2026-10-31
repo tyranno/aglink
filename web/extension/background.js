@@ -204,6 +204,8 @@ async function dispatch(method, params) {
       return await closeTab(params);
     case "proceed_insecure":
       return await proceedInsecure(params);
+    case "upload_file":
+      return await uploadFile(params);
     case "dialog_status":
       return await dialogStatus(params);
     case "handle_dialog":
@@ -1269,6 +1271,75 @@ async function proceedInsecure(params) {
   if (tried.length) why += ` after trying: ${tried.join(", ")}`;
   if (attachError) why += ` (the browser's debugger cannot reach its warning page: ${attachError})`;
   throw new Error(bypassFallback(tabId, why));
+}
+
+// ---- file upload -------------------------------------------------------------
+//
+// Page script cannot put files into an <input type="file">; the DevTools
+// DOM.setFileInputFiles can (it also fires input/change). The element is found
+// with the shared resolver in the isolated world and marked; the debugger then
+// finds the mark from the page's own world — walking open shadow roots too,
+// which DOM.querySelector would not — and sets the files. The daemon has
+// already checked that every path is a file on this PC.
+
+async function uploadFile(params) {
+  const tabId = await activeTabId(params);
+  const selector = params.selector;
+  const files = Array.isArray(params.paths) ? params.paths : [];
+  if (!selector || files.length === 0) throw new Error("upload_file requires 'selector' and 'paths'");
+  await ensureHelpers(tabId);
+  const mark = "u" + Math.random().toString(36).slice(2, 10);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (sel, m) => {
+      const r = globalThis.__aglink;
+      const el = r && r.resolve ? r.resolve(sel) : document.querySelector(sel);
+      if (!el) return { found: false };
+      const ok = el.tagName === "INPUT" && el.type === "file";
+      if (ok) el.setAttribute("data-aglink-upload", m);
+      return { found: true, ok, tag: el.tagName.toLowerCase(), multiple: !!el.multiple };
+    },
+    args: [selector, mark],
+  });
+  const r = (results && results[0] && results[0].result) || { found: false };
+  if (!r.found) throw new Error(`no element matched selector: ${selector}`);
+  if (!r.ok) {
+    throw new Error(`element <${r.tag}> matched by ${selector} is not an <input type="file"> — target the file input itself (often hidden), e.g. input[type=file]`);
+  }
+  if (files.length > 1 && !r.multiple) throw new Error(`this file input takes one file, ${files.length} given`);
+
+  try {
+    await withDebugger(tabId, async (target) => {
+      const found = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => {
+          const m = ${JSON.stringify(mark)};
+          const walk = (root) => {
+            const hit = root.querySelector('[data-aglink-upload="' + m + '"]');
+            if (hit) return hit;
+            for (const el of root.querySelectorAll("*")) {
+              if (el.shadowRoot) { const h = walk(el.shadowRoot); if (h) return h; }
+            }
+            return null;
+          };
+          return walk(document);
+        })()`,
+        returnByValue: false,
+      });
+      const objectId = found && found.result && found.result.objectId;
+      if (!objectId) throw new Error("the marked file input disappeared before the files could be set");
+      await chrome.debugger.sendCommand(target, "DOM.setFileInputFiles", { files, objectId });
+    });
+  } finally {
+    await chrome.scripting
+      .executeScript({
+        target: { tabId },
+        func: (m) => document.querySelectorAll(`[data-aglink-upload="${m}"]`).forEach((e) => e.removeAttribute("data-aglink-upload")),
+        args: [mark],
+      })
+      .catch(() => {});
+  }
+  const names = files.map((f) => String(f).split(/[\\/]/).pop());
+  return `ok: attached ${files.length} file(s): ${names.join(", ")}`;
 }
 
 // ---- JavaScript dialogs (alert / confirm / prompt) --------------------------

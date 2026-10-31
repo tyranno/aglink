@@ -22,6 +22,9 @@ type fakePage struct {
 	}
 	evalErr error
 	eval    string // the Runtime.evaluate result EvalResult returns, as JSON
+
+	rawResults map[string]string // CDP method -> JSON Raw returns (default {})
+	rawParams  map[string]any    // last params each CDP method was sent
 }
 
 func (f *fakePage) CallPage(ctx context.Context, name string, args []any) (json.RawMessage, error) {
@@ -57,6 +60,13 @@ func (f *fakePage) EvalResult(ctx context.Context, expr string) (*evalResult, er
 }
 func (f *fakePage) Raw(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	f.raws = append(f.raws, method)
+	if f.rawParams == nil {
+		f.rawParams = map[string]any{}
+	}
+	f.rawParams[method] = params
+	if r, ok := f.rawResults[method]; ok {
+		return json.RawMessage(r), nil
+	}
 	return json.RawMessage(`{}`), nil
 }
 func (f *fakePage) Dialog() *dialogInfo { return f.dialog }

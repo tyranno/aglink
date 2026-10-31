@@ -489,6 +489,59 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		}
 		return formatEvalValue(r), nil
 
+	case "upload_file":
+		paths := toStrings(params["paths"])
+		if sel == "" || len(paths) == 0 {
+			return "", errors.New("upload_file requires 'selector' and 'paths'")
+		}
+		// Through the shared page scripts first, so the resolver understands
+		// role=/text=/label= selectors here as everywhere else.
+		if _, err := p.CallPage(ctx, "elementExists", []any{sel}); err != nil {
+			return "", err
+		}
+		raw, err := p.Raw(ctx, "Runtime.evaluate", map[string]any{"expression": fileInputExpr(sel), "returnByValue": false})
+		if err != nil {
+			return "", err
+		}
+		var ev struct {
+			Result struct {
+				ObjectID string `json:"objectId"`
+				Subtype  string `json:"subtype"`
+			} `json:"result"`
+		}
+		_ = json.Unmarshal(raw, &ev)
+		if ev.Result.ObjectID == "" || ev.Result.Subtype == "null" {
+			return "", notFound()
+		}
+		chk, err := p.Raw(ctx, "Runtime.callFunctionOn", map[string]any{
+			"objectId":            ev.Result.ObjectID,
+			"functionDeclaration": `function(){ return [this.tagName === "INPUT" && this.type === "file", !!this.multiple, this.tagName.toLowerCase()]; }`,
+			"returnByValue":       true,
+		})
+		if err != nil {
+			return "", err
+		}
+		var c struct {
+			Result struct {
+				Value []any `json:"value"`
+			} `json:"result"`
+		}
+		_ = json.Unmarshal(chk, &c)
+		if len(c.Result.Value) < 3 || c.Result.Value[0] != true {
+			tag := "?"
+			if len(c.Result.Value) >= 3 {
+				tag, _ = c.Result.Value[2].(string)
+			}
+			return "", fmt.Errorf("element <%s> matched by %s is not an <input type=\"file\"> — target the file input itself (often hidden), e.g. input[type=file]", tag, sel)
+		}
+		if len(paths) > 1 && c.Result.Value[1] != true {
+			return "", fmt.Errorf("this file input takes one file, %d given", len(paths))
+		}
+		if _, err := p.Raw(ctx, "DOM.setFileInputFiles", map[string]any{"files": paths, "objectId": ev.Result.ObjectID}); err != nil {
+			return "", err
+		}
+		return uploadedText(paths), nil
+
 	case "dialog_status":
 		d := p.Dialog()
 		if d == nil {

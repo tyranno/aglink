@@ -65,6 +65,15 @@ var commands = []command{
 		},
 	},
 	{
+		name: "upload_file",
+		desc: `Attach files from this PC to a file input (<input type="file">) — what a page's "attach / choose file" button opens, which page script and the other tools cannot do. Target the input itself, which is often hidden behind a styled button: input[type=file] usually works. The page receives the files with the usual input/change events, as if the user had picked them. Works in a Chrome tab (the debugger is attached briefly; Chrome shows its "started debugging" bar for that moment) and in an app window.`,
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: `The file input, e.g. input[type=file] or #avatar-upload.`},
+			{name: "paths", typ: argString, required: true, desc: `Absolute path(s) of files on this PC: one path, several separated by '|', or a JSON array.`},
+			{name: "tabId", typ: argInt, desc: "Tab (or app window number). Omit for the active tab / first window."},
+		},
+	},
+	{
 		name: "run_flow",
 		desc: "Replay a saved run_steps batch by name — the cheapest way to repeat a known UI sequence (reach a screen, log in, reset a form): one call, no reasoning between steps. Same reporting and snapshot as run_steps. The flow runs on the target it was recorded on unless 'profile' says otherwise. list_flows shows what is saved.",
 		args: []argSpec{

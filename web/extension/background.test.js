@@ -990,3 +990,50 @@ test("navigate opens a window when Chrome has none (running in the background)",
   assert.match(out, /^ok: navigated tab 9 /);
   assert.strictEqual(created.url, "https://example.com/");
 });
+
+// ---- file upload ---------------------------------------------------------------
+
+function uploadChrome({ found = true, ok = true, multiple = false, objectId = "obj-1" } = {}) {
+  const st = { set: null, cleaned: false, attached: 0, detached: 0 };
+  const chrome = makeChrome({
+    tabs: { query: async () => [{ id: 7, active: true }] },
+    scripting: {
+      executeScript: async (opts) => {
+        if (opts.files) return [{}];
+        if (opts.args && opts.args.length === 1) { st.cleaned = true; return [{}]; }
+        return [{ result: found ? { found, ok, tag: ok ? "input" : "button", multiple } : { found: false } }];
+      },
+    },
+    debugger: {
+      attach: async () => { st.attached++; },
+      detach: async () => { st.detached++; },
+      onDetach: { addListener: () => {} },
+      onEvent: { addListener: () => {} },
+      sendCommand: async (target, method, params) => {
+        if (method === "Runtime.evaluate") return { result: objectId ? { objectId } : {} };
+        if (method === "DOM.setFileInputFiles") { st.set = params; return {}; }
+        return {};
+      },
+    },
+  });
+  return { sb: loadBackground(chrome), st };
+}
+
+test("upload_file sets the files on the marked input and cleans up", async () => {
+  const { sb, st } = uploadChrome();
+  const out = await sb.uploadFile({ tabId: 7, selector: "input[type=file]", paths: ["C:\\tmp\\a.png"] });
+  assert.strictEqual(out, "ok: attached 1 file(s): a.png");
+  assert.deepStrictEqual({ ...st.set }, { files: ["C:\\tmp\\a.png"], objectId: "obj-1" });
+  assert.ok(st.cleaned, "the temporary mark must be removed");
+  assert.strictEqual(st.detached, 1, "the debugger is only borrowed");
+});
+
+test("upload_file refuses what is not a file input, and too many files", async () => {
+  const notInput = uploadChrome({ ok: false });
+  await assert.rejects(() => notInput.sb.uploadFile({ tabId: 7, selector: "text=첨부", paths: ["C:\\a"] }), /not an <input type="file">/);
+  assert.strictEqual(notInput.st.attached, 0);
+  const single = uploadChrome({ multiple: false });
+  await assert.rejects(() => single.sb.uploadFile({ tabId: 7, selector: "#f", paths: ["C:\\a", "C:\\b"] }), /takes one file, 2 given/);
+  const missing = uploadChrome({ found: false });
+  await assert.rejects(() => missing.sb.uploadFile({ tabId: 7, selector: "#nope", paths: ["C:\\a"] }), /no element matched selector: #nope/);
+});

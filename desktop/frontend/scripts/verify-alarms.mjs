@@ -23,14 +23,61 @@ const cases = [
   ["오늘 날씨 알려 줘", null],
   ["나노파이 얘기한 대화 찾아 줘", null],
 ];
+// Days, weeks and dates; 오늘 without 오전/오후; midnight; daily hours; "N분
+// 전"; questions that only look like reminders.
+const afternoon = new Date(2026, 9, 31, 14, 0, 0); // Sat 14:00
+const afternoonCases = [
+  ["다음 주 월요일 3시에 회의 알려 줘", "모레 오후 3시", "회의"],
+  ["다음 주 화요일 9시 회의 알려 줘", "11월 3일 오전 9시", "회의"],
+  ["다음 주 일요일 10시에 알려 줘", "11월 8일 오전 10시", ""],
+  ["금요일 3시에 알려 줘", "11월 6일 오후 3시", ""],
+  ["토요일 8시에 알려 줘", "오후 8시", ""],
+  ["11월 5일 오후 2시에 병원 가라고 알려 줘", "11월 5일 오후 2시", "병원 가라고"],
+  ["10월 5일 3시 알려줘", "10월 5일 오후 3시", ""],
+  ["이번 주 월요일 3시에 알려 줘", null],
+  ["매주 월요일 9시에 알려 줘", null],
+  ["다음 주에 3시 알려 줘", null],
+  ["3일 뒤 3시에 알려 줘", null],
+  ["오늘 8시에 알려 줘", "오후 8시", ""],
+  ["오늘 9시에 약 먹으라고 알려 줘", "오후 9시", "약 먹으라고"],
+  ["오늘 밤 12시에 알려 줘", "밤 12시", ""],
+  ["내일 밤 12시에 알려 줘", "내일 밤 12시", ""],
+  ["12시에 알려 줘", "밤 12시", ""],
+  ["매일 7시에 깨워 줘", "내일 오전 7시", ""],
+  ["매일 7시에 운동하라고 알려 줘", "내일 오전 7시", "운동하라고"],
+  ["매일 3시에 약 먹으라고 알려 줘", "오후 3시", "약 먹으라고"],
+  ["오후 3시 10분 전에 알려 줘", "오후 2시 50분", ""],
+  ["회의 3시 10분 전에 알려 줘", "오후 2시 50분", "회의"],
+  ["5시에 회의를 알려 줘", "오후 5시", "회의"],
+  ["내일 9시 환율 알려 줘", null],
+  ["1시간 뒤에 비트코인 가격 알려 줘", null],
+  ["내일 3시 미세먼지 알려 줘", null],
+  ["내일 아침 9시 교통 정보 알려 줘", null],
+  ["내일 9시에 주가 알려줘", null],
+];
+const night = new Date(2026, 9, 31, 23, 0, 0); // Sat 23:00
+const nightCases = [
+  ["오늘 밤 12시에 알려 줘", "밤 12시", ""],
+  ["내일 밤 12시에 알려 줘", "내일 밤 12시", ""],
+  ["12시에 알려 줘", "밤 12시", ""],
+  ["매일 7시에 깨워 줘", "내일 오전 7시", ""],
+  ["매일 3시에 약 먹으라고 알려 줘", "내일 오후 3시", "약 먹으라고"],
+  ["오늘 8시에 알려 줘", null],
+  ["내일 8시에 알려 줘", "내일 오전 8시", ""],
+  ["30분 뒤에 회의 알려 줘", "오후 11시 30분", "회의"],
+];
+
 let bad = 0;
-for (const [text, when, msg] of cases) {
-  const a = parseAlarm(text, now);
-  const got = a ? timeLabel(a.at, now) : null;
-  const ok = when === null ? a === null : a && got === when && a.msg === msg;
-  if (!ok) bad++;
-  console.log(ok ? "ok " : "BAD", text, "→", a ? `${got} "${a.msg}"${a.daily ? " daily" : ""}` : "null",
-    a ? `| ${confirmText({ ...a, at: a.at })} | ${fireText(a)}` : "");
+for (const [clock, list] of [[now, cases], [afternoon, afternoonCases], [night, nightCases]]) {
+  console.log(`-- ${clock.toLocaleString("ko-KR")}`);
+  for (const [text, when, msg] of list) {
+    const a = parseAlarm(text, clock);
+    const got = a ? timeLabel(a.at, clock) : null;
+    const ok = when === null ? a === null : a && got === when && a.msg === msg;
+    if (!ok) bad++;
+    console.log(ok ? "ok " : "BAD", text, "→", a ? `${got} "${a.msg}"${a.daily ? " daily" : ""}` : "null",
+      a ? `| ${confirmText({ ...a, at: a.at })} | ${fireText(a)}` : "");
+  }
 }
 console.log(bad ? `${bad} failed` : "all ok");
 process.exit(bad ? 1 : 0);

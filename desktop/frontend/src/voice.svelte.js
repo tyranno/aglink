@@ -31,11 +31,16 @@ import {
   setTurnDoneListener,
 } from "./paneStore.svelte.js";
 import { alarms, parseAlarm, addAlarm, removeAlarm, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
+import { describeCron } from "./schedule.js";
 
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
 const BARGE_STORAGE_KEY = "aglink.voice.barge"; // "0": take turns, the mic waits for the reading
 const CONV_STORAGE_KEY = "aglink.voice.conversation"; // pane id while conversation is on
-const AWAIT_STORAGE_KEY = "aglink.voice.awaiting"; // pane whose spoken request is still being worked on
+const AWAIT_STORAGE_KEY = "aglink.voice.awaiting"; // {pane, key, at} of the spoken request still being worked on
+const AWAIT_MAX_MS = 30 * 60000; // an answer never seen stops holding the conversation open after this
+// A running turn's "typing" is refreshed every 2 minutes (the host heartbeat);
+// a chat with none this long after connecting finished while the app was closed.
+const RESUME_GRACE_MS = 150000;
 const DONE_SHOW_MS = 8000; // "작업이 끝났어요" stays on the indicator this long
 const TARGET_RATE = 16000;
 const SILENCE_STOP_MS = 1300; // pause after speech that ends the clip
@@ -66,10 +71,9 @@ const ENROLL_MS = 15000;
 const LISTEN_ALWAYS_RE = /^(항상|계속|늘)\s*(듣기|들어|들어\s*줘|켜\s*(둬|놔|놓아))(\s*(로|으로))?\s*(해|바꿔|해\s*줘|바꿔\s*줘|줘)?[.!?~\s]*$/;
 const LISTEN_WAKE_RE = /^(호출어|부르기|부르면|아글링크\s*(로|하면))\s*(로|으로)?\s*(켜|켜기|시작|바꿔|해|하자)\S*(\s*줘)?[.!?~\s]*$/;
 // "부르는 이름을 아그라로 바꿔 줘": a name of the user's own to wake on.
-const WAKE_NAME_SET_RE = /^(부르는\s*|호출\s*|깨우는\s*)?(이름|호출어)\s*(을|를)?\s*["“']?(.{1,8}?)["”']?\s*(으로|로)\s*(바꿔|정해|해|지정해|설정해)\S*(\s*(줘|주세요))?[.!?~\s]*$/;
+// A bare "이름을 …로 바꿔" is too often about something else, so "부르는" (or 호출어) is required.
+const WAKE_NAME_SET_RE = /^(?:(?:부르는|호출|깨우는)\s*이름|호출어)\s*(을|를)?\s*["“']?(.{1,8}?)["”']?\s*(으로|로)\s*(바꿔|정해|해|지정해|설정해)\S*(\s*(줘|주세요))?[.!?~\s]*$/;
 const WAKE_NAME_ADD_RE = /^["“']?(.{1,8}?)["”']?\s*(이)?라고\s*(불러도|해도|하면|부르면)\s*(알아들어|대답해|깨어나|켜져|켜)\S*(\s*(줘|주세요))?[.!?~\s]*$/;
-const ENROLL_RE = /^(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(등록|저장|기억)/;
-const UNENROLL_RE = /목소리\s*(등록\s*)?(해제|취소|지워|삭제|지우기)/;
 const MAX_CLIP_MS = 60000;
 const PREROLL_MS = 300; // kept before the first speech so the onset is not cut
 // How much of a reply is read: "short" (the voice setting "요약만 읽기") keeps
@@ -399,10 +403,12 @@ async function resumeSavedConversation() {
     rememberConvPane(saved);
     // A request still being worked on keeps the conversation (and the
     // indicator) on, so its end is seen and the answer read out.
-    if (awaitedPane() === saved) {
+    const req = awaitedReq();
+    if (req?.pane === saved) {
       voice.convPaneId = saved;
       convActiveAt = Date.now();
       vlog("restart: conversation waits for the answer");
+      void watchResumedTurn(req);
       return;
     }
     saveConversation(null);
@@ -417,6 +423,28 @@ async function resumeSavedConversation() {
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
+}
+
+// watchResumedTurn: no "done" comes for a turn that ended while the app was
+// closed, so a conversation resumed to wait for it would wait forever, with
+// the mic shut and the wake word off. A turn still running shows up in
+// chat.working by its next "typing" refresh; none by then means it is over.
+async function watchResumedTurn(req) {
+  let quietSince = 0; // connected, and the chat not working, since then
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const cur = readAwaited();
+    if (cur?.key !== req.key || voice.convPaneId !== req.pane) return; // answered, or ended meanwhile
+    if (Date.now() - req.at > AWAIT_MAX_MS) break;
+    if (!chat.connected || chat.working.has(req.key)) quietSince = 0;
+    else if (!quietSince) quietSince = Date.now();
+    else if (Date.now() - quietSince > RESUME_GRACE_MS) break;
+  }
+  setAwaited(null);
+  vlog("restart: the awaited turn is not running");
+  noteDone(keyTarget(req.key));
+  if (voice.listenMode === "wake") endConversation(); // back to waiting for the name, as after any restart
+  else resumeListening();
 }
 
 // listenAlways starts conversation mode on the last conversation pane (or the
@@ -448,23 +476,32 @@ export function endConversation(note) {
 }
 
 // voice:state tells the Go side (and the indicator window shown while the app
-// is in the tray) whether conversation mode is on and what it is doing.
+// is in the tray) whether conversation mode is on and what it is doing. Go
+// handles events on goroutines of their own, so each carries a rising number
+// and an older one arriving late is ignored; it starts from the clock so it
+// keeps rising across a page reload.
+let stateSeq = Date.now();
+
 $effect.root(() => {
   $effect(() => {
     const active = !!voice.convPaneId || voice.taping || voice.done !== null;
     let phase = "waiting";
     // What was sent is shown while waiting, so a mishearing is caught at once.
     let label = voice.heard ? `${quote(voice.heard, 30)} 답변 기다리는 중` : "답변을 기다리는 중";
+    // "작업이 끝났어요" gives way to a passing note and to the mic listening, so
+    // the indicator never says the work is done while it is waiting for words;
+    // with the conversation off it stays up for its whole time.
     if (voice.taping) [phase, label] = ["recording", `녹음 중 ${voice.tapeClock || "00:00"} — “녹음 끝내”라고 하면 멈춰요`];
     else if (voice.problem) [phase, label] = ["problem", voice.problem];
-    else if (voice.done !== null) [phase, label] = ["done", voice.speaking ? "작업이 끝났어요 — 답변을 읽어요" : "작업이 끝났어요"];
     else if (voice.flash) [phase, label] = ["note", voice.flash];
-    else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
     else if (voice.phase === "listening") [phase, label] = ["listening", "듣는 중 — 말씀하세요"];
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
+    else if (voice.done !== null) [phase, label] = ["done", voice.speaking ? "작업이 끝났어요 — 답변을 읽어요" : "작업이 끝났어요"];
+    else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
     // Which chat the conversation is talking to, shown under the status line.
     const chatTitle = (voice.done || (active && paneConversationMeta(pane(voice.convPaneId)?.target)?.title)) || "";
     Events.Emit("voice:state", {
+      seq: ++stateSeq,
       active,
       phase,
       label: `🗣 ${label}`,
@@ -472,6 +509,7 @@ $effect.root(() => {
       speed: voice.ttsSpeed,
       chat: chatTitle,
       wake: voice.waking,
+      wakeName: wakeNameLabel(), // for the tray tooltip
       textOnly: voice.textOnly,
     });
   });
@@ -527,7 +565,8 @@ function resumeListening(delay = 200) {
   resumeTimer = setTimeout(() => {
     resumeTimer = null;
     const paneId = voice.convPaneId;
-    if (!paneId || recorder || voice.enrolling) return; // a barge-in recorder keeps listening by itself
+    // A barge-in recorder keeps listening by itself; "녹음해 줘" has the mic to itself.
+    if (!paneId || recorder || voice.enrolling || voice.taping) return;
     const busy =
       voice.speaking ||
       (typeof speechSynthesis !== "undefined" && (speechSynthesis.speaking || speechSynthesis.pending));
@@ -549,29 +588,53 @@ setTurnDoneListener((key) => {
   textOnce.delete(key);
   convActiveAt = Date.now();
   const p = voice.convPaneId && pane(voice.convPaneId);
-  const awaited = awaitedPane();
-  const ap = awaited && pane(awaited);
-  if (ap?.target && targetKey(ap.target) === key) {
+  // Matched by the chat, not the pane: the pane may have moved on to another one.
+  if (readAwaited()?.key === key) {
     setAwaited(null);
-    noteDone(ap.target);
+    noteDone(keyTarget(key));
   } else if (p?.target && targetKey(p.target) === key) noteDone(p.target);
   if (p?.target && targetKey(p.target) === key) resumeListening();
 });
 
-// The pane whose spoken request is being worked on, kept over a restart.
-function awaitedPane() {
+// The spoken request being worked on — its pane, chat and when it was sent —
+// kept over a restart.
+function readAwaited() {
   try {
-    return localStorage.getItem(AWAIT_STORAGE_KEY);
+    const a = JSON.parse(localStorage.getItem(AWAIT_STORAGE_KEY) || "null");
+    return a?.pane && a.key && a.at > 0 ? a : null;
   } catch {
-    return null;
+    return null; // also the plain pane id stored before
   }
 }
 
+// awaitedReq is the request still worth waiting for: not too old, and its pane
+// still on the same chat (switching chats mid-turn gives up on that answer).
+function awaitedReq() {
+  const a = readAwaited();
+  if (!a) return null;
+  const t = pane(a.pane)?.target;
+  if (Date.now() - a.at > AWAIT_MAX_MS || (t && targetKey(t) !== a.key)) {
+    setAwaited(null);
+    return null;
+  }
+  return a;
+}
+
+function awaitedPane() {
+  return awaitedReq()?.pane || null;
+}
+
 function setAwaited(paneId) {
+  const t = paneId && pane(paneId)?.target;
   try {
-    if (paneId) localStorage.setItem(AWAIT_STORAGE_KEY, paneId);
+    if (t) localStorage.setItem(AWAIT_STORAGE_KEY, JSON.stringify({ pane: paneId, key: targetKey(t), at: Date.now() }));
     else localStorage.removeItem(AWAIT_STORAGE_KEY);
   } catch {}
+}
+
+// keyTarget turns a targetKey back into a target.
+function keyTarget(key) {
+  return key.startsWith("web:") ? { kind: "web", id: key.slice(4) } : { kind: "telegram" };
 }
 
 let doneTimer = null;
@@ -628,6 +691,7 @@ async function startRecording(paneId, barge = false) {
   }
   clearTimeout(resumeTimer);
   resumeTimer = null;
+  const forConv = voice.convPaneId === paneId;
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -648,6 +712,12 @@ async function startRecording(paneId, barge = false) {
     voice.problem = "";
     if (voice.convPaneId) endConversation();
     setNote(paneId, reason);
+    return;
+  }
+  // The mic takes a moment to open: the conversation may have ended meanwhile
+  // ("그만", ✕, "녹음해 줘"), or another recording started.
+  if (!barge && (voice.taping || recorder || (forConv && voice.convPaneId !== paneId))) {
+    stream.getTracks().forEach((t) => t.stop());
     return;
   }
   micFailures = 0;
@@ -753,12 +823,7 @@ async function startRecording(paneId, barge = false) {
       // Conversation mode never times out: it only ends on "그만", 🗣 or the
       // tray menu, so the app can be used by voice alone from the tray.
       if (voice.convPaneId === paneId) {
-        // With the wake word on, a conversation nobody talks in goes back to
-        // waiting for "아글링크" instead of listening forever.
-        if (voice.listenMode === "wake" && voice.wakeIdleMin > 0 && awaitedPane() !== paneId && Date.now() - convActiveAt > voice.wakeIdleMin * 60000) {
-          vlog("conversation idle → waiting for the wake word");
-          endConversation();
-        } else resumeListening(0);
+        if (!endIfIdle(paneId)) resumeListening(0);
       } else setNote(paneId, "음성이 감지되지 않았습니다. 🎤 를 다시 눌러 말해 주세요.");
     } else if (now - rec.startedAt > MAX_CLIP_MS) stopRecording(true);
   };
@@ -769,6 +834,18 @@ async function startRecording(paneId, barge = false) {
   if (barge) return; // "listening" only once the reading is over, so the indicator says "읽는 중"
   voice.paneId = paneId;
   voice.phase = "listening";
+}
+
+// endIfIdle: with the wake word on, a conversation nobody talks in goes back
+// to waiting for "아글링크" instead of listening forever. Only the user's own
+// words that were kept (and answers) count as talk, so a noisy room whose
+// clips are all dropped still times out.
+function endIfIdle(paneId) {
+  if (voice.listenMode !== "wake" || voice.wakeIdleMin <= 0 || awaitedPane() === paneId) return false;
+  if (Date.now() - convActiveAt <= voice.wakeIdleMin * 60000) return false;
+  vlog("conversation idle → waiting for the wake word");
+  endConversation();
+  return true;
 }
 
 // takeClip encodes the audio from just before the first speech as whisper input.
@@ -929,8 +1006,19 @@ const SPEED_RESET_RE = cmdRE(String.raw`(말\s*|읽는\s*)?(빠르기|속도)\s*
 const REPEAT_RE = cmdRE(String.raw`(다시|한\s*번\s*더|방금\s*(거|답변)\s*다시)\s*(읽어|말해|들려)`);
 const NEW_CONV_RE = cmdRE(String.raw`새\s*(로운\s*)?대화\s*(를)?\s*(시작|시작해|시작하자|열어|만들어|하자)`);
 const BACK_RE = cmdRE(String.raw`(아까|이전|전|원래|지난)\s*대화\s*(로|으로)?\s*(돌아가|돌아가자|가|가자|열어|옮겨|바꿔)`);
-const VOICE_WORD_RE = /목소리|음성|보이스/;
-const VOICE_CHANGE_RE = /(바꿔|바꾸자|변경|(으로|로)\s*해)\S*(\s*(줘|주세요|줄래|봐|봐\s*줘|요))?[.!?~\s]*$/;
+// "남자 목소리로 바꿔 줘", "목소리 여자 삼 번으로 해 줘", "음성을 여자로 바꿔":
+// a short phrase before the verb (group 2 or 5), checked by isVoiceChoice.
+const VOICE_CHANGE_RE = cmdRE(String.raw`(.{1,20}?)\s*(으로|로)?\s*(바꿔|바꾸자|바꿀래|변경해|변경)|(.{1,20}?)\s*(으로|로)\s*(해)`);
+// Everything a voice choice is said with; anything else left over ("음성 인식
+// 모델을 small에서 medium") means the sentence is about something else.
+const VOICE_CHOICE_WORDS_RE = /(?<![a-z])[mf][1-5]?(?![a-z])|목소리|보이스|음성|남자|여자|남성|여성|에프|엠|다른|파이브|쓰리|하나|다섯|중에|걸|거|것|번|째|중|으로|로|을|를|은|는|좀|[1-5]|[일이삼사오원투포둘셋넷한두세네첫]|\s/gi;
+
+function isVoiceChoice(phrase) {
+  const p = String(phrase || "").trim();
+  // "음성" alone is said of speech recognition too, so it needs a gender with it.
+  if (!/목소리|보이스/.test(p) && !/^음성\s*(을|를|은)?\s*(남자|여자|남성|여성)/.test(p)) return false;
+  return !p.replace(VOICE_CHOICE_WORDS_RE, "");
+}
 const FIND_RE = /(대화|얘기|이야기|채팅|채팅방)\s*(를|을)?\s*(좀\s*)?(찾아|찾기|찾자|열어)\S*(\s*(줘|주세요|줄래|봐|봐\s*줘))?[.!?~\s]*$/;
 const LIST_RE = cmdRE(String.raw`(최근\s*)?(대화|채팅|채팅방)\s*(목록|리스트)\s*(을|를|좀)?\s*(읽어|알려|말해|불러|보여)`);
 const NOW_RE = cmdRE(String.raw`(지금|여기)\s*(은|는)?\s*(무슨|어떤|어느|뭔)\s*(대화|채팅|채팅방)\s*(야|이야|예요|이에요|지|인가|인지\s*알려)?\??`);
@@ -947,7 +1035,14 @@ const SHORT_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\s
 const ALARM_LIST_RE =cmdRE(String.raw`((맡긴|예약한|맞춘|남은)\s*)?(알림|알람)\s*(목록|들)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)|(알림|알람)\s*(뭐|뭐가|몇\s*개)\s*(있어|있지|있나|남았어)`);
 const ALARM_CANCEL_RE = cmdRE(String.raw`((\S+)\s*번\s*(째\s*)?|방금\s*(맡긴\s*)?)?(알림|알람)\s*(을|를)?\s*(다|전부|모두)?\s*(취소|취소해|지워|꺼|없애|빼)`);
 const PB_LIST_RE = cmdRE(String.raw`(업무|루틴|업무\s*루틴)\s*(목록|리스트|뭐\s*있어)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)?`);
-const PB_RUN_RE = /^\s*(.+?)\s*(을|를)?\s*(지금\s*)?(실행|돌려)\S*(\s*(줘|주세요|줄래))?[.!?~\s]*$/;
+// Asked for, not asked about: "주간 보고 실행해 줘", never "주간 보고 실행했어?".
+const PB_RUN_RE = /^\s*(.+?)\s*(을|를)?\s*(지금\s*)?(실행\s*해\s*(줘|주세요|줄래\??)?|실행\s*(해\s*)?주세요|돌려\s*(줘|주세요|줄래\??))[.!~\s]*$/;
+const PB_NAME_COVER = 0.6; // share of a routine's name a spoken part of it must cover
+const PB_MIN_NAME = 3; // ...and at least this many letters
+// "목소리 등록해 줘" records the user's voice; "목소리 등록 해제해 줘" / "목소리
+// 지워 줘" forgets it. Whole sentences only: "영상에서 목소리 지우는 법" is a question.
+const ENROLL_RE = cmdRE(String.raw`(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(좀\s*)?(등록|저장|기억)\s*(해|하자|해\s*둬|해\s*놔|할래)?`);
+const UNENROLL_RE = cmdRE(String.raw`(제\s*|내\s*|등록한\s*|등록된\s*)?목소리\s*(등록\s*)?(을|를|은)?\s*(좀\s*)?(해제|취소|지워|삭제|지우기|없애)\s*(해|하자)?`);
 const MAX_ALARM_CHARS = 80; // "내일 아침 9시에 …라고 알려 줘" runs longer than a command
 const LIST_COUNT = 5; // conversations read out by "대화 목록 읽어 줘"
 const MAX_COMMAND_CHARS = 40; // longer sentences are always meant for the AI
@@ -956,8 +1051,8 @@ const MAX_TRAIL = 10;
 
 // Spoken voice names: "남자 목소리로", "여자 삼 번", "에프 투로", "F2로".
 const VOICE_GENDERS = [
-  [/남자|남성|엠|M/i, "M"],
-  [/여자|여성|에프|F/i, "F"],
+  [/남자|남성|엠|(?<![a-z])m(?![a-z])/i, "M"], // a lone M, not the one in "medium"
+  [/여자|여성|에프|(?<![a-z])f(?![a-z])/i, "F"],
 ];
 const VOICE_NUMBERS = [
   ["1", "일", "원", "하나", "한", "첫"],
@@ -1167,14 +1262,18 @@ async function runPlaybookByName(paneId, spoken) {
   const key = normalizeForEcho(spoken.replace(/(업무|루틴)\s*$/, ""));
   if (key.length < 2) return false;
   const books = await playbookList().catch(() => []);
+  // The name said in full (spaces and "·" aside), or a good part of it: a
+  // word it merely contains ("테스트 실행해 줘" and "빌드·테스트 점검") is
+  // a request for the AI.
   let best = null;
-  let bestLen = 0;
+  let bestCover = 0;
   for (const b of books) {
     const name = normalizeForEcho(b.name);
-    const hit = name === key || name.includes(key) || key.includes(name) ? Math.min(name.length, key.length) : 0;
-    if (hit > bestLen) [best, bestLen] = [b, hit];
+    if (!name) continue;
+    const cover = name === key ? 1 : key.length >= PB_MIN_NAME && name.includes(key) ? key.length / name.length : 0;
+    if (cover > bestCover) [best, bestCover] = [b, cover];
   }
-  if (!best || bestLen < 2) return false;
+  if (!best || bestCover < PB_NAME_COVER) return false;
   const j = parseJSON(await ControlService.RunPlaybook(best.id), {});
   if (j.ok === false) throw new Error(j.error || "실행 실패");
   vlog(`playbook run ${quote(best.name)}`);
@@ -1224,9 +1323,13 @@ async function runVoiceCommand(paneId, text) {
   const named = WAKE_NAME_SET_RE.exec(t) || WAKE_NAME_ADD_RE.exec(t);
   if (named) {
     const set = WAKE_NAME_SET_RE.test(t);
-    const name = cleanWakeNames([set ? named[4] : named[1]])[0];
+    const name = cleanWakeNames([set ? named[2] : named[1]])[0];
     if (!name) {
       speak("부를 이름은 두 글자에서 여덟 글자로 정해 주세요.");
+      return true;
+    }
+    if (!set && !voice.wakeNames.includes(name) && voice.wakeNames.length >= MAX_WAKE_NAMES) {
+      speak(`부르는 이름은 ${MAX_WAKE_NAMES}개까지 정할 수 있어요. 음성 설정에서 하나를 지운 뒤에 말씀해 주세요.`);
       return true;
     }
     setVoiceSettings({ wakeNames: set ? [name] : [...voice.wakeNames, name] });
@@ -1253,7 +1356,7 @@ async function runVoiceCommand(paneId, text) {
     return true;
   }
   if (SHORT_RE.test(t)) {
-    speak(lastReply || "아직 읽어 드린 답변이 없어요.", "short");
+    speakAgain("short");
     return true;
   }
   if (ENROLL_RE.test(t) || UNENROLL_RE.test(t)) {
@@ -1275,7 +1378,7 @@ async function runVoiceCommand(paneId, text) {
     return true;
   }
   if (REPEAT_RE.test(t)) {
-    speak(lastReply || "아직 읽어 드린 답변이 없어요.");
+    speakAgain();
     return true;
   }
   if (SLOWER_RE.test(t) || FASTER_RE.test(t)) {
@@ -1286,7 +1389,8 @@ async function runVoiceCommand(paneId, text) {
     changeSpeed(paneId, null);
     return true;
   }
-  if (VOICE_WORD_RE.test(t) && VOICE_CHANGE_RE.test(t)) {
+  const vc = VOICE_CHANGE_RE.exec(t);
+  if (vc && isVoiceChoice(vc[2] ?? vc[5])) {
     const name = parseVoiceName(t);
     if (!name) {
       speak("어떤 목소리로 바꿀지 못 알아들었어요. 남자 일 번부터 오 번, 여자 일 번부터 오 번 중에서 말씀해 주세요.");
@@ -1378,7 +1482,7 @@ async function hostReminders() {
       .filter((t) => !t.isTask)
       .map((t) => {
         const at = new Date(t.nextFire && !t.nextFire.startsWith("0001") ? t.nextFire : t.fireAt).getTime();
-        return { hostId: t.id, at, msg: t.label && !["알림", "깨우기"].includes(t.label) ? t.label : "", daily: !!t.cronExpr, wake: t.label === "깨우기", made: new Date(t.createdAt).getTime() || 0 };
+        return { hostId: t.id, at, msg: t.label && !["알림", "깨우기"].includes(t.label) ? t.label : "", daily: !!t.cronExpr, cron: t.cronExpr || "", wake: t.label === "깨우기", made: new Date(t.createdAt).getTime() || 0 };
       })
       .filter((a) => Number.isFinite(a.at))
       .sort((x, y) => x.at - y.at);
@@ -1388,7 +1492,8 @@ async function hostReminders() {
 }
 
 function alarmLine(a) {
-  const when = a.daily ? `매일 ${timeLabel(a.at).replace(/^(내일|모레) /, "")}` : timeLabel(a.at);
+  // A host reminder may repeat on weekdays or every 30 minutes, not just daily.
+  const when = a.cron ? describeCron(a.cron) : a.daily ? `매일 ${timeLabel(a.at).replace(/^(내일|모레) /, "")}` : timeLabel(a.at);
   return `${when}${a.msg ? `, ${a.msg}` : a.wake ? ", 깨우기" : ""}`;
 }
 
@@ -1413,19 +1518,31 @@ async function runAlarmCommand(t) {
     let picked;
     if (cancel[8]) picked = all;
     else if (nthWord) {
-      const n = /^d+$/.test(nthWord) ? Number(nthWord) : NTH_WORDS[nthWord];
+      const n = /^\d+$/.test(nthWord) ? Number(nthWord) : NTH_WORDS[nthWord];
       if (!all[n - 1]) {
         speak(`알림은 ${all.length}번까지 있어요. 다시 말씀해 주세요.`);
         return true;
       }
       picked = [all[n - 1]];
     } else picked = [all.length === 1 ? all[0] : all.reduce((x, y) => ((y.made || 0) > (x.made || 0) ? y : x))]; // the one set last
+    let failed = 0;
     for (const a of picked) {
-      if (a.hostId) await ControlService.DeleteTask(a.hostId).catch(() => {});
-      else removeAlarm(a.id);
+      if (!a.hostId) {
+        removeAlarm(a.id);
+        continue;
+      }
+      // The host answers {ok:false} when it could not delete it.
+      const j = await ControlService.DeleteTask(a.hostId)
+        .then((raw) => parseJSON(raw, {}))
+        .catch((err) => ({ ok: false, error: err?.message || err }));
+      if (j?.ok === false) {
+        failed++;
+        vlog(`alarm cancel failed: ${j.error || "?"}`);
+      }
     }
-    vlog(`alarms cancelled ${picked.length}`);
-    speak(picked.length > 1 ? `알림 ${picked.length}개를 모두 취소했어요.` : `${alarmLine(picked[0])} 알림을 취소했어요.`);
+    vlog(`alarms cancelled ${picked.length - failed}`);
+    if (failed) speak(picked.length > 1 ? `알림 ${picked.length}개 중 ${failed}개를 취소하지 못했어요. 잠시 뒤에 다시 말씀해 주세요.` : "알림을 취소하지 못했어요. 잠시 뒤에 다시 말씀해 주세요.");
+    else speak(picked.length > 1 ? `알림 ${picked.length}개를 모두 취소했어요.` : `${alarmLine(picked[0])} 알림을 취소했어요.`);
     return true;
   }
   const a = parseAlarm(t);
@@ -1648,8 +1765,9 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
   } finally {
     voice.phase = "idle";
     voice.paneId = null;
-    if (relisten && conv()) resumeListening(0);
-    else if (retry && conv()) resumeListening(CONV_RETRY_MS);
+    if (relisten && conv()) {
+      if (!endIfIdle(paneId)) resumeListening(0);
+    } else if (retry && conv()) resumeListening(CONV_RETRY_MS);
   }
 }
 
@@ -2082,7 +2200,7 @@ async function speakSupertonic(sentences, gen) {
   return true;
 }
 
-function speakWindows(sentences) {
+function speakWindows(sentences, gen) {
   if (typeof speechSynthesis === "undefined") {
     voice.speaking = false;
     return;
@@ -2094,8 +2212,10 @@ function speakWindows(sentences) {
     u.lang = "ko-KR";
     if (v) u.voice = v;
     u.rate = 1.05;
+    // A cancelled reading's end arrives late, during the next one; it must not end that.
     if (i === sentences.length - 1)
       u.onend = u.onerror = () => {
+        if (gen !== speakGen) return;
         voice.speaking = false;
         readingEndedAt = performance.now();
       };
@@ -2119,7 +2239,23 @@ function speakReply(md, key = "") {
       tail = "자세히 들으시려면 자세히 읽어 줘, 라고 하세요.";
     }
   }
+  emitReply(md);
   return speak(md, speechMode(), tail);
+}
+
+// emitReply puts an assistant reply up in the indicator's popup, which shows
+// it whole while only its gist is read. The app's own words ("네, 말씀하세요.")
+// are not sent, so they never replace the reply there.
+function emitReply(md, silent = false) {
+  const text = String(md || "").trim();
+  if (text && (voice.convPaneId || savedConversationPane())) Events.Emit("voice:reply", silent ? { text, silent } : { text });
+}
+
+// speakAgain reads the last reply once more, for "다시 읽어 줘" / "요약해서 읽어 줘".
+function speakAgain(mode = speechMode()) {
+  if (!lastReply) return speak("아직 읽어 드린 답변이 없어요.");
+  emitReply(lastReply);
+  return speak(lastReply, mode);
 }
 
 // showReply puts the reply up as text without reading it: in the popup above
@@ -2129,7 +2265,7 @@ function showReply(md) {
   const text = String(md || "").trim();
   if (!text) return;
   vlog("reply shown as text only");
-  if (voice.convPaneId || savedConversationPane()) Events.Emit("voice:reply", { text, silent: true });
+  emitReply(text, true);
   flash("📄 답변을 글로 띄웠어요");
 }
 
@@ -2137,12 +2273,11 @@ function showReply(md) {
 function speakDetail() {
   if (!lastReply) return speak("아직 읽어 드린 답변이 없어요.");
   vlog("reading the last reply in full");
+  emitReply(lastReply);
   return speak(lastReply, "full");
 }
 
 export async function speak(md, mode = speechMode(), tail = "") {
-  // The indicator shows the whole reply while only its gist is read.
-  if (voice.convPaneId || savedConversationPane()) Events.Emit("voice:reply", { text: String(md || "").trim() });
   const text = [speechText(md, mode), tail].filter(Boolean).join(" ");
   if (!text) return;
   stopSpeaking();
@@ -2161,7 +2296,7 @@ export async function speak(md, mode = speechMode(), tail = "") {
   else if (paneId && !recorder) resumeListening(); // taking turns: the mic opens after the reading
   if ((await supertonicReady()) && (await speakSupertonic(sentences, gen))) return;
   if (gen !== speakGen) return;
-  speakWindows(sentences);
+  speakWindows(sentences, gen);
 }
 
 setAssistantTextListener((key, text) => {
@@ -2489,7 +2624,8 @@ $effect.root(() => {
 // off meanwhile; a conversation that was on comes back afterwards.
 
 const TAPE_START_RE = cmdRE(String.raw`(이거|이것|지금|지금부터|여기|이\s*내용|회의)?\s*(좀\s*)?(녹음|녹화)\s*(을|를|좀)?\s*(좀\s*)?(해|시작해|시작|켜|하자|해\s*봐|해\s*둬|떠|부탁해)`);
-const TAPE_STOP_RE = /녹음\s*(을|를|은|는)?\s*(좀\s*)?(이제\s*)?(끝|그만|멈춰|멈추|중지|종료|정지|꺼|끄|마쳐|마치|스톱)/;
+// The whole piece heard, so talk that only mentions it ("녹음 끝나고 정리하자") goes into the notes.
+const TAPE_STOP_RE = cmdRE(String.raw`(이제\s*)?녹음\s*(을|를|은|는)?\s*(좀\s*)?(이제\s*)?(그만\s*)?(끝|끝내|끝내자|끝낼게|끝내기|그만|그만해|그만하자|그만할게|멈춰|중지|중지해|종료|종료해|정지|정지해|꺼|마쳐|마치자|스톱)`);
 const TAPE_FOLDER_RE = cmdRE(String.raw`녹음\s*(한\s*(거|것|파일)|파일|폴더)\s*(을|를|좀)?\s*(열어|보여)`);
 const TAPE_STOP_MAX_CHARS = 30; // "녹음 끝내" is said on its own, not inside a long sentence
 const TAPE_FLUSH_MS = 2000; // sound reaches the file this often

@@ -9,7 +9,7 @@
   // by itself every day / weekday / week.
   import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
   import { chat, loadConversations, selectTargetFromSidebar } from "./paneStore.svelte.js";
-  import { WEEKDAYS, repeatToCron, describeCron } from "./schedule.js";
+  import { WEEKDAYS, repeatToCron, repeatError, describeCron } from "./schedule.js";
 
   let groups = $state([]);
   let playbooks = $state([]);
@@ -95,7 +95,7 @@
   async function saveSchedule() {
     const s = scheduling;
     if (!s || s.saving) return;
-    if (!scheduleCron) { s.error = "요일을 하나 이상 골라 주세요."; return; }
+    if (!scheduleCron) { s.error = repeatError(s.repeat) || "반복 주기를 정해 주세요."; return; }
     s.saving = true;
     s.error = "";
     const payload = { label: `▶ ${s.book.name}`, isTask: true, prompt: `업무 루틴 "${s.book.name}" 실행`, cronExpr: scheduleCron, playbookId: s.book.id };

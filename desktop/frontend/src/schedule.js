@@ -30,13 +30,37 @@ export function repeatToCron(r) {
       return days.length ? `${m} ${h} * * ${days.join(",")}` : "";
     }
     case "every": {
-      const n = Math.max(1, Math.floor(Number(r.everyN) || 0));
-      if (r.everyUnit === "hour") return n === 1 ? "0 * * * *" : `0 */${n} * * *`;
-      return n === 1 ? "* * * * *" : `*/${n} * * * *`;
+      // */N only repeats evenly when N divides the field's range: "*/90" in the
+      // minute field is just "at :00 every hour", "*/7" leaves a 4-minute gap
+      // at the top of the hour. Anything else becomes the host scheduler's
+      // (robfig/cron) "@every 90m", which counts from when it was saved.
+      if (repeatError(r)) return "";
+      let n = Number(r.everyN);
+      let hour = r.everyUnit === "hour";
+      if (!hour && n % 60 === 0) [n, hour] = [n / 60, true];
+      if (hour) {
+        if (n === 1) return "0 * * * *";
+        return n < 24 && 24 % n === 0 ? `0 */${n} * * *` : `@every ${n}h`;
+      }
+      if (n === 1) return "* * * * *";
+      return 60 % n === 0 ? `*/${n} * * * *` : `@every ${n}m`;
     }
     default:
       return String(r.cron || "").trim();
   }
+}
+
+// repeatError says what is wrong with a repeat the editor holds, "" when it can
+// be saved.
+export function repeatError(r) {
+  if (r?.kind === "weekly" && !(r.days || []).length) return "요일을 하나 이상 골라 주세요.";
+  if (r?.kind === "every") {
+    const n = Number(r.everyN);
+    if (!Number.isInteger(n) || n < 1) return "간격은 1 이상의 정수로 정해 주세요.";
+    if (n > (r.everyUnit === "hour" ? 24 * 31 : 60 * 24 * 31)) return "간격이 너무 길어요. 한 달 이내로 정해 주세요.";
+  }
+  if (r?.kind === "cron" && !String(r.cron || "").trim()) return "cron 표현식을 써 주세요.";
+  return "";
 }
 
 // cronToRepeat reads a cron back into the editor's terms; anything it does not
@@ -44,6 +68,13 @@ export function repeatToCron(r) {
 export function cronToRepeat(cron) {
   const c = String(cron || "").trim();
   const base = { kind: "cron", time: "09:00", days: [], everyN: 30, everyUnit: "min", cron: c };
+  // "@every 90m" / "@every 5h" / "@every 1h30m0s" (Go durations, as the host
+  // and repeatToCron write them).
+  const ev = /^@every\s+(?:(\d+)h)?(?:(\d+)m)?(?:0+s)?$/.exec(c);
+  if (ev && (ev[1] || ev[2])) {
+    const mins = Number(ev[1] || 0) * 60 + Number(ev[2] || 0);
+    if (mins > 0) return mins % 60 === 0 ? { ...base, kind: "every", everyN: mins / 60, everyUnit: "hour" } : { ...base, kind: "every", everyN: mins, everyUnit: "min" };
+  }
   const f = c.split(/\s+/);
   if (f.length !== 5) return base;
   const [mi, ho, dom, mon, dow] = f;
@@ -67,7 +98,8 @@ export function cronToRepeat(cron) {
   return base;
 }
 
-// describeCron: "0 9 * * *" → "매일 오전 9시", "*/30 * * * *" → "30분마다".
+// describeCron: "0 9 * * *" → "매일 오전 9시", "*/30 * * * *" → "30분마다",
+// "@every 90m" → "1시간 30분마다".
 export function describeCron(cron) {
   const r = cronToRepeat(cron);
   const [h, m] = r.time.split(":").map(Number);
@@ -79,7 +111,9 @@ export function describeCron(cron) {
     case "weekly":
       return `매주 ${r.days.map((d) => WEEKDAYS[d]).join("·")}요일 ${clockLabel(h, m)}`;
     case "every":
-      return r.everyUnit === "hour" ? (r.everyN === 1 ? "매시간" : `${r.everyN}시간마다`) : r.everyN === 1 ? "매분" : `${r.everyN}분마다`;
+      if (r.everyUnit === "hour") return r.everyN === 1 ? "매시간" : `${r.everyN}시간마다`;
+      if (r.everyN === 1) return "매분";
+      return r.everyN > 60 ? `${Math.floor(r.everyN / 60)}시간 ${r.everyN % 60}분마다` : `${r.everyN}분마다`;
     default:
       return r.cron ? `반복 (${r.cron})` : "반복";
   }

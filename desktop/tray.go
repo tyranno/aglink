@@ -56,11 +56,19 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 	barge.OnClick(func(*application.Context) {
 		app.Event.Emit("tray:barge")
 	})
+	var (
+		bargeMu    sync.Mutex
+		bargeOrder stateOrder
+	)
 	app.Event.On("voice:state", func(e *application.CustomEvent) {
-		if m, ok := e.Data.(map[string]any); ok {
-			if on, ok := m["barge"].(bool); ok && on != barge.Checked() {
-				barge.SetChecked(on)
-			}
+		m, _ := e.Data.(map[string]any)
+		bargeMu.Lock()
+		defer bargeMu.Unlock()
+		if !bargeOrder.fresh(m) {
+			return
+		}
+		if on, ok := m["barge"].(bool); ok && on != barge.Checked() {
+			barge.SetChecked(on)
 		}
 	})
 	// Recording runs in the frontend too; it answers with a spoken note.
@@ -90,12 +98,19 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 	// doing, like the indicator.
 	var (
 		tipMu     sync.Mutex
+		tipOrder  stateOrder
 		lastTip   string
 		lastPhase string
 	)
 	app.Event.On("voice:state", func(e *application.CustomEvent) {
+		m, _ := e.Data.(map[string]any)
+		tipMu.Lock()
+		defer tipMu.Unlock()
+		if !tipOrder.fresh(m) {
+			return
+		}
 		tip, phase := "aglink", ""
-		if m, ok := e.Data.(map[string]any); ok {
+		if m != nil {
 			if active, _ := m["active"].(bool); active {
 				if label, _ := m["label"].(string); label != "" {
 					tip = "aglink — " + label
@@ -106,11 +121,13 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 				}
 				phase, _ = m["phase"].(string)
 			} else if wake, _ := m["wake"].(bool); wake {
-				tip = "aglink — “아글링크”라고 부르면 음성 대화를 시작해요"
+				name, _ := m["wakeName"].(string) // the user's own name to wake on, if set
+				if name == "" {
+					name = "아글링크"
+				}
+				tip = "aglink — “" + name + "”라고 부르면 음성 대화를 시작해요"
 			}
 		}
-		tipMu.Lock()
-		defer tipMu.Unlock()
 		if tip != lastTip {
 			lastTip = tip
 			tray.SetTooltip(tip)

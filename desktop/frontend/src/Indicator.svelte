@@ -13,8 +13,15 @@
   let chatTitle = $state("");
   let textOnly = $state(false);
 
+  let lastSeq = 0;
+
   Events.On("voice:state", (event) => {
     const d = event.data || {};
+    // An older state arriving late is dropped; Go's replay of the last one has the same number.
+    if (Number.isFinite(d.seq)) {
+      if (d.seq < lastSeq) return;
+      lastSeq = d.seq;
+    }
     phase = d.phase || "waiting";
     label = (d.label || "음성 대화 중").replace(/^🗣\s*/u, ""); // the icon already says it
     if (typeof d.barge === "boolean") barge = d.barge;

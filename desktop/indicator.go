@@ -33,9 +33,32 @@ type indicator struct {
 	replyShown bool
 	lastState  any
 	lastReply  any
+	order      stateOrder
 }
 
 var voiceIndicator indicator
+
+// stateOrder keeps "voice:state" events in the order the page sent them: each
+// listener runs on a goroutine of its own, so an older state can be handled
+// after a newer one. The page numbers each state ("seq"); the copy update()
+// sends again for the indicator page is marked "replay" and only meant for
+// that page. Callers serialise access.
+type stateOrder struct{ last float64 }
+
+func (o *stateOrder) fresh(m map[string]any) bool {
+	if replay, _ := m["replay"].(bool); replay {
+		return false
+	}
+	seq, ok := m["seq"].(float64)
+	if !ok {
+		return true // a page that does not number its states
+	}
+	if seq <= o.last {
+		return false
+	}
+	o.last = seq
+	return true
+}
 
 func setupIndicator(app *application.App) {
 	voiceIndicator.win = app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -65,11 +88,13 @@ func setupIndicator(app *application.App) {
 		Windows:          application.WindowsWindow{HiddenOnTaskbar: true},
 	})
 	app.Event.On("voice:state", func(e *application.CustomEvent) {
-		active := false
-		if m, ok := e.Data.(map[string]any); ok {
-			active, _ = m["active"].(bool)
-		}
+		m, _ := e.Data.(map[string]any)
+		active, _ := m["active"].(bool)
 		voiceIndicator.mu.Lock()
+		if !voiceIndicator.order.fresh(m) {
+			voiceIndicator.mu.Unlock()
+			return
+		}
 		voiceIndicator.active = active
 		voiceIndicator.lastState = e.Data
 		voiceIndicator.mu.Unlock()
@@ -162,7 +187,14 @@ func (ind *indicator) update(app *application.App) {
 		ind.win.SetPosition(x-indicatorW, y-indicatorH)
 	}
 	ind.win.Show()
-	if ind.lastState != nil {
-		app.Event.Emit("voice:state", ind.lastState) // the page may have missed it
+	// The page may have missed it. Marked, so the handlers here skip it
+	// rather than take it in again.
+	if m, ok := ind.lastState.(map[string]any); ok {
+		again := make(map[string]any, len(m)+1)
+		for k, v := range m {
+			again[k] = v
+		}
+		again["replay"] = true
+		app.Event.Emit("voice:state", again)
 	}
 }

@@ -405,7 +405,7 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 	case "playbook_save":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.savePlaybook(m.Payload)})
 	case "playbook_delete":
-		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: mutateResult(deletePlaybook(s.bot.playbooks, m.ID))})
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: mutateResult(deletePlaybook(s.bot.playbooks, s.bot.scheduler, m.ID))})
 	case "pbgroup_save":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: s.savePlaybookGroup(m.Payload)})
 	case "pbgroup_delete":

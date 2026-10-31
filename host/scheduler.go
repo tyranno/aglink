@@ -32,8 +32,13 @@ type Scheduler struct {
 	// and a job sent as a turn of it.
 	webSend     func(chatID int64, tgt Target, text string)
 	webDispatch func(chatID int64, tgt Target, text string)
-	runPlaybook func(chatID int64, playbookID string) // tasks with a PlaybookID
+	runPlaybook func(chatID int64, playbookID string) error // tasks with a PlaybookID
 }
+
+// lateAfter: a one-shot reminder delivered later than this (the host was off,
+// or asleep) says when it was meant for; a repeat whose run fell further back
+// than this while the host was off gets one catch-up notice.
+const lateAfter = 2 * time.Minute
 
 func NewScheduler(tasksPath string) *Scheduler {
 	c := cron.New(cron.WithLocation(time.Local))
@@ -65,8 +70,9 @@ func (s *Scheduler) SetWebDelivery(send, dispatch func(int64, Target, string)) {
 	s.mu.Unlock()
 }
 
-// SetPlaybookRun wires how a task that names an 업무 루틴 runs it.
-func (s *Scheduler) SetPlaybookRun(f func(int64, string)) {
+// SetPlaybookRun wires how a task that names an 업무 루틴 runs it. An error is
+// reported to the task's target as a 정기 실행 실패 message.
+func (s *Scheduler) SetPlaybookRun(f func(int64, string) error) {
 	s.mu.Lock()
 	s.runPlaybook = f
 	s.mu.Unlock()
@@ -108,14 +114,29 @@ func (s *Scheduler) save() error {
 // Returns when Stop() is called.
 func (s *Scheduler) Run() {
 	s.mu.Lock()
+	var missed []missedRun
+	now := time.Now()
 	for _, t := range s.tasks {
 		if t.Status == "pending" {
+			if m, ok := missedRepeat(t, now); ok {
+				missed = append(missed, m)
+				// The notice stands in for the missed runs, so a second restart
+				// does not repeat it.
+				t.LastFired = now
+			}
 			if err := s.register(t); err != nil {
 				log.Printf("[scheduler] startup register error for task %s: %v", t.ID, err)
 			}
 		}
 	}
+	if len(missed) > 0 {
+		_ = s.save()
+	}
 	s.mu.Unlock()
+	for _, m := range missed {
+		log.Printf("[scheduler] task %s: run due %s was missed while the host was off — notice sent", m.taskID, m.due.Format(time.RFC3339))
+		s.deliver(m.chatID, m.web, m.text)
+	}
 	s.cronRunner.Start()
 	<-s.done
 	s.cronRunner.Stop()
@@ -225,6 +246,13 @@ func (s *Scheduler) fire(taskID string) bool {
 		web = &tgt
 	}
 	playbookID := t.PlaybookID
+	label := t.Label
+	// A one-shot that comes late (the host was off when it was due) says so,
+	// after the 🔔 the desktop recognises a reminder by.
+	latePrefix := ""
+	if t.CronExpr == "" && !t.FireAt.IsZero() && t.LastFired.Sub(t.FireAt) > lateAfter {
+		latePrefix = "(" + dueLabel(t.FireAt, t.LastFired) + " 예정이던 알림) "
+	}
 	_ = s.save()
 	sendFn, dispatchFn := s.send, s.dispatch
 	webSendFn, webDispatchFn, playbookFn := s.webSend, s.webDispatch, s.runPlaybook
@@ -250,21 +278,142 @@ func (s *Scheduler) fire(taskID string) bool {
 	}
 
 	if playbookID != "" && playbookFn != nil {
-		go playbookFn(chatID, playbookID)
+		go func() {
+			if err := playbookFn(chatID, playbookID); err != nil {
+				log.Printf("[scheduler] task %s: scheduled playbook %s: %v", taskID, playbookID, err)
+				name := strings.TrimSpace(strings.TrimPrefix(label, "▶"))
+				if name == "" {
+					name = playbookID
+				}
+				s.deliver(chatID, web, fmt.Sprintf("⚠️ 정기 실행 실패: %s — %v", name, err))
+			}
+		}()
 	} else if web != nil && isTask && webDispatchFn != nil {
 		go webDispatchFn(chatID, *web, prompt)
 	} else if web != nil && !isTask && webSendFn != nil {
-		go webSendFn(chatID, *web, "🔔 "+prompt)
+		go webSendFn(chatID, *web, "🔔 "+latePrefix+prompt)
 	} else if isTask && dispatchFn != nil {
 		go dispatchFn(chatID, prompt, project)
 	} else if sendFn != nil {
-		go sendFn(chatID, "🔔 "+prompt)
+		go sendFn(chatID, "🔔 "+latePrefix+prompt)
 	} else {
 		// No channel wired (e.g. the bot is not up yet): say so instead of
 		// dropping the run silently.
 		log.Printf("[scheduler] task %s fired but there is no channel to run or send it on — dropped", taskID)
 	}
 	return true
+}
+
+// deliver posts a plain message (no AI turn) where a task reports: its web
+// conversation when it has one, else the telegram stream.
+func (s *Scheduler) deliver(chatID int64, web *Target, text string) {
+	s.mu.Lock()
+	sendFn, webSendFn := s.send, s.webSend
+	s.mu.Unlock()
+	switch {
+	case web != nil && webSendFn != nil:
+		webSendFn(chatID, *web, text)
+	case sendFn != nil:
+		sendFn(chatID, text)
+	default:
+		log.Printf("[scheduler] no channel to deliver %q — dropped", truncate(text, 60))
+	}
+}
+
+// dueLabel renders when a late task was due: "15:00", or "10/30 15:00" when
+// that was not on the day it is delivered.
+func dueLabel(due, now time.Time) string {
+	due = due.In(time.Local)
+	now = now.In(time.Local)
+	if y, m, d := due.Date(); y == now.Year() && m == now.Month() && d == now.Day() {
+		return due.Format("15:04")
+	}
+	return due.Format("1/2 15:04")
+}
+
+// missedRun is a repeat whose time came and went while the host was off.
+type missedRun struct {
+	taskID string
+	chatID int64
+	web    *Target
+	due    time.Time
+	text   string
+}
+
+// missedRepeat reports whether a recurring task had a run fall due (by more
+// than lateAfter) between its last run — or its creation — and now, i.e.
+// while the host was not running. Missed runs are not replayed; the caller
+// sends a single notice instead.
+func missedRepeat(t *Task, now time.Time) (missedRun, bool) {
+	if t.CronExpr == "" {
+		return missedRun{}, false
+	}
+	from := t.LastFired
+	if from.IsZero() {
+		from = t.CreatedAt
+	}
+	if from.IsZero() {
+		return missedRun{}, false
+	}
+	sched, err := cron.ParseStandard(t.CronExpr)
+	if err != nil {
+		return missedRun{}, false
+	}
+	due := sched.Next(from)
+	if due.IsZero() || now.Sub(due) <= lateAfter {
+		return missedRun{}, false
+	}
+	// Name the latest run that was missed, not the first (bounded, for an
+	// every-minute repeat after a long time off).
+	for i := 0; i < 100000; i++ {
+		next := sched.Next(due)
+		if next.IsZero() || now.Sub(next) <= lateAfter {
+			break
+		}
+		due = next
+	}
+	m := missedRun{taskID: t.ID, chatID: t.ChatID, due: due}
+	if t.Target != nil && t.Target.IsWeb() && t.Target.ID != "" {
+		tgt := *t.Target
+		m.web = &tgt
+	}
+	when := dueLabel(due, now)
+	switch {
+	case !t.IsTask && t.PlaybookID == "":
+		m.text = "🔔 (" + when + " 예정이던 알림 — 꺼져 있는 동안 놓쳤어요) " + t.Prompt
+	default:
+		name := strings.TrimSpace(strings.TrimPrefix(t.Label, "▶"))
+		if name == "" {
+			name = truncate(t.Prompt, 40)
+		}
+		m.text = fmt.Sprintf("⚠️ 꺼져 있는 동안 정기 실행을 놓쳤어요: %s (%s 예정) — 다음 예정 시각에 다시 실행해요.", name, when)
+	}
+	return m, true
+}
+
+// DeleteTasksForPlaybook removes every task that runs the given 업무 루틴, so
+// deleting the routine does not leave a schedule that can only fail. Returns
+// how many were removed.
+func (s *Scheduler) DeleteTasksForPlaybook(playbookID string) int {
+	if playbookID == "" {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for _, t := range s.tasks {
+		if t.PlaybookID == playbookID {
+			ids = append(ids, t.ID)
+		}
+	}
+	for _, id := range ids {
+		s.deregister(id)
+		s.removeByID(id)
+	}
+	if len(ids) > 0 {
+		_ = s.save()
+	}
+	return len(ids)
 }
 
 // AddTask adds a new Task and registers it with the scheduler.

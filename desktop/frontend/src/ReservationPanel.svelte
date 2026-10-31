@@ -12,7 +12,7 @@
   import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
   import { chat, pane, findWebConv } from "./paneStore.svelte.js";
   import { parseAlarm, fireText } from "./alarms.js";
-  import { WEEKDAYS, repeatToCron, cronToRepeat, describeCron, describeWhen, untilLabel } from "./schedule.js";
+  import { WEEKDAYS, repeatToCron, repeatError, cronToRepeat, describeCron, describeWhen, untilLabel } from "./schedule.js";
 
   const REFRESH_MS = 20000; // fired one-shots leave the list; keep it current
 
@@ -133,13 +133,21 @@
   function destTarget(dest) {
     return dest.startsWith("web:") ? { kind: "web", id: dest.slice(4) } : { kind: "telegram" };
   }
-  // A new task reports to the conversation in front of the user.
+  // A new task reports to the conversation in front of the user — or, when
+  // that pane is not a desktop conversation, the first one in the list.
   function defaultDest() {
     const t = pane(chat.focusedPaneId)?.target;
     if (t?.kind === "web" && t.id) return `web:${t.id}`;
     if (chat.webConvs[0]) return `web:${chat.webConvs[0].id}`;
     return "telegram";
   }
+  // Where a quick add will report, in words, for the hint under the input.
+  const quickDestText = $derived.by(() => {
+    const t = pane(chat.focusedPaneId)?.target;
+    if (t?.kind === "web" && t.id) return "결과는 지금 보고 있는 대화로 와요";
+    const dest = defaultDest();
+    return dest === "telegram" ? "결과는 텔레그램으로 와요" : `결과는 "${destLabel(dest)}" 대화로 와요`;
+  });
   const destChoices = $derived([
     ...chat.webConvs.map((c) => ({ value: `web:${c.id}`, label: c.title || "제목 없는 대화" })),
     { value: "telegram", label: "텔레그램" },
@@ -225,9 +233,12 @@
   }
 
   const editorCron = $derived(editing && editing.scheduleType === "repeat" ? repeatToCron(editing.repeat) : "");
+  // Why the repeat cannot be saved as it is ("" when it can): shown under the
+  // picker as the user types, and again on 저장.
+  const editorRepeatError = $derived(editing && editing.scheduleType === "repeat" ? repeatError(editing.repeat) : "");
   const editorPreview = $derived.by(() => {
     if (!editing) return "";
-    if (editing.scheduleType === "repeat") return editorCron ? describeCron(editorCron) : "요일을 하나 이상 골라 주세요";
+    if (editing.scheduleType === "repeat") return editorCron ? describeCron(editorCron) : "";
     const iso = localInputToISO(editing.fireAtLocal);
     return iso ? `${describeWhen(iso)} (${untilLabel(iso, chat.nowTick)})` : "";
   });
@@ -251,7 +262,7 @@
       target: destTarget(editing.dest),
       playbookId: editing.playbookId,
     };
-    if (editing.scheduleType === "repeat" && !payload.cronExpr) { editorError = "반복 주기를 정해 주세요."; return; }
+    if (editing.scheduleType === "repeat" && !payload.cronExpr) { editorError = editorRepeatError || "반복 주기를 정해 주세요."; return; }
     if (editing.scheduleType === "once" && !payload.fireAt) { editorError = "실행할 날짜와 시간을 골라 주세요."; return; }
     if (editing.scheduleType === "once" && new Date(payload.fireAt).getTime() <= Date.now()) { editorError = "이미 지난 시간이에요. 앞으로의 시간을 골라 주세요."; return; }
     saving = true;
@@ -303,7 +314,7 @@
     {#if quickNote}
       <div class="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{quickNote}</div>
     {:else}
-      <div class="mt-1 text-[11px] leading-4 text-slate-400 dark:text-slate-500">말하듯 쓰면 알림이 돼요 · 결과는 지금 보고 있는 대화로 와요</div>
+      <div class="mt-1 text-[11px] leading-4 text-slate-400 dark:text-slate-500">말하듯 쓰면 알림이 돼요 · {quickDestText}</div>
     {/if}
   </div>
 
@@ -435,7 +446,9 @@
               {/if}
             </div>
           {/if}
-          {#if editorPreview}
+          {#if editorRepeatError}
+            <div class="mt-2 text-xs font-medium text-rose-700 dark:text-rose-300">{editorRepeatError}</div>
+          {:else if editorPreview}
             <div class="mt-2 text-xs font-medium text-blue-700 dark:text-blue-300">→ {editorPreview}</div>
           {/if}
         </div>

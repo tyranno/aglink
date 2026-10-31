@@ -363,10 +363,9 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 			bot.dispatchTargetedOpt(chatID, text, &tgt, true)
 		},
 	)
-	sched.SetPlaybookRun(func(chatID int64, id string) {
-		if _, err := bot.runPlaybook(chatID, id); err != nil {
-			log.Printf("[scheduler] scheduled playbook %s: %v", id, err)
-		}
+	sched.SetPlaybookRun(func(chatID int64, id string) error {
+		_, err := bot.runPlaybook(chatID, id)
+		return err // the scheduler logs it and tells the task's conversation
 	})
 	manager.SetScheduler(sched)
 	go sched.Run()

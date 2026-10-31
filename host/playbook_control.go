@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 )
 
@@ -37,11 +39,21 @@ func mutateResult(err error) json.RawMessage {
 	return b
 }
 
-func deletePlaybook(store *PlaybookStore, id string) error {
+// deletePlaybook removes a routine and the 정기 실행 schedules that run it
+// (sched may be nil), which would otherwise go on failing on every tick.
+func deletePlaybook(store *PlaybookStore, sched *Scheduler, id string) error {
 	if store == nil {
 		return fmt.Errorf("playbooks unavailable")
 	}
-	return store.DeletePlaybook(id)
+	if err := store.DeletePlaybook(id); err != nil {
+		return err
+	}
+	if sched != nil {
+		if n := sched.DeleteTasksForPlaybook(id); n > 0 {
+			log.Printf("[playbook] %s deleted with its %d schedule(s)", id, n)
+		}
+	}
+	return nil
 }
 
 func deletePlaybookGroup(store *PlaybookStore, id string) error {
@@ -60,6 +72,14 @@ func (s *chatControlServer) savePlaybook(payload json.RawMessage) json.RawMessag
 	var p Playbook
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return mutateResult(fmt.Errorf("invalid playbook payload: %w", err))
+	}
+	// A work folder that is not there would only be skipped silently at run
+	// time; say so now, in the editor.
+	p.WorkDir = strings.TrimSpace(p.WorkDir)
+	if p.WorkDir != "" {
+		if err := validateDir(p.WorkDir); err != nil {
+			return mutateResult(fmt.Errorf("작업 폴더 확인 필요 — %w", err))
+		}
 	}
 	saved, err := s.bot.playbooks.UpsertPlaybook(p, time.Now())
 	if err != nil {

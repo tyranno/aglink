@@ -1915,12 +1915,15 @@ setAssistantTextListener((key, text) => {
 // recognition as conversation mode; with a voice enrolled, other voices are
 // dropped by the much cheaper voice check first.
 
-const WAKE_RE = /([아애에어][글그클굴걸끌]\s*[링린닝잉]\s*[크그큰]|에이\s*지\s*링크|a\s*g\s*(link|링크))/i;
+// Whisper writes the name many ways ("아그링크~", "어글링크", "아글링", "아글랭크");
+// the last syllable is often swallowed.
+const WAKE_RE = /([아애에어악앙][글그클굴걸끌구]\s*[링린닝잉랭랑]\s*[크그큰구]?|알\s*링\s*크|에이\s*지\s*링크|a\s*g\s*(link|링크))/i;
 const WAKE_TAIL_RE = /^[\s,.!?~]*(야|아|씨|님|가|는|도)?[\s,.!?~]*/; // "아글링크야, …"
 const WAKE_SEGMENT_END_MS = 600; // a pause this long ends a piece
 const WAKE_MAX_SEGMENT_MS = 4000; // a piece is checked after this much talk anyway
 const WAKE_MIN_SPEECH_MS = 300;
 const WAKE_PREROLL_CHUNKS = 3;
+const WAKE_PAD_S = 0.4;
 const LAST_CONV_STORAGE_KEY = "aglink.voice.lastConversation"; // pane the wake word opens
 
 let wakeRec = null;
@@ -1995,7 +1998,10 @@ async function startWake() {
     if (now - w.lastAt > WAKE_SEGMENT_END_MS || now - w.firstAt > WAKE_MAX_SEGMENT_MS) {
       const long = w.lastAt - w.firstAt >= WAKE_MIN_SPEECH_MS && w.loud >= 3;
       const from = Math.max(0, w.first - WAKE_PREROLL_CHUNKS);
-      const wav = long && !w.busy ? encodeWav(downsample(concat(w.chunks.slice(from)), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
+      // A bit of silence after the word: Whisper often returns nothing for a
+      // lone short word that runs to the very end of the clip.
+      const pad = new Float32Array(Math.round(ctx.sampleRate * WAKE_PAD_S));
+      const wav = long && !w.busy ? encodeWav(downsample(concat([...w.chunks.slice(from), pad]), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
       w.chunks = [];
       w.first = -1;
       w.loud = 0;
@@ -2026,13 +2032,19 @@ async function checkWake(w, wav) {
   w.busy = true;
   try {
     const score = await speakerScore(wav);
-    if (!isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) return;
+    if (!isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
+      vlog(`wake: other voice (${score.toFixed(2)})`);
+      return;
+    }
     const text = (await VoiceService.Transcribe(toBase64(wav))).trim();
     if (!text || wakeRec !== w) return;
     const m = WAKE_RE.exec(text);
     // The name has to open the sentence (give or take a "어," before it), so a
     // passing mention in someone's talk does not count.
-    if (!m || m.index > 4) return;
+    if (!m || m.index > 4) {
+      vlog(`wake: not the name ${quote(text, 20)}`); // to see how the name gets written
+      return;
+    }
     const rest = text.slice(m.index + m[0].length).replace(WAKE_TAIL_RE, "").trim();
     vlog(`wake ${score >= 0 ? score.toFixed(2) + " " : ""}${quote(text)}`);
     await wakeUp(rest);

@@ -29,6 +29,10 @@ const defaultTTSVoice = "F2"
 // takes ~35% less time than supertonic-server's own default of 8.
 const ttsSteps = 5
 
+// ttsSpeed: at 1.05 Korean sentence endings snapped shut and the reading
+// sounded pushy; a touch under 1.0 lets them settle.
+const ttsSpeed = 0.98
+
 type ttsServer struct {
 	cmd *exec.Cmd
 	in  io.WriteCloser
@@ -120,7 +124,7 @@ func (v *VoiceService) Synthesize(text, voiceName string) (string, error) {
 
 	started := time.Now()
 	ttsMu.Lock()
-	err = ttsRequest(map[string]any{"text": text, "voice": voiceName, "speed": 1.05, "steps": ttsSteps, "out": path})
+	err = ttsRequest(map[string]any{"text": text, "voice": voiceName, "speed": ttsSpeed, "steps": ttsSteps, "out": path})
 	ttsMu.Unlock()
 	if err != nil {
 		return "", err

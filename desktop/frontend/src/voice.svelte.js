@@ -908,6 +908,8 @@ function cleanProse(p) {
 // bare "네."), the first sentence of each top-level list item — the point it
 // makes — and a closing question to the user. Code, tables, headings and a
 // trailing "출처:" list never count.
+const ITEM_LABEL_RE = /^[^.!?:：\d]{1,20}[:：]\s*/; // no digits: "10:30" is not a label
+
 export function speechText(md) {
   let s = String(md || "").replace(/\r\n/g, "\n");
   s = s.replace(/^\s*(출처|참고|Sources?|References?)\s*:?\s*$[\s\S]*/im, ""); // trailing sources block
@@ -929,7 +931,9 @@ export function speechText(md) {
     const items = para.split(/\n(?=[ ]{0,1}(?:[-*+]|\d+[.)])\s)/).filter((l) => LIST_ITEM_RE.test(l));
     if (items.length) {
       for (const item of items) {
-        const point = sentencesOf(cleanProse(item.split("\n")[0]))[0];
+        // A "**고친 것:**" lead-in read on its own sounds curt, like a report
+        // being handed over; the sentence after it carries the point.
+        const point = sentencesOf(cleanProse(item.split("\n")[0]).replace(ITEM_LABEL_RE, ""))[0];
         if (point) points.push(point);
       }
       closing = "";

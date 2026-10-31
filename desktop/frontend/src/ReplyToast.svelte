@@ -4,6 +4,7 @@
   // a time that grows with the reply's length, but stays while the mouse is
   // over it; the indicator's 원문 button brings it back.
   import { Events } from "@wailsio/runtime";
+  import { renderMarkdown } from "./markdown.js";
 
   const FADE_MS = 300;
 
@@ -13,6 +14,14 @@
   let timer = null;
   let box = $state();
   let shown = $state(0);
+
+  // Replies are Markdown; rendered the same safe way as the chat bubbles
+  // (textContent only), so ** and - show as bold and lists, not as symbols.
+  function markdown(el, text) {
+    const update = (value) => el.replaceChildren(renderMarkdown(value || ""));
+    update(text);
+    return { update };
+  }
 
   function lingerMs(text) {
     return Math.min(25000, Math.max(8000, 4000 + text.length * 60));
@@ -61,7 +70,7 @@
     <span>답변 원문</span>
     <button onclick={fadeOut} title="닫기">✕</button>
   </div>
-  <div class="text" bind:this={box}>{reply}</div>
+  <div class="text md" bind:this={box} use:markdown={reply}></div>
 </div>
 {/key}
 
@@ -116,10 +125,92 @@
     padding: 10px 16px 14px;
     font-size: 14.5px;
     line-height: 1.6;
-    white-space: pre-wrap;
     word-break: keep-all;
     overflow-wrap: anywhere;
     user-select: text;
+  }
+  .md :global(> :first-child) {
+    margin-top: 0;
+  }
+  .md :global(> :last-child) {
+    margin-bottom: 0;
+  }
+  .md :global(p) {
+    margin: 0 0 8px;
+  }
+  .md :global(strong) {
+    color: #ffffff;
+    font-weight: 600;
+  }
+  .md :global(h1),
+  .md :global(h2),
+  .md :global(h3),
+  .md :global(h4),
+  .md :global(h5),
+  .md :global(h6) {
+    margin: 10px 0 4px;
+    font-size: 15px;
+    line-height: 1.35;
+    font-weight: 600;
+  }
+  .md :global(ul),
+  .md :global(ol) {
+    margin: 0 0 8px;
+    padding-left: 20px;
+  }
+  .md :global(li) {
+    margin: 2px 0;
+  }
+  .md :global(blockquote) {
+    margin: 0 0 8px;
+    padding: 2px 0 2px 10px;
+    border-left: 3px solid #4a5270;
+    color: #a9afc6;
+  }
+  .md :global(hr) {
+    margin: 8px 0;
+    border: 0;
+    border-top: 1px solid #2f3547;
+  }
+  .md :global(table) {
+    margin: 0 0 8px;
+    border-collapse: collapse;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .md :global(th),
+  .md :global(td) {
+    padding: 3px 6px;
+    border: 1px solid #3a4158;
+    text-align: left;
+    vertical-align: top;
+  }
+  .md :global(th) {
+    background: #262b3b;
+    font-weight: 600;
+  }
+  .md :global(a) {
+    color: #7aa7ff;
+  }
+  .md :global(code) {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: #2a3042;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 13px;
+  }
+  .md :global(pre) {
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #161924;
+    overflow-x: auto;
+  }
+  .md :global(pre code) {
+    display: block;
+    padding: 0;
+    background: transparent;
+    white-space: pre;
   }
   .text::-webkit-scrollbar {
     width: 8px;

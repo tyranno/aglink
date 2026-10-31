@@ -266,7 +266,7 @@ var commands = []command{
 	},
 	{
 		name: "get_console_logs",
-		desc: "Read recent browser console messages (log/warn/error/info/debug, plus uncaught errors and unhandled promise rejections) captured from a tab since it loaded. Useful for web debugging tasks (\"did that click throw a JS error?\") — get_page_text can't see this, since console output isn't part of the rendered DOM. Chrome profiles only — not available for app windows yet.",
+		desc: "Read recent browser console messages (log/warn/error/info/debug, plus uncaught errors and unhandled promise rejections) captured from a tab since it loaded. Useful for web debugging tasks (\"did that click throw a JS error?\") — get_page_text can't see this, since console output isn't part of the rendered DOM. In an app window (app:/cdp:) it reads what the window logged since aglink-web first attached to it.",
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 			{name: "max", typ: argInt, desc: "Maximum number of recent messages to return (default 50)."},
@@ -274,7 +274,7 @@ var commands = []command{
 	},
 	{
 		name: "get_network_requests",
-		desc: "Read recent AJAX calls (fetch and XMLHttpRequest) made by the page — method, URL, status, duration, and truncated request/response bodies — captured from a tab since it loaded. The tool for reverse-engineering a web app's own API: what endpoint does clicking a button actually call, with what payload, and what does it return. get_page_text/get_html/eval can't see this, since it never touches the rendered DOM. Binary responses (images, blobs) are recorded without a body preview. Use 'filter' to narrow a busy page down to the one call you care about. Chrome profiles only — not available for app windows yet.",
+		desc: "Read recent AJAX calls (fetch and XMLHttpRequest) made by the page — method, URL, status, duration, and truncated request/response bodies — captured from a tab since it loaded. The tool for reverse-engineering a web app's own API: what endpoint does clicking a button actually call, with what payload, and what does it return. get_page_text/get_html/eval can't see this, since it never touches the rendered DOM. Binary responses (images, blobs) are recorded without a body preview. Use 'filter' to narrow a busy page down to the one call you care about. In an app window (app:/cdp:) it reads what the window logged since aglink-web first attached to it.",
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 			{name: "max", typ: argInt, desc: "Maximum number of recent requests to return (default 50)."},

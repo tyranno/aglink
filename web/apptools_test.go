@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,10 @@ func (f *fakePage) Raw(ctx context.Context, method string, params any) (json.Raw
 		return json.RawMessage(r), nil
 	}
 	return json.RawMessage(`{}`), nil
+}
+func (f *fakePage) ConsoleText(max int) string { return fmt.Sprintf("console(max=%d)", max) }
+func (f *fakePage) NetworkText(ctx context.Context, max int, filter string) string {
+	return fmt.Sprintf("network(max=%d,filter=%s)", max, filter)
 }
 func (f *fakePage) Dialog() *dialogInfo { return f.dialog }
 func (f *fakePage) HandleDialog(ctx context.Context, accept bool, text string) error {
@@ -305,10 +310,17 @@ func TestAppDialogOpenErrorIsExplicit(t *testing.T) {
 }
 
 func TestAppUnsupportedMethods(t *testing.T) {
-	for _, m := range []string{"close_tab", "reload_extension", "get_console_logs", "get_network_requests"} {
+	for _, m := range []string{"close_tab", "reload_extension"} {
 		if r := run(t, &fakePage{}, m, nil); r.Error != "not supported for app profiles: "+m {
 			t.Errorf("%s: %+v", m, r)
 		}
+	}
+	// Console and network now come from the window's own CDP capture.
+	if r := run(t, &fakePage{}, "get_console_logs", map[string]any{"max": 20}); r.Text != "console(max=20)" {
+		t.Errorf("get_console_logs: %+v", r)
+	}
+	if r := run(t, &fakePage{}, "get_network_requests", map[string]any{"filter": "/api/"}); r.Text != "network(max=50,filter=/api/)" {
+		t.Errorf("get_network_requests: %+v", r)
 	}
 	if r := run(t, &fakePage{evalErr: errors.New("boom")}, "get_value", map[string]any{"selector": "x"}); r.Error != "boom" {
 		t.Errorf("transport errors pass through: %+v", r)

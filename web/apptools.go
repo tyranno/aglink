@@ -29,6 +29,8 @@ type appPage interface {
 	Dialog() *dialogInfo
 	HandleDialog(ctx context.Context, accept bool, promptText string) error
 	Screenshot(ctx context.Context) (string, error)
+	ConsoleText(max int) string
+	NetworkText(ctx context.Context, max int, filter string) string
 }
 
 // Mirrors of background.js constants.
@@ -571,7 +573,13 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		}
 		return fmt.Sprintf("ok: %s %s %s", verb, d.Type, jsQuote(d.Message)), nil
 
-	case "close_tab", "reload_extension", "get_console_logs", "get_network_requests":
+	case "get_console_logs":
+		return p.ConsoleText(intp(params, "max", 50)), nil
+
+	case "get_network_requests":
+		return p.NetworkText(ctx, intp(params, "max", 50), str(params, "filter")), nil
+
+	case "close_tab", "reload_extension":
 		return "", fmt.Errorf("not supported for app profiles: %s", method)
 	}
 	return "", fmt.Errorf("unknown method: %s", method)

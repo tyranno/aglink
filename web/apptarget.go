@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -30,6 +31,8 @@ type appTarget struct {
 	target cdpTarget
 	conn   *cdpConn
 
+	logs *appLogs // console + network capture (applogs.go)
+
 	mu     sync.Mutex
 	dialog *dialogInfo
 	// opened is closed the moment a dialog appears, waking every evaluation
@@ -43,15 +46,31 @@ func openAppTarget(t cdpTarget, port int) (*appTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &appTarget{port: port, target: t, conn: conn, opened: make(chan struct{})}
+	a := &appTarget{port: port, target: t, conn: conn, opened: make(chan struct{}), logs: newAppLogs()}
 	conn.OnEvent(a.onEvent)
+	conn.OnEvent(a.logs.onEvent)
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	if _, err := conn.Call(ctx, "Page.enable", nil); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("enable page events: %w", err)
 	}
+	// Console and network capture. Best effort: a window refusing one of
+	// these still works for everything else.
+	for _, m := range []string{"Runtime.enable", "Network.enable"} {
+		if _, err := conn.Call(ctx, m, nil); err != nil {
+			log.Printf("aglink-web: %s on %s: %v", m, t.URL, err)
+		}
+	}
 	return a, nil
+}
+
+// ConsoleText is get_console_logs for this window.
+func (a *appTarget) ConsoleText(max int) string { return a.logs.consoleText(max) }
+
+// NetworkText is get_network_requests for this window.
+func (a *appTarget) NetworkText(ctx context.Context, max int, filter string) string {
+	return networkText(ctx, a.logs.networkEntries(max, filter), a.conn.Call)
 }
 
 func (a *appTarget) onEvent(method string, params json.RawMessage) {

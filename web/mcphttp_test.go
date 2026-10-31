@@ -180,10 +180,16 @@ func TestMCPInitializeCarriesAppInstructions(t *testing.T) {
 // Tools that cannot work on an app window must say so in their description,
 // or a model will try them there and only learn from the error.
 func TestChromeOnlyToolsSaySo(t *testing.T) {
-	chromeOnly := map[string]bool{"get_console_logs": true, "get_network_requests": true, "close_tab": true, "reload_extension": true}
+	chromeOnly := map[string]bool{"close_tab": true, "reload_extension": true}
 	for _, c := range commands {
 		if chromeOnly[c.name] && !strings.Contains(c.desc, "Chrome profiles only") {
 			t.Errorf("%s: description must mark it Chrome-only", c.name)
+		}
+		// Console and network work in app windows now; the description must
+		// say how (capture starts at attach) rather than call them Chrome-only.
+		if (c.name == "get_console_logs" || c.name == "get_network_requests") &&
+			(strings.Contains(c.desc, "Chrome profiles only") || !strings.Contains(c.desc, "app window")) {
+			t.Errorf("%s: description must cover app windows", c.name)
 		}
 	}
 }

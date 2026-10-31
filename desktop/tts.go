@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,15 +107,24 @@ func (v *VoiceService) TTSStatus() (string, error) {
 	return string(b), nil
 }
 
-// Synthesize reads text aloud with Supertonic and returns a base64 WAV.
-func (v *VoiceService) Synthesize(text, voiceName string) (string, error) {
+// ttsVoiceRE: Supertonic's voices, M1–M5 and F1–F5 (voice_styles/*.json).
+var ttsVoiceRE = regexp.MustCompile(`^[MF][1-5]$`)
+
+// Synthesize reads text aloud with Supertonic and returns a base64 WAV. The
+// voice and speed come from the frontend's voice settings; "" and 0 mean the
+// defaults.
+func (v *VoiceService) Synthesize(text, voiceName string, speed float64) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", errors.New("빈 문장")
 	}
-	if voiceName == "" {
+	if !ttsVoiceRE.MatchString(voiceName) {
 		voiceName = defaultTTSVoice
 	}
+	if speed <= 0 {
+		speed = ttsSpeed
+	}
+	speed = min(max(speed, 0.7), 1.4)
 	tmp, err := os.CreateTemp("", "aglink-tts-*.wav")
 	if err != nil {
 		return "", err
@@ -125,7 +135,7 @@ func (v *VoiceService) Synthesize(text, voiceName string) (string, error) {
 
 	started := time.Now()
 	ttsMu.Lock()
-	err = ttsRequest(map[string]any{"text": text, "voice": voiceName, "speed": ttsSpeed, "steps": ttsSteps, "out": path})
+	err = ttsRequest(map[string]any{"text": text, "voice": voiceName, "speed": speed, "steps": ttsSteps, "out": path})
 	ttsMu.Unlock()
 	if err != nil {
 		return "", err

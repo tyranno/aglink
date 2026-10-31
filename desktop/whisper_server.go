@@ -33,15 +33,20 @@ type whisperServer struct {
 	base string // http://127.0.0.1:port
 }
 
-// wsMaxFailures: a server that fails to start or dies this many times stays
-// off until the app restarts. Before that it is brought up again — one
-// timed-out request or driver hiccup should not cost the rest of the day.
-const wsMaxFailures = 3
+// wsMaxFailures: a server that fails to start or dies this many times
+// rests for wsRestFor (whisper-cli does the work meanwhile) and is then tried
+// again — one timed-out request or driver hiccup should not cost the rest of
+// the day, nor should a bad stretch.
+const (
+	wsMaxFailures = 3
+	wsRestFor     = 10 * time.Minute
+)
 
 var (
-	wsMu       sync.Mutex // guards ws, wsFailures, wsStarting
+	wsMu       sync.Mutex // guards ws, wsFailures, wsFailedAt, wsStarting
 	ws         *whisperServer
 	wsFailures int
+	wsFailedAt time.Time
 	wsStarting bool
 )
 
@@ -65,6 +70,10 @@ func fastWhisperReady() bool {
 func warmWhisperServer() {
 	wsMu.Lock()
 	defer wsMu.Unlock()
+	if wsFailures >= wsMaxFailures && time.Since(wsFailedAt) >= wsRestFor {
+		log.Printf("[voice] whisper-server: trying again after a rest")
+		wsFailures = 0
+	}
 	if ws != nil || wsFailures >= wsMaxFailures || wsStarting || !fileExists(whisperServerPath()) {
 		return
 	}
@@ -76,6 +85,7 @@ func warmWhisperServer() {
 		wsStarting = false
 		if err != nil {
 			wsFailures++
+			wsFailedAt = time.Now()
 			log.Printf("[voice] whisper-server unavailable (%d/%d), using whisper-cli: %v", wsFailures, wsMaxFailures, err)
 			return
 		}
@@ -172,6 +182,7 @@ func transcribeFast(wav []byte) (text string, ok bool) {
 		if ws == s {
 			ws = nil
 			wsFailures++
+			wsFailedAt = time.Now()
 		}
 		n := wsFailures
 		wsMu.Unlock()

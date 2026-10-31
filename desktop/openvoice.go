@@ -38,8 +38,31 @@ var (
 	ov       *ttsServer
 	ovReady  atomic.Bool // server up and both voice embeddings made
 	ovWarmed atomic.Bool
-	ovFailed atomic.Bool // gave up for this run
+	ovFailed atomic.Bool  // off until ovRetryAfter has passed
+	ovFailAt atomic.Int64 // when it went off (UnixNano)
 )
+
+// ovRetryAfter: a converter that died or failed to start is tried again after
+// this long, so one crash does not leave the plain voice for the rest of the run.
+const ovRetryAfter = 5 * time.Minute
+
+func ovFail() {
+	ovReady.Store(false)
+	ovFailAt.Store(time.Now().UnixNano())
+	ovFailed.Store(true)
+}
+
+// ovRetryDue reopens a failed converter once ovRetryAfter has passed.
+func ovRetryDue(voiceName string) {
+	if !ovFailed.Load() || time.Since(time.Unix(0, ovFailAt.Load())) < ovRetryAfter {
+		return
+	}
+	if ovFailed.CompareAndSwap(true, false) {
+		log.Printf("[openvoice] trying again")
+		ovWarmed.Store(false)
+		warmOpenVoice(voiceName)
+	}
+}
 
 func openVoiceDir() string {
 	dir, err := dataDir()
@@ -79,7 +102,10 @@ func warmOpenVoice(voiceName string) {
 	go func() {
 		started := time.Now()
 		if err := prepareOpenVoice(dir, target, voiceName); err != nil {
-			ovFailed.Store(true)
+			ovMu.Lock()
+			stopOpenVoiceServer()
+			ovMu.Unlock()
+			ovFail()
 			log.Printf("[openvoice] off: %v", err)
 			return
 		}
@@ -103,6 +129,13 @@ func prepareOpenVoice(dir, target, voiceName string) error {
 			return fmt.Errorf("목소리 녹음 분석 실패: %w", err)
 		}
 	}
+	return ensureSourceSELocked(dir, voiceName)
+}
+
+// ensureSourceSELocked makes the embedding of a Supertonic voice's own timbre
+// the first time that voice is converted — the voice can be changed in the
+// settings at any time. Callers hold ovMu.
+func ensureSourceSELocked(dir, voiceName string) error {
 	srcSE := filepath.Join(dir, "src_"+voiceName+".se.pt")
 	if !fileExists(srcSE) {
 		ref := filepath.Join(dir, "src_"+voiceName+".wav")
@@ -131,20 +164,24 @@ func stale(derived, source string) bool {
 // convertVoice returns wavPath repainted in the target voice, or "" when the
 // voice is not being changed (or the conversion failed).
 func convertVoice(wavPath, voiceName string) string {
+	ovRetryDue(voiceName)
 	if !ovReady.Load() || ovFailed.Load() {
 		return ""
 	}
 	dir := openVoiceDir()
 	out := strings.TrimSuffix(wavPath, ".wav") + ".ov.wav"
 	ovMu.Lock()
-	err := ovRequest(map[string]any{
-		"op":     "convert",
-		"src":    wavPath,
-		"src_se": filepath.Join(dir, "src_"+voiceName+".se.pt"),
-		"tgt_se": filepath.Join(dir, "voice.se.pt"),
-		"out":    out,
-		"tau":    ovTau,
-	})
+	err := ensureSourceSELocked(dir, voiceName)
+	if err == nil {
+		err = ovRequest(map[string]any{
+			"op":     "convert",
+			"src":    wavPath,
+			"src_se": filepath.Join(dir, "src_"+voiceName+".se.pt"),
+			"tgt_se": filepath.Join(dir, "voice.se.pt"),
+			"out":    out,
+			"tau":    ovTau,
+		})
+	}
 	ovMu.Unlock()
 	if err != nil {
 		log.Printf("[openvoice] convert failed, plain voice: %v", err)
@@ -154,8 +191,9 @@ func convertVoice(wavPath, voiceName string) string {
 }
 
 // ovRequest sends one request to the running converter. Callers hold ovMu.
-// A dead or hung converter is dropped for this run rather than restarted: it
-// costs ~15 s to bring back, and the plain voice is a fine fallback.
+// A dead or hung converter is dropped and only brought back after
+// ovRetryAfter: it costs ~15 s to start, and the plain voice is a fine
+// fallback meanwhile.
 func ovRequest(req map[string]any) error {
 	if ov == nil {
 		return errors.New("OpenVoice 가 실행 중이 아닙니다")
@@ -163,7 +201,7 @@ func ovRequest(req map[string]any) error {
 	line, _ := json.Marshal(req)
 	if _, err := ov.in.Write(append(line, '\n')); err != nil || !scanWithin(ov.out, ttsTimeout) {
 		stopOpenVoiceServer()
-		ovFailed.Store(true)
+		ovFail()
 		return errors.New("OpenVoice 가 응답하지 않습니다")
 	}
 	var resp struct {

@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"sync"
 	"sync/atomic"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -53,6 +54,10 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 			}
 		}
 	})
+	menu.Add("음성 설정").OnClick(func(*application.Context) {
+		show()
+		app.Event.Emit("tray:voiceSettings")
+	})
 	menu.AddSeparator()
 	menu.Add("종료").OnClick(func(*application.Context) {
 		quitting.Store(true)
@@ -63,6 +68,27 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 	tray.SetIcon(trayIcon)
 	tray.SetTooltip("aglink")
 	tray.SetMenu(menu)
+	// The tooltip says what voice conversation is doing, like the indicator.
+	var (
+		tipMu   sync.Mutex
+		lastTip string
+	)
+	app.Event.On("voice:state", func(e *application.CustomEvent) {
+		tip := "aglink"
+		if m, ok := e.Data.(map[string]any); ok {
+			if active, _ := m["active"].(bool); active {
+				if label, _ := m["label"].(string); label != "" {
+					tip = "aglink — " + label
+				}
+			}
+		}
+		tipMu.Lock()
+		defer tipMu.Unlock()
+		if tip != lastTip {
+			lastTip = tip
+			tray.SetTooltip(tip)
+		}
+	})
 	tray.OnClick(func() {
 		if win.IsVisible() && !win.IsMinimised() {
 			hide()

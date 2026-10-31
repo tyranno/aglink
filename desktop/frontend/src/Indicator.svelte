@@ -127,6 +127,9 @@
   .dot.problem {
     background: #f87171;
   }
+  .dot.note {
+    background: #c4b5fd;
+  }
   .dot.speaking {
     background: #60a5fa;
     animation: pulse 0.8s ease-in-out infinite;

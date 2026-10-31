@@ -15,11 +15,15 @@
 // is done and the reading has finished the mic opens again by itself, so the
 // user just keeps talking. Silence, "그만" or the 🗣 button ends it.
 import { Events } from "@wailsio/runtime";
-import { VoiceService } from "../bindings/github.com/tyranno/aglink-desktop";
+import { ControlService, VoiceService } from "../bindings/github.com/tyranno/aglink-desktop";
 import {
   chat,
   pane,
   targetKey,
+  findWebConv,
+  parseJSON,
+  loadConversations,
+  selectTargetInPane,
   setPaneComposerValue,
   sendFromPane,
   setAssistantTextListener,
@@ -48,8 +52,10 @@ const BARGE_MAX_SEGMENT_MS = 3000; // ...or this much speech without one
 const BARGE_MIN_SPEECH_MS =400; // shorter blips are not checked
 const BARGE_MIN_LOUD_CHUNKS = 5; // ~0.4s above the echo floor: our own voice only peaks over it now and then
 const ECHO_OVERLAP = 0.6; // share of a segment's syllable pairs found in the reply = our own voice
-const SPEAKER_MIN = 0.3; // enrolled voice: about 0.5+ for the user, under 0.3 for others
-const SPEAKER_MIN_MIXED = 0.2; // short clips, or the user over our own voice, score lower
+// The enrolled voice scores about 0.5+ for the user, under 0.3 for others; the
+// bar (voice.speakerMin) is set in the voice settings. Short clips, or the user
+// over our own voice, score lower and get a bar this much lower.
+const SPEAKER_MIXED_DROP = 0.1;
 const SPEAKER_SHORT_S = 1.2;
 const ENROLL_MS = 15000;
 const ENROLL_RE = /^(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(등록|저장|기억)/;
@@ -61,7 +67,30 @@ const MAX_SPEAK_SENTENCES = 3; // of the opening paragraph
 const MAX_SPEAK_POINTS = 6; // list items summarized by their first sentence
 const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
-const TTS_VOICE = "M2"; // Supertonic voice (M1–M5 male, F1–F5 female)
+const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
+export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3 };
+export const SPEED_RANGE = [0.7, 1.4];
+export const SPEAKER_MIN_RANGE = [0.1, 0.7];
+const SPEED_STEP = 0.1; // "더 천천히" / "더 빨리"
+const FLASH_MS = 2500; // a passing note on the indicator ("다른 목소리라 넘겼어요")
+const MAX_HEARD_LOG = 30; // recent clips and their voice scores, for the settings
+
+function clamp(v, [lo, hi]) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+function loadSettings() {
+  let s = {};
+  try {
+    s = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || "{}") || {};
+  } catch {}
+  return {
+    ttsVoice: TTS_VOICES.includes(s.ttsVoice) ? s.ttsVoice : VOICE_DEFAULTS.ttsVoice,
+    ttsSpeed: Number.isFinite(s.ttsSpeed) ? clamp(s.ttsSpeed, SPEED_RANGE) : VOICE_DEFAULTS.ttsSpeed,
+    speakerMin: Number.isFinite(s.speakerMin) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
+  };
+}
 
 function loadSpeakEnabled() {
   try {
@@ -99,7 +128,61 @@ export const voice = $state({
   problem: "", // conversation mode: why the mic is not listening (shown by the indicator)
   note: "", // last error / hint, shown above the composer
   notePaneId: null,
+  flash: "", // conversation mode: a passing note on the indicator
+  heardLog: [], // recent clips: {at, text, score, kept, why}
+  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin
 });
+
+let flashTimer = null;
+
+function flash(text) {
+  voice.flash = text;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => (voice.flash = ""), FLASH_MS);
+}
+
+// logHeard keeps what each clip was judged as, so the settings can show which
+// voices were let through and which were not.
+function logHeard(text, score, kept, why = "") {
+  voice.heardLog = [{ at: Date.now(), text, score, kept, why }, ...voice.heardLog].slice(0, MAX_HEARD_LOG);
+}
+
+// setVoiceSettings changes the voice settings and remembers them. They apply
+// from the next sentence on — nothing is restarted.
+export function setVoiceSettings(patch) {
+  if (patch.ttsVoice !== undefined && TTS_VOICES.includes(patch.ttsVoice)) voice.ttsVoice = patch.ttsVoice;
+  if (Number.isFinite(patch.ttsSpeed)) voice.ttsSpeed = Math.round(clamp(patch.ttsSpeed, SPEED_RANGE) * 100) / 100;
+  if (Number.isFinite(patch.speakerMin)) voice.speakerMin = Math.round(clamp(patch.speakerMin, SPEAKER_MIN_RANGE) * 100) / 100;
+  try {
+    localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ttsVoice: voice.ttsVoice, ttsSpeed: voice.ttsSpeed, speakerMin: voice.speakerMin }),
+    );
+  } catch {}
+  prefetched.clear(); // made in the old voice
+}
+
+// previewVoice reads a sample sentence with the current settings.
+export function previewVoice() {
+  return speak(`안녕하세요. ${voiceLabel(voice.ttsVoice)} 목소리예요. 이 빠르기로 읽어 드릴게요.`);
+}
+
+export async function speakerStatus() {
+  try {
+    return JSON.parse(await VoiceService.SpeakerStatus());
+  } catch {
+    return {};
+  }
+}
+
+export async function clearSpeaker() {
+  await VoiceService.ClearSpeaker();
+  vlog("speaker enrollment cleared");
+}
+
+function speakerMinFor(mixed) {
+  return mixed ? Math.max(0.05, voice.speakerMin - SPEAKER_MIXED_DROP) : voice.speakerMin;
+}
 
 let recorder = null; // active recording session
 let resumeTimer = null; // conversation mode: waits for the reading to finish
@@ -270,6 +353,7 @@ $effect.root(() => {
     // What was sent is shown while waiting, so a mishearing is caught at once.
     let label = voice.heard ? `${quote(voice.heard, 30)} 답변 기다리는 중` : "답변을 기다리는 중";
     if (voice.problem) [phase, label] = ["problem", voice.problem];
+    else if (voice.flash) [phase, label] = ["note", voice.flash];
     else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
     else if (voice.phase === "listening") [phase, label] = ["listening", "듣는 중 — 말씀하세요"];
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
@@ -331,7 +415,7 @@ setTurnDoneListener((key) => {
   // ones before it are "looking into it…" notes sent while working.
   const texts = pendingSpeech.get(key);
   pendingSpeech.delete(key);
-  if (texts?.length) speak(texts[texts.length - 1]);
+  if (texts?.length) speakReply(texts[texts.length - 1]);
   const p = voice.convPaneId && pane(voice.convPaneId);
   if (p?.target && targetKey(p.target) === key) resumeListening();
 });
@@ -557,8 +641,9 @@ function checkBargeSegment(rec, wavBytes) {
     }
     if (!text || (recorder !== rec && !rec.stopped)) return;
     // Our own voice is mixed into these, so the bar is the low one.
-    if (!isUserVoice(score, SPEAKER_MIN_MIXED)) {
+    if (!isUserVoice(score, speakerMinFor(true))) {
       vlog(`other voice dropped (barge, ${score.toFixed(2)}) ${quote(text)}`);
+      logHeard(text, score, false, "읽는 중");
       return;
     }
     if (BARGE_HUSH_RE.test(text)) {
@@ -576,6 +661,7 @@ function checkBargeSegment(rec, wavBytes) {
       return;
     }
     vlog(`barge-in ${quote(text)} (echo gain ${echoGain?.toFixed(3) ?? "unlearned"}, voice ${score.toFixed(2)})`);
+    if (score >= 0) logHeard(text, score, true, "끼어들기");
     stopSpeaking();
     rec.prefix = rec.prefix ? `${rec.prefix} ${text}` : text;
     rec.lastSpeechAt = performance.now();
@@ -653,6 +739,263 @@ function isEcho(text, reply, overlap = ECHO_OVERLAP) {
   return pairShare >= overlap * 0.65 && charHit / t.length >= 0.7;
 }
 
+// ---- voice commands ----
+//
+// In conversation mode a few short sentences run the app instead of going to
+// the AI: changing the voice or how fast it reads, reading the last reply
+// again, and starting, going back to or finding a conversation. Each has to be
+// the whole utterance (give or take a "줘"), so a question that merely
+// mentions one of them is still sent.
+
+const CMD_TAIL = String.raw`\s*(줘|주세요|줄래|봐|봐\s*줘|요)?[.!?~\s]*$`;
+const cmdRE = (body) => new RegExp(String.raw`^\s*(${body})${CMD_TAIL}`, "i");
+const SLOWER_RE = cmdRE(String.raw`(조금|좀|더|조금\s*더|좀\s*더)?\s*(천천히|느리게)\s*(말해|읽어|얘기해)`);
+const FASTER_RE = cmdRE(String.raw`(조금|좀|더|조금\s*더|좀\s*더)?\s*(빨리|빠르게)\s*(말해|읽어|얘기해)`);
+const SPEED_RESET_RE = cmdRE(String.raw`(말\s*|읽는\s*)?(빠르기|속도)\s*(를|을)?\s*(원래대로|기본으로|처음대로)\s*(해|돌려|바꿔)?`);
+const REPEAT_RE = cmdRE(String.raw`(다시|한\s*번\s*더|방금\s*(거|답변)\s*다시)\s*(읽어|말해|들려)`);
+const NEW_CONV_RE = cmdRE(String.raw`새\s*(로운\s*)?대화\s*(를)?\s*(시작|시작해|시작하자|열어|만들어|하자)`);
+const BACK_RE = cmdRE(String.raw`(아까|이전|전|원래|지난)\s*대화\s*(로|으로)?\s*(돌아가|돌아가자|가|가자|열어|옮겨|바꿔)`);
+const VOICE_WORD_RE = /목소리|음성|보이스/;
+const VOICE_CHANGE_RE = /(바꿔|바꾸자|변경|(으로|로)\s*해)\S*(\s*(줘|주세요|줄래|봐|봐\s*줘|요))?[.!?~\s]*$/;
+const FIND_RE = /(대화|얘기|이야기)\s*(를|을)?\s*(좀\s*)?(찾아|찾기|찾자|열어)\S*(\s*(줘|주세요|줄래|봐|봐\s*줘))?[.!?~\s]*$/;
+const MAX_COMMAND_CHARS = 40; // longer sentences are always meant for the AI
+const FIND_SCAN_CONVS = 40; // recent conversations whose text is searched when no title matches
+const MAX_TRAIL = 10;
+
+// Spoken voice names: "남자 목소리로", "여자 삼 번", "에프 투로", "F2로".
+const VOICE_GENDERS = [
+  [/남자|남성|엠|M/i, "M"],
+  [/여자|여성|에프|F/i, "F"],
+];
+const VOICE_NUMBERS = [
+  ["1", "일", "원", "하나", "한", "첫"],
+  ["2", "이", "투", "둘", "두"],
+  ["3", "삼", "쓰리", "셋", "세"],
+  ["4", "사", "포", "넷", "네"],
+  ["5", "오", "파이브", "다섯"],
+];
+const VOICE_NUMBER_RE = new RegExp(`^(${VOICE_NUMBERS.flat().sort((a, b) => b.length - a.length).join("|")})`);
+
+function voiceNumber(s) {
+  const m = VOICE_NUMBER_RE.exec(s);
+  return m ? VOICE_NUMBERS.findIndex((names) => names.includes(m[1])) + 1 : 0;
+}
+
+export function voiceLabel(name) {
+  return `${name[0] === "M" ? "남자" : "여자"} ${name[1]}번`;
+}
+
+// parseVoiceName finds the voice asked for, or "" when none is named. A bare
+// "남자 목소리" means M2, the one the user chose; "다른 목소리" the next one.
+function parseVoiceName(text) {
+  const cur = voice.ttsVoice;
+  let gender = "";
+  let at = -1;
+  for (const [re, g] of VOICE_GENDERS) {
+    const m = re.exec(text);
+    if (m && (at < 0 || m.index < at)) [gender, at] = [g, m.index + m[0].length];
+  }
+  const rest = gender ? text.slice(at).replace(/^\s*(목소리|음성|보이스)?\s*(중에?\s*)?/, "") : "";
+  let n = gender ? voiceNumber(rest) : 0;
+  if (!gender) {
+    // "삼 번 목소리로" keeps the current one's gender
+    const m = /(\S+)\s*번\s*(째\s*)?(목소리|음성)/.exec(text);
+    n = m ? voiceNumber(m[1]) : 0;
+    if (n) gender = cur[0];
+  }
+  if (/다른/.test(text) && !n) {
+    gender ||= cur[0];
+    n = gender === cur[0] ? (Number(cur[1]) % 5) + 1 : 2;
+  }
+  if (!gender) return "";
+  return `${gender}${n || 2}`;
+}
+
+// The conversations the voice pane showed before, newest last, for "아까 대화로".
+const convTrail = [];
+let trailTarget = null;
+
+$effect.root(() => {
+  $effect(() => {
+    const t = pane(voice.convPaneId || chat.focusedPaneId)?.target;
+    if (!t) return;
+    const key = targetKey(t);
+    if (trailTarget && targetKey(trailTarget) !== key) {
+      const prev = targetKey(trailTarget);
+      const i = convTrail.findIndex((x) => targetKey(x) === prev);
+      if (i >= 0) convTrail.splice(i, 1);
+      convTrail.push(trailTarget);
+      if (convTrail.length > MAX_TRAIL) convTrail.shift();
+    }
+    trailTarget = { ...t };
+  });
+});
+
+function convTitle(target) {
+  if (target.kind === "telegram") return "텔레그램";
+  return findWebConv(target.id)?.title || "제목 없는";
+}
+
+function convExists(target) {
+  return target.kind === "telegram" ? !!chat.telegram : !!findWebConv(target.id);
+}
+
+async function newConversation(paneId) {
+  await ControlService.WebNew("");
+  await loadConversations({ forceReloadCurrent: true });
+  const first = chat.webConvs[0];
+  if (!first) throw new Error("새 대화가 목록에 없습니다");
+  await selectTargetInPane(paneId, { kind: "web", id: first.id });
+  speak("새 대화를 시작했어요. 말씀하세요.");
+}
+
+async function goBackConversation(paneId) {
+  const cur = pane(paneId)?.target;
+  const curKey = cur ? targetKey(cur) : "";
+  for (let i = convTrail.length - 1; i >= 0; i--) {
+    const t = convTrail[i];
+    if (targetKey(t) === curKey || !convExists(t)) continue;
+    await selectTargetInPane(paneId, t);
+    speak(`${convTitle(t)} 대화로 돌아왔어요.`);
+    return;
+  }
+  speak("돌아갈 이전 대화가 없어요.");
+}
+
+// The words to look for in "지난주에 나노파이 얘기한 대화 찾아 줘": what is
+// left once the time words, "얘기한", "대화", "찾아 줘" and particles are gone.
+const FIND_STOPWORDS = new Set(["지난주", "지난주에", "지난번", "지난번에", "저번", "저번에", "예전에", "어제", "그저께", "아까", "전에", "좀", "관련", "관련된", "관련해서", "대해", "대해서", "대한", "했던", "하던", "한", "줘", "주세요", "그", "그때"]);
+const FIND_STOP_PREFIX_RE = /^(얘기|이야기|애기|대화|찾|열어)/;
+
+function findWords(text) {
+  return text
+    .replace(/[.!?~,]/g, " ")
+    .split(/\s+/)
+    .map((w) => w.replace(/(를|을|에서|에|의|으로|로|랑|이랑|하고)$/, ""))
+    .filter((w) => w && !FIND_STOPWORDS.has(w) && !FIND_STOP_PREFIX_RE.test(w));
+}
+
+// findConversation opens the conversation that best matches the words: by
+// title first, then by what was said in the most recent ones. Ties go to the
+// more recent conversation (the list is newest first).
+async function findConversation(paneId, text) {
+  const keys = findWords(text).map(normalizeForEcho).filter(Boolean);
+  if (!keys.length) {
+    speak("무슨 대화를 찾을지 말씀해 주세요. 나노파이 얘기한 대화 찾아 줘, 처럼요.");
+    return;
+  }
+  const hits = (s) => {
+    const n = echoReference(s);
+    return keys.filter((k) => n.includes(k)).length;
+  };
+  const cur = pane(paneId)?.target;
+  const convs = chat.webConvs.filter((c) => !(cur?.kind === "web" && cur.id === c.id));
+  let best = null;
+  let bestScore = 0;
+  for (const c of convs) {
+    const s = hits(c.title || "");
+    if (s > bestScore) [best, bestScore] = [c, s];
+  }
+  if (bestScore < keys.length) {
+    flash("지난 대화를 찾는 중…");
+    for (const c of convs.slice(0, FIND_SCAN_CONVS)) {
+      let turns = [];
+      try {
+        turns = parseJSON(await ControlService.GetHistory("web", c.id), { turns: [] }).turns || [];
+      } catch {
+        continue;
+      }
+      const s = hits(turns.map((t) => t.text || "").join("\n"));
+      if (s > bestScore) [best, bestScore] = [c, s];
+      if (bestScore === keys.length) break;
+    }
+  }
+  if (!best) {
+    speak("그런 대화를 찾지 못했어요.");
+    return;
+  }
+  await selectTargetInPane(paneId, { kind: "web", id: best.id });
+  speak(`${best.title || "제목 없는"} 대화를 찾아서 열었어요.`);
+}
+
+function changeSpeed(paneId, delta) {
+  const before = voice.ttsSpeed;
+  setVoiceSettings({ ttsSpeed: delta === null ? VOICE_DEFAULTS.ttsSpeed : before + delta });
+  if (voice.ttsSpeed === before && delta !== null) {
+    speak(delta < 0 ? "지금이 가장 느린 빠르기예요." : "지금이 가장 빠른 빠르기예요.");
+    return;
+  }
+  vlog(`speed ${before} → ${voice.ttsSpeed}`);
+  speak("이 빠르기로 읽을게요.");
+}
+
+// runVoiceCommand carries out text if it is one of the commands; false means
+// it is to be sent as usual.
+async function runVoiceCommand(paneId, text) {
+  const t = text.trim();
+  if (t.length > MAX_COMMAND_CHARS) return false;
+  if (ENROLL_RE.test(t) || UNENROLL_RE.test(t)) {
+    if (UNENROLL_RE.test(t)) {
+      await VoiceService.ClearSpeaker().catch(() => {});
+      vlog("speaker enrollment cleared");
+      speak("등록한 목소리를 지웠어요. 이제 들리는 말은 모두 받아요.");
+    } else await enrollVoice();
+    return true;
+  }
+  if (BARGE_ON_RE.test(t) || BARGE_OFF_RE.test(t)) {
+    const on = BARGE_ON_RE.test(t);
+    setBargeEnabled(on);
+    speak(on ? "끼어들기를 켰어요. 제가 읽는 중에도 말씀하시면 멈추고 들어요." : "주고받기로 바꿨어요. 제가 다 읽은 뒤에 말씀해 주세요.");
+    return true;
+  }
+  if (BARGE_HUSH_RE.test(t)) {
+    stopSpeaking();
+    return true;
+  }
+  if (REPEAT_RE.test(t)) {
+    speak(lastReply || "아직 읽어 드린 답변이 없어요.");
+    return true;
+  }
+  if (SLOWER_RE.test(t) || FASTER_RE.test(t)) {
+    changeSpeed(paneId, SLOWER_RE.test(t) ? -SPEED_STEP : SPEED_STEP);
+    return true;
+  }
+  if (SPEED_RESET_RE.test(t)) {
+    changeSpeed(paneId, null);
+    return true;
+  }
+  if (VOICE_WORD_RE.test(t) && VOICE_CHANGE_RE.test(t)) {
+    const name = parseVoiceName(t);
+    if (!name) {
+      speak("어떤 목소리로 바꿀지 못 알아들었어요. 남자 일 번부터 오 번, 여자 일 번부터 오 번 중에서 말씀해 주세요.");
+      return true;
+    }
+    setVoiceSettings({ ttsVoice: name });
+    vlog(`voice → ${name}`);
+    speak(`${voiceLabel(name)} 목소리로 바꿨어요. 이 목소리 어떠세요?`);
+    return true;
+  }
+  try {
+    if (NEW_CONV_RE.test(t)) {
+      await newConversation(paneId);
+      return true;
+    }
+    if (BACK_RE.test(t)) {
+      await goBackConversation(paneId);
+      return true;
+    }
+    if (FIND_RE.test(t)) {
+      await findConversation(paneId, t);
+      return true;
+    }
+  } catch (err) {
+    vlog(`command failed: ${err?.message || err}`);
+    speak("그 일을 하지 못했어요. 잠시 뒤에 다시 말씀해 주세요.");
+    return true;
+  }
+  return false;
+}
+
 // ---- whose voice ----
 
 function clipSeconds(wav) {
@@ -670,7 +1013,7 @@ function isUserVoice(score, min) {
 
 // enrollVoice records ~15 s of the user talking ("목소리 등록") as the voice to
 // listen to; clips that do not sound like it are not sent from then on.
-async function enrollVoice() {
+export async function enrollVoice() {
   let status = {};
   try {
     status = JSON.parse(await VoiceService.SpeakerStatus());
@@ -777,10 +1120,15 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     // Someone else in the room (or the reply from the speakers) is not sent once
     // the user has enrolled their voice.
     const score = await scoring;
-    if (heard && !isUserVoice(score, clipSeconds(wavBytes) < SPEAKER_SHORT_S ? SPEAKER_MIN_MIXED : SPEAKER_MIN)) {
+    if (heard && !isUserVoice(score, speakerMinFor(clipSeconds(wavBytes) < SPEAKER_SHORT_S))) {
       vlog(`other voice dropped (${score.toFixed(2)}) ${quote(heard)}`);
+      logHeard(heard, score, false, "다른 목소리");
+      flash("다른 목소리라 넘겼어요");
       heard = "";
-    } else if (heard && score >= 0) vlog(`voice ${score.toFixed(2)} ${quote(heard, 20)}`);
+    } else if (heard && score >= 0) {
+      vlog(`voice ${score.toFixed(2)} ${quote(heard, 20)}`);
+      logHeard(heard, score, true);
+    }
     // Safety net: a clip that is just the reply read back through the speakers
     // (its tail, or all of it) is never sent as the user's words. Speech that
     // starts as the reading ends is most likely the last of it still coming out
@@ -805,19 +1153,8 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       endConversation("음성 대화를 끝냈습니다.");
       return;
     }
-    if (conv() && (ENROLL_RE.test(text) || UNENROLL_RE.test(text))) {
-      if (UNENROLL_RE.test(text)) {
-        await VoiceService.ClearSpeaker().catch(() => {});
-        vlog("speaker enrollment cleared");
-        speak("등록한 목소리를 지웠어요. 이제 들리는 말은 모두 받아요.");
-      } else await enrollVoice();
-      relisten = true;
-      return;
-    }
-    if (conv() && (BARGE_ON_RE.test(text) || BARGE_OFF_RE.test(text))) {
-      const on = BARGE_ON_RE.test(text);
-      setBargeEnabled(on);
-      speak(on ? "끼어들기를 켰어요. 제가 읽는 중에도 말씀하시면 멈추고 들어요." : "주고받기로 바꿨어요. 제가 다 읽은 뒤에 말씀해 주세요.");
+    if (conv() && (await runVoiceCommand(paneId, text))) {
+      vlog(`command ${quote(text)}`);
       relisten = true;
       return;
     }
@@ -1198,7 +1535,7 @@ function playWavPage(b64, gen) {
 function synthesize(sentence) {
   const early = prefetched.get(sentence);
   prefetched.delete(sentence);
-  return early ?? VoiceService.Synthesize(sentence, TTS_VOICE);
+  return early ?? VoiceService.Synthesize(sentence, voice.ttsVoice, voice.ttsSpeed);
 }
 
 // prefetchSpeech makes a reply's first sentence as soon as its text arrives:
@@ -1208,7 +1545,7 @@ function prefetchSpeech(md) {
   if (ttsReady !== true) return;
   const first = splitSentences(speechText(md))[0];
   if (!first || prefetched.has(first)) return;
-  const p = VoiceService.Synthesize(first, TTS_VOICE);
+  const p = VoiceService.Synthesize(first, voice.ttsVoice, voice.ttsSpeed);
   p.catch(() => {});
   prefetched.set(first, p);
   if (prefetched.size > 3) prefetched.delete(prefetched.keys().next().value);
@@ -1221,6 +1558,7 @@ async function speakSupertonic(sentences, gen) {
   } catch (err) {
     vlog(`Supertonic failed, Windows voice instead: ${err?.message || err}`);
     ttsReady = null; // asked again next time — the Go side retries the server after a while
+    flash("음성 엔진을 다시 켜는 중이라 기본 목소리로 읽어요");
     return false;
   }
   try {
@@ -1268,6 +1606,13 @@ function speakWindows(sentences) {
   });
 }
 
+let lastReply = ""; // the last assistant reply read out, for "다시 읽어 줘"
+
+function speakReply(md) {
+  lastReply = md;
+  return speak(md);
+}
+
 export async function speak(md) {
   // The indicator shows the whole reply while only its gist is read.
   if (voice.convPaneId || savedConversationPane()) Events.Emit("voice:reply", { text: String(md || "").trim() });
@@ -1305,7 +1650,7 @@ setAssistantTextListener((key, text) => {
   if (!wanted) return;
   // A reply outside a running turn (a !command answer) has no "done" coming.
   if (!chat.working.has(key)) {
-    speak(text);
+    speakReply(text);
     return;
   }
   pendingSpeech.set(key, [...(pendingSpeech.get(key) || []), text]);

@@ -10,6 +10,7 @@
   import ClaudeAuthPanel from "./ClaudeAuthPanel.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import UsagePanel from "./UsagePanel.svelte";
+  import VoicePanel from "./VoicePanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import {
     chat,
@@ -175,6 +176,7 @@
 
   async function loadSettingsTab(tab) {
     settingsTab = tab;
+    if (tab === "voice") return;
     if (tab === "settings") {
       await Promise.all([loadSettingsSchema(), loadRawConfig()]);
       return;
@@ -467,6 +469,11 @@
       handleFrame(event.data || {});
     });
 
+    // The tray menu's "음성 설정".
+    const offVoiceSettings = Events.On("tray:voiceSettings", () => {
+      void openSettings("voice");
+    });
+
     const tickTimer = window.setInterval(() => {
       chat.nowTick = Date.now();
     }, 1000);
@@ -501,6 +508,7 @@
     return () => {
       offStatus();
       offFrame();
+      offVoiceSettings();
       window.clearInterval(tickTimer);
       window.clearInterval(workerTimer);
       document.removeEventListener("click", clickAway);
@@ -853,6 +861,12 @@
             >
               연결 / aglink
             </button>
+            <button
+              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "voice" ? "bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
+              onclick={() => loadSettingsTab("voice")}
+            >
+              음성
+            </button>
           </div>
         </div>
 
@@ -983,6 +997,8 @@
                   {/if}
                 </div>
               </section>
+            {:else if settingsTab === "voice"}
+              <VoicePanel />
             {:else}
               <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">

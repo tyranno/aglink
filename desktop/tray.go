@@ -95,6 +95,8 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 					tip = "aglink · " + title + "\n" + strings.TrimPrefix(tip, "aglink — ")
 				}
 				phase, _ = m["phase"].(string)
+			} else if wake, _ := m["wake"].(bool); wake {
+				tip = "aglink — “아글링크”라고 부르면 음성 대화를 시작해요"
 			}
 		}
 		tipMu.Lock()

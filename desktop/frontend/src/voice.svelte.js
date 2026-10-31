@@ -70,7 +70,8 @@ const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
 const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3 };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, wake: true, wakeIdleMin: 3 };
+export const WAKE_IDLE_CHOICES = [0, 1, 3, 5, 10]; // minutes without talk before conversation goes back to waiting; 0 = never
 export const SPEED_RANGE = [0.7, 2.0];
 export const SPEAKER_MIN_RANGE = [0.1, 0.7];
 const SPEED_STEP = 0.1; // "더 천천히" / "더 빨리"
@@ -90,6 +91,8 @@ function loadSettings() {
     ttsVoice: TTS_VOICES.includes(s.ttsVoice) ? s.ttsVoice : VOICE_DEFAULTS.ttsVoice,
     ttsSpeed: Number.isFinite(s.ttsSpeed) ? clamp(s.ttsSpeed, SPEED_RANGE) : VOICE_DEFAULTS.ttsSpeed,
     speakerMin: Number.isFinite(s.speakerMin) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
+    wake: typeof s.wake === "boolean" ? s.wake : VOICE_DEFAULTS.wake,
+    wakeIdleMin: WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
   };
 }
 
@@ -131,7 +134,8 @@ export const voice = $state({
   notePaneId: null,
   flash: "", // conversation mode: a passing note on the indicator
   heardLog: [], // recent clips: {at, text, score, kept, why}
-  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin
+  waking: false, // conversation is off and the mic waits for "아글링크"
+  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, wake, wakeIdleMin
 });
 
 let flashTimer = null;
@@ -154,10 +158,18 @@ export function setVoiceSettings(patch) {
   if (patch.ttsVoice !== undefined && TTS_VOICES.includes(patch.ttsVoice)) voice.ttsVoice = patch.ttsVoice;
   if (Number.isFinite(patch.ttsSpeed)) voice.ttsSpeed = Math.round(clamp(patch.ttsSpeed, SPEED_RANGE) * 100) / 100;
   if (Number.isFinite(patch.speakerMin)) voice.speakerMin = Math.round(clamp(patch.speakerMin, SPEAKER_MIN_RANGE) * 100) / 100;
+  if (typeof patch.wake === "boolean") voice.wake = patch.wake;
+  if (WAKE_IDLE_CHOICES.includes(patch.wakeIdleMin)) voice.wakeIdleMin = patch.wakeIdleMin;
   try {
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
-      JSON.stringify({ ttsVoice: voice.ttsVoice, ttsSpeed: voice.ttsSpeed, speakerMin: voice.speakerMin }),
+      JSON.stringify({
+        ttsVoice: voice.ttsVoice,
+        ttsSpeed: voice.ttsSpeed,
+        speakerMin: voice.speakerMin,
+        wake: voice.wake,
+        wakeIdleMin: voice.wakeIdleMin,
+      }),
     );
   } catch {}
   prefetched.clear(); // made in the old voice
@@ -187,6 +199,7 @@ function speakerMinFor(mixed) {
 
 let recorder = null; // active recording session
 let resumeTimer = null; // conversation mode: waits for the reading to finish
+let convActiveAt = 0; // conversation mode: last time something was said or answered
 let micFailures = 0; // conversation mode: mic opens failed in a row
 const MAX_MIC_FAILURES = 3;
 const pendingSpeech = new Map(); // key -> reply texts held until the turn is done
@@ -297,6 +310,7 @@ export async function toggleConversation(paneId) {
   if (voice.phase !== "idle") return;
   if (voice.convPaneId) endConversation();
   voice.convPaneId = paneId;
+  convActiveAt = Date.now();
   saveConversation(paneId);
   await startRecording(paneId);
 }
@@ -367,6 +381,7 @@ $effect.root(() => {
       barge: voice.bargeEnabled,
       speed: voice.ttsSpeed,
       chat: chatTitle,
+      wake: voice.waking,
     });
   });
 });
@@ -426,6 +441,7 @@ setTurnDoneListener((key) => {
   const texts = pendingSpeech.get(key);
   pendingSpeech.delete(key);
   if (texts?.length) speakReply(texts[texts.length - 1]);
+  convActiveAt = Date.now();
   const p = voice.convPaneId && pane(voice.convPaneId);
   if (p?.target && targetKey(p.target) === key) resumeListening();
 });
@@ -594,8 +610,14 @@ async function startRecording(paneId, barge = false) {
       stopRecording(false);
       // Conversation mode never times out: it only ends on "그만", 🗣 or the
       // tray menu, so the app can be used by voice alone from the tray.
-      if (voice.convPaneId === paneId) resumeListening(0);
-      else setNote(paneId, "음성이 감지되지 않았습니다. 🎤 를 다시 눌러 말해 주세요.");
+      if (voice.convPaneId === paneId) {
+        // With the wake word on, a conversation nobody talks in goes back to
+        // waiting for "아글링크" instead of listening forever.
+        if (voice.wake && voice.wakeIdleMin > 0 && Date.now() - convActiveAt > voice.wakeIdleMin * 60000) {
+          vlog("conversation idle → waiting for the wake word");
+          endConversation();
+        } else resumeListening(0);
+      } else setNote(paneId, "음성이 감지되지 않았습니다. 🎤 를 다시 눌러 말해 주세요.");
     } else if (now - rec.startedAt > MAX_CLIP_MS) stopRecording(true);
   };
   source.connect(node);
@@ -1214,6 +1236,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       endConversation("음성 대화를 끝냈습니다.");
       return;
     }
+    if (conv()) convActiveAt = Date.now();
     if (conv() && (await runVoiceCommand(paneId, text))) {
       vlog(`command ${quote(text)}`);
       relisten = true;
@@ -1229,6 +1252,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     if (chat.connected) {
       vlog(`sent ${quote(text)}`);
       if (conv()) voice.heard = text;
+      convActiveAt = Date.now();
       await sendFromPane(paneId);
     }
     else {
@@ -1716,6 +1740,179 @@ setAssistantTextListener((key, text) => {
   }
   pendingSpeech.set(key, [...(pendingSpeech.get(key) || []), text]);
   prefetchSpeech(text);
+});
+
+// ---- wake word ----
+//
+// With conversation mode off, the mic waits for "아글링크": it cuts what it
+// hears into short pieces, and a piece that starts with the name (in the
+// enrolled voice, if there is one) starts conversation mode on the last
+// conversation pane. Anything said after the name in the same breath ("아글링크,
+// 오늘 날씨 어때?") is sent right away. The pieces go through the same GPU
+// recognition as conversation mode; with a voice enrolled, other voices are
+// dropped by the much cheaper voice check first.
+
+const WAKE_RE = /([아애에어][글그클굴걸끌]\s*[링린닝잉]\s*[크그큰]|에이\s*지\s*링크|a\s*g\s*(link|링크))/i;
+const WAKE_TAIL_RE = /^[\s,.!?~]*(야|아|씨|님|가|는|도)?[\s,.!?~]*/; // "아글링크야, …"
+const WAKE_SEGMENT_END_MS = 600; // a pause this long ends a piece
+const WAKE_MAX_SEGMENT_MS = 4000; // a piece is checked after this much talk anyway
+const WAKE_MIN_SPEECH_MS = 300;
+const WAKE_PREROLL_CHUNKS = 3;
+const LAST_CONV_STORAGE_KEY = "aglink.voice.lastConversation"; // pane the wake word opens
+
+let wakeRec = null;
+let wakeOn = false; // the listener is wanted (voice.waking mirrors it for the UI)
+
+function rememberConvPane(paneId) {
+  try {
+    localStorage.setItem(LAST_CONV_STORAGE_KEY, paneId);
+  } catch {}
+}
+
+function wakePane() {
+  let last = null;
+  try {
+    last = localStorage.getItem(LAST_CONV_STORAGE_KEY);
+  } catch {}
+  for (const id of [last, chat.focusedPaneId]) if (id && pane(id)?.target) return id;
+  return null;
+}
+
+async function startWake() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (error) {
+    vlog(`wake mic failed: ${error?.message || error}`);
+    setTimeout(() => {
+      if (wakeOn && !wakeRec) void startWake();
+    }, CONV_RETRY_MS);
+    return;
+  }
+  if (!wakeOn || wakeRec) {
+    stream.getTracks().forEach((t) => t.stop());
+    return;
+  }
+  const ctx = new AudioContext();
+  const source = ctx.createMediaStreamSource(stream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  const startedAt = performance.now();
+  const w = { stream, ctx, source, node, chunks: [], first: -1, firstAt: 0, lastAt: 0, loud: 0, noise: 0, noiseN: 0, busy: false };
+  wakeRec = w;
+  node.onaudioprocess = (e) => {
+    if (wakeRec !== w) return;
+    const input = e.inputBuffer.getChannelData(0);
+    w.chunks.push(new Float32Array(input));
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+    const rms = Math.sqrt(sum / input.length);
+    const now = performance.now();
+    if (now - startedAt < 400) {
+      w.noise = (w.noise * w.noiseN + rms) / (w.noiseN + 1);
+      w.noiseN++;
+      return;
+    }
+    if (rms > Math.max(0.012, w.noise * 3)) {
+      if (w.first < 0) {
+        w.first = w.chunks.length - 1;
+        w.firstAt = now;
+      }
+      w.lastAt = now;
+      w.loud++;
+    } else if (w.first < 0) {
+      // Follow a slowly changing room, but not the talking itself.
+      w.noise = w.noise * 0.98 + rms * 0.02;
+    }
+    if (w.first < 0) {
+      if (w.chunks.length > WAKE_PREROLL_CHUNKS) w.chunks.splice(0, w.chunks.length - WAKE_PREROLL_CHUNKS);
+      return;
+    }
+    if (now - w.lastAt > WAKE_SEGMENT_END_MS || now - w.firstAt > WAKE_MAX_SEGMENT_MS) {
+      const long = w.lastAt - w.firstAt >= WAKE_MIN_SPEECH_MS && w.loud >= 3;
+      const from = Math.max(0, w.first - WAKE_PREROLL_CHUNKS);
+      const wav = long && !w.busy ? encodeWav(downsample(concat(w.chunks.slice(from)), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
+      w.chunks = [];
+      w.first = -1;
+      w.loud = 0;
+      if (wav) void checkWake(w, wav);
+    }
+  };
+  source.connect(node);
+  node.connect(ctx.destination);
+  vlog("waiting for the wake word");
+}
+
+function stopWake() {
+  const w = wakeRec;
+  if (!w) return;
+  wakeRec = null;
+  w.node.onaudioprocess = null;
+  try {
+    w.source.disconnect();
+    w.node.disconnect();
+  } catch {}
+  w.stream.getTracks().forEach((t) => t.stop());
+  void w.ctx.close();
+}
+
+// checkWake looks for the name in one piece; one piece at a time, so a noisy
+// room cannot queue up recognitions.
+async function checkWake(w, wav) {
+  w.busy = true;
+  try {
+    const score = await speakerScore(wav);
+    if (!isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) return;
+    const text = (await VoiceService.Transcribe(toBase64(wav))).trim();
+    if (!text || wakeRec !== w) return;
+    const m = WAKE_RE.exec(text);
+    // The name has to open the sentence (give or take a "어," before it), so a
+    // passing mention in someone's talk does not count.
+    if (!m || m.index > 4) return;
+    const rest = text.slice(m.index + m[0].length).replace(WAKE_TAIL_RE, "").trim();
+    vlog(`wake ${score >= 0 ? score.toFixed(2) + " " : ""}${quote(text)}`);
+    await wakeUp(rest);
+  } catch (err) {
+    vlog(`wake check failed: ${err?.message || err}`);
+  } finally {
+    w.busy = false;
+  }
+}
+
+async function wakeUp(rest) {
+  const paneId = wakePane();
+  if (!paneId || voice.convPaneId || voice.phase !== "idle") return;
+  wakeOn = false;
+  voice.waking = false;
+  stopWake();
+  clearVoiceNote();
+  voice.convPaneId = paneId;
+  convActiveAt = Date.now();
+  saveConversation(paneId);
+  if (rest.length >= 2) {
+    await transcribeClip(paneId, null, null, rest); // sends it; the reply reopens the mic
+    return;
+  }
+  void speak("네, 말씀하세요."); // the mic opens as the reading goes, as after any reply
+}
+
+// The wake listener runs whenever nothing else uses the voice.
+$effect.root(() => {
+  $effect(() => {
+    if (voice.convPaneId) rememberConvPane(voice.convPaneId);
+  });
+  $effect(() => {
+    const want = voice.wake && voice.status === "ready" && !voice.convPaneId && voice.phase === "idle" && !voice.enrolling && !voice.speaking;
+    if (want && !wakeOn) {
+      wakeOn = true;
+      void startWake();
+    } else if (!want && wakeOn) {
+      wakeOn = false;
+      stopWake();
+    }
+    voice.waking = want;
+  });
 });
 
 // getVoices() is empty until the voice list loads; touching it starts the load.

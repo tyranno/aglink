@@ -10,6 +10,7 @@
     VOICE_DEFAULTS,
     SPEED_RANGE,
     SPEAKER_MIN_RANGE,
+    WAKE_IDLE_CHOICES,
     setVoiceSettings,
     setBargeEnabled,
     previewVoice,
@@ -117,6 +118,38 @@
           <input type="checkbox" checked={voice.bargeEnabled} onchange={(e) => setBargeEnabled(e.currentTarget.checked)} />
           사용
         </label>
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div class={label}>“아글링크”로 부르기</div>
+          <div class={desc}>
+            켜면 음성 대화가 꺼져 있을 때도 “아글링크”라고 부르면 대화를 시작해요. “아글링크, 오늘 날씨 어때?”처럼 이어서 말하면 바로 보내요.
+            {voice.waking ? "지금 부르기를 기다리는 중이에요." : ""}
+          </div>
+        </div>
+        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input type="checkbox" checked={voice.wake} onchange={(e) => setVoiceSettings({ wake: e.currentTarget.checked })} />
+          사용
+        </label>
+      </div>
+      <div class="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div class={label}>말이 없으면 대기로</div>
+          <div class={desc}>부르기를 켜 두었을 때, 음성 대화에서 이 시간 동안 아무 말이 없으면 대화를 끝내고 다시 부르기를 기다려요.</div>
+        </div>
+        <select
+          class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300"
+          value={voice.wakeIdleMin}
+          disabled={!voice.wake}
+          onchange={(e) => setVoiceSettings({ wakeIdleMin: Number(e.currentTarget.value) })}
+        >
+          {#each WAKE_IDLE_CHOICES as m (m)}
+            <option value={m}>{m === 0 ? "끝내지 않음" : `${m}분`}</option>
+          {/each}
+        </select>
       </div>
     </div>
 

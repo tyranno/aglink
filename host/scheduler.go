@@ -227,6 +227,10 @@ func (s *Scheduler) fire(taskID string) bool {
 		go dispatchFn(chatID, prompt, project)
 	} else if sendFn != nil {
 		go sendFn(chatID, "🔔 "+prompt)
+	} else {
+		// No channel wired (e.g. the bot is not up yet): say so instead of
+		// dropping the run silently.
+		log.Printf("[scheduler] task %s fired but there is no channel to run or send it on — dropped", taskID)
 	}
 	return true
 }

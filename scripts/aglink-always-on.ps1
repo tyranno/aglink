@@ -90,6 +90,14 @@ param(
     # Path to the host binary; only read when -Host_ is given.
     [string] $HostExe,
 
+    # The host's health endpoint (host/health.go); only read with -Host_.
+    [string] $HostHealthUrl = 'http://127.0.0.1:27269/health',
+
+    # Restart a running host after this many consecutive unhealthy checks.
+    # With the task's 5-minute period, 3 is ~15 minutes of a stuck poll loop —
+    # long enough not to restart over a network blip, short of eleven days.
+    [int] $HostUnhealthyLimit = 3,
+
     # Hard cap on a single ssh probe. Nothing this script asks a remote box
     # should take anywhere near this long, so exceeding it means the link is
     # wedged, not slow.
@@ -302,16 +310,65 @@ function Start-Tunnel([string] $Target, [int] $Port) {
 
 # ---- 0: the aglink host (Telegram), when asked -------------------------------
 #
-# The host has no health port, so "is it up?" is the process itself. It polls
-# Telegram with a long-lived getUpdates loop and logs only failures, which is
-# why its death on 2026-09-07 went unnoticed for eleven days: the browser and
-# screen servers stayed up, so nothing looked wrong until a message went
-# unanswered.
+# Two checks. Is there a process at all — and, since a process can be alive with
+# its Telegram poll loop stuck (the loop logs only failures, which is how the
+# host went silent on 2026-09-07 and nobody noticed for eleven days), does its
+# /health endpoint say the loop is still coming back from getUpdates?
+#
+# Test-HostHealth answers 'ok', 'bad' (endpoint says unhealthy, or does not
+# answer in time: a hung process) or 'none' (connection refused: an older build
+# without the endpoint, or AGLINK_HEALTH_ADDR=off). Only 'bad' counts towards a
+# restart, so a host that simply has no endpoint is never restarted over it.
+
+function Test-HostHealth([string] $Url) {
+    try {
+        $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 10
+        if ($r.StatusCode -eq 200) { return 'ok' }
+        return 'bad'
+    } catch [System.Net.WebException] {
+        $ex = $_.Exception
+        if ($ex.Response) { return 'bad' }                                   # 503: unhealthy
+        if ($ex.Status -eq [System.Net.WebExceptionStatus]::Timeout) { return 'bad' }
+        return 'none'                                                        # refused: no endpoint
+    } catch {
+        return 'none'
+    }
+}
 
 if ($Host_) {
     if (-not $HostExe) { $HostExe = Join-Path $RepoRoot 'host\aglink.exe' }
     $running = Get-CimInstance Win32_Process -Filter "Name='aglink.exe'" -ErrorAction SilentlyContinue |
         Select-Object -First 1
+
+    # A running host whose poll loop is stuck: count consecutive bad checks in a
+    # small state file and restart once the limit is reached.
+    $failFile = Join-Path $env:TEMP 'aglink-host-health.fails'
+    if ($running) {
+        $verdict = Test-HostHealth $HostHealthUrl
+        if ($verdict -eq 'bad') {
+            $fails = 0
+            try { $fails = [int](Get-Content $failFile -ErrorAction Stop) } catch {}
+            $fails++
+            if ($fails -ge $HostUnhealthyLimit) {
+                if ($CheckOnly) {
+                    Write-Act "WOULD    restart aglink host: unhealthy $fails checks in a row"
+                } else {
+                    Write-Act "RESTART  aglink host pid $($running.ProcessId): /health unhealthy $fails checks in a row"
+                    Get-CimInstance Win32_Process -Filter "Name='aglink.exe' OR Name='aglink-chat.exe'" -ErrorAction SilentlyContinue |
+                        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                    Start-Sleep -Seconds 2
+                    $running = $null   # falls through to the start below
+                }
+                Remove-Item $failFile -ErrorAction SilentlyContinue
+            } else {
+                Set-Content -Path $failFile -Value $fails
+                Write-Act "UNHEALTHY aglink host /health check $fails/$HostUnhealthyLimit"
+            }
+        } else {
+            Remove-Item $failFile -ErrorAction SilentlyContinue
+        }
+    }
+
     if (-not $running) {
         if (-not (Test-Path $HostExe)) {
             Write-Act "MISSING  aglink host: $HostExe not found"

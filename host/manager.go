@@ -2321,6 +2321,9 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text, p
 
 	projects := m.store.ListProjects()
 	if len(projects) == 0 {
+		// Logged as well as sent: a scheduled run has no one watching the chat at
+		// that moment, and this path used to leave no trace in aglink.log.
+		log.Printf("[manager] scheduled task skipped: no project registered (task: %s)", truncate(text, 60))
 		_ = s.Send(chatID, "⚠️ 예약 작업 실행 실패: 등록된 프로젝트가 없습니다. !project add <이름> <경로>")
 		return
 	}
@@ -2334,6 +2337,12 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text, p
 		}
 		sort.Strings(names)
 		projectName = names[0]
+		// A task pinned to a project that no longer exists used to run in
+		// another project without a word — work landing in the wrong repo.
+		if project != "" {
+			log.Printf("[manager] scheduled task: pinned project %q not found — running in %q", project, projectName)
+			_ = s.Send(chatID, fmt.Sprintf("⚠️ 예약 작업에 지정된 프로젝트 '%s' 가 없어 '%s' 에서 실행합니다. (!task 로 프로젝트를 다시 지정하세요)", project, projectName))
+		}
 	}
 
 	c, err := m.store.NewConversation(projectName, "📅 "+truncate(text, 28), OriginTelegram)

@@ -375,6 +375,8 @@ func (b *Bot) Hub() *Hub { return b.out }
 func (b *Bot) Run() {
 	// Web-chat-only mode: no Telegram api → no polling. Block forever so the
 	// process stays alive while the web frontend goroutines serve the browser.
+	healthTelegramEnabled(b.api != nil)
+	startHealthServer(b)
 	if b.api == nil {
 		log.Printf("[bot] 웹채팅 전용 모드 — 텔레그램 폴링 없음. 웹 프론트엔드 대기 중.")
 		if b.onReady != nil {
@@ -403,9 +405,11 @@ func (b *Bot) Run() {
 				os.Exit(1)
 			}
 			log.Printf("[bot] getUpdates 실패: %v — 3초 후 재시도", err)
+			notePollErr(err)
 			time.Sleep(3 * time.Second)
 			continue
 		}
+		notePollOK()
 
 		for _, update := range updates {
 			if update.UpdateID+1 > offset {
@@ -745,6 +749,7 @@ func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 		}
 		entry.timer.Stop()
 		cancel()
+		noteTurnEnd()
 		next, ok := b.finishTurn(key, wid, queued)
 		if ok {
 			if !next.isTask {

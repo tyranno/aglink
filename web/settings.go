@@ -17,6 +17,10 @@ var webSettingKeys = []string{
 	"AGLINK_WEB_CDP_PORTS",
 	"AGLINK_WEB_INSECURE_HOSTS",
 	"AGLINK_WEB_STEP_DELAY_MS",
+	// Approval gate (approvalgate.go): read per request, never from the
+	// shared last-seen copy.
+	"AGLINK_APPROVAL_URL",
+	"AGLINK_APPROVAL_TOOLS",
 }
 
 // bridgeEnv collects the settings set in this (bridge) process's environment.

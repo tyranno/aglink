@@ -51,8 +51,19 @@ func pluginWorkerArgsOpts(cfg *Config, screenBin, webBin, goonoBin string, scree
 	var allowed []string
 	var prompts []string
 	hasScreen, hasWeb := false, false
+	appr := approvalEnv(cfg) // nil unless approvals.tools is set (approval.go)
 	for _, d := range list {
-		servers[d.Name] = mcpServerSpec{Command: d.Command, Args: d.Args, Env: d.Env}
+		env := d.Env
+		if appr != nil && (d.Name == "web" || d.Name == "screen") {
+			env = map[string]string{}
+			for k, v := range d.Env {
+				env[k] = v
+			}
+			for k, v := range appr {
+				env[k] = v
+			}
+		}
+		servers[d.Name] = mcpServerSpec{Command: d.Command, Args: d.Args, Env: env}
 		allowed = append(allowed, "mcp__"+d.Name+"__*")
 		if d.SystemPrompt != "" {
 			prompts = append(prompts, d.SystemPrompt)

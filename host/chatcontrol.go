@@ -136,6 +136,8 @@ func (s *chatControlServer) handleControl(w http.ResponseWriter, r *http.Request
 	ch := &remoteChatChannel{send: make(chan controlOut, 64), cancel: cancel}
 	s.hub.Register(s.ownerChatID, ch)
 	defer s.hub.Unregister(s.ownerChatID, ch)
+	addControlClient(ch) // approval prompts reach every connected UI (approval.go)
+	defer removeControlClient(ch)
 	defer c.Close(websocket.StatusNormalClosure, "")
 	s.connCount.Add(1)
 	defer s.connCount.Add(-1)
@@ -379,6 +381,17 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		}
 		_ = json.Unmarshal(m.Payload, &p)
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: sendClaudeAuthCode(p.Code)})
+	case "approval_answer":
+		var p struct {
+			ID string `json:"id"`
+			OK bool   `json:"ok"`
+		}
+		_ = json.Unmarshal(m.Payload, &p)
+		if req, msg := resolveApproval(p.ID, p.OK); req == nil {
+			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: settingsFail(msg)})
+		} else {
+			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: authReply(true, "")})
+		}
 	case "claude_auth_cancel":
 		claudeAuthJob.stop()
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: authReply(true, "")})

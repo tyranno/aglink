@@ -390,6 +390,28 @@ list_flows
 2026-10-07 크롬 실측: navigate → expect → get_attribute → click → expect 5단계가 한
 호출로 성공했고, 새 탭 이어받기와 클릭 후 바뀐 페이지의 snapshot 까지 확인했다.
 
+## 실행 전 승인 — 위험한 도구는 사람이 OK 해야 실행
+
+aglink 워커는 동작마다 승인을 묻지 않는다. 그래서 웹페이지·문서에 숨은 지시에 넘어가면
+그대로 실행된다. aglink 설정 → 보안·원격 → **실행 전 승인받을 도구**(config
+`approvals.tools`)에 적은 도구는 실행 전에 사람에게 묻는다.
+
+```yaml
+approvals:
+  tools: [eval, vscode_terminal_run, vscode_command, upload_file, launch_app]
+  timeout_sec: 120      # 0 이면 120초. 답이 없으면 거부
+```
+
+- 묻는 곳: 데스크톱 앱(버튼 창 — [승인]/[거부]), 텔레그램(`!ok 번호` / `!no 번호`,
+  하나뿐이면 번호 생략). 어디서 먼저 답하든 나머지 창은 닫힌다.
+- 호스트가 워커의 MCP 설정에 `AGLINK_APPROVAL_URL`·`AGLINK_APPROVAL_TOOLS` 를 넣고,
+  aglink-web·aglink-screen 이 도구 실행 전에 호스트의 `/approve`(127.0.0.1:27269)에 묻는다.
+- `run_steps`·`run_flow` 는 단계 안에 대상 도구가 있으면 **배치 전체를 한 번** 묻는다.
+  aglink-screen 의 `run_sequence` 는 안의 동작 이름(`type`, `click` …)까지 본다.
+- 판정은 그 호출에 실려 온 값으로 한다 — 사람이 직접 돌리는 `!flow`·`aglink-web cmd`
+  처럼 승인 설정이 없는 호출이 섞여 들어와도 워커 호출의 승인이 꺼지지 않는다.
+- 원격 세션의 `/mcp`(SSH 터널) 호출은 이 승인을 거치지 않는다 — 그쪽은 접근 토큰으로 막는다.
+
 ## 크롬의 alert · confirm · prompt
 
 대화창이 뜨면 페이지 JS 가 멈춰 `executeScript` 가 돌아오지 않는다. 예전에는 그 탭의

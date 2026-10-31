@@ -129,19 +129,30 @@ func buildHealth(now time.Time, active, queued int) healthReport {
 // startHealthServer serves /health on addr until the process exits. A port
 // already in use is logged, not fatal: health is for watchdogs, not for the
 // bot's own work.
-func startHealthServer(b *Bot) {
+// healthAddr is where /health (and /approve) listen, or "" when disabled.
+func healthAddr() string {
 	addr := strings.TrimSpace(os.Getenv("AGLINK_HEALTH_ADDR"))
 	if addr == "" {
 		addr = defaultHealthAddr
 	}
 	if strings.EqualFold(addr, "off") {
-		return
+		return ""
 	}
 	if host, _, err := net.SplitHostPort(addr); err != nil || !isLoopbackHost(host) {
-		log.Printf("[health] %q is not a loopback address — health endpoint disabled", addr)
+		return ""
+	}
+	return addr
+}
+
+func startHealthServer(b *Bot) {
+	addr := healthAddr()
+	if addr == "" {
+		log.Printf("[health] endpoint disabled (AGLINK_HEALTH_ADDR off or not loopback)")
 		return
 	}
 	mux := http.NewServeMux()
+	// Tools marked for approval ask here before they run (approval.go).
+	mux.HandleFunc("/approve", b.handleApproveHTTP)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		active, queued := b.dispatchLoad()
 		rep := buildHealth(time.Now(), active, queued)

@@ -125,6 +125,11 @@ type yamlConfig struct {
 		Enabled bool      `yaml:"enabled"`
 		Hosts   []SSHHost `yaml:"hosts,omitempty"`
 	} `yaml:"ssh,omitempty"`
+	// Approvals: tools that ask the user before running (approval.go).
+	Approvals struct {
+		Tools      []string `yaml:"tools,omitempty"`
+		TimeoutSec int      `yaml:"timeout_sec,omitempty"`
+	} `yaml:"approvals,omitempty"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -249,6 +254,8 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.CustomProviders = y.CustomProviders
 	c.SSHEnabled = y.SSH.Enabled
 	c.SSHHosts = y.SSH.Hosts
+	c.ApprovalTools = y.Approvals.Tools
+	c.ApprovalTimeoutSec = y.Approvals.TimeoutSec
 	return c
 }
 
@@ -326,6 +333,8 @@ func configToYAML(c *Config) *yamlConfig {
 	y.CustomProviders = c.CustomProviders
 	y.SSH.Enabled = c.SSHEnabled
 	y.SSH.Hosts = c.SSHHosts
+	y.Approvals.Tools = c.ApprovalTools
+	y.Approvals.TimeoutSec = c.ApprovalTimeoutSec
 	return y
 }
 

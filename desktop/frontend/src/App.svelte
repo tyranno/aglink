@@ -8,6 +8,7 @@
   import ReservationPanel from "./ReservationPanel.svelte";
   import MCPServerPanel from "./MCPServerPanel.svelte";
   import ClaudeAuthPanel from "./ClaudeAuthPanel.svelte";
+  import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import UsagePanel from "./UsagePanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import {
@@ -1135,3 +1136,4 @@
 {/if}
 
 <ImageWindow />
+<ApprovalPrompt />

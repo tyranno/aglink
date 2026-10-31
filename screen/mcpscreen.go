@@ -122,6 +122,8 @@ func newScreenMCPServer() *server.MCPServer {
 		// (screenshot, snapshot, get_value, …) never trigger it. Fire-and-forget
 		// so the tool response is never delayed by the overlay.
 		server.WithToolHandlerMiddleware(controlCompleteMiddleware),
+		// Tools the user marked as risky wait for an OK in chat (approval.go).
+		server.WithToolHandlerMiddleware(screenApprovalMiddleware),
 	)
 
 	// list_windows — visible top-level windows as "TITLE | hwnd=0x..".

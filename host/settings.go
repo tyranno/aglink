@@ -313,6 +313,8 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "screen_control.elevated", Label: "관리자 권한으로 화면 제어", Desc: "관리자 권한 창까지 제어해야 할 때만 켭니다.", Type: "bool", Value: cfg.ScreenElevated},
 			{Key: "notion_control.enabled", Label: "Notion 연동 허용", Desc: "봇이 Notion MCP로 페이지를 읽고 쓰게 합니다. 토큰은 설정 파일(notion_control.token)에 직접 넣어야 합니다.", Type: "bool", Value: cfg.NotionControl},
 			{Key: "goono_control.enabled", Label: "구노(goono) 문서 연동 허용", Desc: "봇이 구노 MCP로 문서를 검색·업로드하게 합니다. 실행파일 경로는 설정 파일(goono_control.binary_path)에서 지정합니다.", Type: "bool", Value: cfg.GoonoControl},
+			{Key: "approvals.tools", Label: "실행 전 승인받을 도구", Desc: "여기 적은 웹·화면 제어 도구는 실행 전에 채팅으로 '🔐 승인 요청'을 보내고, !ok 번호 / !no 번호 로 답할 때까지 기다립니다. 쉼표로 구분. 예: eval, vscode_terminal_run, vscode_command, upload_file, launch_app. 비우면 승인 없이 실행합니다.", Type: "string", Value: strings.Join(cfg.ApprovalTools, ", ")},
+			{Key: "approvals.timeout_sec", Label: "승인 대기 시간(초)", Desc: "이 시간 안에 답이 없으면 거부합니다. 0 이면 120초.", Type: "int", Value: cfg.ApprovalTimeoutSec},
 		}},
 		// NOTE: user-defined MCP servers are NOT here. They're a variable-length
 		// list, which this scalar form can't express, so they have their own
@@ -410,6 +412,10 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.NotionControl = asBool(v)
 		case "goono_control.enabled":
 			cfg.GoonoControl = asBool(v)
+		case "approvals.tools":
+			cfg.ApprovalTools = splitToolList(asString(v))
+		case "approvals.timeout_sec":
+			cfg.ApprovalTimeoutSec = asInt(v)
 		case "web_chat.enabled":
 			cfg.WebChat = asBool(v)
 		case "web_chat.addr":

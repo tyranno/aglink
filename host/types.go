@@ -118,6 +118,12 @@ type Config struct {
 	// SSHHosts is the registry of named remotes !ssh may reach. !ssh takes a host
 	// *name*, never a raw host:port, so only registered hosts are reachable.
 	SSHHosts []SSHHost
+
+	// ApprovalTools are aglink-web / aglink-screen tools that ask the user
+	// (Telegram / desktop / web chat) before they run — see approval.go. Empty:
+	// no approvals. ApprovalTimeoutSec: how long to wait before refusing.
+	ApprovalTools      []string
+	ApprovalTimeoutSec int
 }
 
 // ConversationTurn represents one exchange in a conversation.

@@ -151,6 +151,12 @@ func (c *ControlService) connectOnce(ctx context.Context) error {
 			}
 		case "reply":
 			c.deliverReply(o.ReqID, o.Data)
+		case "approval", "approval_done":
+			// A tool the user marked as risky is waiting (host/approval.go);
+			// ApprovalPrompt.svelte shows it with buttons.
+			var v any
+			_ = json.Unmarshal(o.Data, &v)
+			c.emit("control:"+o.Kind, v)
 		}
 	}
 }
@@ -677,6 +683,13 @@ func (c *ControlService) ClaudeAuthVerify() (string, error) {
 // ClaudeAuthClear removes the token (claude's own login is used instead).
 func (c *ControlService) ClaudeAuthClear() (string, error) {
 	data, err := c.request(controlIn{Type: "claude_auth_clear"})
+	return string(data), err
+}
+
+// ApprovalAnswer approves (ok) or refuses a pending tool approval by id.
+func (c *ControlService) ApprovalAnswer(id string, ok bool) (string, error) {
+	p, _ := json.Marshal(map[string]any{"id": id, "ok": ok})
+	data, err := c.request(controlIn{Type: "approval_answer", Payload: p})
 	return string(data), err
 }
 

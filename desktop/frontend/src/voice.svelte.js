@@ -21,6 +21,7 @@ import {
   pane,
   targetKey,
   findWebConv,
+  paneConversationMeta,
   parseJSON,
   loadConversations,
   selectTargetInPane,
@@ -357,7 +358,16 @@ $effect.root(() => {
     else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
     else if (voice.phase === "listening") [phase, label] = ["listening", "듣는 중 — 말씀하세요"];
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
-    Events.Emit("voice:state", { active, phase, label: `🗣 ${label}`, barge: voice.bargeEnabled, speed: voice.ttsSpeed });
+    // Which chat the conversation is talking to, shown under the status line.
+    const chatTitle = (active && paneConversationMeta(pane(voice.convPaneId)?.target)?.title) || "";
+    Events.Emit("voice:state", {
+      active,
+      phase,
+      label: `🗣 ${label}`,
+      barge: voice.bargeEnabled,
+      speed: voice.ttsSpeed,
+      chat: chatTitle,
+    });
   });
 });
 

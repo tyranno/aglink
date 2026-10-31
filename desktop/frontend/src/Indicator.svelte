@@ -10,6 +10,7 @@
   let barge = $state(true);
   let hasReply = $state(false);
   let speed = $state(0);
+  let chatTitle = $state("");
 
   Events.On("voice:state", (event) => {
     const d = event.data || {};
@@ -17,6 +18,7 @@
     label = (d.label || "음성 대화 중").replace(/^🗣\s*/u, ""); // the icon already says it
     if (typeof d.barge === "boolean") barge = d.barge;
     if (Number.isFinite(d.speed)) speed = d.speed;
+    chatTitle = typeof d.chat === "string" ? d.chat : "";
   });
 
   Events.On("voice:reply", (event) => {
@@ -54,7 +56,13 @@
       </svg>
       <span class="text">
         <span class="label" title={label}>{label}</span>
-        {#if speed}<span class="speed">읽기 속도 {Math.round(speed * 100) / 100}배</span>{/if}
+        {#if chatTitle || speed}
+          <span class="sub">
+            {#if chatTitle}<span class="chat" title={chatTitle}>{chatTitle}</span>{/if}
+            {#if chatTitle && speed}<span>·</span>{/if}
+            {#if speed}<span class="speed">읽기 속도 {Math.round(speed * 100) / 100}배</span>{/if}
+          </span>
+        {/if}
       </span>
     </button>
     {#if hasReply}
@@ -137,9 +145,21 @@
     flex-direction: column;
     gap: 2px;
   }
-  .speed {
+  .sub {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
     font-size: 11px;
     opacity: 0.6;
+    white-space: nowrap;
+  }
+  .chat {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .speed {
+    flex: none;
   }
   .label {
     min-width: 0;

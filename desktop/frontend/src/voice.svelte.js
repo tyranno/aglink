@@ -821,6 +821,8 @@ const DETAIL_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\
 const SHORT_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\s*)?(요약|짧게|간단히|간단하게)\s*(해서\s*)?(다시\s*)?(읽어|말해|들려|얘기해)`);
 const ALARM_LIST_RE =cmdRE(String.raw`((맡긴|예약한|맞춘|남은)\s*)?(알림|알람)\s*(목록|들)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)|(알림|알람)\s*(뭐|뭐가|몇\s*개)\s*(있어|있지|있나|남았어)`);
 const ALARM_CANCEL_RE = cmdRE(String.raw`((\S+)\s*번\s*(째\s*)?|방금\s*(맡긴\s*)?)?(알림|알람)\s*(을|를)?\s*(다|전부|모두)?\s*(취소|취소해|지워|꺼|없애|빼)`);
+const PB_LIST_RE = cmdRE(String.raw`(업무|루틴|업무\s*루틴)\s*(목록|리스트|뭐\s*있어)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)?`);
+const PB_RUN_RE = /^\s*(.+?)\s*(을|를)?\s*(지금\s*)?(실행|돌려)\S*(\s*(줘|주세요|줄래))?[.!?~\s]*$/;
 const MAX_ALARM_CHARS = 80; // "내일 아침 9시에 …라고 알려 줘" runs longer than a command
 const LIST_COUNT = 5; // conversations read out by "대화 목록 읽어 줘"
 const MAX_COMMAND_CHARS = 40; // longer sentences are always meant for the AI
@@ -1016,6 +1018,49 @@ async function findConversation(paneId, text) {
   speak(`${best.title || "제목 없는"} 대화를 찾아서 열었어요.`);
 }
 
+// ---- 업무 루틴 by voice ----
+// "업무 목록 읽어 줘" reads the routines; "아침 업무 정리 실행해 줘" runs the one
+// whose name matches, in a new conversation the voice follows — so its result
+// is read out. A name that matches no routine goes to the AI as usual.
+
+async function playbookList() {
+  const data = parseJSON(await ControlService.ListPlaybooks(), {});
+  return Array.isArray(data.playbooks) ? data.playbooks : [];
+}
+
+async function listPlaybooks() {
+  const books = await playbookList();
+  if (!books.length) {
+    speak("저장된 업무 루틴이 없어요. 업무 탭에서 만들 수 있어요.");
+    return;
+  }
+  const names = books.slice(0, 8).map((b) => b.name).join(", ");
+  speak(`업무 루틴이 ${books.length}개 있어요. ${names}. 이름을 말하고 실행해 줘, 라고 하시면 바로 실행해요.`);
+}
+
+async function runPlaybookByName(paneId, spoken) {
+  const key = normalizeForEcho(spoken.replace(/(업무|루틴)\s*$/, ""));
+  if (key.length < 2) return false;
+  const books = await playbookList().catch(() => []);
+  let best = null;
+  let bestLen = 0;
+  for (const b of books) {
+    const name = normalizeForEcho(b.name);
+    const hit = name === key || name.includes(key) || key.includes(name) ? Math.min(name.length, key.length) : 0;
+    if (hit > bestLen) [best, bestLen] = [b, hit];
+  }
+  if (!best || bestLen < 2) return false;
+  const j = parseJSON(await ControlService.RunPlaybook(best.id), {});
+  if (j.ok === false) throw new Error(j.error || "실행 실패");
+  vlog(`playbook run ${quote(best.name)}`);
+  if (j.conversationId) {
+    await loadConversations();
+    await selectTargetInPane(paneId, { kind: "web", id: j.conversationId });
+  }
+  speak(`${best.name} 업무를 시작했어요. 끝나면 결과를 읽어 드릴게요.`);
+  return true;
+}
+
 function changeSpeed(paneId, delta) {
   const before = voice.ttsSpeed;
   setVoiceSettings({ ttsSpeed: delta === null ? VOICE_DEFAULTS.ttsSpeed : before + delta });
@@ -1033,7 +1078,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 // runVoiceCommand carries out text if it is one of the commands; false means
@@ -1118,6 +1163,12 @@ async function runVoiceCommand(paneId, text) {
       await findConversation(paneId, t);
       return true;
     }
+    if (PB_LIST_RE.test(t)) {
+      await listPlaybooks();
+      return true;
+    }
+    const run = PB_RUN_RE.exec(t);
+    if (run && (await runPlaybookByName(paneId, run[1]))) return true;
   } catch (err) {
     vlog(`command failed: ${err?.message || err}`);
     speak("그 일을 하지 못했어요. 잠시 뒤에 다시 말씀해 주세요.");

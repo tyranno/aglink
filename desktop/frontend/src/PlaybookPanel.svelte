@@ -2,12 +2,40 @@
   // 업무 관리 (Playbook) 사이드바 패널. Reusable work routines in a group tree,
   // persisted server-side via ControlService. "실행" composes a routine into a
   // prompt, opens a fresh conversation, and dispatches it — automating the repeat.
+  //
+  // For everyday use: a search box, each routine's "언제 쓰는지" under its name
+  // with when it last ran, ready-made examples to start from, and "정기 실행
+  // 예약" that hands a routine to the 예약 scheduler (Task.playbookId) so it runs
+  // by itself every day / weekday / week.
   import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
-  import { loadConversations, selectTargetFromSidebar } from "./paneStore.svelte.js";
+  import { chat, loadConversations, selectTargetFromSidebar } from "./paneStore.svelte.js";
+  import { WEEKDAYS, repeatToCron, describeCron } from "./schedule.js";
 
   let groups = $state([]);
   let playbooks = $state([]);
   let loadError = $state("");
+  let notice = $state(""); // what the last action did ("매일 오전 9시에 실행하도록 예약했어요")
+  let search = $state("");
+  let scheduling = $state(null); // { book, repeat, saving, error } — the 정기 실행 예약 dialog
+
+  // Ready-made routines to start from; they open in the editor to be adjusted.
+  const templates = [
+    {
+      name: "아침 업무 정리",
+      description: "하루를 시작할 때",
+      instructions: "- 오늘 날짜와 요일을 알려 준다\n- 어제 이후 작업 폴더에서 바뀐 파일과 커밋을 요약한다\n- 오늘 먼저 할 일 세 가지를 제안한다\n- 짧게, 말로 들어도 이해되게 정리한다",
+    },
+    {
+      name: "빌드·테스트 점검",
+      description: "코드를 고친 뒤 확인할 때",
+      instructions: "- 작업 폴더에서 최신 코드를 받는다\n- 빌드와 테스트를 돌린다\n- 실패하면 원인과 고칠 곳을 요약한다\n- 통과하면 통과했다고 한 줄로 알린다",
+    },
+    {
+      name: "주간 보고 초안",
+      description: "매주 금요일 보고서를 쓸 때",
+      instructions: "- 이번 주 커밋과 대화 기록을 훑어 한 일을 정리한다\n- 완료, 진행 중, 다음 주 계획으로 나눈다\n- 보고서에 바로 붙일 수 있는 문장으로 쓴다",
+    },
+  ];
 
   // Editor modal state. editing === null → closed. A routine is now a "skill":
   // name + description(when to use) + a free-form natural-language instructions body.
@@ -40,6 +68,46 @@
   }
   function countIn(gid) {
     return playbooks.filter((b) => (b.groupId || "") === gid).length;
+  }
+
+  // A search shows the matching routines as a flat list instead of the tree.
+  const found = $derived.by(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return null;
+    return playbooks.filter((b) => [b.name, b.description, b.instructions].some((s) => (s || "").toLowerCase().includes(q)));
+  });
+
+  function lastRunText(b) {
+    if (!b.lastRunAt || b.lastRunAt.startsWith("0001")) return "";
+    const days = Math.floor((chat.nowTick - new Date(b.lastRunAt).getTime()) / 86400000);
+    return days <= 0 ? "오늘 실행" : days === 1 ? "어제 실행" : `${days}일 전 실행`;
+  }
+
+  // --- 정기 실행 예약 ---
+  function openSchedule(b) {
+    scheduling = { book: b, repeat: { kind: "daily", time: "09:00", days: [new Date().getDay()], everyN: 1, everyUnit: "hour", cron: "" }, saving: false, error: "" };
+  }
+  const scheduleCron = $derived(scheduling ? repeatToCron(scheduling.repeat) : "");
+  function toggleScheduleDay(d) {
+    const days = scheduling.repeat.days;
+    scheduling.repeat.days = days.includes(d) ? days.filter((x) => x !== d) : [...days, d];
+  }
+  async function saveSchedule() {
+    const s = scheduling;
+    if (!s || s.saving) return;
+    if (!scheduleCron) { s.error = "요일을 하나 이상 골라 주세요."; return; }
+    s.saving = true;
+    s.error = "";
+    const payload = { label: `▶ ${s.book.name}`, isTask: true, prompt: `업무 루틴 "${s.book.name}" 실행`, cronExpr: scheduleCron, playbookId: s.book.id };
+    try {
+      const j = JSON.parse((await ControlService.SaveTask(JSON.stringify(payload))) || "{}");
+      if (j.ok === false) throw new Error(j.error || "저장 실패");
+      notice = `"${s.book.name}"을(를) ${describeCron(scheduleCron)}에 실행하도록 예약했어요. 예약 탭에서 바꾸거나 멈출 수 있어요.`;
+      scheduling = null;
+    } catch (e) {
+      s.saving = false;
+      s.error = `예약하지 못했어요: ${e?.message || e}`;
+    }
   }
 
   // Flatten the tree into display rows so the template stays simple.
@@ -117,12 +185,20 @@
   async function rowMenu(b) {
     const choice = await askMenu("업무: " + b.name, [
       { value: "edit", label: "✏️ 편집" },
-      { value: "run", label: "▶ 실행" },
+      { value: "run", label: "▶ 지금 실행" },
+      { value: "schedule", label: "⏰ 정기 실행 예약" },
+      { value: "copy", label: "📄 복제" },
       { value: "move", label: "📁 그룹 이동" },
       { value: "delete", label: "🗑 삭제", danger: true },
     ]);
     if (choice === "edit") return openEditor(b);
     if (choice === "run") return runPlaybook(b);
+    if (choice === "schedule") return openSchedule(b);
+    if (choice === "copy") {
+      const { id: _id, runCount: _r, lastRunAt: _l, createdAt: _c, updatedAt: _u, ...rest } = b;
+      await savePlaybook({ ...rest, name: `${b.name} (복사본)` });
+      return;
+    }
     if (choice === "move") {
       const opts = [{ value: "", label: "(그룹 없음 · 루트)" }].concat(groups.map((g) => ({ value: g.id, label: g.name })));
       const gid = await askMenu("이동할 그룹 선택", opts);
@@ -147,8 +223,10 @@
   }
 
   // --- editor ---
-  function openEditor(b, presetGroupId) {
-    if (b) {
+  function openEditor(b, presetGroupId, template) {
+    if (template) {
+      editing = { id: "", name: template.name, groupId: presetGroupId || "", description: template.description, workDir: "", backend: "", instructions: template.instructions };
+    } else if (b) {
       editing = {
         id: b.id, name: b.name, groupId: b.groupId || "", description: b.description || "",
         workDir: b.workDir || "", backend: b.backend || "",
@@ -206,13 +284,44 @@
     <button class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={load} title="새로고침" aria-label="새로고침">↻</button>
   </div>
 
+  {#if playbooks.length > 0}
+    <div class="shrink-0 border-b border-slate-200 dark:border-slate-700 px-3 py-2">
+      <input class="w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1.5 text-sm" bind:value={search} placeholder="🔍 업무 찾기" aria-label="업무 찾기" />
+    </div>
+  {/if}
+
   <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
     {#if loadError}
       <div class="mb-2 rounded bg-rose-50 dark:bg-rose-950/40 px-2 py-1 text-xs text-rose-700 dark:text-rose-300">{loadError}</div>
     {/if}
-    {#if rows.length === 0}
-      <div class="px-2 py-3 text-sm text-slate-500 dark:text-slate-400">＋로 업무 루틴을, 📁로 그룹을 만들어 보세요.</div>
+    {#if notice}
+      <div class="mb-2 flex items-start gap-2 rounded bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1.5 text-xs text-emerald-800 dark:text-emerald-300">
+        <span class="min-w-0 flex-1">{notice}</span>
+        <button class="shrink-0" onclick={() => (notice = "")} aria-label="닫기">✕</button>
+      </div>
     {/if}
+    {#if rows.length === 0}
+      <div class="px-2 py-3 text-sm leading-6 text-slate-500 dark:text-slate-400">
+        자주 하는 일을 업무 루틴으로 저장해 두면 ▶ 한 번으로 AI가 처리해요. 정해진 시간에 저절로 돌게 예약할 수도 있어요.
+        <div class="mt-2 text-xs font-semibold text-slate-600 dark:text-slate-300">예시로 시작하기</div>
+        <div class="mt-1 space-y-1.5">
+          {#each templates as tpl}
+            <button class="block w-full rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800" onclick={() => openEditor(null, "", tpl)}>
+              <div class="text-sm font-medium text-slate-800 dark:text-slate-200">{tpl.name}</div>
+              <div class="text-[11px] text-slate-500 dark:text-slate-400">{tpl.description}</div>
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+    {#if found}
+      {#if found.length === 0}
+        <div class="px-2 py-3 text-sm text-slate-500 dark:text-slate-400">"{search}"에 맞는 업무가 없어요.</div>
+      {/if}
+      {#each found as b (b.id)}
+        {@render bookRow(b, 0)}
+      {/each}
+    {:else}
     {#each rows as row (row.type + (row.group?.id || row.book?.id))}
       {#if row.type === "group"}
         <div class="flex items-center gap-1 py-1.5 text-xs font-bold text-slate-600 dark:text-slate-400" style={`padding-left:${8 + row.depth * 14}px`}>
@@ -220,20 +329,70 @@
           <button class="grid h-6 w-6 place-items-center rounded hover:bg-slate-200 dark:hover:bg-slate-600" onclick={() => groupMenu(row.group)} aria-label="그룹 메뉴">⋯</button>
         </div>
       {:else}
-        <div class="group flex items-center gap-1.5 rounded-md py-1 pr-1 hover:bg-slate-100 dark:hover:bg-slate-700" style={`padding-left:${8 + row.depth * 14}px`}>
-          <button class="grid h-6 w-6 shrink-0 place-items-center rounded border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50" onclick={() => runPlaybook(row.book)} title="실행" aria-label="실행">▶</button>
-          <button class="min-w-0 flex-1 truncate text-left text-sm text-slate-800 dark:text-slate-200" onclick={() => openEditor(row.book)} title={row.book.description || row.book.name}>
-            {row.book.name}
-            <span class="text-[11px] text-slate-400 dark:text-slate-500">
-              {#if row.book.runCount}· 실행 {row.book.runCount}{/if}
-            </span>
-          </button>
-          <button class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600" onclick={() => rowMenu(row.book)} aria-label="루틴 메뉴">⋯</button>
-        </div>
+        {@render bookRow(row.book, row.depth)}
       {/if}
     {/each}
+    {/if}
   </div>
 </div>
+
+{#snippet bookRow(b, depth)}
+  <div class="group flex items-start gap-1.5 rounded-md py-1.5 pr-1 hover:bg-slate-100 dark:hover:bg-slate-700" style={`padding-left:${8 + depth * 14}px`}>
+    <button class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40" onclick={() => runPlaybook(b)} title="지금 실행" aria-label="지금 실행">▶</button>
+    <button class="min-w-0 flex-1 text-left" onclick={() => openEditor(b)} title={b.description || b.name}>
+      <div class="truncate text-sm text-slate-800 dark:text-slate-200">{b.name}</div>
+      {#if b.description || lastRunText(b)}
+        <div class="truncate text-[11px] text-slate-400 dark:text-slate-500">
+          {b.description || ""}{b.description && lastRunText(b) ? " · " : ""}{lastRunText(b)}{b.runCount ? ` (${b.runCount}회)` : ""}
+        </div>
+      {/if}
+    </button>
+    <button class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600" onclick={() => openSchedule(b)} title="정기 실행 예약" aria-label="정기 실행 예약">⏰</button>
+    <button class="grid h-6 w-6 shrink-0 place-items-center rounded text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600" onclick={() => rowMenu(b)} aria-label="루틴 메뉴">⋯</button>
+  </div>
+{/snippet}
+
+<!-- 정기 실행 예약 -->
+{#if scheduling}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onclick={(e) => { if (e.target === e.currentTarget) scheduling = null; }}>
+    <div class="w-[400px] max-w-full rounded-lg bg-white dark:bg-slate-900 p-4 shadow-xl">
+      <div class="mb-1 text-sm font-semibold text-slate-900 dark:text-slate-100">정기 실행 예약</div>
+      <div class="mb-3 text-xs text-slate-500 dark:text-slate-400">"{scheduling.book.name}"을(를) 정한 때마다 새 대화에서 저절로 실행해요.</div>
+      <div class="flex flex-wrap gap-1.5">
+        {#each [["daily", "매일"], ["weekdays", "평일"], ["weekly", "매주"], ["every", "몇 시간마다"]] as [k, l]}
+          <button type="button" class={`rounded-full px-2.5 py-1 text-xs ${scheduling.repeat.kind === k ? "bg-blue-600 font-semibold text-white" : "border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"}`} onclick={() => (scheduling.repeat.kind = k)}>{l}</button>
+        {/each}
+      </div>
+      <div class="mt-3">
+        {#if scheduling.repeat.kind === "weekly"}
+          <div class="mb-2 flex gap-1">
+            {#each WEEKDAYS as w, d}
+              <button type="button" class={`h-8 w-8 rounded-full text-xs ${scheduling.repeat.days.includes(d) ? "bg-blue-600 font-semibold text-white" : "border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400"}`} onclick={() => toggleScheduleDay(d)}>{w}</button>
+            {/each}
+          </div>
+        {/if}
+        {#if scheduling.repeat.kind === "every"}
+          <div class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+            <input type="number" min="1" max="23" class="w-20 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1.5 text-sm" bind:value={scheduling.repeat.everyN} /> 시간마다
+          </div>
+        {:else}
+          <input type="time" class="w-40 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1.5 text-sm" bind:value={scheduling.repeat.time} />
+        {/if}
+      </div>
+      {#if scheduleCron}
+        <div class="mt-3 text-xs font-medium text-blue-700 dark:text-blue-300">→ {describeCron(scheduleCron)}에 실행</div>
+      {/if}
+      {#if scheduling.error}
+        <div class="mt-2 rounded bg-rose-50 dark:bg-rose-950/40 px-2 py-1 text-xs text-rose-700 dark:text-rose-300">{scheduling.error}</div>
+      {/if}
+      <div class="mt-4 flex justify-end gap-2">
+        <button class="rounded border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => (scheduling = null)}>닫기</button>
+        <button class="rounded bg-blue-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50" disabled={scheduling.saving} onclick={saveSchedule}>{scheduling.saving ? "예약 중…" : "예약하기"}</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Editor modal -->
 {#if editing}

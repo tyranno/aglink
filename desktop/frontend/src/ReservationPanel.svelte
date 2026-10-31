@@ -217,6 +217,7 @@
       repeat: { ...repeat, days: repeat.days.length ? repeat.days : [new Date().getDay()] },
       fireAtLocal: isoToLocalInput(t?.fireAt) || inMinutes(60),
       dest: t ? destOf(t) : defaultDest(),
+      playbookId: t?.playbookId || "", // a scheduled 업무 루틴: kept through an edit
       advanced: !!t?.script,
     };
     editorError = "";
@@ -248,6 +249,7 @@
       cronExpr: editing.scheduleType === "repeat" ? editorCron : "",
       fireAt: editing.scheduleType === "once" ? localInputToISO(editing.fireAtLocal) : "",
       target: destTarget(editing.dest),
+      playbookId: editing.playbookId,
     };
     if (editing.scheduleType === "repeat" && !payload.cronExpr) { editorError = "반복 주기를 정해 주세요."; return; }
     if (editing.scheduleType === "once" && !payload.fireAt) { editorError = "실행할 날짜와 시간을 골라 주세요."; return; }
@@ -328,7 +330,7 @@
       {#each sorted as t (t.id)}
         <div class={`rounded-lg border border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-900/85 p-3 shadow-sm ${t.status !== "pending" ? "opacity-70" : ""}`}>
           <div class="flex items-start gap-2">
-            <span class="mt-0.5 shrink-0 text-base" title={t.isTask ? "AI 작업" : "알림"}>{t.isTask ? "🤖" : "🔔"}</span>
+            <span class="mt-0.5 shrink-0 text-base" title={t.playbookId ? "업무 루틴" : t.isTask ? "AI 작업" : "알림"}>{t.playbookId ? "▶" : t.isTask ? "🤖" : "🔔"}</span>
             <button class="min-w-0 flex-1 text-left" onclick={() => openEditor(t)} title="편집">
               <div class="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{title(t)}</div>
               {#if t.prompt && t.prompt !== t.label}
@@ -344,7 +346,11 @@
             {#if t.status === "pending" && nextText(t)}
               <span class="font-semibold text-blue-600 dark:text-blue-400">{nextText(t)}</span>
             {/if}
-            <span title="결과 받을 곳">💬 {destLabel(destOf(t))}</span>
+            {#if t.playbookId}
+              <span>업무 루틴 · 실행할 때마다 새 대화</span>
+            {:else}
+              <span title="결과 받을 곳">💬 {destLabel(destOf(t))}</span>
+            {/if}
             {#if t.script}
               <span title={t.script}>사전 확인 있음</span>
             {/if}

@@ -25,16 +25,23 @@ var (
 	playMu   sync.Mutex
 	playing  []byte        // the WAV winmm is reading; kept alive while it plays
 	playStop chan struct{} // closed by stopWavNative
+	stopGen  int           // readings up to this one were stopped; their clips never start
 )
 
-// playWavNative plays a WAV image and returns when it ends or stopWavNative
-// cuts it off.
-func playWavNative(wav []byte) error {
+// playWavNative plays a WAV image of reading gen and returns when it ends or
+// stopWavNative cuts it off. The two calls come from the page concurrently,
+// so a clip whose reading was already stopped (its PlayWav arriving after the
+// StopWav) is not played at all - barge-in used to let one through.
+func playWavNative(wav []byte, gen int) error {
 	d, ok := wavDuration(wav)
 	if !ok {
 		return syscall.EINVAL
 	}
 	playMu.Lock()
+	if gen <= stopGen {
+		playMu.Unlock()
+		return nil
+	}
 	stopLocked()
 	playing = wav
 	stop := make(chan struct{})
@@ -57,8 +64,10 @@ func playWavNative(wav []byte) error {
 	return nil
 }
 
-func stopWavNative() {
+// stopWavNative cuts off reading gen and every one before it.
+func stopWavNative(gen int) {
 	playMu.Lock()
+	stopGen = max(stopGen, gen)
 	stopLocked()
 	playMu.Unlock()
 }

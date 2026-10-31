@@ -573,11 +573,57 @@ function normalizeForEcho(s) {
   return String(s || "").normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 }
 
+// The reply is written with English words and digits, but whisper hears our
+// voice reading them in Hangul ("OpenVoice" → "오픈 보이스", "M2" → "엠투"),
+// so the echo check compares against how they are read aloud too.
+const READ_WORDS = {
+  openvoice: "오픈보이스", supertonic: "슈퍼토닉", whisper: "위스퍼", claude: "클로드", aglink: "에이지링크",
+  windows: "윈도우", wav: "웨이브", ok: "오케이", okay: "오케이", go: "고", git: "깃", commit: "커밋",
+  push: "푸시", build: "빌드", server: "서버", test: "테스트", log: "로그", app: "앱", mode: "모드",
+};
+const READ_LETTERS = {
+  a: "에이", b: "비", c: "씨", d: "디", e: "이", f: "에프", g: "지", h: "에이치", i: "아이", j: "제이",
+  k: "케이", l: "엘", m: "엠", n: "엔", o: "오", p: "피", q: "큐", r: "알", s: "에스", t: "티",
+  u: "유", v: "브이", w: "더블유", x: "엑스", y: "와이", z: "지",
+};
+const SINO_DIGITS = ["", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"];
+const SINO_DIGITS_ALONE = ["영", ...SINO_DIGITS.slice(1)];
+// After a letter ("M2", "F2") a digit is read as an English number.
+const ENGLISH_DIGITS = ["제로", "원", "투", "쓰리", "포", "파이브", "식스", "세븐", "에잇", "나인"];
+
+function sinoNumber(digits) {
+  const n = Number(digits);
+  if (!Number.isFinite(n) || digits.length > 4 || n === 0) return [...digits].map((d) => SINO_DIGITS_ALONE[d]).join("");
+  let out = "";
+  [..."천백십"].forEach((unit, i) => {
+    const d = Math.floor(n / 10 ** (3 - i)) % 10;
+    if (d) out += (d === 1 ? "" : SINO_DIGITS[d]) + unit;
+  });
+  return out + SINO_DIGITS[n % 10];
+}
+
+export function readAloud(text) {
+  const decimals = String(text || "").replace(/(\d+)\.(\d+)/g, (_, a, b) => `${sinoNumber(a)}점${[...b].map((d) => SINO_DIGITS_ALONE[d]).join("")}`);
+  return decimals.replace(/[A-Za-z]+(\d*)|\d+/g, (tok, tail = "") => {
+    if (/^\d/.test(tok)) return sinoNumber(tok);
+    const word = tok.slice(0, tok.length - tail.length);
+    const known = READ_WORDS[word.toLowerCase()];
+    // Unknown short or all-caps words (GPU, TTS) are spelled out letter by letter.
+    const spoken = known ?? (word.length <= 4 || word === word.toUpperCase() ? [...word.toLowerCase()].map((c) => READ_LETTERS[c]).join("") : word);
+    return spoken + [...tail].map((d) => ENGLISH_DIGITS[d]).join("");
+  });
+}
+
+function echoReference(reply) {
+  const r = normalizeForEcho(reply);
+  return /[a-z0-9]/.test(r) ? r + normalizeForEcho(readAloud(reply)) : r;
+}
+
 // isEcho: most of the segment's character pairs also occur in the reply being
 // read. Whisper mishears our own voice a little, so this is fuzzy on purpose.
 function isEcho(text, reply, overlap = ECHO_OVERLAP) {
   const t = normalizeForEcho(text);
-  const r = normalizeForEcho(reply);
+  const r = echoReference(reply);
   if (t.length < 2) return true; // too short to tell — not worth stopping the reply for
   if (!r) return false;
   const pairs = new Set();
@@ -863,11 +909,11 @@ function addPlayRef(b64) {
 export function stopSpeaking() {
   const cut = performance.now();
   for (const ref of playRefs) if (ref.endAt > cut) ref.endAt = cut;
+  // Always told, even between clips: a PlayWav already on its way to Go is
+  // then dropped there instead of starting after this.
+  nativePlaying = false;
+  if (nativeOK) VoiceService.StopWav(speakGen).catch(() => {});
   speakGen++;
-  if (nativePlaying) {
-    nativePlaying = false;
-    VoiceService.StopWav().catch(() => {});
-  }
   if (audio) {
     audio.pause();
     audio = null;
@@ -977,7 +1023,10 @@ function splitSentences(text) {
   return out;
 }
 
-let speakGen = 0; // bumped by stopSpeaking to abandon a reading in progress
+// Bumped by stopSpeaking to abandon a reading in progress. It starts from the
+// clock so it keeps rising across a page reload, which Go's StopWav relies on.
+let speakGen = Date.now();
+const prefetched = new Map(); // sentence -> Synthesize promise started before the turn was done
 let audio = null; // the Supertonic clip playing now
 let replyText = ""; // what is (or was last) read aloud — barge-in drops segments matching it
 let readingEndedAt = -Infinity; // when the last reading finished on its own
@@ -1004,7 +1053,7 @@ async function playWav(b64, gen) {
   if (nativeOK) {
     nativePlaying = true;
     try {
-      await VoiceService.PlayWav(b64);
+      await VoiceService.PlayWav(b64, gen);
       if (ref && ref.endAt > performance.now()) ref.endAt = performance.now();
       return;
     } catch (err) {
@@ -1032,10 +1081,29 @@ function playWavPage(b64, gen) {
 
 // speakSupertonic synthesizes sentence by sentence, the next one while the
 // current one plays. False means it could not start, so the caller falls back.
+function synthesize(sentence) {
+  const early = prefetched.get(sentence);
+  prefetched.delete(sentence);
+  return early ?? VoiceService.Synthesize(sentence, TTS_VOICE);
+}
+
+// prefetchSpeech makes a reply's first sentence as soon as its text arrives:
+// the turn's "done" comes a moment later, and by then it is ready to play.
+// A note sent mid-turn that is not read in the end only costs a synthesis.
+function prefetchSpeech(md) {
+  if (ttsReady !== true) return;
+  const first = splitSentences(speechText(md))[0];
+  if (!first || prefetched.has(first)) return;
+  const p = VoiceService.Synthesize(first, TTS_VOICE);
+  p.catch(() => {});
+  prefetched.set(first, p);
+  if (prefetched.size > 3) prefetched.delete(prefetched.keys().next().value);
+}
+
 async function speakSupertonic(sentences, gen) {
   let b64;
   try {
-    b64 = await VoiceService.Synthesize(sentences[0], TTS_VOICE);
+    b64 = await synthesize(sentences[0]);
   } catch (err) {
     vlog(`Supertonic failed, Windows voice instead: ${err?.message || err}`);
     ttsReady = null; // asked again next time — the Go side retries the server after a while
@@ -1043,7 +1111,7 @@ async function speakSupertonic(sentences, gen) {
   }
   try {
     for (let i = 0; gen === speakGen; i++) {
-      const next = i + 1 < sentences.length ? VoiceService.Synthesize(sentences[i + 1], TTS_VOICE) : null;
+      const next = i + 1 < sentences.length ? synthesize(sentences[i + 1]) : null;
       next?.catch(() => {}); // awaited below; this only silences an abandoned one
       if (b64) await playWav(b64, gen);
       if (!next) break;
@@ -1125,6 +1193,7 @@ setAssistantTextListener((key, text) => {
     return;
   }
   pendingSpeech.set(key, [...(pendingSpeech.get(key) || []), text]);
+  prefetchSpeech(text);
 });
 
 // getVoices() is empty until the voice list loads; touching it starts the load.

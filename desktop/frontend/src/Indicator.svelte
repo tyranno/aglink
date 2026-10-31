@@ -13,7 +13,7 @@
   Events.On("voice:state", (event) => {
     const d = event.data || {};
     phase = d.phase || "waiting";
-    label = d.label || "음성 대화 중";
+    label = (d.label || "음성 대화 중").replace(/^🗣\s*/u, ""); // the icon already says it
     if (typeof d.barge === "boolean") barge = d.barge;
   });
 
@@ -25,24 +25,31 @@
 <div class="box">
   <div class="pill">
     <button class="main" onclick={() => Events.Emit("indicator:open")} title="aglink 열기">
-      <!-- Each phase has its own shape, not just a colour: ripple = listening,
-           spinner = working out the words, typing dots = waiting for the reply,
-           bars = reading it out. -->
-      <span class="icon {phase}" aria-hidden="true">
+      <!-- Each phase is its own pictogram, the same as the tray icon, so the
+           state is told by shape rather than colour: mic = listening, lines =
+           working out the words, hourglass = waiting for the reply, speaker =
+           reading it out, ! = problem. -->
+      <svg class="icon {phase}" viewBox="0 0 24 24" aria-hidden="true">
         {#if phase === "listening"}
-          <span class="core"></span><span class="ripple"></span>
+          <rect x="9" y="3" width="6" height="11" rx="3" class="fill" />
+          <path d="M6 11a6 6 0 0 0 12 0M12 17v4M8.5 21h7" />
         {:else if phase === "transcribing"}
-          <span class="spin"></span>
+          <path class="ln l1" d="M5 7h14" /><path class="ln l2" d="M5 12h14" /><path class="ln l3" d="M5 17h8" />
         {:else if phase === "speaking"}
-          <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
+          <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" class="fill" />
+          <path class="wave w1" d="M15 9.5a3.5 3.5 0 0 1 0 5" />
+          <path class="wave w2" d="M17.5 7a7 7 0 0 1 0 10" />
         {:else if phase === "problem"}
-          <span class="warn">!</span>
+          <path d="M12 4 3 20h18z" /><path d="M12 10v4.5M12 17.2v.3" />
         {:else if phase === "note"}
-          <span class="core"></span>
+          <circle cx="12" cy="12" r="8.5" /><path d="M12 11v5.5M12 7.8v.3" />
         {:else}
-          <span class="d"></span><span class="d"></span><span class="d"></span>
+          <g class="glass">
+            <path d="M6.5 3.5h11M6.5 20.5h11M8 3.5c0 5 8 5 8 8.5s-8 3.5-8 8.5M16 3.5c0 5-8 5-8 8.5s8 3.5 8 8.5" />
+            <path d="M9.5 19.5h5l-2.5-3z" class="fill" />
+          </g>
         {/if}
-      </span>
+      </svg>
       <span class="label" title={label}>{label}</span>
     </button>
     {#if hasReply}
@@ -126,119 +133,77 @@
     white-space: nowrap;
   }
   .icon {
-    position: relative;
     flex: none;
     width: 22px;
     height: 22px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
-  /* listening: green dot sending out a ripple */
-  .core {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: #4ade80;
+  .icon .fill {
+    fill: currentColor;
+    stroke: none;
   }
-  .ripple {
-    position: absolute;
-    inset: 6px;
-    border-radius: 50%;
-    border: 2px solid #4ade80;
-    animation: ripple 1.4s ease-out infinite;
+  /* listening: the mic breathes */
+  .icon.listening {
+    animation: breathe 1.4s ease-in-out infinite;
   }
-  @keyframes ripple {
-    from {
-      transform: scale(0.6);
-      opacity: 1;
-    }
-    to {
-      transform: scale(1.9);
-      opacity: 0;
+  @keyframes breathe {
+    50% {
+      transform: scale(0.82);
+      opacity: 0.6;
     }
   }
-  /* transcribing: amber spinner */
-  .spin {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    border: 3px solid rgba(251, 191, 36, 0.25);
-    border-top-color: #fbbf24;
-    animation: spin 0.8s linear infinite;
+  /* transcribing: lines being written one after another */
+  .ln {
+    stroke-dasharray: 14;
+    animation: write 1.5s ease-in-out infinite;
   }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
+  .l2 {
+    animation-delay: 0.25s;
+  }
+  .l3 {
+    animation-delay: 0.5s;
+  }
+  @keyframes write {
+    0% {
+      stroke-dashoffset: 14;
     }
-  }
-  /* waiting for the reply: three dots typing */
-  .d {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: #a5b4fc;
-    animation: typing 1.2s ease-in-out infinite;
-  }
-  .d:nth-child(2) {
-    animation-delay: 0.2s;
-  }
-  .d:nth-child(3) {
-    animation-delay: 0.4s;
-  }
-  @keyframes typing {
-    0%,
-    60%,
+    50%,
     100% {
-      transform: translateY(0);
-      opacity: 0.4;
-    }
-    30% {
-      transform: translateY(-5px);
-      opacity: 1;
+      stroke-dashoffset: 0;
     }
   }
-  /* speaking: blue equaliser bars */
-  .bar {
-    width: 3px;
-    height: 16px;
-    border-radius: 2px;
-    background: #60a5fa;
-    transform-origin: center;
-    animation: eq 0.9s ease-in-out infinite;
+  /* waiting: the hourglass turns over */
+  .glass {
+    transform-origin: 12px 12px;
+    animation: flip 2s ease-in-out infinite;
   }
-  .bar:nth-child(2) {
-    animation-delay: 0.15s;
+  @keyframes flip {
+    0%,
+    60% {
+      transform: rotate(0);
+    }
+    100% {
+      transform: rotate(180deg);
+    }
   }
-  .bar:nth-child(3) {
-    animation-delay: 0.3s;
+  /* speaking: sound waves come and go */
+  .wave {
+    animation: wave 1s ease-in-out infinite;
   }
-  .bar:nth-child(4) {
-    animation-delay: 0.45s;
+  .w2 {
+    animation-delay: 0.25s;
   }
-  @keyframes eq {
+  @keyframes wave {
     0%,
     100% {
-      transform: scaleY(0.3);
+      opacity: 0.2;
     }
     50% {
-      transform: scaleY(1);
+      opacity: 1;
     }
-  }
-  /* problem: red badge, no motion */
-  .warn {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #f87171;
-    color: #1e2230;
-    font-weight: 700;
-    font-size: 13px;
-    line-height: 18px;
-    text-align: center;
-  }
-  .icon.note .core {
-    background: #c4b5fd;
   }
 </style>

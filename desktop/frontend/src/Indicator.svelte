@@ -11,12 +11,14 @@
   let hasReply = $state(false);
   let speed = $state(0);
   let chatTitle = $state("");
+  let textOnly = $state(false);
 
   Events.On("voice:state", (event) => {
     const d = event.data || {};
     phase = d.phase || "waiting";
     label = (d.label || "음성 대화 중").replace(/^🗣\s*/u, ""); // the icon already says it
     if (typeof d.barge === "boolean") barge = d.barge;
+    if (typeof d.textOnly === "boolean") textOnly = d.textOnly;
     if (Number.isFinite(d.speed)) speed = d.speed;
     chatTitle = typeof d.chat === "string" ? d.chat : "";
   });
@@ -72,6 +74,12 @@
     {#if hasReply}
       <button class="mode" onclick={() => Events.Emit("reply:toggle")} title="마지막 답변 원문 보기">원문</button>
     {/if}
+    <button
+      class="mode"
+      onclick={() => Events.Emit("tray:textonly")}
+      title={textOnly ? "답변을 읽지 않고 글로만 보여요 — 눌러서 말로" : "답변을 읽어 드려요 — 눌러서 글로만"}
+      >{textOnly ? "글로만" : "말로"}</button
+    >
     <button
       class="mode"
       onclick={() => Events.Emit("tray:barge")}

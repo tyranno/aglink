@@ -14,6 +14,7 @@
   let timer = null;
   let box = $state();
   let shown = $state(0);
+  let silent = $state(false); // shown instead of read: it stays until closed
 
   // Replies are Markdown; rendered the same safe way as the chat bubbles
   // (textContent only), so ** and - show as bold and lists, not as symbols.
@@ -30,7 +31,7 @@
   function arm() {
     clearTimeout(timer);
     fading = false;
-    if (!hovered) timer = setTimeout(fadeOut, lingerMs(reply));
+    if (!hovered && !silent) timer = setTimeout(fadeOut, lingerMs(reply));
   }
 
   function fadeOut() {
@@ -45,6 +46,7 @@
   // Go sends the reply along each time it pops this window up.
   Events.On("reply:show", (event) => {
     reply = event.data?.text || "";
+    silent = !!event.data?.silent;
     shown++; // re-mounts the box (scrolled to the top), replaying the pop-in
     arm();
   });
@@ -67,7 +69,7 @@
   }}
 >
   <div class="head">
-    <span>답변 원문</span>
+    <span>{silent ? "답변" : "답변 원문"}</span>
     <button onclick={fadeOut} title="닫기">✕</button>
   </div>
   <div class="text md" bind:this={box} use:markdown={reply}></div>

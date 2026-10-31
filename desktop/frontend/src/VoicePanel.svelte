@@ -127,6 +127,19 @@
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
+          <div class={label}>답변은 글로만 보여 주기</div>
+          <div class={desc}>켜면 말로 시키신 일의 답변을 읽지 않고 글로만 띄워요. 창을 트레이에 두면 오른쪽 아래에 답변 창이 떠서 닫을 때까지 남아요. “글로만 보여 줘”, “다시 말로 해 줘”라고 말해서 바꿀 수도 있고, 부탁 끝에 “글로만 보여 줘”를 붙이면 그 답변만 글로 보여요.</div>
+        </div>
+        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input type="checkbox" checked={voice.textOnly} onchange={(e) => setVoiceSettings({ textOnly: e.currentTarget.checked })} />
+          사용
+        </label>
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
           <div class={label}>읽는 중 끼어들기</div>
           <div class={desc}>켜면 제가 읽는 중에 말씀하실 때 읽기를 멈추고 들어요. 끄면 다 읽은 뒤에 마이크가 켜져요.</div>
         </div>

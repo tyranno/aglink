@@ -17,7 +17,7 @@ import (
 // themselves; this side only decides what is visible and where.
 
 const (
-	indicatorW, indicatorH = 380, 52
+	indicatorW, indicatorH = 440, 52
 	replyW, replyH         = 420, 280
 	indicatorMargin        = 16
 	replyGap               = 8

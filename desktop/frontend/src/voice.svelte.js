@@ -85,7 +85,7 @@ const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
 const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
 const MAX_WAKE_NAMES = 5;
 // How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on
 // from the start and stays on; "manual" — only 🗣 / Ctrl+Shift+M / the tray.
@@ -126,6 +126,7 @@ function loadSettings() {
     wakeNames: cleanWakeNames(s.wakeNames),
     wakeDefault: typeof s.wakeDefault === "boolean" ? s.wakeDefault : true,
     summary: typeof s.summary === "boolean" ? s.summary : VOICE_DEFAULTS.summary,
+    textOnly: typeof s.textOnly === "boolean" ? s.textOnly : VOICE_DEFAULTS.textOnly,
   };
 }
 
@@ -203,6 +204,7 @@ export function setVoiceSettings(patch) {
   if (typeof patch.wakeDefault === "boolean") voice.wakeDefault = patch.wakeDefault;
   if (!voice.wakeDefault && !voice.wakeNames.length) voice.wakeDefault = true; // always some name to wake on
   if (typeof patch.summary === "boolean") voice.summary = patch.summary;
+  if (typeof patch.textOnly === "boolean") voice.textOnly = patch.textOnly;
   try {
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
@@ -215,6 +217,7 @@ export function setVoiceSettings(patch) {
         wakeNames: voice.wakeNames,
         wakeDefault: voice.wakeDefault,
         summary: voice.summary,
+        textOnly: voice.textOnly,
       }),
     );
   } catch {}
@@ -469,6 +472,7 @@ $effect.root(() => {
       speed: voice.ttsSpeed,
       chat: chatTitle,
       wake: voice.waking,
+      textOnly: voice.textOnly,
     });
   });
 });
@@ -515,6 +519,7 @@ export function setBargeEnabled(on) {
 }
 
 Events.On("tray:barge", () => setBargeEnabled(!voice.bargeEnabled));
+Events.On("tray:textonly", () => setVoiceSettings({ textOnly: !voice.textOnly }));
 
 // resumeListening opens the mic again once the reply has been read out.
 function resumeListening(delay = 200) {
@@ -540,7 +545,8 @@ setTurnDoneListener((key) => {
   // ones before it are "looking into it…" notes sent while working.
   const texts = pendingSpeech.get(key);
   pendingSpeech.delete(key);
-  if (texts?.length) speakReply(texts[texts.length - 1]);
+  if (texts?.length) speakReply(texts[texts.length - 1], key);
+  textOnce.delete(key);
   convActiveAt = Date.now();
   const p = voice.convPaneId && pane(voice.convPaneId);
   const awaited = awaitedPane();
@@ -930,6 +936,13 @@ const LIST_RE = cmdRE(String.raw`(최근\s*)?(대화|채팅|채팅방)\s*(목록
 const NOW_RE = cmdRE(String.raw`(지금|여기)\s*(은|는)?\s*(무슨|어떤|어느|뭔)\s*(대화|채팅|채팅방)\s*(야|이야|예요|이에요|지|인가|인지\s*알려)?\??`);
 const NTH_RE = cmdRE(String.raw`(\d+|일|이|삼|사|오|첫|두|세|네|다섯)\s*번\s*(째)?\s*(대화|채팅)?\s*(으로|로|를|을)?\s*(열어|가|가자|바꿔|옮겨|들어가)`);
 const DETAIL_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\s*)?(더\s*)?(자세히|전부|전체|끝까지|나머지|다)\s*(다\s*)?(읽어|말해|들려|얘기해)`);
+// "글로만 보여 줘": replies are shown, not read, until "다시 말로 해 줘".
+// The same words at the end of a request ("오늘 일정 정리해서 글로만 보여
+// 줘") hold for that one reply only (ONCE_TEXT_RE).
+const NO_SPEECH = String.raw`((말|소리|음성)\s*(로\s*)?(는\s*)?(하지\s*말고|없이|끄고|빼고)|읽지\s*(말고|마))`;
+const TEXT_ONLY_ON_RE = cmdRE(String.raw`(이제\s*(부터)?\s*)?(답변\s*(은|을|도)?\s*)?(${NO_SPEECH}\s*)?(글|글자|글씨|텍스트|문자|화면)\s*(으로|로|에)?\s*만\s*(보여|띄워|해|알려|써)|(답변\s*(은|을|도)?\s*)?${NO_SPEECH}\s*(보여|띄워)`);
+const TEXT_ONLY_OFF_RE = cmdRE(String.raw`(이제\s*)?(다시\s*)?(답변\s*(은|을|도)?\s*)?(말|소리|음성)\s*(로|으로)\s*(도\s*)?(다시\s*)?(읽어|말해|해|들려|알려|대답해)`);
+const ONCE_TEXT_RE = new RegExp(String.raw`(${NO_SPEECH}\s*((글|글자|텍스트|화면)\s*(으로|로|에)?\s*)?(만\s*)?|(글|글자|텍스트|화면)\s*(으로|로|에)\s*만\s*)(보여|띄워|정리해|알려|써)\S*(\s*(줘|주세요|줄래))?[.!?~\s]*$`);
 const SHORT_RE = cmdRE(String.raw`(방금\s*(거|답변)\s*(을|를)?\s*)?(좀\s*)?(요약|짧게|간단히|간단하게)\s*(해서\s*)?(다시\s*)?(읽어|말해|들려|얘기해)`);
 const ALARM_LIST_RE =cmdRE(String.raw`((맡긴|예약한|맞춘|남은)\s*)?(알림|알람)\s*(목록|들)?\s*(을|를|좀)?\s*(읽어|알려|말해|불러)|(알림|알람)\s*(뭐|뭐가|몇\s*개)\s*(있어|있지|있나|남았어)`);
 const ALARM_CANCEL_RE = cmdRE(String.raw`((\S+)\s*번\s*(째\s*)?|방금\s*(맡긴\s*)?)?(알림|알람)\s*(을|를)?\s*(다|전부|모두)?\s*(취소|취소해|지워|꺼|없애|빼)`);
@@ -1190,7 +1203,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 // runVoiceCommand carries out text if it is one of the commands; false means
@@ -1226,6 +1239,13 @@ async function runVoiceCommand(paneId, text) {
     const always = LISTEN_ALWAYS_RE.test(t);
     setVoiceSettings({ listenMode: always ? "always" : "wake" });
     speak(always ? "이제 항상 듣고 있을게요. 앱을 켜면 바로 대화가 시작돼요." : `이제 ${wakeNameLabel()}, 라고 부르실 때만 들을게요.`);
+    return true;
+  }
+  if (TEXT_ONLY_ON_RE.test(t) || TEXT_ONLY_OFF_RE.test(t)) {
+    const on = TEXT_ONLY_ON_RE.test(t);
+    setVoiceSettings({ textOnly: on });
+    vlog(`text only → ${on}`);
+    speak(on ? "이제 답변은 읽지 않고 글로만 보여 드릴게요. 다시 말로 해 줘, 라고 하시면 읽어 드려요." : "이제 다시 답변을 읽어 드릴게요.");
     return true;
   }
   if (DETAIL_RE.test(t)) {
@@ -1614,6 +1634,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
         setAwaited(paneId);
       }
       convActiveAt = Date.now();
+      if (ONCE_TEXT_RE.test(text)) textOnce.add(targetKey(p.target));
       await sendFromPane(paneId);
     }
     else {
@@ -2085,8 +2106,11 @@ function speakWindows(sentences) {
 let lastReply = ""; // the last assistant reply read out, for "다시 읽어 줘" / "자세히 읽어 줘"
 let detailHinted = false; // "자세히 읽어 줘" is mentioned once a run, the first time a reply is cut
 
-function speakReply(md) {
+const textOnce = new Set(); // chats whose next reply was asked for "글로만"
+
+function speakReply(md, key = "") {
   lastReply = md;
+  if (voice.textOnly || textOnce.has(key)) return showReply(md);
   let tail = "";
   if (voice.summary && !detailHinted && voice.convPaneId) {
     const cut = speechText(md, "full").length > speechText(md).length + CUT_MARGIN;
@@ -2096,6 +2120,17 @@ function speakReply(md) {
     }
   }
   return speak(md, speechMode(), tail);
+}
+
+// showReply puts the reply up as text without reading it: in the popup above
+// the indicator while the window is in the tray, where it stays until closed.
+// "다시 읽어 줘" / "자세히 읽어 줘" still read it on request.
+function showReply(md) {
+  const text = String(md || "").trim();
+  if (!text) return;
+  vlog("reply shown as text only");
+  if (voice.convPaneId || savedConversationPane()) Events.Emit("voice:reply", { text, silent: true });
+  flash("📄 답변을 글로 띄웠어요");
 }
 
 // speakDetail reads the last reply in full.
@@ -2153,11 +2188,12 @@ setAssistantTextListener((key, text) => {
   if (!wanted) return;
   // A reply outside a running turn (a !command answer) has no "done" coming.
   if (!chat.working.has(key)) {
-    speakReply(text);
+    speakReply(text, key);
+    textOnce.delete(key);
     return;
   }
   pendingSpeech.set(key, [...(pendingSpeech.get(key) || []), text]);
-  prefetchSpeech(text);
+  if (!voice.textOnly && !textOnce.has(key)) prefetchSpeech(text);
 });
 
 // ---- wake word ----

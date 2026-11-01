@@ -636,3 +636,14 @@ func TestSetBackend_CodexUnavailable(t *testing.T) {
 		t.Error("backend should remain claude after failed switch")
 	}
 }
+
+func TestFormatUsageLineCostWarning(t *testing.T) {
+	cheap := CumUsage{Input: 10, Output: 10, Cost: 0.5}
+	if got := formatUsageLine(cheap, cheap, false); strings.Contains(got, "⚠️") {
+		t.Fatalf("cheap turn warned: %q", got)
+	}
+	pricey := CumUsage{Input: 10, Output: 10, Cost: 1.2}
+	if got := formatUsageLine(pricey, pricey, false); !strings.Contains(got, "⚠️ 이번 턴 비용 $1.20") {
+		t.Fatalf("expensive turn not warned: %q", got)
+	}
+}

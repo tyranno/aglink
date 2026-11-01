@@ -2005,7 +2005,9 @@ const (
 	// depends on the worker model's context window (200k for sonnet) and is a
 	// judgment call pending more data; tune via measurement if it fires too often or
 	// too rarely.
-	claudeContextResetTokens = 150000
+	// 2026-11: lowered 150k→100k. Token audit of a long conversation: cache reads
+	// of a big context × many tool round-trips were ~88% of its cost.
+	claudeContextResetTokens = 100000
 )
 
 // codexContextTooLarge reports whether a codex thread's last observed input-token
@@ -2071,7 +2073,19 @@ func formatUsageLine(turn, cum CumUsage, isError bool) string {
 		compactTokens(turn.Input+turn.Write),
 		compactTokens(turn.Output),
 		compactTokens(cum.Total()),
-		turn.Cost)
+		turn.Cost) + costWarning(turn.Cost)
+}
+
+// turnCostWarnUSD: a single turn costing at least this much gets a warning line
+// under the usage footer. Expensive turns are almost always long tool-heavy work
+// on a large context; starting a new conversation is the cheapest fix.
+const turnCostWarnUSD = 1.0
+
+func costWarning(cost float64) string {
+	if cost < turnCostWarnUSD {
+		return ""
+	}
+	return fmt.Sprintf("\n⚠️ 이번 턴 비용 $%.2f — 대화가 길어졌으니 새 대화로 시작하면 줄어요", cost)
 }
 
 // compactTokens formats a token count tersely for the usage footer ("2.5M", "31.7k",

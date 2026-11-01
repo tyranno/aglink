@@ -256,11 +256,13 @@ export async function clearSpeaker() {
 
 // How loudly the user talks into this mic, learned from clips that are surely
 // them. People across the room or the TV reach the mic much quieter; a clip
-// well under the user's level must sound clearly like them to be sent.
-const USER_LEVEL_KEY = "aglink.voice.userLevel";
+// well under the user's level must sound clearly like them to be sent. This
+// only works with the mic's automatic gain off (startRecording, startWake):
+// AGC lifts far-off speech to the same level as speech at the desk.
+const USER_LEVEL_KEY = "aglink.voice.userLevel2"; // v1 was measured with AGC on
 const QUIET_RATIO = 0.4; // under this share of the user's level = far away
 const QUIET_EXTRA_BAR = 0.15;
-const USER_LEVEL_MIN_CLIPS = 5;
+const USER_LEVEL_MIN_CLIPS = 1;
 let userLevel = (() => {
   try {
     const v = JSON.parse(localStorage.getItem(USER_LEVEL_KEY) || "null");
@@ -730,7 +732,7 @@ async function startRecording(paneId, barge = false) {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false },
     });
   } catch (error) {
     if (barge) return; // the normal recording after the reading reports it
@@ -2609,7 +2611,7 @@ async function startWake() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false },
     });
   } catch (error) {
     vlog(`wake mic failed: ${error?.message || error}`);

@@ -91,7 +91,8 @@ const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
 export const CLONE_VOICE = "C"; // the recorded voice (cloneVoice); only it is repainted
 const isTTSVoice = (name) => TTS_VOICES.includes(name) || name === CLONE_VOICE;
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.4, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
+const OLD_SPEAKER_MIN = 0.3;
 const MAX_WAKE_NAMES = 5;
 // How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on
 // from the start and stays on; "manual" — only 🗣 / Ctrl+Shift+M / the tray.
@@ -126,7 +127,8 @@ function loadSettings() {
   return {
     ttsVoice: isTTSVoice(s.ttsVoice) ? s.ttsVoice : VOICE_DEFAULTS.ttsVoice,
     ttsSpeed: Number.isFinite(s.ttsSpeed) ? clamp(s.ttsSpeed, SPEED_RANGE) : VOICE_DEFAULTS.ttsSpeed,
-    speakerMin: Number.isFinite(s.speakerMin) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
+    // 0.3 was the old default: too loose — nearby talk at 0.34–0.47 got through.
+    speakerMin: Number.isFinite(s.speakerMin) && !(s.speakerMinV !== 2 && s.speakerMin === OLD_SPEAKER_MIN) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
     listenMode: LISTEN_MODES.includes(s.listenMode) ? s.listenMode : s.wake === false ? "manual" : VOICE_DEFAULTS.listenMode,
     wakeIdleMin: WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
     wakeNames: cleanWakeNames(s.wakeNames),
@@ -220,6 +222,7 @@ export function setVoiceSettings(patch) {
         ttsVoice: voice.ttsVoice,
         ttsSpeed: voice.ttsSpeed,
         speakerMin: voice.speakerMin,
+        speakerMinV: 2,
         listenMode: voice.listenMode,
         wakeIdleMin: voice.wakeIdleMin,
         wakeNames: voice.wakeNames,

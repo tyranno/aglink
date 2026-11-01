@@ -195,7 +195,7 @@ func (v *VoiceService) SpeakerScore(b64 string) (float64, error) {
 		}
 		return -1, nil
 	}
-	score, err := spkRequestLocked(map[string]any{"op": "score", "wav": path, "ref": me})
+	score, err := spkRequestLocked(map[string]any{"op": "score", "wav": path, "ref": me, "adapt_min": speakerAdaptMin})
 	if err != nil {
 		log.Printf("[speaker] score failed: %v", err)
 		return -1, nil
@@ -214,3 +214,9 @@ func stopSpeakerServer() {
 	_ = spk.cmd.Wait()
 	spk = nil
 }
+
+// speakerAdaptMin: a clip scoring at least this is surely the user, so
+// speaker_server.py nudges the enrolled voice toward it. The user's own clips
+// score ~0.45–0.7 against the one enrollment recording and others ≤0.3;
+// learning from everyday clips widens that gap.
+const speakerAdaptMin = 0.6

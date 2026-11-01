@@ -4,7 +4,12 @@
 # similarity to the enrolled one. One JSON line per request on stdin, one
 # answer on stdout:
 #   in:  {"op":"embed","wav":"C:/.../me.wav","out":"C:/.../me.pt"}
-#   in:  {"op":"score","wav":"C:/.../clip.wav","ref":"C:/.../me.pt"}
+#   in:  {"op":"score","wav":"C:/.../clip.wav","ref":"C:/.../me.pt","adapt_min":0.6}
+#
+# adapt_min: a clip of at least ADAPT_SECONDS scoring this high is surely the
+# user, so the enrolled embedding is nudged toward it (and saved). One
+# enrollment recording was made once, in one room, on one day; everyday clips
+# teach it how the user sounds through this mic, which widens the gap to others.
 #   out: {"ok":true,"score":0.71,"seconds":0.03}  or  {"ok":false,"error":"..."}
 import json
 import os
@@ -12,6 +17,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+ADAPT_SECONDS = 2.0
+ADAPT_WEIGHT = 0.1
 
 
 def answer(obj):
@@ -52,7 +59,7 @@ def main():
             wav = torchaudio.functional.resample(wav, rate, 16000)
         feats = fbank(wav.to(device))
         feats = feats - feats.mean(dim=1, keepdim=True)  # per-clip mean normalization, as trained
-        return model(feats).squeeze().float().cpu()
+        return model(feats).squeeze().float().cpu(), wav.shape[1] / 16000
 
     def ref(path):
         if path not in refs:
@@ -72,11 +79,20 @@ def main():
             sys.stdout = sys.stderr
             out = {"ok": True}
             if req.get("op") == "embed":
-                torch.save(embed(req["wav"]), req["out"])
+                torch.save(embed(req["wav"])[0], req["out"])
                 refs.pop(req["out"], None)
             else:
-                e = embed(req["wav"])
-                out["score"] = round(torch.nn.functional.cosine_similarity(e, ref(req["ref"]), dim=0).item(), 3)
+                e, seconds = embed(req["wav"])
+                r = ref(req["ref"])
+                score = torch.nn.functional.cosine_similarity(e, r, dim=0).item()
+                out["score"] = round(score, 3)
+                lo = req.get("adapt_min")
+                if lo and score >= lo and seconds >= ADAPT_SECONDS:
+                    n = torch.nn.functional.normalize
+                    r = (1 - ADAPT_WEIGHT) * n(r, dim=0) + ADAPT_WEIGHT * n(e, dim=0)
+                    torch.save(r, req["ref"])
+                    refs[req["ref"]] = r
+                    out["adapted"] = True
             out["seconds"] = round(time.time() - started, 3)
             sys.stdout = real_stdout
             answer(out)

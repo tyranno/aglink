@@ -90,6 +90,7 @@ func main() {
 	win.OnWindowEvent(events.Common.WindowDidMove, saveGeo)
 	win.OnWindowEvent(events.Common.WindowClosing, saveGeo)
 	setupIndicator(app)
+	setupVSCodeVoice(app)
 	setupTray(app, win)
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		keepWindowOnScreen(app, win)

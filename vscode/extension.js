@@ -136,6 +136,7 @@ function createConnector({ vscode, WebSocketImpl, readPort, methods, timers, log
 
 let connector = null;
 let terminals = null;
+let voice = null;
 
 function activate(context) {
   const vscode = require("vscode");
@@ -157,12 +158,15 @@ function activate(context) {
   };
   start();
 
+  voice = require("./voice").createVoice(vscode, log);
+
   context.subscriptions.push(
+    vscode.commands.registerCommand("aglink.voice.toggle", () => voice.toggle()),
     out,
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("aglink")) start();
     }),
-    { dispose: () => { if (connector) connector.stop(); if (terminals) terminals.dispose(); } }
+    { dispose: () => { if (connector) connector.stop(); if (terminals) terminals.dispose(); if (voice) voice.dispose(); } }
   );
 }
 
@@ -171,6 +175,8 @@ function deactivate() {
   connector = null;
   if (terminals) terminals.dispose();
   terminals = null;
+  if (voice) voice.dispose();
+  voice = null;
 }
 
 module.exports = { activate, deactivate, createConnector, windowIdentity, readPortFile };

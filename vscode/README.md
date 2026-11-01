@@ -65,6 +65,28 @@ the command is still sent, and the tool says plainly that its output cannot be
 read. `vscode_terminal_read` only knows commands run after the extension
 started.
 
+## Voice conversation with Claude Code
+
+With the aglink desktop app running, the status bar button **음성** (or
+`aglink: 음성 대화 켜기/끄기`, Ctrl+Alt+V) lends the desktop app's voice to
+Claude Code in this window: its wake word, Whisper recognition, enrolled-voice
+check and Supertonic reading.
+
+- What you say goes into Claude Code's input box and is sent. Claude Code has
+  no way to submit a prompt from outside, so the words go on the clipboard and
+  the desktop app presses Ctrl+V, Enter in this window, only once it is sure
+  this window is in front (otherwise the words stay on the clipboard).
+- When the turn ends, Claude Code's Stop hook hands the answer to the desktop
+  app, which reads it the way it reads its own replies. The first time voice is
+  turned on, the hook (`~/.aglink/vscode-voice-hook.js`) is added to
+  `~/.claude/settings.json`; it always exits 0 and does nothing while voice is
+  off.
+- While voice is on here, conversation mode on the desktop talks to this window
+  instead of its own chat. One window holds it at a time; closing the window
+  gives it back.
+
+The two sides talk over 127.0.0.1:48230 (`desktop/vscodevoice.go`).
+
 ## What it cannot do
 
 - **Read another extension's panel**, such as the Claude Code chat. VS Code does

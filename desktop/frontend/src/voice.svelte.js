@@ -185,6 +185,7 @@ export const voice = $state({
   tapeClock: "", // "03:12", shown while recording
   done: null, // title of the chat whose work just finished, shown for a while
   doneAt: 0,
+  vscode: null, // {folder, title}: what is said goes to Claude Code in that VS Code window
   ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, listenMode, wakeIdleMin, summary
 });
 
@@ -644,6 +645,76 @@ setTurnDoneListener((key) => {
   if (p?.target && targetKey(p.target) === key) resumeListening();
 });
 
+// ---- VS Code ----
+//
+// The aglink-vscode extension borrows this voice for Claude Code in a VS Code
+// window (see vscodevoice.go). While it is attached, what is said in
+// conversation mode goes there instead of the pane's chat, and the answer that
+// Claude Code's Stop hook hands back is read like any reply.
+
+const VSCODE_WAIT_MS = 15 * 60000; // a turn never reported stops holding the mic after this
+let vscodeAwait = null; // timer while an answer from VS Code is awaited
+
+function sendToVSCode(text) {
+  vlog(`to VS Code ${quote(text)}`);
+  voice.heard = text;
+  convActiveAt = Date.now();
+  if (ONCE_TEXT_RE.test(text)) textOnce.add("vscode");
+  clearTimeout(vscodeAwait);
+  vscodeAwait = setTimeout(() => {
+    vscodeAwait = null;
+    vlog("VS Code answer never came");
+    resumeListening(0);
+  }, VSCODE_WAIT_MS);
+  Events.Emit("vscode:prompt", { text });
+}
+
+Events.On("vscode:attach", (ev) => {
+  const d = ev.data || {};
+  if (d.on) {
+    voice.vscode = { folder: d.folder || "", title: d.title || "" };
+    vlog(`VS Code attached ${quote(d.title || d.folder || "", 30)}`);
+    if (voice.convPaneId) void speak("VS Code 로 연결했어요. 말씀하세요.");
+    else if (!wakePane()) flash("aglink 대화가 없어 음성을 켜지 못했어요");
+    else void wakeUp("");
+    return;
+  }
+  if (!voice.vscode) return;
+  voice.vscode = null;
+  clearTimeout(vscodeAwait);
+  vscodeAwait = null;
+  textOnce.delete("vscode");
+  vlog("VS Code detached");
+  if (voice.convPaneId) endConversation();
+  flash("VS Code 음성 연결을 끝냈어요");
+});
+
+Events.On("vscode:sent", (ev) => {
+  const d = ev.data || {};
+  if (d.ok) {
+    flash("💻 VS Code 로 보냈어요");
+    return;
+  }
+  clearTimeout(vscodeAwait);
+  vscodeAwait = null;
+  vlog(`VS Code send failed: ${d.error}`);
+  void speak(d.error || "VS Code 로 보내지 못했어요.", "full"); // the mic opens again after it
+});
+
+Events.On("vscode:reply", (ev) => {
+  const text = String(ev.data?.text || "").trim();
+  // Only the answer to what was said here: the hook reports every turn.
+  if (!voice.vscode || !vscodeAwait || !text) return;
+  clearTimeout(vscodeAwait);
+  vscodeAwait = null;
+  voice.heard = "";
+  convActiveAt = Date.now();
+  vlog("VS Code answered");
+  void speakReply(text, "vscode");
+  textOnce.delete("vscode");
+  resumeListening(); // text only: nothing is read, so the mic opens now
+});
+
 // The spoken request being worked on — its pane, chat and when it was sent —
 // kept over a restart.
 function readAwaited() {
@@ -825,7 +896,8 @@ async function startRecording(paneId, barge = false) {
       // segment still open is mostly the reading itself (it has no long
       // pauses), so it is checked like any other rather than carried over.
       if (rec.firstSpeechChunk >= 0) {
-        if (rec.lastSpeechAt - rec.firstSpeechAt >= BARGE_MIN_SPEECH_MS && rec.loudChunks >= BARGE_MIN_LOUD_CHUNKS) checkBargeSegment(rec, takeClip(rec));
+        if (rec.lastSpeechAt - rec.firstSpeechAt >= BARGE_MIN_SPEECH_MS && rec.loudChunks >= BARGE_MIN_LOUD_CHUNKS)
+          checkBargeSegment(rec, takeClip(rec), rec.speechSum / rec.loudChunks);
         rec.chunks = [];
         rec.firstSpeechChunk = -1;
       }
@@ -857,7 +929,8 @@ async function startRecording(paneId, barge = false) {
       // when the reading ends.
       const ended = now - rec.lastSpeechAt > BARGE_SEGMENT_MS || now - rec.firstSpeechAt > BARGE_MAX_SEGMENT_MS;
       if (rec.firstSpeechChunk >= 0 && ended) {
-        if (rec.lastSpeechAt - rec.firstSpeechAt >= BARGE_MIN_SPEECH_MS && rec.loudChunks >= BARGE_MIN_LOUD_CHUNKS) checkBargeSegment(rec, takeClip(rec));
+        if (rec.lastSpeechAt - rec.firstSpeechAt >= BARGE_MIN_SPEECH_MS && rec.loudChunks >= BARGE_MIN_LOUD_CHUNKS)
+          checkBargeSegment(rec, takeClip(rec), rec.speechSum / rec.loudChunks);
         rec.chunks = [];
         rec.firstSpeechChunk = -1;
         rec.loudChunks = 0;
@@ -931,8 +1004,12 @@ function tryEarlyStop(rec) {
 }
 
 // checkBargeSegment transcribes one segment heard during the reading, one at a
-// time, and decides whether it was the user or our own voice.
-function checkBargeSegment(rec, wavBytes) {
+// time, and decides whether it was the user or our own voice. level is the
+// segment's average level — the reading bouncing back off the room reaches the
+// mic far quieter than the user's own voice, so a quiet segment needs a
+// clearly matching voice and is given more benefit of the doubt on the words
+// (whisper garbles a quiet echo more than a close one).
+function checkBargeSegment(rec, wavBytes, level) {
   rec.bargeDone = rec.bargeDone.then(async () => {
     if (recorder !== rec && !rec.stopped) return;
     let text = "";
@@ -943,10 +1020,13 @@ function checkBargeSegment(rec, wavBytes) {
       return;
     }
     if (!text || (recorder !== rec && !rec.stopped)) return;
-    // Our own voice is mixed into these, so the bar is the low one.
-    if (!isUserVoice(score, speakerMinFor(true))) {
-      vlog(`other voice dropped (barge, ${score.toFixed(2)}) ${quote(text)}`);
-      logHeard(text, score, false, "읽는 중");
+    // Our own voice is mixed into these, so the bar is the low one — unless the
+    // segment is also quiet, which the mixed bar alone was already passing too
+    // easily for echo that happens to score like the user by chance.
+    const quiet = isQuiet(level);
+    if (!isUserVoice(score, speakerMinFor(true) + (quiet ? QUIET_EXTRA_BAR : 0))) {
+      vlog(`other voice dropped (barge, ${score.toFixed(2)}, level ${level.toFixed(3)}${quiet ? " quiet" : ""}) ${quote(text)}`);
+      logHeard(text, score, false, quiet ? "작은 소리" : "읽는 중");
       return;
     }
     if (BARGE_HUSH_RE.test(text)) {
@@ -959,11 +1039,14 @@ function checkBargeSegment(rec, wavBytes) {
       endConversation("음성 대화를 끝냈습니다.");
       return;
     }
-    if (isEcho(text, replyText)) {
-      vlog(`echo dropped ${quote(text)}`);
+    // A quiet segment is most likely the reading itself heard faintly, and
+    // whisper mangles it more than it would a close voice, so it does not need
+    // as much of a match to be dropped as our own echo.
+    if (isEcho(text, replyText, quiet ? 0.4 : ECHO_OVERLAP)) {
+      vlog(`echo dropped${quiet ? " (quiet)" : ""} ${quote(text)}`);
       return;
     }
-    vlog(`barge-in ${quote(text)} (echo gain ${echoGain?.toFixed(3) ?? "unlearned"}, voice ${score.toFixed(2)})`);
+    vlog(`barge-in ${quote(text)} (echo gain ${echoGain?.toFixed(3) ?? "unlearned"}, voice ${score.toFixed(2)}, level ${level.toFixed(3)})`);
     if (score >= 0) logHeard(text, score, true, "끼어들기");
     stopSpeaking();
     rec.prefix = rec.prefix ? `${rec.prefix} ${text}` : text;
@@ -2251,6 +2334,10 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     if (conv() && (await runVoiceCommand(paneId, text))) {
       vlog(`command ${quote(text)}`);
       relisten = true;
+      return;
+    }
+    if (conv() && voice.vscode) {
+      sendToVSCode(text);
       return;
     }
     const p = pane(paneId);

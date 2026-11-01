@@ -254,6 +254,34 @@ export async function clearSpeaker() {
   vlog("speaker enrollment cleared");
 }
 
+// How loudly the user talks into this mic, learned from clips that are surely
+// them. People across the room or the TV reach the mic much quieter; a clip
+// well under the user's level must sound clearly like them to be sent.
+const USER_LEVEL_KEY = "aglink.voice.userLevel";
+const QUIET_RATIO = 0.4; // under this share of the user's level = far away
+const QUIET_EXTRA_BAR = 0.15;
+const USER_LEVEL_MIN_CLIPS = 5;
+let userLevel = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(USER_LEVEL_KEY) || "null");
+    if (v && Number.isFinite(v.level) && Number.isFinite(v.n)) return v;
+  } catch {}
+  return { level: 0, n: 0 };
+})();
+
+function learnUserLevel(level) {
+  if (!(level > 0)) return;
+  const n = Math.min(userLevel.n + 1, 30); // a moving average over ~30 clips
+  userLevel = { level: userLevel.level + (level - userLevel.level) / n, n };
+  try {
+    localStorage.setItem(USER_LEVEL_KEY, JSON.stringify(userLevel));
+  } catch {}
+}
+
+function isQuiet(level) {
+  return level > 0 && userLevel.n >= USER_LEVEL_MIN_CLIPS && level < userLevel.level * QUIET_RATIO;
+}
+
 function speakerMinFor(mixed) {
   return mixed ? Math.max(0.05, voice.speakerMin - SPEAKER_MIXED_DROP) : voice.speakerMin;
 }
@@ -750,6 +778,7 @@ async function startRecording(paneId, barge = false) {
     chunks: [],
     firstSpeechChunk: -1,
     loudChunks: 0,
+    speechSum: 0, // RMS summed over the loud chunks: how loudly this was said
     lastSpeechAt: 0,
     noiseFloor: 0,
     noiseSamples: 0,
@@ -788,6 +817,7 @@ async function startRecording(paneId, barge = false) {
         rec.firstSpeechChunk = -1;
       }
       rec.loudChunks = 0;
+      rec.speechSum = 0;
       rec.barge = false;
       rec.startedAt = now;
       voice.paneId = paneId;
@@ -806,6 +836,7 @@ async function startRecording(paneId, barge = false) {
       }
       rec.lastSpeechAt = now;
       rec.loudChunks++;
+      rec.speechSum += rms;
     }
     if (rec.barge) {
       // The reading rarely pauses long enough to end a segment, so one is also
@@ -817,6 +848,7 @@ async function startRecording(paneId, barge = false) {
         rec.chunks = [];
         rec.firstSpeechChunk = -1;
         rec.loudChunks = 0;
+        rec.speechSum = 0;
       } else if (rec.firstSpeechChunk < 0 && rec.chunks.length > 8) {
         rec.chunks.splice(0, rec.chunks.length - 8); // keep only the pre-roll
       }
@@ -1811,14 +1843,23 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     // Someone else in the room (or the reply from the speakers) is not sent once
     // the user has enrolled their voice.
     const score = await scoring;
-    if (heard && !isUserVoice(score, speakerMinFor(clipSeconds(wavBytes) < SPEAKER_SHORT_S))) {
-      vlog(`other voice dropped (${score.toFixed(2)}) ${quote(heard)}`);
-      logHeard(heard, score, false, "다른 목소리");
-      flash("다른 목소리라 넘겼어요");
+    const level = rec && rec.loudChunks > 0 ? rec.speechSum / rec.loudChunks : 0;
+    const quiet = conv() && isQuiet(level);
+    const bar = speakerMinFor(clipSeconds(wavBytes) < SPEAKER_SHORT_S) + (quiet ? QUIET_EXTRA_BAR : 0);
+    if (heard && quiet && score < 0) {
+      vlog(`quiet dropped (level ${level.toFixed(3)}) ${quote(heard)}`);
+      logHeard(heard, score, false, "작은 소리");
+      flash("소리가 작아서 넘겼어요");
+      heard = "";
+    } else if (heard && !isUserVoice(score, bar)) {
+      vlog(`other voice dropped (${score.toFixed(2)}, level ${level.toFixed(3)}${quiet ? " quiet" : ""}) ${quote(heard)}`);
+      logHeard(heard, score, false, quiet ? "작은 소리" : "다른 목소리");
+      flash(quiet ? "소리가 작아서 넘겼어요" : "다른 목소리라 넘겼어요");
       heard = "";
     } else if (heard && score >= 0) {
-      vlog(`voice ${score.toFixed(2)} ${quote(heard, 20)}`);
+      vlog(`voice ${score.toFixed(2)} level ${level.toFixed(3)} ${quote(heard, 20)}`);
       logHeard(heard, score, true);
+      if (score >= voice.speakerMin + QUIET_EXTRA_BAR) learnUserLevel(level);
     }
     // whisper writes a back-and-forth as "- 그쵸. - 네.": people talking in the
     // room or on TV, not a request. Sent, each one cost a full AI turn.

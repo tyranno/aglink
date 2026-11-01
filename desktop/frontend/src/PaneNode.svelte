@@ -44,7 +44,7 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
-  import { voice, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation } from "./voice.svelte.js";
+  import { voice, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
 
   let { node } = $props();
 
@@ -483,6 +483,13 @@
               if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "m") {
                 event.preventDefault();
                 void toggleVoiceInput(p.id);
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey && !event.isComposing && p.attachments.length === 0 && isTypedCommand(p.composerText)) {
+                event.preventDefault();
+                const text = p.composerText;
+                setPaneComposerValue(p.id, "");
+                void runTypedCommand(p.id, text);
                 return;
               }
               handleComposerKeydown(p.id, event);

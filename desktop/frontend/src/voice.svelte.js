@@ -1323,6 +1323,18 @@ function isCommandText(text) {
   return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_USE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
+// Typed in the chat box, the same commands work as when spoken ("아내
+// 목소리로 바꿔 줘"); "!" commands stay the host's.
+export function isTypedCommand(text) {
+  const t = String(text || "").trim();
+  return !!t && !t.startsWith("!") && isCommandText(t);
+}
+
+export async function runTypedCommand(paneId, text) {
+  vlog(`typed command ${quote(text.trim())}`);
+  return runVoiceCommand(paneId, text);
+}
+
 // runVoiceCommand carries out text if it is one of the commands; false means
 // it is to be sent as usual.
 async function runVoiceCommand(paneId, text) {

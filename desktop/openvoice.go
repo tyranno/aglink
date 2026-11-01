@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -259,4 +260,64 @@ func stopOpenVoiceServer() {
 	_ = ov.cmd.Process.Kill()
 	_ = ov.cmd.Wait()
 	ov = nil
+}
+
+// SetCloneVoice saves a recording (base64 WAV) as the target voice and makes
+// its embedding right away, so the caller hears whether it worked. Replies
+// are read in that voice from the next sentence on.
+func (v *VoiceService) SetCloneVoice(b64 string) error {
+	dir := openVoiceDir()
+	if !openVoiceInstalled(dir) {
+		return errors.New("목소리 바꾸기 기능이 설치되어 있지 않습니다")
+	}
+	wav, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return err
+	}
+	ovReady.Store(false)
+	ovFailed.Store(false)
+	ovWarmed.Store(true) // this call does the warming
+	ovMu.Lock()
+	stopOpenVoiceServer() // a fresh start reads the new embedding
+	ovMu.Unlock()
+	target := filepath.Join(dir, "voice.wav")
+	if err := os.WriteFile(target, wav, 0o600); err != nil {
+		return err
+	}
+	started := time.Now()
+	if err := prepareOpenVoice(dir, target, defaultTTSVoice); err != nil {
+		ovMu.Lock()
+		stopOpenVoiceServer()
+		ovMu.Unlock()
+		_ = os.Remove(target)
+		ovWarmed.Store(false)
+		return err
+	}
+	ovReady.Store(true)
+	log.Printf("[openvoice] new voice %d bytes, ready in %s", len(wav), time.Since(started).Round(time.Millisecond))
+	return nil
+}
+
+// ClearCloneVoice goes back to the plain Supertonic voice.
+func (v *VoiceService) ClearCloneVoice() error {
+	dir := openVoiceDir()
+	ovReady.Store(false)
+	ovWarmed.Store(false)
+	ovMu.Lock()
+	stopOpenVoiceServer()
+	ovMu.Unlock()
+	for _, name := range []string{"voice.wav", "voice.se.pt"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	log.Printf("[openvoice] voice cleared")
+	return nil
+}
+
+// CloneVoiceStatus: {"available": installed, "on": a voice is set}.
+func (v *VoiceService) CloneVoiceStatus() string {
+	dir := openVoiceDir()
+	b, _ := json.Marshal(map[string]bool{"available": openVoiceInstalled(dir), "on": openVoiceTarget(dir) != ""})
+	return string(b)
 }

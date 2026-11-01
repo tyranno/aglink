@@ -18,17 +18,41 @@
     enrollVoice,
     speakerStatus,
     clearSpeaker,
+    cloneVoice,
+    cloneVoiceStatus,
+    clearCloneVoice,
     startTape,
     stopTape,
     openTapeFolder,
   } from "./voice.svelte.js";
 
   let speaker = $state({});
+  let clone = $state({});
   let busy = $state(false);
 
   onMount(async () => {
     speaker = await speakerStatus();
+    clone = await cloneVoiceStatus();
   });
+
+  async function recordClone() {
+    busy = true;
+    try {
+      await cloneVoice();
+    } finally {
+      clone = await cloneVoiceStatus();
+      busy = false;
+    }
+  }
+
+  async function dropClone() {
+    busy = true;
+    try {
+      await clearCloneVoice();
+    } catch {}
+    clone = await cloneVoiceStatus();
+    busy = false;
+  }
 
   async function enroll() {
     busy = true;
@@ -107,6 +131,19 @@
           />
           <span class="w-10 text-right text-sm tabular-nums">{voice.ttsSpeed.toFixed(2)}</span>
           <button class={button} onclick={() => setVoiceSettings({ ttsSpeed: VOICE_DEFAULTS.ttsSpeed })}>기본값</button>
+        </div>
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div class={label}>다른 사람 목소리로 읽기 {clone.on ? "— 켜짐" : ""}</div>
+          <div class={desc}>허락한 분이 화면에 뜬 글을 25초 동안 읽으면, 그 목소리로 답변을 읽어요. 말로 “아내 목소리 녹음해 줘”, “원래 목소리로 돌려 줘”라고 하셔도 돼요.{clone.available === false ? " (목소리 바꾸기 기능이 설치되어 있지 않아요)" : ""}</div>
+        </div>
+        <div class="flex gap-2">
+          <button class={button} disabled={busy || clone.available === false} onclick={recordClone}>녹음하기</button>
+          {#if clone.on}<button class={button} disabled={busy} onclick={dropClone}>원래 목소리로</button>{/if}
         </div>
       </div>
     </div>

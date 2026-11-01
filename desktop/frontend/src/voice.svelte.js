@@ -1042,6 +1042,15 @@ const PB_MIN_NAME = 3; // ...and at least this many letters
 // "목소리 등록해 줘" records the user's voice; "목소리 등록 해제해 줘" / "목소리
 // 지워 줘" forgets it. Whole sentences only: "영상에서 목소리 지우는 법" is a question.
 const ENROLL_RE = cmdRE(String.raw`(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(좀\s*)?(등록|저장|기억)\s*(해|하자|해\s*둬|해\s*놔|할래)?`);
+// "목소리 따라 하기 녹음해 줘": someone who agreed reads a short text, and
+// replies are read in their voice (OpenVoice) until "원래 목소리로 돌려 줘".
+const CLONE_RE = cmdRE(String.raw`((이\s*사람|이|아내|와이프|집사람|엄마|아빠|내|제)\s*(의\s*)?목소리\s*(로\s*)?(따라\s*하기|따라하기|흉내)?\s*(를|을)?\s*(녹음|배워|익혀|따라\s*해|따라해)|목소리\s*(따라\s*하기|따라하기|흉내\s*내기|복제)\s*(녹음)?\s*(을|를)?\s*(해|시작|하자|녹음해))\s*(해|하자|시작해)?`);
+const CLONE_OFF_RE = cmdRE(String.raw`(원래|기본|처음|예전)\s*(목소리|음색)\s*(로|으로)\s*(돌려|돌아가|바꿔|해)|목소리\s*따라\s*하기\s*(꺼|끄기|그만|해제|취소)`);
+const CLONE_MS = 25000;
+const CLONE_SCRIPT =
+  "안녕하세요. 오늘은 날씨가 참 맑고 바람도 시원하네요. 아침에 따뜻한 커피 한 잔을 마시고 천천히 하루를 시작했어요. " +
+  "점심에는 가까운 식당에서 김치찌개를 먹었는데 정말 맛있었어요. 오후에는 잠깐 산책을 하면서 가을 하늘을 올려다봤어요. " +
+  "내일은 비가 온다고 하니까 우산을 꼭 챙기세요. 그럼 오늘도 좋은 하루 보내세요.";
 const UNENROLL_RE = cmdRE(String.raw`(제\s*|내\s*|등록한\s*|등록된\s*)?목소리\s*(등록\s*)?(을|를|은)?\s*(좀\s*)?(해제|취소|지워|삭제|지우기|없애)\s*(해|하자)?`);
 const MAX_ALARM_CHARS = 80; // "내일 아침 9시에 …라고 알려 줘" runs longer than a command
 const LIST_COUNT = 5; // conversations read out by "대화 목록 읽어 줘"
@@ -1302,7 +1311,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 // runVoiceCommand carries out text if it is one of the commands; false means
@@ -1357,6 +1366,17 @@ async function runVoiceCommand(paneId, text) {
   }
   if (SHORT_RE.test(t)) {
     speakAgain("short");
+    return true;
+  }
+  if (CLONE_OFF_RE.test(t)) {
+    await VoiceService.ClearCloneVoice().catch(() => {});
+    prefetched.clear();
+    vlog("clone voice cleared");
+    speak("원래 목소리로 돌렸어요.");
+    return true;
+  }
+  if (CLONE_RE.test(t)) {
+    await cloneVoice(paneId);
     return true;
   }
   if (ENROLL_RE.test(t) || UNENROLL_RE.test(t)) {
@@ -1610,6 +1630,61 @@ export async function enrollVoice() {
   } finally {
     voice.enrolling = false;
   }
+}
+
+// cloneVoice records CLONE_MS of the person reading CLONE_SCRIPT (shown on
+// screen) and makes it the voice replies are read in. Nothing heard while it
+// records is sent.
+export async function cloneVoice(paneId = voice.convPaneId) {
+  let status = {};
+  try {
+    status = JSON.parse(await VoiceService.CloneVoiceStatus());
+  } catch {}
+  if (!status.available) {
+    speak("목소리 바꾸기 기능이 설치되어 있지 않아서 녹음할 수 없어요.");
+    return;
+  }
+  voice.enrolling = true;
+  const script = `**이 글을 또박또박 읽어 주세요 (25초)**\n\n${CLONE_SCRIPT}`;
+  try {
+    if (paneId) setNote(paneId, `이 글을 또박또박 읽어 주세요 (25초): ${CLONE_SCRIPT}`);
+    Events.Emit("voice:reply", { text: script, silent: true });
+    await speak("목소리를 녹음할게요. 화면에 뜬 글을 이십오 초 동안 또박또박 읽어 주세요. 띵 소리가 나면 시작하세요.");
+    while (voice.speaking) await new Promise((r) => setTimeout(r, 100));
+    await playChime();
+    flash("🎙 목소리 녹음 중 — 화면의 글을 읽어 주세요");
+    const wav = await recordFor(CLONE_MS);
+    if (!wav) {
+      speak("마이크를 열지 못해서 녹음하지 못했어요.");
+      return;
+    }
+    flash("🎙 목소리를 익히는 중");
+    await speak("녹음했어요. 목소리를 익히는 중이에요. 잠깐만 기다려 주세요.");
+    await VoiceService.SetCloneVoice(toBase64(wav));
+    prefetched.clear(); // made in the old voice
+    vlog(`clone voice set (${clipSeconds(wav).toFixed(1)} s)`);
+    speak("이제 이 목소리로 읽어 드릴게요. 원래 목소리로 돌려 줘, 라고 하시면 돌아가요.");
+  } catch (err) {
+    vlog(`clone voice failed: ${err?.message || err}`);
+    speak("목소리를 익히지 못했어요. 조용한 곳에서 다시 해 주세요.");
+  } finally {
+    voice.enrolling = false;
+    resumeListening();
+  }
+}
+
+export async function cloneVoiceStatus() {
+  try {
+    return JSON.parse(await VoiceService.CloneVoiceStatus());
+  } catch {
+    return {};
+  }
+}
+
+export async function clearCloneVoice() {
+  await VoiceService.ClearCloneVoice();
+  prefetched.clear();
+  vlog("clone voice cleared");
 }
 
 // recordFor records the mic for ms and returns it as 16 kHz WAV, or null.

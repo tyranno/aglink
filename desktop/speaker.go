@@ -39,6 +39,11 @@ func speakerInstalled(dir string) bool {
 
 func speakerEnrollment(dir string) string { return filepath.Join(dir, "me.pt") }
 
+// speakerAnchor is the embedding of the enrollment recording itself. me.pt
+// learns from everyday clips; a clip far from the anchor is never learned, so
+// me.pt cannot drift toward someone else's voice.
+func speakerAnchor(dir string) string { return filepath.Join(dir, "me.base.pt") }
+
 // warmSpeaker starts the server in the background (~5 s) so the first clip
 // is not held up by it.
 func warmSpeaker() {
@@ -154,8 +159,10 @@ func (v *VoiceService) EnrollSpeaker(b64 string) error {
 	if err := ensureSpeakerLocked(dir); err != nil {
 		return err
 	}
-	if _, err := spkRequestLocked(map[string]any{"op": "embed", "wav": ref, "out": speakerEnrollment(dir)}); err != nil {
-		return err
+	for _, out := range []string{speakerEnrollment(dir), speakerAnchor(dir)} {
+		if _, err := spkRequestLocked(map[string]any{"op": "embed", "wav": ref, "out": out}); err != nil {
+			return err
+		}
 	}
 	log.Printf("[speaker] enrolled %d bytes", len(wav))
 	return nil
@@ -164,7 +171,7 @@ func (v *VoiceService) EnrollSpeaker(b64 string) error {
 // ClearSpeaker forgets the enrolled voice: every clip counts as the user's again.
 func (v *VoiceService) ClearSpeaker() error {
 	dir := openVoiceDir()
-	for _, name := range []string{"me.wav", "me.pt"} {
+	for _, name := range []string{"me.wav", "me.pt", "me.base.pt"} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -195,7 +202,12 @@ func (v *VoiceService) SpeakerScore(b64 string) (float64, error) {
 		}
 		return -1, nil
 	}
-	score, err := spkRequestLocked(map[string]any{"op": "score", "wav": path, "ref": me, "adapt_min": speakerAdaptMin})
+	anchor := speakerAnchor(dir)
+	if !fileExists(anchor) && fileExists(filepath.Join(dir, "me.wav")) {
+		// Enrolled before learning existed: the anchor is the recording itself.
+		_, _ = spkRequestLocked(map[string]any{"op": "embed", "wav": filepath.Join(dir, "me.wav"), "out": anchor})
+	}
+	score, err := spkRequestLocked(map[string]any{"op": "score", "wav": path, "ref": me, "base": anchor, "adapt_min": speakerAdaptMin})
 	if err != nil {
 		log.Printf("[speaker] score failed: %v", err)
 		return -1, nil

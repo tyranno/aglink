@@ -251,6 +251,7 @@ export async function speakerStatus() {
 
 export async function clearSpeaker() {
   await VoiceService.ClearSpeaker();
+  forgetUserLevel();
   vlog("speaker enrollment cleared");
 }
 
@@ -277,6 +278,13 @@ function learnUserLevel(level) {
   userLevel = { level: userLevel.level + (level - userLevel.level) / n, n };
   try {
     localStorage.setItem(USER_LEVEL_KEY, JSON.stringify(userLevel));
+  } catch {}
+}
+
+function forgetUserLevel() {
+  userLevel = { level: 0, n: 0 };
+  try {
+    localStorage.removeItem(USER_LEVEL_KEY);
   } catch {}
 }
 
@@ -1452,6 +1460,7 @@ async function runVoiceCommand(paneId, text) {
   if (ENROLL_RE.test(t) || UNENROLL_RE.test(t)) {
     if (UNENROLL_RE.test(t)) {
       await VoiceService.ClearSpeaker().catch(() => {});
+      forgetUserLevel();
       vlog("speaker enrollment cleared");
       speak("등록한 목소리를 지웠어요. 이제 들리는 말은 모두 받아요.");
     } else await enrollVoice();
@@ -1692,6 +1701,7 @@ export async function enrollVoice() {
       return;
     }
     await VoiceService.EnrollSpeaker(toBase64(wav));
+    forgetUserLevel(); // a new voice (or a new mic spot) is learned afresh
     vlog(`speaker enrolled (${clipSeconds(wav).toFixed(1)} s)`);
     speak("목소리를 등록했어요. 이제 다른 사람 말은 보내지 않아요. 지우고 싶으면 목소리 등록 해제라고 말씀해 주세요.");
   } catch (err) {

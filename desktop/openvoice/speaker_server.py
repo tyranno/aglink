@@ -19,6 +19,7 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ADAPT_SECONDS = 2.0
 ADAPT_WEIGHT = 0.1
+ANCHOR_MIN = 0.45  # learned clips must still match the enrollment itself
 
 
 def answer(obj):
@@ -87,7 +88,10 @@ def main():
                 score = torch.nn.functional.cosine_similarity(e, r, dim=0).item()
                 out["score"] = round(score, 3)
                 lo = req.get("adapt_min")
-                if lo and score >= lo and seconds >= ADAPT_SECONDS:
+                base = req.get("base")  # the enrollment as recorded; never moves
+                sure = lo and score >= lo and seconds >= ADAPT_SECONDS
+                anchored = base and os.path.exists(base)
+                if sure and anchored and torch.nn.functional.cosine_similarity(e, ref(base), dim=0).item() >= ANCHOR_MIN:
                     n = torch.nn.functional.normalize
                     r = (1 - ADAPT_WEIGHT) * n(r, dim=0) + ADAPT_WEIGHT * n(e, dim=0)
                     torch.save(r, req["ref"])

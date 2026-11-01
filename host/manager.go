@@ -1464,6 +1464,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	projectMemory := ""
 	if pPath != "" {
 		projectMemory = readProjectMemory(pPath, workConv.ID)
+	} else if workConv.WorkDir != "" {
+		// No project: the worker runs in WorkDir and writes the relative memPath
+		// there. Without reading it back, every note written was wasted tokens.
+		projectMemory = readProjectMemory(workConv.WorkDir, workConv.ID)
 	}
 	memPath := conversationMemoryPath(pPath, workConv.ID)
 	prompt := buildContextPrompt(text, promptSummary, globalMemory, projectMemory, memPath, historyForPrompt)

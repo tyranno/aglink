@@ -12,6 +12,7 @@
   import UsagePanel from "./UsagePanel.svelte";
   import VoicePanel from "./VoicePanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
+  import CloneScript from "./CloneScript.svelte";
   import {
     chat,
     MAX_PANES,
@@ -1164,3 +1165,4 @@
 
 <ImageWindow />
 <ApprovalPrompt />
+<CloneScript />

@@ -167,6 +167,8 @@ export const voice = $state({
   bargeEnabled: loadBargeEnabled(), // conversation mode: talking over the reading interrupts it
   speaking: false,
   enrolling: false, // recording the user's voice to tell it from others'
+  readScript: "", // cloneVoice: the text to read, shown large (CloneScript.svelte)
+  readUntil: 0, // when that recording ends; 0 = not started yet
   fast: false, // recognition runs on the resident GPU server (~0.3 s a clip)
   heard: "", // conversation mode: what was last sent, shown while the reply is awaited
   problem: "", // conversation mode: why the mic is not listening (shown by the indicator)
@@ -1666,11 +1668,18 @@ export async function cloneVoice(paneId = voice.convPaneId) {
   try {
     if (paneId) setNote(paneId, `이 글을 또박또박 읽어 주세요 (25초): ${CLONE_SCRIPT}`);
     Events.Emit("voice:reply", { text: script, silent: true });
+    // Shown large in the main window, brought up from the tray if hidden:
+    // the one-line note and the small reply box are too small to read from.
+    voice.readScript = CLONE_SCRIPT;
+    voice.readUntil = 0;
+    Events.Emit("indicator:open");
     await speak("목소리를 녹음할게요. 화면에 뜬 글을 이십오 초 동안 또박또박 읽어 주세요. 띵 소리가 나면 시작하세요.");
     while (voice.speaking) await new Promise((r) => setTimeout(r, 100));
     await playChime();
     flash("🎙 목소리 녹음 중 — 화면의 글을 읽어 주세요");
+    voice.readUntil = Date.now() + CLONE_MS;
     const wav = await recordFor(CLONE_MS);
+    voice.readScript = "";
     if (!wav) {
       speak("마이크를 열지 못해서 녹음하지 못했어요.");
       return;
@@ -1687,6 +1696,7 @@ export async function cloneVoice(paneId = voice.convPaneId) {
     speak("목소리를 익히지 못했어요. 조용한 곳에서 다시 해 주세요.");
   } finally {
     voice.enrolling = false;
+    voice.readScript = "";
     resumeListening();
   }
 }

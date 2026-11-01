@@ -285,7 +285,7 @@ func (v *VoiceService) SetCloneVoice(b64 string) error {
 		return err
 	}
 	started := time.Now()
-	if err := prepareOpenVoice(dir, target, defaultTTSVoice); err != nil {
+	if err := prepareOpenVoice(dir, target, cloneBaseVoice); err != nil {
 		ovMu.Lock()
 		stopOpenVoiceServer()
 		ovMu.Unlock()

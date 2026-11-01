@@ -15,6 +15,7 @@
     setBargeEnabled,
     previewVoice,
     voiceLabel,
+    CLONE_VOICE,
     enrollVoice,
     speakerStatus,
     clearSpeaker,
@@ -97,7 +98,7 @@
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <div class={label}>읽어 주는 목소리</div>
-          <div class={desc}>Supertonic 목소리예요. 남자 1~5번, 여자 1~5번이 있어요.</div>
+          <div class={desc}>Supertonic 목소리예요. 남자 1~5번, 여자 1~5번이 있어요. 목소리를 녹음했으면 “녹음한 목소리”도 고를 수 있어요.</div>
         </div>
         <div class="flex items-center gap-2">
           <select
@@ -108,6 +109,7 @@
             {#each TTS_VOICES as name}
               <option value={name}>{voiceLabel(name)} ({name}){name === VOICE_DEFAULTS.ttsVoice ? " · 기본" : ""}</option>
             {/each}
+            {#if clone.on || voice.ttsVoice === CLONE_VOICE}<option value={CLONE_VOICE}>녹음한 목소리</option>{/if}
           </select>
           <button class={button} onclick={previewVoice}>미리 듣기</button>
         </div>
@@ -138,12 +140,12 @@
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <div class={label}>다른 사람 목소리로 읽기 {clone.on ? "— 켜짐" : ""}</div>
-          <div class={desc}>허락한 분이 화면에 뜬 글을 25초 동안 읽으면, 그 목소리로 답변을 읽어요. 말로 “아내 목소리 녹음해 줘”, “원래 목소리로 돌려 줘”라고 하셔도 돼요.{clone.available === false ? " (목소리 바꾸기 기능이 설치되어 있지 않아요)" : ""}</div>
+          <div class={label}>다른 사람 목소리로 읽기 {clone.on ? "— 녹음 있음" : ""}</div>
+          <div class={desc}>허락한 분이 화면에 뜬 글을 25초 동안 읽으면, “녹음한 목소리”를 고르면 그 목소리로 읽어요. 다른 목소리는 그대로예요. 말로 “아내 목소리 녹음해 줘”, “아내 목소리로 바꿔 줘”, “원래 목소리로 돌려 줘”라고 하셔도 돼요.{clone.available === false ? " (목소리 바꾸기 기능이 설치되어 있지 않아요)" : ""}</div>
         </div>
         <div class="flex gap-2">
           <button class={button} disabled={busy || clone.available === false} onclick={recordClone}>녹음하기</button>
-          {#if clone.on}<button class={button} disabled={busy} onclick={dropClone}>원래 목소리로</button>{/if}
+          {#if clone.on}<button class={button} disabled={busy} onclick={dropClone}>녹음 지우기</button>{/if}
         </div>
       </div>
     </div>

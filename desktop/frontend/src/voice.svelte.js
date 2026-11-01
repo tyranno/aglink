@@ -89,6 +89,8 @@ const LIST_ITEM_RE = /^[ ]{0,1}([-*+]|\d+[.)])\s/;
 const MIN_GIST_CHARS = 40; // a bare "네." opening pulls in the next paragraph
 const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
+export const CLONE_VOICE = "C"; // the recorded voice (cloneVoice); only it is repainted
+const isTTSVoice = (name) => TTS_VOICES.includes(name) || name === CLONE_VOICE;
 export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.3, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
 const MAX_WAKE_NAMES = 5;
 // How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on
@@ -122,7 +124,7 @@ function loadSettings() {
     s = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || "{}") || {};
   } catch {}
   return {
-    ttsVoice: TTS_VOICES.includes(s.ttsVoice) ? s.ttsVoice : VOICE_DEFAULTS.ttsVoice,
+    ttsVoice: isTTSVoice(s.ttsVoice) ? s.ttsVoice : VOICE_DEFAULTS.ttsVoice,
     ttsSpeed: Number.isFinite(s.ttsSpeed) ? clamp(s.ttsSpeed, SPEED_RANGE) : VOICE_DEFAULTS.ttsSpeed,
     speakerMin: Number.isFinite(s.speakerMin) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
     listenMode: LISTEN_MODES.includes(s.listenMode) ? s.listenMode : s.wake === false ? "manual" : VOICE_DEFAULTS.listenMode,
@@ -198,7 +200,7 @@ function logHeard(text, score, kept, why = "") {
 // setVoiceSettings changes the voice settings and remembers them. They apply
 // from the next sentence on — nothing is restarted.
 export function setVoiceSettings(patch) {
-  if (patch.ttsVoice !== undefined && TTS_VOICES.includes(patch.ttsVoice)) voice.ttsVoice = patch.ttsVoice;
+  if (patch.ttsVoice !== undefined && isTTSVoice(patch.ttsVoice)) voice.ttsVoice = patch.ttsVoice;
   if (Number.isFinite(patch.ttsSpeed)) voice.ttsSpeed = Math.round(clamp(patch.ttsSpeed, SPEED_RANGE) * 100) / 100;
   if (Number.isFinite(patch.speakerMin)) voice.speakerMin = Math.round(clamp(patch.speakerMin, SPEAKER_MIN_RANGE) * 100) / 100;
   const modeChanged = LISTEN_MODES.includes(patch.listenMode) && patch.listenMode !== voice.listenMode;
@@ -1047,6 +1049,8 @@ const ENROLL_RE = cmdRE(String.raw`(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*
 const CLONE_RE = cmdRE(String.raw`(다시\s*|한\s*번\s*더\s*)?((이\s*사람|이|아내|안에|와이프|집사람|엄마|아빠|내|제)\s*(의\s*)?목소리\s*(로\s*)?(따라\s*하기|따라하기|흉내)?\s*(를|을)?\s*(녹음|배워|익혀|따라\s*해|따라해)|목소리\s*(따라\s*하기|따라하기|흉내\s*내기|복제)\s*(녹음)?\s*(을|를)?\s*(해|시작|하자|녹음해))\s*(해|하자|시작해)?`);
 // "아내 목소리 녹음해서 그 목소리로 바꿔 줘"처럼 뒤에 말이 더 붙어도 받는다("아내"는 "안에"로도 적힘).
 const CLONE_LEAD_RE = new RegExp(String.raw`^\s*(다시\s*)?(아내|안에|와이프|집사람)\s*(의\s*)?목소리\s*(를|을|로)?\s*(녹음|따라\s*하|따라해)`);
+// "아내 목소리로 바꿔 줘": back to the recorded voice, made earlier.
+const CLONE_USE_RE = cmdRE(String.raw`(아내|안에|와이프|집사람|녹음한|녹음된|따라\s*한)\s*(의\s*)?목소리\s*(로|으로)\s*(바꿔|해|읽어|변경해)`);
 const CLONE_OFF_RE = cmdRE(String.raw`(원래|기본|처음|예전)\s*(목소리|음색)\s*(로|으로)\s*(돌려|돌아가|바꿔|해)|목소리\s*따라\s*하기\s*(꺼|끄기|그만|해제|취소)`);
 const CLONE_MS = 25000;
 const CLONE_SCRIPT =
@@ -1080,13 +1084,14 @@ function voiceNumber(s) {
 }
 
 export function voiceLabel(name) {
+  if (name === CLONE_VOICE) return "녹음한";
   return `${name[0] === "M" ? "남자" : "여자"} ${name[1]}번`;
 }
 
 // parseVoiceName finds the voice asked for, or "" when none is named. A bare
 // "남자 목소리" means M2, the one the user chose; "다른 목소리" the next one.
 function parseVoiceName(text) {
-  const cur = voice.ttsVoice;
+  const cur = voice.ttsVoice === CLONE_VOICE ? "F2" : voice.ttsVoice;
   let gender = "";
   let at = -1;
   for (const [re, g] of VOICE_GENDERS) {
@@ -1313,7 +1318,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_USE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 // runVoiceCommand carries out text if it is one of the commands; false means
@@ -1371,10 +1376,20 @@ async function runVoiceCommand(paneId, text) {
     return true;
   }
   if (CLONE_OFF_RE.test(t)) {
-    await VoiceService.ClearCloneVoice().catch(() => {});
-    prefetched.clear();
-    vlog("clone voice cleared");
+    // The recording is kept: "아내 목소리로 바꿔 줘" brings it back.
+    setVoiceSettings({ ttsVoice: VOICE_DEFAULTS.ttsVoice });
+    vlog(`voice → ${VOICE_DEFAULTS.ttsVoice}`);
     speak("원래 목소리로 돌렸어요.");
+    return true;
+  }
+  if (CLONE_USE_RE.test(t)) {
+    if (!(await cloneVoiceStatus()).on) {
+      speak("녹음한 목소리가 없어요. 아내 목소리 녹음해 줘, 라고 하시면 먼저 녹음할게요.");
+      return true;
+    }
+    setVoiceSettings({ ttsVoice: CLONE_VOICE });
+    vlog(`voice → ${CLONE_VOICE}`);
+    speak("녹음한 목소리로 바꿨어요.");
     return true;
   }
   if (CLONE_RE.test(t) || CLONE_LEAD_RE.test(t)) {
@@ -1664,8 +1679,9 @@ export async function cloneVoice(paneId = voice.convPaneId) {
     await speak("녹음했어요. 목소리를 익히는 중이에요. 잠깐만 기다려 주세요.");
     await VoiceService.SetCloneVoice(toBase64(wav));
     prefetched.clear(); // made in the old voice
+    setVoiceSettings({ ttsVoice: CLONE_VOICE });
     vlog(`clone voice set (${clipSeconds(wav).toFixed(1)} s)`);
-    speak("이제 이 목소리로 읽어 드릴게요. 원래 목소리로 돌려 줘, 라고 하시면 돌아가요.");
+    speak("이제 이 목소리로 읽어 드릴게요. 원래 목소리로 돌려 줘, 라고 하시면 돌아가요. 다른 목소리들은 그대로예요.");
   } catch (err) {
     vlog(`clone voice failed: ${err?.message || err}`);
     speak("목소리를 익히지 못했어요. 조용한 곳에서 다시 해 주세요.");
@@ -1685,6 +1701,7 @@ export async function cloneVoiceStatus() {
 
 export async function clearCloneVoice() {
   await VoiceService.ClearCloneVoice();
+  if (voice.ttsVoice === CLONE_VOICE) setVoiceSettings({ ttsVoice: VOICE_DEFAULTS.ttsVoice });
   prefetched.clear();
   vlog("clone voice cleared");
 }

@@ -26,6 +26,13 @@ import (
 
 const defaultTTSVoice = "M2"
 
+// cloneVoiceName is the recorded voice ("녹음한 목소리"): cloneBaseVoice
+// repainted with the recording. The other voices are read plain.
+const (
+	cloneVoiceName = "C"
+	cloneBaseVoice = "F2"
+)
+
 // ttsSteps: Supertonic's denoising steps. 5 (the upstream examples' default)
 // takes ~35% less time than supertonic-server's own default of 8.
 const ttsSteps = 5
@@ -66,7 +73,7 @@ func warmTTSServer() {
 		return
 	}
 	go func() {
-		defer warmOpenVoice(defaultTTSVoice) // after Supertonic: it reads the reference text
+		defer warmOpenVoice(cloneBaseVoice) // after Supertonic: it reads the reference text
 		ttsMu.Lock()
 		defer ttsMu.Unlock()
 		if tts != nil || ttsBad() {
@@ -118,6 +125,10 @@ func (v *VoiceService) Synthesize(text, voiceName string, speed float64) (string
 	if text == "" {
 		return "", errors.New("빈 문장")
 	}
+	clone := voiceName == cloneVoiceName
+	if clone {
+		voiceName = cloneBaseVoice
+	}
 	if !ttsVoiceRE.MatchString(voiceName) {
 		voiceName = defaultTTSVoice
 	}
@@ -140,9 +151,11 @@ func (v *VoiceService) Synthesize(text, voiceName string, speed float64) (string
 	if err != nil {
 		return "", err
 	}
-	if conv := convertVoice(path, voiceName); conv != "" {
-		defer os.Remove(conv)
-		path = conv
+	if clone {
+		if conv := convertVoice(path, voiceName); conv != "" {
+			defer os.Remove(conv)
+			path = conv
+		}
 	}
 	wav, err := os.ReadFile(path)
 	if err != nil {

@@ -39,6 +39,11 @@ func pluginWorkerArgs(cfg *Config, screenBin, webBin, goonoBin string) []string 
 // keeps progress visible to the turn watchdog and saved on disk.
 const longWritePrompt = "긴 문서나 큰 파일(수백 줄 이상)을 새로 쓸 때는 한 번의 Write로 전부 쓰지 말고, 뼈대를 먼저 저장한 뒤 섹션별로 나눠 Edit로 채우세요. 중간에 실패해도 써둔 부분이 남습니다."
 
+// tokenThriftPrompt: every tool round-trip re-reads the whole context, and big
+// tool outputs stay in it for every later round-trip and turn. A token audit of
+// a long conversation found ~88% of its cost in tool-heavy turns.
+const tokenThriftPrompt = "토큰 절약: 도구 결과는 이후 모든 호출·턴에 다시 읽혀 비용이 쌓입니다. 명령 출력은 head/tail/grep으로 필요한 줄만 보고(빌드·포맷 도구의 긴 목록 출력 금지), 파일은 필요한 범위만 읽고, 이미 확인한 내용은 다시 읽지 마세요. 서로 관계없는 확인은 한 번에 묶어 호출 횟수를 줄이세요."
+
 func pluginWorkerArgsOpts(cfg *Config, screenBin, webBin, goonoBin string, screenBrief bool) []string {
 	if cfg == nil {
 		return nil
@@ -85,7 +90,7 @@ func pluginWorkerArgsOpts(cfg *Config, screenBin, webBin, goonoBin string, scree
 	if hasScreen && hasWeb {
 		prompts = append([]string{screenWebArbitrationPrompt()}, prompts...)
 	}
-	prompts = append(prompts, longWritePrompt)
+	prompts = append(prompts, longWritePrompt, tokenThriftPrompt)
 
 	inline, err := json.Marshal(mcpConfig{McpServers: servers})
 	if err != nil {

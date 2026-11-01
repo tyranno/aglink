@@ -647,3 +647,20 @@ func TestFormatUsageLineCostWarning(t *testing.T) {
 		t.Fatalf("expensive turn not warned: %q", got)
 	}
 }
+
+func TestClaudeIdleCacheCold(t *testing.T) {
+	now := time.Now()
+	c := &Conversation{ClaudeContextTokens: 120000, TurnStats: []TurnStat{{At: now.Add(-2 * time.Hour)}}}
+	if !claudeIdleCacheCold(c, now) {
+		t.Fatal("2h idle, 120k context: want fresh session")
+	}
+	c.TurnStats[0].At = now.Add(-30 * time.Minute)
+	if claudeIdleCacheCold(c, now) {
+		t.Fatal("30 min idle: cache still warm")
+	}
+	c.TurnStats[0].At = now.Add(-2 * time.Hour)
+	c.ClaudeContextTokens = 30000
+	if claudeIdleCacheCold(c, now) {
+		t.Fatal("small context: resume is cheap enough")
+	}
+}

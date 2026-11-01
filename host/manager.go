@@ -1428,6 +1428,17 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		_ = s.Send(chatID, fmt.Sprintf("♻️ claude 세션 컨텍스트가 커져서(약 %dk 토큰) 새 세션으로 정리했습니다 — 대화는 그대로 이어집니다.", workConv.ClaudeContextTokens/1000))
 		markSessionReset(workConv)
 	}
+	if resume && backend == "claude" && claudeIdleCacheCold(workConv, time.Now()) {
+		// The prompt cache has expired, so resuming re-writes the whole context
+		// (1.25× input price). A fresh session re-writes only the summary + recent
+		// turns. Silent: nothing the user needs to act on.
+		resume = false
+		claudeReset = true
+		workConv.SessionID = newUUID()
+		log.Printf("[worker] claude idle with %d-token context — fresh session for conv %s",
+			workConv.ClaudeContextTokens, workConv.ID)
+		markSessionReset(workConv)
+	}
 
 	// Pass history in the prompt sized to whether the CLI carries the session.
 	// A resuming turn only needs a short trailing reminder (the CLI holds the
@@ -2160,6 +2171,22 @@ func historyForContext(history []ConversationTurn, resume bool) []ConversationTu
 //     replaces the stored one (!wasStarted).
 //
 // A successful turn sets Started=true and the real counters as before.
+// claudeIdleResetAfter / claudeIdleResetMinTokens: a session idle longer than
+// the prompt-cache lifetime (~1h observed: 36 min idle still hit the cache, 2h
+// re-wrote all 127k tokens) with a context well above a fresh session's (~30k)
+// is cheaper to restart than to resume.
+const (
+	claudeIdleResetAfter     = 60 * time.Minute
+	claudeIdleResetMinTokens = 50000
+)
+
+func claudeIdleCacheCold(c *Conversation, now time.Time) bool {
+	if c.ClaudeContextTokens < claudeIdleResetMinTokens || len(c.TurnStats) == 0 {
+		return false
+	}
+	return now.Sub(c.TurnStats[len(c.TurnStats)-1].At) >= claudeIdleResetAfter
+}
+
 func markSessionReset(c *Conversation) {
 	c.Started = false
 	c.ClaudeContextTokens = 0

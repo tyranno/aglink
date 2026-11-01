@@ -1045,6 +1045,8 @@ const ENROLL_RE = cmdRE(String.raw`(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*
 // "목소리 따라 하기 녹음해 줘": someone who agreed reads a short text, and
 // replies are read in their voice (OpenVoice) until "원래 목소리로 돌려 줘".
 const CLONE_RE = cmdRE(String.raw`(다시\s*|한\s*번\s*더\s*)?((이\s*사람|이|아내|안에|와이프|집사람|엄마|아빠|내|제)\s*(의\s*)?목소리\s*(로\s*)?(따라\s*하기|따라하기|흉내)?\s*(를|을)?\s*(녹음|배워|익혀|따라\s*해|따라해)|목소리\s*(따라\s*하기|따라하기|흉내\s*내기|복제)\s*(녹음)?\s*(을|를)?\s*(해|시작|하자|녹음해))\s*(해|하자|시작해)?`);
+// "아내 목소리 녹음해서 그 목소리로 바꿔 줘"처럼 뒤에 말이 더 붙어도 받는다("아내"는 "안에"로도 적힘).
+const CLONE_LEAD_RE = new RegExp(String.raw`^\s*(다시\s*)?(아내|안에|와이프|집사람)\s*(의\s*)?목소리\s*(를|을|로)?\s*(녹음|따라\s*하|따라해)`);
 const CLONE_OFF_RE = cmdRE(String.raw`(원래|기본|처음|예전)\s*(목소리|음색)\s*(로|으로)\s*(돌려|돌아가|바꿔|해)|목소리\s*따라\s*하기\s*(꺼|끄기|그만|해제|취소)`);
 const CLONE_MS = 25000;
 const CLONE_SCRIPT =
@@ -1311,7 +1313,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 // runVoiceCommand carries out text if it is one of the commands; false means
@@ -1375,7 +1377,7 @@ async function runVoiceCommand(paneId, text) {
     speak("원래 목소리로 돌렸어요.");
     return true;
   }
-  if (CLONE_RE.test(t)) {
+  if (CLONE_RE.test(t) || CLONE_LEAD_RE.test(t)) {
     await cloneVoice(paneId);
     return true;
   }

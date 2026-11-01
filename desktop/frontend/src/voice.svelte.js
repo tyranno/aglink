@@ -1044,7 +1044,7 @@ const PB_MIN_NAME = 3; // ...and at least this many letters
 const ENROLL_RE = cmdRE(String.raw`(제\s*|내\s*)?목소리\s*(로|를|좀)?\s*(좀\s*)?(등록|저장|기억)\s*(해|하자|해\s*둬|해\s*놔|할래)?`);
 // "목소리 따라 하기 녹음해 줘": someone who agreed reads a short text, and
 // replies are read in their voice (OpenVoice) until "원래 목소리로 돌려 줘".
-const CLONE_RE = cmdRE(String.raw`((이\s*사람|이|아내|와이프|집사람|엄마|아빠|내|제)\s*(의\s*)?목소리\s*(로\s*)?(따라\s*하기|따라하기|흉내)?\s*(를|을)?\s*(녹음|배워|익혀|따라\s*해|따라해)|목소리\s*(따라\s*하기|따라하기|흉내\s*내기|복제)\s*(녹음)?\s*(을|를)?\s*(해|시작|하자|녹음해))\s*(해|하자|시작해)?`);
+const CLONE_RE = cmdRE(String.raw`(다시\s*|한\s*번\s*더\s*)?((이\s*사람|이|아내|안에|와이프|집사람|엄마|아빠|내|제)\s*(의\s*)?목소리\s*(로\s*)?(따라\s*하기|따라하기|흉내)?\s*(를|을)?\s*(녹음|배워|익혀|따라\s*해|따라해)|목소리\s*(따라\s*하기|따라하기|흉내\s*내기|복제)\s*(녹음)?\s*(을|를)?\s*(해|시작|하자|녹음해))\s*(해|하자|시작해)?`);
 const CLONE_OFF_RE = cmdRE(String.raw`(원래|기본|처음|예전)\s*(목소리|음색)\s*(로|으로)\s*(돌려|돌아가|바꿔|해)|목소리\s*따라\s*하기\s*(꺼|끄기|그만|해제|취소)`);
 const CLONE_MS = 25000;
 const CLONE_SCRIPT =

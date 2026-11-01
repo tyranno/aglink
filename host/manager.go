@@ -1456,8 +1456,11 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	}
 	memPath := conversationMemoryPath(pPath, workConv.ID)
 	prompt := buildContextPrompt(text, promptSummary, globalMemory, projectMemory, memPath, historyForPrompt)
-	if resume && sessionNearReset(backend, workConv) {
+	if !resume {
+		workConv.MemoryFlushSent = false
+	} else if sessionNearReset(backend, workConv) && !workConv.MemoryFlushSent {
 		prompt += memoryFlushReminder(memPath)
+		workConv.MemoryFlushSent = true
 	}
 
 	workerModel, workerTier := m.pickWorkerModel(backend, text, workConv, resume)
@@ -2147,6 +2150,7 @@ func markSessionReset(c *Conversation) {
 	c.Started = false
 	c.ClaudeContextTokens = 0
 	c.CodexContextTokens = 0
+	c.MemoryFlushSent = false
 }
 
 // tailTurns returns the last turns of history: at most maxTurns, and — when

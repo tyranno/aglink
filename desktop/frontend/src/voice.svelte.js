@@ -1323,6 +1323,8 @@ function isCommandText(text) {
   return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_USE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
+const DIALOGUE_RE = /(?:^|\s)-\s/g; // a speaker turn in whisper's output
+
 // Typed in the chat box, the same commands work as when spoken ("아내
 // 목소리로 바꿔 줘"); "!" commands stay the host's.
 export function isTypedCommand(text) {
@@ -1814,6 +1816,13 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     } else if (heard && score >= 0) {
       vlog(`voice ${score.toFixed(2)} ${quote(heard, 20)}`);
       logHeard(heard, score, true);
+    }
+    // whisper writes a back-and-forth as "- 그쵸. - 네.": people talking in the
+    // room or on TV, not a request. Sent, each one cost a full AI turn.
+    if (heard && conv() && (heard.match(DIALOGUE_RE) || []).length >= 2) {
+      vlog(`dialogue dropped ${quote(heard)}`);
+      logHeard(heard, score, false, "주변 대화");
+      heard = "";
     }
     // Safety net: a clip that is just the reply read back through the speakers
     // (its tail, or all of it) is never sent as the user's words. Speech that

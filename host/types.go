@@ -200,6 +200,11 @@ type Conversation struct {
 	// keep a large resumed session on the model whose prompt cache is warm (see
 	// pickWorkerModel) and reported by get_usage_stats.
 	LastModel string `json:"lastModel,omitempty"`
+	// MemoryFlushSent: memoryFlushReminder was already added in this backend
+	// session. Asking once is enough — repeated on every turn past the
+	// threshold it cost an extra memory-file edit (a full context re-read) per
+	// turn. Cleared when the session resets (markSessionReset).
+	MemoryFlushSent bool `json:"memoryFlushSent,omitempty"`
 	// ScreenUsed is sticky: set once this conversation used the screen MCP tools
 	// (or a request plainly asked for screen work). From then on the full screen
 	// guidance is appended to the system prompt; before that only a short pointer

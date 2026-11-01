@@ -34,8 +34,11 @@ func screenWebArbitrationPrompt() string {
 		"For anything in a web page/browser (reading content, following links, filling web forms, checking a site), " +
 		"use the `web` tools (list_tabs/navigate/get_page_text/get_attribute) and do NOT capture or click the browser " +
 		"window with the `screen` tools — a page screenshot costs 10–100× the tokens of its text and is re-billed every " +
-		"turn it stays in the session. Use the `screen` tools for native Windows desktop apps, or for a genuinely visual " +
-		"check no DOM text can answer. When in doubt about a browser, reach for `web` first."
+		"turn it stays in the session. The same rule covers Electron/Wails app windows, including the aglink desktop app " +
+		"itself (profile \"app:aglink\"): call the web tool list_profiles, and if the app is listed drive it with " +
+		"page_snapshot/click/run_steps on that profile instead of screen capture. Use the `screen` tools only for native " +
+		"Windows desktop apps, an app that list_profiles does not show, or a genuinely visual check no DOM text can " +
+		"answer. When in doubt about a browser or app window, reach for `web` first."
 }
 
 // resolveWebBinaryPath locates the aglink-web executable that provides the web

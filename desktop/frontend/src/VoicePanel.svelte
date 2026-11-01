@@ -25,6 +25,11 @@
     startTape,
     stopTape,
     openTapeFolder,
+    summarizeTape,
+    assist,
+    setDaily,
+    refreshMemos,
+    deleteMemo,
   } from "./voice.svelte.js";
 
   let speaker = $state({});
@@ -34,7 +39,15 @@
   onMount(async () => {
     speaker = await speakerStatus();
     clone = await cloneVoiceStatus();
+    refreshMemos().catch(() => {});
   });
+
+  // {h, m} as "07:30" for a time input, and back.
+  const hhmm = (s) => `${String(s.h).padStart(2, "0")}:${String(s.m).padStart(2, "0")}`;
+  function setTime(which, value) {
+    const [h, m] = String(value).split(":").map(Number);
+    if (Number.isFinite(h) && Number.isFinite(m)) setDaily(which, { h, m });
+  }
 
   async function recordClone() {
     busy = true;
@@ -81,6 +94,7 @@
   const card = "rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4";
   const label = "text-sm font-semibold text-slate-900 dark:text-slate-100";
   const desc = "mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400";
+  const field = "rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300";
   const button =
     "rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50";
 </script>
@@ -262,15 +276,61 @@
         <div>
           <div class={label}>녹음</div>
           <div class={desc}>
-            “녹음해 줘”라고 하면 대답하지 않고 “녹음 끝내”라고 할 때까지 계속 녹음해요. 소리 파일과 받아 적은 글이 문서 폴더의 “aglink 녹음”에 함께 저장돼요.
+            “녹음해 줘”라고 하면 대답하지 않고 “녹음 끝내”라고 할 때까지 계속 녹음해요. 소리 파일과 받아 적은 글이 문서 폴더의 “aglink 녹음”에 함께 저장돼요. “방금 녹음 정리해 줘”라고 하면 AI가 요약·결정 사항·할 일로 정리해서 녹음 옆에 “… 요약.md”로 저장해요.
             {voice.taping ? `지금 녹음 중이에요 (${voice.tapeClock || "00:00"}).` : ""}
           </div>
         </div>
         <div class="flex shrink-0 gap-2">
           <button class={button} onclick={() => (voice.taping ? stopTape() : startTape())}>{voice.taping ? "녹음 끝내기" : "녹음 시작"}</button>
+          <button class={button} disabled={voice.taping} onclick={() => summarizeTape()}>방금 녹음 정리</button>
           <button class={button} onclick={openTapeFolder}>폴더 열기</button>
         </div>
       </div>
+    </div>
+
+    <div class={card}>
+      <div class={label}>아침 브리핑 · 저녁 정리</div>
+      <div class={desc}>
+        아침 브리핑은 정한 시각에 열린 대화로 날짜, 오늘 일정, 날씨, 주요 뉴스를 물어 읽어 드려요(AI 한 번). 저녁 정리는 오늘 메모와 남은 할 일을 읽어요.
+        “아침 브리핑 7시 반으로 해 줘”, “브리핑 지역 수원으로”, “지금 브리핑해 줘”, “저녁 정리 9시로 해 줘”라고 말해도 돼요.
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-700 dark:text-slate-300">
+        <label class="inline-flex items-center gap-1.5">
+          <input type="checkbox" checked={assist.briefing.on} onchange={(e) => setDaily("briefing", { on: e.currentTarget.checked })} />
+          아침 브리핑
+        </label>
+        <input type="time" class={field} value={hhmm(assist.briefing)} onchange={(e) => setTime("briefing", e.currentTarget.value)} />
+        <input class={`${field} w-24`} placeholder="지역" value={assist.briefing.region} onchange={(e) => setDaily("briefing", { region: e.currentTarget.value.trim() || "서울" })} />
+        <label class="inline-flex items-center gap-1.5 md:ml-4">
+          <input type="checkbox" checked={assist.evening.on} onchange={(e) => setDaily("evening", { on: e.currentTarget.checked })} />
+          저녁 정리
+        </label>
+        <input type="time" class={field} value={hhmm(assist.evening)} onchange={(e) => setTime("evening", e.currentTarget.value)} />
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <div class={label}>메모 · 할 일</div>
+          <div class={desc}>“메모해 줘, 내일 견적서 확인”, “할 일 추가: 보고서”, “메모 뭐 있어?”, “2번 메모 지워 줘”라고 말하면 돼요.</div>
+        </div>
+        {#if assist.memos.length}<button class={button} onclick={() => deleteMemo()}>모두 지우기</button>{/if}
+      </div>
+      {#if assist.memos.length === 0}
+        <div class="mt-3 text-xs text-slate-500 dark:text-slate-400">아직 없어요.</div>
+      {:else}
+        <ul class="mt-3 space-y-1 text-sm">
+          {#each assist.memos as m, i (m.id)}
+            <li class="flex items-center gap-2 border-t border-slate-200 dark:border-slate-700 pt-1">
+              <span class="w-6 tabular-nums text-xs text-slate-500 dark:text-slate-400">{i + 1}</span>
+              {#if m.todo}<span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">할 일</span>{/if}
+              <span class="flex-1 text-slate-800 dark:text-slate-200">{m.text}</span>
+              <button class="text-xs text-slate-400 hover:text-rose-600" title="지우기" onclick={() => deleteMemo(m.id)}>✕</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
 
     <div class={card}>

@@ -12,7 +12,7 @@ export const LATE_MS = 2 * 60000; // fired later than this (the app was off): sa
 
 // A number as Whisper writes it (digits, mostly) or as it is said: native
 // ("세 시", "열두 시") for hours, Sino ("삼십 분") for minutes.
-const N = String.raw`(\d+|열한|열두|열|한|두|세|네|다섯|여섯|일곱|여덟|아홉|[일이삼사오육칠팔구]?십\s*[일이삼사오육칠팔구]?|[일이삼사오육칠팔구])`;
+export const N = String.raw`(\d+|열한|열두|열|한|두|세|네|다섯|여섯|일곱|여덟|아홉|[일이삼사오육칠팔구]?십\s*[일이삼사오육칠팔구]?|[일이삼사오육칠팔구])`;
 const NATIVE = { 한: 1, 두: 2, 세: 3, 네: 4, 다섯: 5, 여섯: 6, 일곱: 7, 여덟: 8, 아홉: 9, 열: 10, 열한: 11, 열두: 12 };
 const SINO = { 일: 1, 이: 2, 삼: 3, 사: 4, 오: 5, 육: 6, 칠: 7, 팔: 8, 구: 9 };
 

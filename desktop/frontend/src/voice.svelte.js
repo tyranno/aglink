@@ -32,6 +32,7 @@ import {
 } from "./paneStore.svelte.js";
 import { alarms, parseAlarm, addAlarm, removeAlarm, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
 import { describeCron } from "./schedule.js";
+import { parsePc, parseUsage, usageText, parseDaily, dailyDue, dayKey, clockLabel, parseMemo, MAX_MEMO_CMD_CHARS, parseTapeSummary, tapeSummaryPrompt, briefingPrompt } from "./assist.js";
 
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
 const BARGE_STORAGE_KEY = "aglink.voice.barge"; // "0": take turns, the mic waits for the reading
@@ -629,8 +630,10 @@ setTurnDoneListener((key) => {
   // ones before it are "looking into it…" notes sent while working.
   const texts = pendingSpeech.get(key);
   pendingSpeech.delete(key);
-  if (texts?.length) speakReply(texts[texts.length - 1], key);
+  if (texts?.length) speakReply(texts[texts.length - 1], key, speakNext.has(key) ? "full" : speechMode()); // the briefing is read whole
   textOnce.delete(key);
+  speakNext.delete(key);
+  saveTurnReply(key);
   convActiveAt = Date.now();
   const p = voice.convPaneId && pane(voice.convPaneId);
   // Matched by the chat, not the pane: the pane may have moved on to another one.
@@ -1362,6 +1365,7 @@ function changeSpeed(paneId, delta) {
 // isCommandText tells a voice command, which the echo check must not drop.
 function isCommandText(text) {
   const t = text.trim();
+  if (isAssistCommand(t)) return true;
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
@@ -1386,6 +1390,7 @@ export async function runTypedCommand(paneId, text) {
 // it is to be sent as usual.
 async function runVoiceCommand(paneId, text) {
   const t = text.trim();
+  if (isAssistCommand(t)) return runAssistCommand(paneId, t);
   if (t.length <= MAX_ALARM_CHARS && (await runAlarmCommand(t))) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
   if (TAPE_START_RE.test(t)) {
@@ -1539,6 +1544,336 @@ async function runVoiceCommand(paneId, text) {
     return true;
   }
   return false;
+}
+
+// ---- assistant: PC control, cost, memos, briefing, recording summary ----
+//
+// Whole-sentence commands parsed in assist.js. PC control, the cost question,
+// memos and the evening round-up are done here with no AI turn; the morning
+// briefing and the recording summary each send one short turn.
+
+const BRIEFING_STORAGE_KEY = "aglink.voice.briefing";
+const EVENING_STORAGE_KEY = "aglink.voice.evening";
+const DAILY_CHECK_MS = 30000;
+const DAILY_DEFAULTS = {
+  briefing: { on: false, h: 7, m: 30, region: "서울", last: "" },
+  evening: { on: false, h: 21, m: 0, last: "" },
+};
+const DAILY_KEYS = { briefing: BRIEFING_STORAGE_KEY, evening: EVENING_STORAGE_KEY };
+const MAX_READ_MEMOS = 10; // "메모 뭐 있어?" reads this many
+
+function loadDaily(which) {
+  try {
+    const s = JSON.parse(localStorage.getItem(DAILY_KEYS[which]) || "{}");
+    return { ...DAILY_DEFAULTS[which], ...(s && typeof s === "object" ? s : {}) };
+  } catch {
+    return { ...DAILY_DEFAULTS[which] };
+  }
+}
+
+// assist: the daily settings and the memo list, for the voice settings.
+export const assist = $state({ briefing: loadDaily("briefing"), evening: loadDaily("evening"), memos: [] });
+
+// setDaily changes the briefing's or the round-up's settings. A time set to
+// one that has gone by today starts tomorrow, rather than going off at once.
+export function setDaily(which, patch) {
+  const next = { ...assist[which], ...patch };
+  if ("h" in patch || "m" in patch) {
+    const at = new Date();
+    at.setHours(next.h, next.m, 0, 0);
+    if (at.getTime() <= Date.now()) next.last = dayKey();
+  }
+  assist[which] = next;
+  try {
+    localStorage.setItem(DAILY_KEYS[which], JSON.stringify(next));
+  } catch {}
+}
+
+const speakNext = new Set(); // chats whose next reply is read out wherever it lands (the briefing)
+const replySaves = new Map(); // chat key -> {path, text}: the turn's answer is saved as the recording's summary
+
+function isAssistCommand(t) {
+  return t.length <= MAX_MEMO_CMD_CHARS && !!(parsePc(t) || parseUsage(t) || parseDaily(t) || parseMemo(t) || parseTapeSummary(t));
+}
+
+// eulReul picks 을/를 for the word before it.
+function eulReul(word) {
+  const c = String(word).trim().slice(-1).charCodeAt(0);
+  return c >= 0xac00 && c <= 0xd7a3 && (c - 0xac00) % 28 ? "을" : "를";
+}
+
+// assistPane is the pane a turn goes to: the one spoken or typed in, else the
+// conversation, the focused pane or any with a chat open.
+function assistPane(paneId) {
+  for (const id of [paneId, voice.convPaneId, chat.focusedPaneId, ...chat.panes.map((p) => p.id)]) if (id && pane(id)?.target) return id;
+  return null;
+}
+
+// sendTurn sends one AI turn from paneId as if typed, leaving what was in the
+// composer as it was. read: the answer is read out even outside conversation
+// mode; saveTo: it is saved as that recording's summary. "" when sent, else
+// why not.
+async function sendTurn(paneId, prompt, { read = false, saveTo = "" } = {}) {
+  const p = pane(paneId);
+  if (!p?.target) return "열린 대화가 없어요";
+  if (!chat.connected) return "aglink 에 연결되어 있지 않아요";
+  const key = targetKey(p.target);
+  if (chat.working.has(key)) return "그 대화가 아직 일하는 중이에요";
+  if (p.attachments.length) return "입력창에 첨부한 파일이 있어요";
+  const kept = p.composerText;
+  if (read) speakNext.add(key);
+  if (saveTo) replySaves.set(key, { path: saveTo, text: "" });
+  setPaneComposerValue(paneId, prompt);
+  await sendFromPane(paneId);
+  if (kept.trim()) setPaneComposerValue(paneId, kept);
+  return "";
+}
+
+// saveTurnReply saves a finished turn's answer as the recording summary it
+// was asked for.
+function saveTurnReply(key) {
+  const save = replySaves.get(key);
+  if (!save) return;
+  replySaves.delete(key);
+  if (!save.text) return;
+  VoiceService.SaveTapeSummary(save.path, save.text)
+    .then((p) => {
+      vlog(`tape summary saved ${p}`);
+      flash("📝 녹음 요약을 저장했어요");
+    })
+    .catch((err) => vlog(`tape summary save failed: ${err?.message || err}`));
+}
+
+async function runAssistCommand(paneId, t) {
+  try {
+    const pc = parsePc(t);
+    if (pc) await runPcCommand(pc);
+    else if (parseUsage(t)) {
+      const period = parseUsage(t);
+      speak(usageText(period, parseJSON(await VoiceService.UsageSummary(period), {})));
+    } else if (parseDaily(t)) await runDailyCommand(paneId, parseDaily(t));
+    else if (parseMemo(t)) await runMemoCommand(parseMemo(t));
+    else if (parseTapeSummary(t)) await summarizeTape(paneId, parseTapeSummary(t).notion);
+    else return false;
+  } catch (err) {
+    vlog(`command failed: ${err?.message || err}`);
+    speak("그 일을 하지 못했어요. 잠시 뒤에 다시 말씀해 주세요.");
+  }
+  return true;
+}
+
+function durationLabel(sec) {
+  const min = Math.round(sec / 60);
+  if (min < 60 || min % 60 === 30) return `${min}분`;
+  return `${Math.floor(min / 60)}시간${min % 60 ? ` ${min % 60}분` : ""}`;
+}
+
+async function runPcCommand(pc) {
+  vlog(`pc ${pc.kind} ${pc.target || pc.op || pc.seconds || ""}`);
+  if (pc.kind === "open") {
+    try {
+      await VoiceService.PCOpen(pc.target);
+      speak(`${pc.name}${eulReul(pc.name)} 열었어요.`);
+    } catch (err) {
+      vlog(`open failed: ${err?.message || err}`);
+      speak(`${pc.name}${eulReul(pc.name)} 찾지 못했어요.`);
+    }
+  } else if (pc.kind === "volume") {
+    const v = parseJSON(await VoiceService.PCVolume(pc.op, pc.value), {});
+    flash(v.muted ? "🔇 소리 꺼짐" : `🔊 ${v.level}%`);
+    if (pc.op === "mute") speak("소리를 껐어요.");
+    else if (pc.op === "unmute") speak(`소리를 켰어요. 지금 ${v.level}퍼센트예요.`);
+    else speak(`소리를 ${v.level}퍼센트로 ${pc.op === "down" ? "줄였어요" : pc.op === "up" ? "키웠어요" : "맞췄어요"}.`);
+  } else if (pc.kind === "screenOff") {
+    await VoiceService.PCScreenOff();
+    speak("화면을 끌게요. 마우스를 움직이면 다시 켜져요.");
+  } else if (pc.kind === "shutdown") {
+    await VoiceService.PCShutdown(pc.seconds);
+    speak(`${durationLabel(pc.seconds)} 뒤에 컴퓨터를 꺼요. 취소하려면 '컴퓨터 끄기 취소'라고 하세요.`);
+  } else if (pc.kind === "shutdownAsk") {
+    speak("언제 끌지 함께 말씀해 주세요. 30분 뒤에 컴퓨터 꺼 줘, 처럼요.");
+  } else if (pc.kind === "shutdownCancel") {
+    const r = await VoiceService.PCShutdownCancel();
+    speak(r === "none" ? "예약된 컴퓨터 끄기가 없어요." : "컴퓨터 끄기를 취소했어요.");
+  }
+}
+
+async function runDailyCommand(paneId, d) {
+  const name = d.which === "briefing" ? "아침 브리핑" : "저녁 정리";
+  const what = d.which === "briefing" ? "아침 브리핑을 해 드릴게요." : "오늘 메모와 남은 할 일을 읽어 드릴게요.";
+  if (d.op === "set" || d.op === "on") {
+    setDaily(d.which, d.op === "set" ? { on: true, h: d.h, m: d.m } : { on: true });
+    const s = assist[d.which];
+    speak(`매일 ${clockLabel(s.h, s.m)}에 ${what}`);
+  } else if (d.op === "off") {
+    setDaily(d.which, { on: false });
+    speak(`${name}${eulReul(name)} 껐어요.`);
+  } else if (d.op === "region") {
+    setDaily("briefing", { region: d.region });
+    speak(`브리핑 날씨는 ${d.region} 기준으로 알려 드릴게요.`);
+  } else if (d.which === "evening") await readEvening();
+  else {
+    const why = await sendBriefing(paneId);
+    if (why) speak(`${why}. 대화를 연 뒤에 다시 말씀해 주세요.`);
+  }
+}
+
+// todaySchedule lists what is set for the rest of today — 예약 jobs and
+// reminders on the host, and reminders kept here — for the briefing prompt.
+async function todaySchedule() {
+  const end = new Date();
+  end.setHours(24, 0, 0, 0);
+  let host = [];
+  try {
+    host = parseJSON(await ControlService.ListTasks("pending"), []);
+  } catch {}
+  return (Array.isArray(host) ? host : [])
+    .map((t) => ({ at: new Date(t.nextFire && !t.nextFire.startsWith("0001") ? t.nextFire : t.fireAt).getTime(), label: t.label || (t.isTask ? "예약 작업" : "알림") }))
+    .concat(alarms.map((a) => ({ at: a.at, label: a.msg || "알림" })))
+    .filter((x) => Number.isFinite(x.at) && x.at >= Date.now() && x.at < end.getTime())
+    .sort((x, y) => x.at - y.at)
+    .slice(0, 8)
+    .map((x) => {
+      const d = new Date(x.at);
+      return `${clockLabel(d.getHours(), d.getMinutes())} ${x.label}`;
+    })
+    .join(", ");
+}
+
+// sendBriefing sends the morning briefing's turn; "" when sent, else why not.
+async function sendBriefing(paneId) {
+  const target = assistPane(paneId);
+  if (!target) return "브리핑을 보낼 대화가 없어요";
+  const prompt = briefingPrompt(new Date(), assist.briefing.region || DAILY_DEFAULTS.briefing.region, await todaySchedule());
+  const why = await sendTurn(target, prompt, { read: true });
+  if (!why) vlog("briefing sent");
+  return why;
+}
+
+// readEvening reads out today's memos and the to-dos still kept.
+async function readEvening(auto = false) {
+  const list = await refreshMemos();
+  const today = dayKey();
+  const memos = list.filter((m) => !m.todo && dayKey(new Date(m.at)) === today);
+  const todos = list.filter((m) => m.todo);
+  const parts = auto ? ["저녁 정리예요."] : [];
+  if (!memos.length && !todos.length) parts.push("오늘 메모도, 남은 할 일도 없어요.");
+  if (memos.length) parts.push(`오늘 메모 ${memos.length}개. ${memos.map((m) => m.text).join(". ")}.`);
+  if (todos.length) parts.push(`남은 할 일 ${todos.length}개. ${todos.map((m) => m.text).join(". ")}.`);
+  if (auto) flash("🌙 저녁 정리");
+  void speak(parts.join(" "), "full");
+}
+
+let briefingSending = false;
+let briefingSkip = ""; // why the due briefing was last not sent, logged once
+
+// checkDaily does the briefing and the round-up when their time has come (or
+// came less than two hours ago, with the app off). A briefing that cannot be
+// sent yet (not connected, the chat busy) is tried again on the next check.
+function checkDaily() {
+  const now = new Date();
+  if (dailyDue(assist.evening, now) && !voice.enrolling) {
+    setDaily("evening", { last: dayKey(now) });
+    vlog("evening round-up");
+    void readEvening(true).catch((err) => vlog(`evening round-up failed: ${err?.message || err}`));
+  }
+  if (dailyDue(assist.briefing, now) && !briefingSending && !voice.enrolling && !voice.taping) {
+    briefingSending = true;
+    sendBriefing(null)
+      .then((why) => {
+        if (!why) setDaily("briefing", { last: dayKey(now) });
+        else if (why !== briefingSkip) vlog(`briefing waits: ${why}`);
+        briefingSkip = why;
+      })
+      .catch((err) => vlog(`briefing failed: ${err?.message || err}`))
+      .finally(() => (briefingSending = false));
+  }
+}
+
+function startDaily() {
+  setTimeout(checkDaily, 10000); // after start-up: the chats and the connection come first
+  setInterval(checkDaily, DAILY_CHECK_MS);
+  void refreshMemos().catch(() => {});
+}
+
+// ---- memos ----
+
+export async function refreshMemos() {
+  const list = parseJSON(await VoiceService.MemoList(), []);
+  assist.memos = Array.isArray(list) ? list : [];
+  return assist.memos;
+}
+
+// deleteMemo removes one memo by id, or all of them with no id.
+export async function deleteMemo(id) {
+  assist.memos = parseJSON(await VoiceService.MemoDelete(id === undefined ? [] : [id]), []);
+}
+
+function memoLine(m, i) {
+  return `${i + 1}번, ${m.todo ? "할 일, " : ""}${m.text}.`;
+}
+
+async function runMemoCommand(c) {
+  if (c.op === "add") {
+    assist.memos = parseJSON(await VoiceService.MemoAdd(c.text, c.todo), []);
+    vlog(`memo added${c.todo ? " (todo)" : ""} ${quote(c.text)}`);
+    speak(c.todo ? `할 일에 넣었어요. ${c.text}.` : `메모했어요. ${c.text}.`);
+    return;
+  }
+  if (c.op === "ask") {
+    speak("무엇을 메모할까요? 메모해 줘, 다음에 내용을 이어서 말씀해 주세요.");
+    return;
+  }
+  const list = await refreshMemos();
+  if (!list.length) {
+    speak(c.op === "list" ? "메모가 없어요." : "지울 메모가 없어요.");
+    return;
+  }
+  if (c.op === "list") {
+    const more = list.length > MAX_READ_MEMOS ? ` 나머지 ${list.length - MAX_READ_MEMOS}개는 음성 설정에서 보세요.` : "";
+    speak(`메모가 ${list.length}개 있어요. ${list.slice(0, MAX_READ_MEMOS).map(memoLine).join(" ")}${more}`, "full");
+  } else if (c.op === "clear") {
+    await deleteMemo();
+    speak(`메모 ${list.length}개를 모두 지웠어요.`);
+  } else if (c.op === "delete") {
+    const m = list[c.n - 1];
+    if (!m) {
+      speak(`메모는 ${list.length}번까지 있어요. 다시 말씀해 주세요.`);
+      return;
+    }
+    await deleteMemo(m.id);
+    speak(`${c.n}번 메모, ${m.text}, 지웠어요.`);
+  }
+}
+
+// ---- recording summary ----
+
+// summarizeTape sends the latest recording's text for one AI turn that sums
+// it up; the answer is saved next to the recording as "… 요약.md".
+export async function summarizeTape(paneId = null, notion = false) {
+  if (voice.taping) {
+    speak("아직 녹음 중이에요. 녹음 끝내, 라고 하신 뒤에 말씀해 주세요.");
+    return;
+  }
+  const last = parseJSON(await VoiceService.TapeLast(), {});
+  if (!last.path) {
+    speak("정리할 녹음이 없어요.");
+    return;
+  }
+  const body = String(last.text || "").replace(/^녹음 [^\n]*\n/, "").trim();
+  if (!body) {
+    speak("방금 녹음에는 받아 적은 말이 없어요.");
+    return;
+  }
+  const name = last.path.split(/[/\\]/).pop().replace(/\.txt$/i, "");
+  const target = assistPane(paneId);
+  const why = target ? await sendTurn(target, tapeSummaryPrompt(name, last.text, notion), { saveTo: last.path }) : "열린 대화가 없어요";
+  if (why) {
+    speak(`${why}. 잠시 뒤에 다시 말씀해 주세요.`);
+    return;
+  }
+  vlog(`tape summary asked ${name} (${last.chars} chars)${notion ? " +notion" : ""}`);
+  speak(notion ? "녹음을 정리해서 노션에도 저장할게요." : "녹음을 정리할게요. 끝나면 녹음 옆에 요약 파일로 저장해 둘게요.");
 }
 
 // ---- reminders ----
@@ -2409,7 +2744,7 @@ let detailHinted = false; // "자세히 읽어 줘" is mentioned once a run, the
 
 const textOnce = new Set(); // chats whose next reply was asked for "글로만"
 
-function speakReply(md, key = "") {
+function speakReply(md, key = "", mode = speechMode()) {
   lastReply = md;
   if (voice.textOnly || textOnce.has(key)) return showReply(md);
   let tail = "";
@@ -2421,7 +2756,7 @@ function speakReply(md, key = "") {
     }
   }
   emitReply(md);
-  return speak(md, speechMode(), tail);
+  return speak(md, mode, tail);
 }
 
 // emitReply puts an assistant reply up in the indicator's popup, which shows
@@ -2493,6 +2828,8 @@ setAssistantTextListener((key, text) => {
     return;
   }
   if (STATUS_LINE_RE.test(text)) return;
+  const save = replySaves.get(key);
+  if (save) save.text = text; // the last one is the answer
   // A remembered conversation counts before it has resumed after a restart,
   // so a reply that lands in that gap is still read out.
   const convId = voice.convPaneId || savedConversationPane();
@@ -2500,7 +2837,8 @@ setAssistantTextListener((key, text) => {
   const focused = pane(chat.focusedPaneId);
   const wanted =
     (conv?.target && targetKey(conv.target) === key) ||
-    (voice.speakEnabled && focused?.target && targetKey(focused.target) === key);
+    (voice.speakEnabled && focused?.target && targetKey(focused.target) === key) ||
+    speakNext.has(key);
   if (!wanted) return;
   // A reply outside a running turn (a !command answer) has no "done" coming.
   if (!chat.working.has(key)) {
@@ -3045,3 +3383,4 @@ Events.On("tray:tape", () => void (voice.taping ? stopTape() : startTape()));
 if (typeof speechSynthesis !== "undefined") speechSynthesis.getVoices();
 void refreshVoiceStatus().then(resumeSavedConversation);
 startAlarms(fireAlarm);
+startDaily();

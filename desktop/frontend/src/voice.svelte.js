@@ -82,7 +82,7 @@ const PREROLL_MS = 300; // kept before the first speech so the onset is not cut
 // all ("full") but code, tables and links.
 const SPEAK_LIMITS = {
   short: { chars: 220, sentences: 2, points: 3 },
-  gist: { chars: 600, sentences: 3, points: 6 },
+  gist: { chars: 600, sentences: 3, points: 8 },
 };
 const MAX_FULL_CHARS = 4000;
 const CUT_MARGIN = 80; // a full reading this much longer than the summary means it was cut
@@ -2593,7 +2593,13 @@ function cleanProse(p) {
 // bare "네."), the first sentence of each top-level list item — the point it
 // makes — and a closing question to the user. Code, tables, headings and a
 // trailing "출처:" list never count.
-const ITEM_LABEL_RE = /^[^.!?:：\d]{1,20}[:：]\s*/; // no digits: "10:30" is not a label
+const ITEM_LABEL_RE = /^([^.!?:：\d]{1,20})[:：]\s*/; // no digits: "10:30" is not a label
+
+// A subject label ("강남·서초:") is kept as "강남·서초," or the point loses
+// what it is about; a report lead-in ("고친 것:") is dropped.
+function speakLabel(s) {
+  return s.replace(ITEM_LABEL_RE, (_, label) => (/(것|점|일|이유|결과|방법)\s*$/.test(label) ? "" : `${label.trim()}, `));
+}
 
 function speakableParas(md) {
   let s = String(md || "").replace(/\r\n/g, "\n");
@@ -2632,14 +2638,18 @@ export function speechText(md, mode = speechMode()) {
       for (const item of items) {
         // A "**고친 것:**" lead-in read on its own sounds curt, like a report
         // being handed over; the sentence after it carries the point.
-        const point = sentencesOf(cleanProse(item.split("\n")[0]).replace(ITEM_LABEL_RE, ""))[0];
+        const point = sentencesOf(speakLabel(cleanProse(item.split("\n")[0])))[0];
         if (point) points.push(point);
       }
       closing = "";
       continue;
     }
     const prose = cleanProse(para);
-    if (prose) closing = prose;
+    if (!prose) continue;
+    // Later prose paragraphs carry points too; skipping them cut readings short.
+    const point = sentencesOf(speakLabel(prose))[0];
+    if (point && !/[?？]\s*$/.test(point)) points.push(point);
+    closing = prose;
   }
   for (const point of points.slice(0, MAX_SPEAK_POINTS)) {
     if ((out + point).length > MAX_SPEAK_CHARS) break;
@@ -2660,7 +2670,7 @@ function fullSpeechText(paras) {
   for (const para of paras) {
     const items = para.split(/\n(?=[ ]{0,3}(?:[-*+]|\d+[.)])\s)/);
     for (const item of items) {
-      const prose = cleanProse(item.replace(/\n+/g, " ")).replace(ITEM_LABEL_RE, "");
+      const prose = speakLabel(cleanProse(item.replace(/\n+/g, " ")));
       if (prose) parts.push(/[.!?。？！]$/.test(prose) ? prose : `${prose}.`);
     }
   }
@@ -2670,13 +2680,13 @@ function fullSpeechText(paras) {
 }
 
 function sentencesOf(text) {
-  return (text || "").match(/[^.!?。？！]+[.!?。？！]*\s*/g) || [];
+  return (text || "").match(/(?:[^.!?。？！]|\.(?=\d))+[.!?。？！]*\s*/g) || []; // "0.09%" does not end a sentence
 }
 
 // splitSentences keeps each utterance short: speechSynthesis stalls on long
 // ones, and with Supertonic the first sentence starts playing sooner.
 function splitSentences(text) {
-  const parts = text.match(/[^.!?。？！\n]+[.!?。？！]*\s*/g) || [text];
+  const parts = text.match(/(?:[^.!?。？！\n]|\.(?=\d))+[.!?。？！]*\s*/g) || [text];
   const out = [];
   let cur = "";
   for (const p of parts) {

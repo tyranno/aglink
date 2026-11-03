@@ -2089,13 +2089,14 @@ function clipSeconds(wav) {
   return wav ? (wav.length - 44) / (TARGET_RATE * 2) : 0;
 }
 
-// speakerScore: how much a clip sounds like the enrolled user, -1 if unknown.
+// speakerScore: how much a clip sounds like the enrolled user, -1 if nobody
+// is enrolled, -2 if someone is but the check could not run (see speaker.go).
 function speakerScore(wav) {
-  return VoiceService.SpeakerScore(toBase64(wav)).catch(() => -1);
+  return VoiceService.SpeakerScore(toBase64(wav)).catch(() => -2);
 }
 
 function isUserVoice(score, min) {
-  return score < 0 || score >= min;
+  return score === -1 || score >= min;
 }
 
 // enrollVoice records ~15 s of the user talking ("목소리 등록") as the voice to

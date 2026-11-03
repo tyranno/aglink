@@ -181,7 +181,11 @@ func (v *VoiceService) ClearSpeaker() error {
 
 // SpeakerScore says how much a clip (base64 WAV) sounds like the enrolled
 // user: a cosine similarity, about 0.5 and up for them and under 0.3 for
-// others. -1 means it cannot tell (nobody enrolled, or the server is down).
+// others. -1 means nobody is enrolled, so there is nothing to check against.
+// -2 means someone is enrolled but the check itself could not run (the
+// server was still starting, or it failed) — callers must not treat that as
+// a free pass, or a clip they can't actually verify (such as our own
+// reading coming back through the mic) gets taken for the user.
 func (v *VoiceService) SpeakerScore(b64 string) (float64, error) {
 	dir := openVoiceDir()
 	me := speakerEnrollment(dir)
@@ -190,7 +194,7 @@ func (v *VoiceService) SpeakerScore(b64 string) (float64, error) {
 	}
 	path, err := writeTempWav(b64)
 	if err != nil {
-		return -1, err
+		return -2, err
 	}
 	defer os.Remove(path)
 	spkMu.Lock()
@@ -200,7 +204,7 @@ func (v *VoiceService) SpeakerScore(b64 string) (float64, error) {
 		if !spkWarming.Load() {
 			go warmSpeaker()
 		}
-		return -1, nil
+		return -2, nil
 	}
 	anchor := speakerAnchor(dir)
 	if !fileExists(anchor) && fileExists(filepath.Join(dir, "me.wav")) {
@@ -210,7 +214,7 @@ func (v *VoiceService) SpeakerScore(b64 string) (float64, error) {
 	score, err := spkRequestLocked(map[string]any{"op": "score", "wav": path, "ref": me, "base": anchor, "adapt_min": speakerAdaptMin})
 	if err != nil {
 		log.Printf("[speaker] score failed: %v", err)
-		return -1, nil
+		return -2, nil
 	}
 	return score, nil
 }

@@ -2618,6 +2618,11 @@ export function speechText(md, mode = speechMode()) {
   const paras = speakableParas(md);
   if (mode === "full") return fullSpeechText(paras);
   const { chars: MAX_SPEAK_CHARS, sentences: MAX_SPEAK_SENTENCES, points: MAX_SPEAK_POINTS } = SPEAK_LIMITS[mode] || SPEAK_LIMITS.gist;
+  if (mode === "gist") {
+    // A reply that fits is read whole; picking sentences out of it sounds like it broke off.
+    const full = fullSpeechText(paras);
+    if (full.length <= MAX_SPEAK_CHARS) return full;
+  }
   let opening = "";
   let i = 0;
   for (; i < paras.length && opening.length < MIN_GIST_CHARS; i++) {

@@ -1368,6 +1368,16 @@ export async function adjustPaneTimeout(paneId, arg) {
   }
 }
 
+export async function cancelPane(paneId) {
+  const p = pane(paneId);
+  if (!p?.target) return;
+  try {
+    await ControlService.SendText("!cancel", p.target.kind, p.target.id || "");
+  } catch (error) {
+    pushMessageToKey(targetKey(p.target), { role: "system", text: `취소 실패: ${error}` });
+  }
+}
+
 export async function pickAttachment(paneId) {
   try {
     const sourcePath = await ControlService.PickFile();

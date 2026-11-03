@@ -34,6 +34,7 @@
     progressForTarget,
     toggleProgressPopup,
     adjustPaneTimeout,
+    cancelPane,
     paneColor,
     scrollPaneLogToBottom,
     recordPaneLogScroll,
@@ -345,6 +346,11 @@
               </optgroup>
               <option value="reset">기본값으로</option>
             </select>
+            <button
+              class="shrink-0 rounded border border-rose-300 dark:border-rose-700 bg-white dark:bg-slate-900 px-2 py-0.5 text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+              title="진행 중인 작업을 멈춥니다 (!cancel)"
+              onclick={(e) => { e.stopPropagation(); cancelPane(p.id); }}
+            >■ 취소</button>
             {#if progressForTarget(p.target).length > 0}
               <span class="shrink-0 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
                 진행 메시지 {progressForTarget(p.target).length}건 {chat.progressPopupPaneId === p.id ? "▾" : "▸"}

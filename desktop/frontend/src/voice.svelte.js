@@ -303,6 +303,8 @@ let resumeTimer = null; // conversation mode: waits for the reading to finish
 let convActiveAt = 0; // conversation mode: last time something was said or answered
 let micFailures = 0; // conversation mode: mic opens failed in a row
 const MAX_MIC_FAILURES = 3;
+let sendFailures = 0; // conversation mode: transcribe/send errors in a row
+const MAX_SEND_FAILURES = 3;
 const pendingSpeech = new Map(); // key -> reply texts held until the turn is done
 
 // vlog records a decision about what was heard in the app's diagnostic log.
@@ -514,6 +516,7 @@ export function endConversation(note) {
   voice.heard = "";
   voice.problem = "";
   micFailures = 0;
+  sendFailures = 0;
   saveConversation(null);
   clearTimeout(resumeTimer);
   resumeTimer = null;
@@ -912,7 +915,9 @@ async function startRecording(paneId, barge = false) {
     // learned share of what is playing; only sound well above that counts.
     const ref = refLevel(now);
     if (ref > 0.01) noteEchoRatio(rms / ref);
-    const echoFloor = echoGain !== null ? echoGain * ref * ECHO_MARGIN : 0;
+    // A small room's reverb keeps echoing after the learned gain reads ~0, so
+    // never trust a gain below ECHO_GAIN_MIN while a reply is playing.
+    const echoFloor = ref > 0 ? Math.max(echoGain ?? 0, ECHO_GAIN_MIN) * ref * ECHO_MARGIN : 0;
     const threshold = Math.max(0.012, rec.noiseFloor * 3, echoFloor);
     if (rms > threshold) {
       if (rec.firstSpeechChunk < 0) {
@@ -978,7 +983,7 @@ function takeClip(rec) {
   const rate = rec.ctx.sampleRate;
   const chunkMs = (4096 / rate) * 1000;
   const from = Math.max(0, rec.firstSpeechChunk - Math.ceil(PREROLL_MS / chunkMs));
-  return encodeWav(downsample(concat(rec.chunks.slice(from)), rate, TARGET_RATE), TARGET_RATE);
+  return asrWav(downsample(concat(rec.chunks.slice(from)), rate, TARGET_RATE), TARGET_RATE);
 }
 
 // tryEarlyStop transcribes the clip at a short pause in conversation mode; a
@@ -1452,7 +1457,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_USE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_USE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, ENROLL_RE, UNENROLL_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 const DIALOGUE_RE = /(?:^|\s)-\s/g; // a speaker turn in whisper's output
@@ -2356,20 +2361,25 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       }
       convActiveAt = Date.now();
       if (ONCE_TEXT_RE.test(text)) textOnce.add(targetKey(p.target));
+      sendFailures = 0;
       await sendFromPane(paneId);
     }
     else {
       setNote(paneId, "aglink 에 연결되어 있지 않아 입력창에만 넣었습니다.");
-      if (conv()) retry = true;
+      if (conv()) retry = true, sendFailures++;
     }
   } catch (error) {
     vlog(`transcribe failed: ${error?.message || error}`);
     setNote(paneId, `음성 인식 실패: ${error?.message || error}`);
-    if (conv()) retry = true;
+    if (conv()) retry = true, sendFailures++;
   } finally {
     voice.phase = "idle";
     voice.paneId = null;
-    if (relisten && conv()) {
+    if (retry && sendFailures >= MAX_SEND_FAILURES && conv()) {
+      // Retrying every few seconds only piles up the same error: stop and keep the note.
+      sendFailures = 0;
+      endConversation();
+    } else if (relisten && conv()) {
       if (!endIfIdle(paneId)) resumeListening(0);
     } else if (retry && conv()) resumeListening(CONV_RETRY_MS);
   }
@@ -2455,9 +2465,10 @@ export function setSpeakEnabled(on) {
 // so our own voice is not transcribed at all; the text comparison (isEcho)
 // stays as the second line.
 const REF_FRAME_MS = 20;
-const REF_BEFORE_MS = 450; // speaker + mic latency: the mic hears now what played this long ago
+const REF_BEFORE_MS = 700; // speaker + mic latency + a small room's reverb tail: the mic hears now what played this long ago
 const REF_AFTER_MS = 100; // PlayWav starts a little after it is called
-const ECHO_MARGIN = 2.5; // the user's voice is this much above our echo
+const ECHO_MARGIN = 3; // the user's voice is this much above our echo
+const ECHO_GAIN_MIN = 0.08; // lowest room gain assumed while a reply plays
 let playRefs = []; // {startAt, endAt, env} for clips playing or just played
 const echoRatios = []; // recent mic/reference level ratios
 // Their median: the room's echo gain. The reference is the loudest frame in a
@@ -3115,7 +3126,7 @@ async function startWake() {
       // A bit of silence after the word: Whisper often returns nothing for a
       // lone short word that runs to the very end of the clip.
       const pad = new Float32Array(Math.round(ctx.sampleRate * WAKE_PAD_S));
-      const wav = long && !w.busy ? encodeWav(downsample(concat([...w.chunks.slice(from), pad]), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
+      const wav = long && !w.busy ? asrWav(downsample(concat([...w.chunks.slice(from), pad]), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
       w.chunks = [];
       w.first = -1;
       w.loud = 0;
@@ -3401,7 +3412,7 @@ async function openTapeMic() {
       const long = t.lastAt - t.firstAt >= TAPE_MIN_SPEECH_MS && t.loud >= 3;
       const from = Math.max(0, t.first - TAPE_PREROLL_CHUNKS);
       const pad = new Float32Array(Math.round(ctx.sampleRate * WAKE_PAD_S));
-      const wav = long ? encodeWav(downsample(concat([...t.chunks.slice(from), pad]), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
+      const wav = long ? asrWav(downsample(concat([...t.chunks.slice(from), pad]), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
       const at = t.segFrames / ctx.sampleRate;
       t.chunks = [];
       t.first = -1;
@@ -3487,3 +3498,24 @@ if (typeof speechSynthesis !== "undefined") speechSynthesis.getVoices();
 void refreshVoiceStatus().then(resumeSavedConversation);
 startAlarms(fireAlarm);
 startDaily();
+
+// asrWav encodes a clip for whisper, raising a quiet one (auto gain is off, so
+// a laptop or Bluetooth mic often arrives far under full scale) to a steady
+// level. Whisper misreads quiet speech; the level is logged to tell the two apart.
+function asrWav(samples, rate) {
+  let peak = 0;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const a = Math.abs(samples[i]);
+    if (a > peak) peak = a;
+    sum += samples[i] * samples[i];
+  }
+  const gain = peak > 0.005 ? Math.min(8, 0.7 / peak) : 1;
+  vlog(`clip peak ${peak.toFixed(3)} rms ${Math.sqrt(sum / Math.max(1, samples.length)).toFixed(3)} gain x${gain.toFixed(1)}`);
+  if (gain > 1.2) {
+    const out = new Float32Array(samples.length);
+    for (let i = 0; i < samples.length; i++) out[i] = samples[i] * gain;
+    return encodeWav(out, rate);
+  }
+  return encodeWav(samples, rate);
+}

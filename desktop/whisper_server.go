@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,12 +75,19 @@ func warmWhisperServer() {
 		log.Printf("[voice] whisper-server: trying again after a rest")
 		wsFailures = 0
 	}
-	if ws != nil || wsFailures >= wsMaxFailures || wsStarting || !fileExists(whisperServerPath()) {
+	remote := remoteWhisperURL()
+	if ws != nil || wsFailures >= wsMaxFailures || wsStarting || (remote == "" && !fileExists(whisperServerPath())) {
 		return
 	}
 	wsStarting = true
 	go func() {
-		s, err := startWhisperServer()
+		var s *whisperServer
+		var err error
+		if remote != "" {
+			s, err = connectRemoteWhisper(remote)
+		} else {
+			s, err = startWhisperServer()
+		}
 		wsMu.Lock()
 		defer wsMu.Unlock()
 		wsStarting = false
@@ -130,7 +138,25 @@ func startWhisperServer() (*whisperServer, error) {
 	return s, nil
 }
 
+// remoteWhisperURL: AGLINK_WHISPER_URL points at a whisper.cpp server on another
+// machine (see whisper-server-linux/), used instead of starting one here.
+func remoteWhisperURL() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("AGLINK_WHISPER_URL")), "/")
+}
+
+func connectRemoteWhisper(base string) (*whisperServer, error) {
+	s := &whisperServer{base: base}
+	if _, err := s.transcribe(silentWav(time.Second), 10*time.Second); err != nil {
+		return nil, err
+	}
+	log.Printf("[voice] remote whisper-server ready at %s", base)
+	return s, nil
+}
+
 func (s *whisperServer) stop() {
+	if s.cmd == nil { // remote: nothing of ours to kill
+		return
+	}
 	_ = s.cmd.Process.Kill()
 	_ = s.cmd.Wait()
 }

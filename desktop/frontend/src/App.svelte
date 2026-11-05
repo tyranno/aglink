@@ -13,6 +13,8 @@
   import VoicePanel from "./VoicePanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import CloneScript from "./CloneScript.svelte";
+  import MarkdownPreview from "./MarkdownPreview.svelte";
+  import AttentionToast from "./AttentionToast.svelte";
   import {
     chat,
     MAX_PANES,
@@ -99,6 +101,30 @@
   let configText = $state("");
   let configMsg = $state("");
   let openMenuId = $state("");
+
+  // In-app file preview panel. A file path shown in a message (markdown.js marks
+  // it with class "md-file-link") opens here, rendered — .md as Markdown, other
+  // text files verbatim. Relative paths resolve against the focused web
+  // conversation's working directory, where the worker wrote them.
+  let preview = $state({ open: false, name: "", path: "", content: "", error: "", isMarkdown: false });
+
+  async function openPreview(path) {
+    if (!path) return;
+    let baseDir = "";
+    const t = focusedPane()?.target;
+    if (t?.kind === "web" && t.id) baseDir = findWebConv(t.id)?.workDir || "";
+    try {
+      const data = parseJSON(await ControlService.PreviewFile(path, baseDir), { name: path, path, content: "", error: "열 수 없습니다" });
+      const name = data.name || path;
+      preview = { open: true, name, path: data.path || path, content: data.content || "", error: data.error || "", isMarkdown: /\.(md|markdown)$/i.test(name) };
+    } catch (error) {
+      preview = { open: true, name: path, path, content: "", error: String(error), isMarkdown: false };
+    }
+  }
+
+  function closePreview() {
+    preview = { ...preview, open: false };
+  }
   let promptState = $state(null);
   let confirmState = $state(null);
 
@@ -494,6 +520,12 @@
     const clickAway = (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
+      const fileLink = target.closest(".md-file-link");
+      if (fileLink) {
+        event.preventDefault();
+        void openPreview(fileLink.getAttribute("data-preview-path") || "");
+        return;
+      }
       if (!target.closest("[data-conv-menu]")) openMenuId = "";
       if (!target.closest("[data-progress-popup]")) closeProgressPopup();
       if (!target.closest("[data-pane-backend-menu]")) closePaneBackendMenu();
@@ -502,6 +534,7 @@
 
     const onEscape = (event) => {
       if (event.key !== "Escape") return;
+      if (preview.open) { closePreview(); return; }
       if (chat.lightboxSrc) closeLightbox();
       if (promptState) resolvePrompt(null);
       if (confirmState) resolveConfirm(false);
@@ -1166,3 +1199,13 @@
 <ImageWindow />
 <ApprovalPrompt />
 <CloneScript />
+<MarkdownPreview
+  open={preview.open}
+  name={preview.name}
+  path={preview.path}
+  content={preview.content}
+  error={preview.error}
+  isMarkdown={preview.isMarkdown}
+  onClose={closePreview}
+/>
+<AttentionToast />

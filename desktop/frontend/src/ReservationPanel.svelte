@@ -171,6 +171,9 @@
       fireAt: a.daily ? "" : d.toISOString(),
       target: destTarget(defaultDest()),
     };
+    // The host unmarshals fireAt into a time.Time, which rejects "" (not RFC3339);
+    // a recurring task has no one-shot time, so drop the key instead of sending "".
+    if (!payload.fireAt) delete payload.fireAt;
     quickBusy = true;
     const ok = await mutate(ControlService.SaveTask(JSON.stringify(payload)));
     quickBusy = false;
@@ -262,6 +265,9 @@
       target: destTarget(editing.dest),
       playbookId: editing.playbookId,
     };
+    // The host unmarshals fireAt into a time.Time, which rejects "" (not RFC3339).
+    // A repeat task has no one-shot time, so drop the empty key rather than send "".
+    if (!payload.fireAt) delete payload.fireAt;
     if (editing.scheduleType === "repeat" && !payload.cronExpr) { editorError = editorRepeatError || "반복 주기를 정해 주세요."; return; }
     if (editing.scheduleType === "once" && !payload.fireAt) { editorError = "실행할 날짜와 시간을 골라 주세요."; return; }
     if (editing.scheduleType === "once" && new Date(payload.fireAt).getTime() <= Date.now()) { editorError = "이미 지난 시간이에요. 앞으로의 시간을 골라 주세요."; return; }

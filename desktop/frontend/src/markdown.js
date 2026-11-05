@@ -16,6 +16,14 @@ function safeHref(url) {
 // Inline spans, longest-delimiter-first so ** wins over * and ~~ over ~.
 const INLINE_RE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(_[^_\n]+_)|(\[[^\]\n]*\]\([^)\s]+\))|(https?:\/\/[^\s<>()]+)/;
 
+// A `code` span whose whole text is a path to a previewable text file is turned
+// into a clickable link (class "md-file-link", data-preview-path) that the app
+// opens in its preview panel. Kept deliberately narrow — a known text extension
+// and no spaces — so ordinary inline code (flags, identifiers, shell) stays
+// plain. The click itself is handled by delegation in App.svelte, not here, so
+// this renderer stays free of app state and side effects.
+const PREVIEW_PATH_RE = /^[^\s`]+\.(md|markdown|txt|text|json|ya?ml|go|js|mjs|cjs|ts|tsx|jsx|svelte|vue|css|scss|html?|py|sh|bash|zsh|rs|toml|ini|conf|cfg|csv|tsv|xml|sql|log|env|gitignore|dockerfile|make|mk)$/i;
+
 function renderInline(doc, text, parent) {
   let rest = String(text);
   while (rest) {
@@ -25,8 +33,18 @@ function renderInline(doc, text, parent) {
     const tok = m[0];
     let el;
     if (tok.startsWith("`")) {
-      el = doc.createElement("code");
-      el.textContent = tok.slice(1, -1);
+      const inner = tok.slice(1, -1);
+      if (PREVIEW_PATH_RE.test(inner)) {
+        el = doc.createElement("a");
+        el.setAttribute("href", "#");
+        el.className = "md-file-link";
+        el.setAttribute("data-preview-path", inner);
+        el.setAttribute("title", "미리보기: " + inner);
+        el.textContent = inner;
+      } else {
+        el = doc.createElement("code");
+        el.textContent = inner;
+      }
     } else if (tok.startsWith("**") || tok.startsWith("__")) {
       el = doc.createElement("strong");
       renderInline(doc, tok.slice(2, -2), el);

@@ -1111,7 +1111,11 @@ func (b *Bot) transferSSHFile(reply replySender, chatID int64, host, pathA, path
 // leaving other conversations' workers untouched. A lane runs its turns
 // strictly one at a time, so at most one entry ever matches, but we scan
 // defensively rather than assume that invariant here.
-func (b *Bot) cancel(reply replySender, chatID int64, key string) {
+// cancelKey signals every running turn on the given lane to stop and returns
+// how many it signalled. It sends nothing to the user — callers that want a
+// reply build their own (see cancel), and callers that cancel as a side effect
+// of another action (see webDelete) stay silent.
+func (b *Bot) cancelKey(key string) int {
 	b.mu.Lock()
 	fns := make([]context.CancelFunc, 0, 1)
 	for _, e := range b.cancels {
@@ -1120,14 +1124,18 @@ func (b *Bot) cancel(reply replySender, chatID int64, key string) {
 		}
 	}
 	b.mu.Unlock()
-	if len(fns) == 0 {
-		_ = reply.Send(chatID, "취소할 작업이 없습니다.")
-		return
-	}
 	for _, fn := range fns {
 		fn()
 	}
-	_ = reply.Send(chatID, fmt.Sprintf("🛑 %d개 작업 취소 요청됨.", len(fns)))
+	return len(fns)
+}
+
+func (b *Bot) cancel(reply replySender, chatID int64, key string) {
+	if n := b.cancelKey(key); n > 0 {
+		_ = reply.Send(chatID, fmt.Sprintf("🛑 %d개 작업 취소 요청됨.", n))
+	} else {
+		_ = reply.Send(chatID, "취소할 작업이 없습니다.")
+	}
 }
 
 // timeoutOp describes how !timeout should move a running turn's deadline:
@@ -2902,6 +2910,12 @@ func (b *Bot) webDelete(reply replySender, chatID int64, id string) {
 		_ = reply.Send(chatID, "웹 대화를 찾을 수 없습니다.")
 		return
 	}
+	// Stop any in-flight turn on this lane before removing the record. A worker
+	// still streaming would otherwise emit a trailing frame after the store entry
+	// is gone; the client treats that frame as an unknown conversation, reloads
+	// the list and marks it unread — resurrecting the row the user just deleted
+	// with a NEW badge, so only a second delete (once the turn has ended) sticks.
+	b.cancelKey(laneKeyOf(WebTarget(id)))
 	if err := b.store.DeleteWebConv(id); err != nil {
 		_ = reply.Send(chatID, "⚠️ 삭제 실패: "+err.Error())
 		return

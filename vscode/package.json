@@ -1,8 +1,8 @@
 {
   "name": "aglink-vscode",
   "displayName": "aglink for VS Code",
-  "description": "Lets aglink-web read and act in this VS Code window — files, problems, terminal output — so an agent in another window can see what this one is doing without screen capture. Also lends the aglink desktop app's voice to Claude Code: speak a request, hear the answer.",
-  "version": "0.2.0",
+  "description": "Lets aglink-web read and act in this VS Code window — files, problems, terminal output — so an agent in another window can see what this one is doing without screen capture.",
+  "version": "0.3.0",
   "publisher": "aglink",
   "private": true,
   "engines": {
@@ -30,19 +30,7 @@
           "description": "aglink-web daemon port. 0 reads it from ~/.aglink/aglink-web.port, falling back to 48219."
         }
       }
-    },
-    "commands": [
-      {
-        "command": "aglink.voice.toggle",
-        "title": "aglink: 음성 대화 켜기/끄기"
-      }
-    ],
-    "keybindings": [
-      {
-        "command": "aglink.voice.toggle",
-        "key": "ctrl+alt+v"
-      }
-    ]
+    }
   },
   "repository": {
     "type": "git",

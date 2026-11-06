@@ -659,7 +659,7 @@
       <div class="flex min-h-0 flex-1 overflow-hidden">
         {#if !sidebarCollapsed}
           <aside class="flex h-full w-[296px] shrink-0 flex-col border-r border-slate-200 dark:border-slate-700 bg-slate-50/90 dark:bg-slate-800/90 backdrop-blur">
-            <div class="flex h-9 shrink-0 items-center border-b border-slate-200 dark:border-slate-700 bg-slate-100/60 dark:bg-slate-800/60">
+            <div class="flex h-11 shrink-0 items-center border-b border-slate-200 dark:border-slate-700 bg-slate-100/60 dark:bg-slate-800/60">
               <button
                 class="grid h-full w-8 shrink-0 place-items-center text-sm text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"
                 onclick={() => (sidebarCollapsed = true)}
@@ -668,11 +668,11 @@
               >«</button>
               {#each SIDEBAR_TABS as t (t.id)}
                 <button
-                  class={`h-full flex-1 border-b-2 text-[17px] leading-none transition ${sidebarTab === t.id ? "border-blue-600 bg-white/80 dark:border-blue-400 dark:bg-slate-700/70" : "border-transparent opacity-75 hover:bg-slate-200/70 hover:opacity-100 dark:hover:bg-slate-700/50"}`}
+                  class={`h-full flex-1 border-b-2 transition ${sidebarTab === t.id ? "border-blue-600 bg-white/80 dark:border-blue-400 dark:bg-slate-700/70" : "border-transparent hover:bg-slate-200/70 dark:hover:bg-slate-700/50"}`}
                   onclick={() => (sidebarTab = t.id)}
                   title={t.label}
                   aria-label={t.label}
-                >{t.icon}</button>
+                ><span class="text-[22px] leading-none">{t.icon}</span></button>
               {/each}
             </div>
             {#if sidebarTab === "chat"}

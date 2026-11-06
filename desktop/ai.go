@@ -57,7 +57,8 @@ func (v *VoiceService) AskAI(prompt string) (string, error) {
 	return parseAskAI(out.Bytes())
 }
 
-const askAITimeout = 5 * time.Minute
+// Long enough for the write-up of a meeting of several hours.
+const askAITimeout = 15 * time.Minute
 
 // nativeClaude swaps npm's claude.cmd/.ps1 shim for the claude.exe beside it:
 // a .cmd runs through cmd.exe, which breaks on a path like C:\Program Files.

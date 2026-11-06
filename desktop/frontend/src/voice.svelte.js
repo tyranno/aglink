@@ -3830,7 +3830,7 @@ Events.On("tray:meeting", () => void (voice.meeting ? stopMeeting() : startMeeti
 // "정리하기" does it by hand.
 
 const MEETING_WRITEUP_MIN_PIECES = 2;
-const MEETING_WRITEUP_MAX_CHARS = 30000; // longer talk keeps its start and end
+const MEETING_WRITEUP_MAX_CHARS = 150000; // ~5 hours of talk; longer keeps its start and end
 const MEETING_WRITEUP_RETRY_MS = 30000;
 const MEETING_WRITEUP_RETRIES = 20;
 

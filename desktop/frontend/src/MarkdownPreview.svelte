@@ -60,12 +60,21 @@
 {/if}
 
 <style>
-  .preview-pre {
+  /* Global: the <pre> is created in the $effect above, so it never gets this
+     component's scope class. It must also beat ".markdown-body pre" (the dark
+     code-block box from PaneNode), which otherwise paints the panel's dark text
+     on a #1e1e1e background in light mode and turns off wrapping. */
+  :global(.markdown-body pre.preview-pre) {
     white-space: pre-wrap;
     word-break: break-word;
     font-family: ui-monospace, "D2Coding", Consolas, monospace;
     font-size: 12px;
     margin: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    overflow-x: visible;
   }
 
   /* File paths inside chat messages that open this panel. Defined global so the

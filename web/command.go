@@ -66,7 +66,7 @@ var commands = []command{
 	},
 	{
 		name: "page_snapshot",
-		desc: `Compact outline of what is on screen — headings, dialogs/landmarks, every visible control with its state (value, checked, disabled, expanded) and short text — with each control numbered: '- button "저장" [ref=e7]'. Then act on it with selector "ref=e7" in click/type/select_option/… (valid until the next page_snapshot). Usually the cheapest way to see a screen and decide what to do: far smaller than get_page_text or get_html, and it keeps structure that list_elements drops (which dialog a button belongs to). Works in Chrome tabs and app windows.`,
+		desc: `Compact outline of what is on screen — headings, dialogs/landmarks, every visible control with its state (value, checked, disabled, expanded) and short text — with each control numbered: '- button "저장" [ref=e7]'. Then act on it with selector "ref=e7" in click/type/select_option/… (a control keeps its number across snapshots while it exists; one a framework re-rendered is re-found by its role and name). Usually the cheapest way to see a screen and decide what to do: far smaller than get_page_text or get_html, and it keeps structure that list_elements drops (which dialog a button belongs to). Works in Chrome tabs and app windows.`,
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Tab (or app window number). Omit for the active tab / first window."},
 			{name: "maxLines", typ: argInt, desc: "Cap on output lines (default 200, max 1000)."},

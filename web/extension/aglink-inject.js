@@ -31,7 +31,7 @@
   // Bump __v whenever this file changes: a page that already holds an older
   // copy keeps it until reload otherwise, and a new locator kind would be
   // silently missing there.
-  if (globalThis.__aglink && globalThis.__aglink.__v === 2) return;
+  if (globalThis.__aglink && globalThis.__aglink.__v === 3) return;
 
   // isVisible mirrors the rendered-check used elsewhere (non-zero rect) plus a
   // computed-style gate, so semantic locators prefer the element a human would
@@ -167,6 +167,21 @@
 
   // ref=e12 targets an element by the number the last snapshot gave it
   // (page-actions.js P.snapshot marks them data-aglink-ref).
+  //
+  // healRef re-finds a ref whose element is gone — a framework re-rendered it
+  // as a new node — by the role and name the snapshot recorded. Only a single
+  // visible, unmarked match counts; anything ambiguous stays "not found".
+  function healRef(id) {
+    const info = globalThis.__aglinkRefInfo && globalThis.__aglinkRefInfo[id];
+    if (!info || !info.name) return [];
+    const hits = deepAll().filter((el) =>
+      el.getAttribute && !el.hasAttribute("data-aglink-ref") &&
+      roleOf(el) === info.role && accessibleName(el) === info.name && isVisible(el));
+    if (hits.length !== 1) return [];
+    hits[0].setAttribute("data-aglink-ref", id);
+    return hits;
+  }
+
   const LOCATOR_KINDS = ["role", "text", "label", "placeholder", "testid", "ref"];
 
   // resolveAll returns every element matching the selector spec, visible ones
@@ -188,7 +203,9 @@
             .filter((el) => !nameSpec || matchText(accessibleName(el), nameSpec.text, nameSpec.exact));
         }
       } else if (kind === "ref") {
-        cands = deepQueryAll(`[data-aglink-ref="${cssEscape(unquote(rest).text.trim())}"]`);
+        const id = unquote(rest).text.trim();
+        cands = deepQueryAll(`[data-aglink-ref="${cssEscape(id)}"]`);
+        if (!cands.length) cands = healRef(id);
       } else if (kind === "testid") {
         const v = unquote(rest).text;
         const e = cssEscape(v);
@@ -225,7 +242,7 @@
   }
 
   globalThis.__aglink = {
-    __v: 2,
+    __v: 3,
     resolve,
     resolveAll,
     deepQueryAll,

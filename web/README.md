@@ -390,6 +390,19 @@ list_flows
 2026-10-07 크롬 실측: navigate → expect → get_attribute → click → expect 5단계가 한
 호출로 성공했고, 새 탭 이어받기와 클릭 후 바뀐 페이지의 snapshot 까지 확인했다.
 
+## 화면 읽기 — `page_snapshot` 과 `ref=eN`
+
+`page_snapshot` 은 화면을 짧은 개요로 돌려주고 컨트롤마다 번호를 붙인다
+(`- button "저장" [ref=e7]`). 이후 도구에 `selector="ref=e7"` 로 쓴다.
+
+- **번호는 유지된다.** 이미 번호가 있는 요소는 다음 스냅숏에서도 같은 번호를 받고,
+  새로 나타난 요소만 다음 번호를 받는다. 작은 화면 변화 뒤에 다시 찍어도 앞에서 본
+  번호가 그대로 통한다. 사라진 요소의 번호는 지워진다.
+- **다시 그려진 요소를 찾아간다.** React/Svelte 처럼 프레임워크가 요소를 새 노드로
+  바꿔 표식이 없어지면, 스냅숏 때 기록한 역할·이름(`button "저장"`)이 같은 요소가
+  **화면에 하나뿐일 때만** 그 요소로 이어 준다. 둘 이상이면 추측하지 않고
+  "no element matched" 로 실패한다 — 그때는 스냅숏을 다시 찍는다.
+
 ## 실행 전 승인 — 위험한 도구는 사람이 OK 해야 실행
 
 aglink 워커는 동작마다 승인을 묻지 않는다. 그래서 웹페이지·문서에 숨은 지시에 넘어가면
@@ -560,6 +573,9 @@ extension/     MV3 extension:
                                     never changes page behavior
                  options.html/.js   set the daemon port (chrome.storage.local)
                  background.test.js node:test unit tests (chrome.* mocked via vm)
+                 pageside.test.js   node:test tests of the page-side scripts
+                                    (aglink-inject.js, page-actions.js) on
+                                    fakedom.js, a minimal DOM stand-in
 ```
 
 Adding a browser command is a three-file change: add an entry to `commands` in

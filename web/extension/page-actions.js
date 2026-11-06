@@ -278,10 +278,18 @@
   // target it as selector "ref=eN". Cheaper than get_page_text for deciding
   // what to click, and unlike list_elements it keeps the structure (which
   // dialog a button is in, which heading a field sits under).
+  //
+  // Refs are stable: an element that already has one keeps it, and only new
+  // elements get the next number, so a second snapshot after a small change
+  // still matches the first. Each ref's role and name are remembered
+  // (__aglinkRefInfo) so the resolver can re-find an element a framework
+  // re-rendered (aglink-inject.js healRef).
   P.snapshot = (maxLines) => {
     const A = globalThis.__aglink;
     if (!A) return "(page helpers missing)";
-    for (const el of A.deepQueryAll("[data-aglink-ref]")) el.removeAttribute("data-aglink-ref");
+    const info = {};
+    const seen = new Set();
+    let seq = globalThis.__aglinkRefSeq || 0;
     const max = Math.max(20, Math.min(maxLines || 200, 1000));
     const CONTROL = new Set(["button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox", "slider",
       "tab", "menuitem", "menuitemcheckbox", "option", "switch", "spinbutton"]);
@@ -289,7 +297,7 @@
       "banner", "complementary", "region", "toolbar"]);
     const SKIP = new Set(["script", "style", "noscript", "template", "svg", "iframe", "head"]);
     const lines = [];
-    let ref = 0;
+    let ref = 0; // refs emitted this time
     let cut = false;
     const q = (s, n) => JSON.stringify(String(s).trim().replace(/\s+/g, " ").slice(0, n));
     const emit = (depth, s) => {
@@ -323,7 +331,14 @@
         if (CONTROL.has(role) || (tag === "input" && role)) {
           if (!A.isVisible(el)) continue;
           ref++;
-          el.setAttribute("data-aglink-ref", "e" + ref);
+          // A clone of a marked node carries its ref too; renumber the copy.
+          let id = el.getAttribute("data-aglink-ref");
+          if (!id || seen.has(id)) {
+            id = "e" + (++seq);
+            el.setAttribute("data-aglink-ref", id);
+          }
+          seen.add(id);
+          info[id] = { role, name: A.accessibleName(el) };
           // A <select>'s text is every option run together; its name is only
           // what labels it (the chosen option shows as value= below).
           const name = tag === "select"
@@ -341,7 +356,7 @@
           if (el.getAttribute("aria-selected") === "true") st.push("selected");
           if (el.getAttribute("aria-expanded") === "true") st.push("expanded");
           if (el.disabled || el.getAttribute("aria-disabled") === "true") st.push("disabled");
-          st.push("ref=e" + ref);
+          st.push("ref=" + id);
           emit(depth, s + " [" + st.join(", ") + "]");
           continue; // a control's own text is its name
         }
@@ -367,6 +382,12 @@
       }
     };
     walk(document.body || document.documentElement, 0);
+    // Drop refs on elements this snapshot no longer shows.
+    for (const el of A.deepQueryAll("[data-aglink-ref]")) {
+      if (!seen.has(el.getAttribute("data-aglink-ref"))) el.removeAttribute("data-aglink-ref");
+    }
+    globalThis.__aglinkRefSeq = seq;
+    globalThis.__aglinkRefInfo = info;
     const head = `[snapshot ${lines.length} lines, ${ref} refs — act on one with selector "ref=eN"]`;
     return head + "\n" + lines.join("\n") + (cut ? `\n… [truncated at ${max} lines — raise maxLines, or scope with get_page_text selector]` : "");
   };
@@ -529,6 +550,6 @@
   P.constants = { AGLINK_ID_ATTR, INTERACTIVE_SELECTOR, KEY_SPECS, MOD_PROPS };
   // Version of this file. The daemon re-injects into an app window whose copy
   // is older (apptarget.go pageActionsVersion); bump both together.
-  P.__v = 3;
+  P.__v = 4;
   globalThis.__aglinkPage = P;
 })();

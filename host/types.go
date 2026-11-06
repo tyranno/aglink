@@ -124,15 +124,6 @@ type Config struct {
 	// no approvals. ApprovalTimeoutSec: how long to wait before refusing.
 	ApprovalTools      []string
 	ApprovalTimeoutSec int
-
-	// Heartbeat: an opt-in periodic check-in that goes through a checklist file
-	// and only messages the user when something needs attention (heartbeat.go).
-	// Enabled/Every only seed the scheduler task on first start; after that
-	// !heartbeat on/off/interval (persisted in tasks.json) is what counts.
-	HeartbeatEnabled    bool
-	HeartbeatEvery      string // "30m", "2h" — "" = 30m
-	HeartbeatQuietHours string // "23:00-07:00"; "" = that default, "off" = none
-	HeartbeatFile       string // checklist path; "" = <data dir>/HEARTBEAT.md
 }
 
 // ConversationTurn represents one exchange in a conversation.
@@ -376,9 +367,6 @@ type Task struct {
 	// PlaybookID makes the task run that 업무 루틴 (in a fresh conversation, with
 	// its work folder and backend, exactly like its ▶ button) instead of Prompt.
 	PlaybookID string `json:"playbookId,omitempty"`
-	// Kind marks a built-in task the scheduler runs its own way; "" = an
-	// ordinary reminder/job. taskKindHeartbeat runs the heartbeat check-in.
-	Kind string `json:"kind,omitempty"`
 }
 
 // Target kinds. An empty or unrecognized Kind means the telegram stream: it is

@@ -667,6 +667,92 @@ test("waitForElement times out when the element never appears", async () => {
   assert.ok(Date.now() - start < 2000, "should not block far past the timeout");
 });
 
+test("waitForElement with gone waits for the element to disappear", async () => {
+  let polls = 0;
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: {
+        executeScript: async (opts) => {
+          if (opts.files) return [{ result: null }];
+          polls++;
+          return [{ result: polls < 3 ? { found: true, visible: true, tag: "div" } : { found: false } }];
+        },
+      },
+    })
+  );
+  assert.strictEqual(await sb.waitForElement({ selector: ".spinner", gone: "true", timeoutMs: 3000 }), "ok: no visible element matches .spinner");
+  assert.ok(polls >= 3);
+
+  const stuck = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: { executeScript: async () => [{ result: { found: true, visible: true, tag: "div" } }] },
+    })
+  );
+  await assert.rejects(
+    () => stuck.waitForElement({ selector: ".spinner", gone: true, timeoutMs: 100 }),
+    /timed out after 100ms: an element matching \.spinner is still visible/
+  );
+});
+
+test("waitForElement with idleMs waits for in-flight requests to finish", async () => {
+  let netPolls = 0;
+  const worlds = [];
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: {
+        executeScript: async (opts) => {
+          worlds.push(opts.world);
+          netPolls++;
+          return [{ result: netPolls < 3 ? { pending: ["/api/x"], count: 1, idle: 0 } : { pending: [], count: 0, idle: 900 } }];
+        },
+      },
+    })
+  );
+  assert.strictEqual(await sb.waitForElement({ idleMs: 500, timeoutMs: 3000 }), "ok: network idle for 500ms");
+  assert.ok(worlds.every((w) => w === "MAIN"), "network state lives in the page's MAIN world");
+
+  const busy = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: { executeScript: async () => [{ result: { pending: ["/api/slow"], count: 2, idle: 0 } }] },
+    })
+  );
+  await assert.rejects(
+    () => busy.waitForElement({ idleMs: 500, timeoutMs: 100 }),
+    /network to be idle for 500ms — 2 request\(s\) still pending: \/api\/slow/
+  );
+
+  const old = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: { executeScript: async () => [{ result: null }] },
+    })
+  );
+  await assert.rejects(() => old.waitForElement({ idleMs: 500 }), /reload the page/);
+});
+
+test("waitForElement combines an element and network idle", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 6, active: true }] },
+      scripting: {
+        executeScript: async (opts) => {
+          if (opts.files) return [{ result: null }];
+          if (opts.world === "MAIN") return [{ result: { pending: [], count: 0, idle: 1000 } }];
+          return [{ result: { found: true, visible: true, tag: "ul" } }];
+        },
+      },
+    })
+  );
+  assert.strictEqual(
+    await sb.waitForElement({ selector: "#list", idleMs: 300 }),
+    "ok: found <ul> matching #list; network idle for 300ms"
+  );
+});
+
 test("waitForElement requires a selector", async () => {
   const sb = loadBackground(makeChrome());
   await assert.rejects(() => sb.waitForElement({}), /wait_for_element requires 'selector'/);

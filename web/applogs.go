@@ -48,9 +48,33 @@ type appLogs struct {
 	console []appConsoleEntry
 	net     []*appNetEntry
 	byID    map[string]*appNetEntry
+	// In-flight fetch/XHR (the same requests the extension counts in Chrome)
+	// and when one last started or ended, for wait_for_element's idleMs.
+	inflight map[string]string
+	lastNet  time.Time
 }
 
-func newAppLogs() *appLogs { return &appLogs{byID: map[string]*appNetEntry{}} }
+func newAppLogs() *appLogs {
+	return &appLogs{byID: map[string]*appNetEntry{}, inflight: map[string]string{}, lastNet: time.Now()}
+}
+
+// isAjax says whether a CDP resource type is a page's own fetch/XHR.
+func isAjax(typ string) bool { return typ == "XHR" || typ == "Fetch" }
+
+// networkIdle returns up to three in-flight URLs, how many there are, and how
+// long the window has been without a fetch/XHR starting or ending.
+func (l *appLogs) networkIdle() ([]string, int, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var urls []string
+	for _, u := range l.inflight {
+		if len(urls) == 3 {
+			break
+		}
+		urls = append(urls, u)
+	}
+	return urls, len(l.inflight), time.Since(l.lastNet)
+}
 
 func (l *appLogs) addConsole(level, text string) {
 	l.mu.Lock()
@@ -125,6 +149,10 @@ func (l *appLogs) onEvent(method string, params json.RawMessage) {
 		}
 		e := &appNetEntry{ID: p.RequestID, Type: p.Type, Method: p.Request.Method, URL: p.Request.URL, PostData: p.Request.PostData, start: p.Timestamp}
 		l.mu.Lock()
+		if isAjax(p.Type) {
+			l.inflight[p.RequestID] = truncateRunes(p.Request.URL, 200)
+			l.lastNet = time.Now()
+		}
 		l.net = append(l.net, e)
 		l.byID[p.RequestID] = e
 		if len(l.net) > appNetworkKeep {
@@ -163,6 +191,10 @@ func (l *appLogs) onEvent(method string, params json.RawMessage) {
 			return
 		}
 		l.mu.Lock()
+		if _, ok := l.inflight[p.RequestID]; ok {
+			delete(l.inflight, p.RequestID)
+			l.lastNet = time.Now()
+		}
 		if e := l.byID[p.RequestID]; e != nil {
 			e.end = p.Timestamp
 			if method == "Network.loadingFailed" {

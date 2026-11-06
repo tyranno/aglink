@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAppLogsFromCDPEvents(t *testing.T) {
@@ -91,5 +92,21 @@ func TestFixMojibake(t *testing.T) {
 		if got := fixMojibake(s); got != s {
 			t.Errorf("changed %q to %q", s, got)
 		}
+	}
+}
+
+func TestAppLogsTrackInflightAjax(t *testing.T) {
+	l := newAppLogs()
+	ev := func(method, params string) { l.onEvent(method, json.RawMessage(params)) }
+	ev("Network.requestWillBeSent", `{"requestId":"1","type":"XHR","request":{"url":"http://x/api/a","method":"GET"}}`)
+	ev("Network.requestWillBeSent", `{"requestId":"2","type":"Image","request":{"url":"http://x/a.png","method":"GET"}}`)
+	urls, n, _ := l.networkIdle()
+	if n != 1 || len(urls) != 1 || urls[0] != "http://x/api/a" {
+		t.Fatalf("only fetch/XHR count as in flight: %v %d", urls, n)
+	}
+	ev("Network.loadingFinished", `{"requestId":"1"}`)
+	ev("Network.loadingFinished", `{"requestId":"2"}`)
+	if _, n, idle := l.networkIdle(); n != 0 || idle > time.Second {
+		t.Fatalf("after finish: n=%d idle=%s", n, idle)
 	}
 }

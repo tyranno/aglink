@@ -15,6 +15,19 @@
   const MAX_BODY_CHARS = 4000;
   const buf = [];
   window.__aglinkNetwork = buf;
+  // In-flight requests, for wait_for_element's idleMs: id -> url, and when
+  // the last request started or ended.
+  const state = { pending: new Map(), last: Date.now(), seq: 0 };
+  window.__aglinkNetState = state;
+  function begin(url) {
+    const id = ++state.seq;
+    state.pending.set(id, String(url).slice(0, 200));
+    state.last = Date.now();
+    return id;
+  }
+  function end(id) {
+    if (state.pending.delete(id)) state.last = Date.now();
+  }
 
   function truncate(s) {
     if (typeof s !== "string") return s;
@@ -33,6 +46,7 @@
       const method = (init && init.method) || (input && input.method) || "GET";
       const url = typeof input === "string" ? input : (input && input.url) || String(input);
       const start = Date.now();
+      const flight = begin(url);
       let requestBody;
       try {
         if (init && init.body !== undefined) {
@@ -57,12 +71,14 @@
             const ct = response.headers.get("content-type") || "";
             const isBinary = /^(image|video|audio|font)\//.test(ct) || ct.includes("octet-stream");
             if (isBinary) {
+              end(flight);
               record({ type: "fetch", method, url, status: response.status, time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
             } else {
               response
                 .clone()
                 .text()
                 .then((text) => {
+                  end(flight);
                   record({
                     type: "fetch",
                     method,
@@ -76,15 +92,18 @@
                   });
                 })
                 .catch(() => {
+                  end(flight);
                   record({ type: "fetch", method, url, status: response.status, time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
                 });
             }
           } catch (e) {
+            end(flight);
             // never let capture failure break the page's own fetch
           }
           return response;
         },
         (err) => {
+          end(flight);
           record({ type: "fetch", method, url, error: String(err && err.message ? err.message : err), time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
           throw err;
         }
@@ -115,7 +134,9 @@
     } catch (e) {
       meta.requestBody = undefined;
     }
+    const flight = begin(meta.url);
     const onDone = () => {
+      end(flight);
       try {
         let responseBody;
         try {
@@ -144,6 +165,11 @@
       }
     };
     this.addEventListener("loadend", onDone);
-    return OrigSend.call(this, body);
+    try {
+      return OrigSend.call(this, body);
+    } catch (e) {
+      end(flight); // send threw, so loadend will not come
+      throw e;
+    }
   };
 })();

@@ -197,11 +197,13 @@ var commands = []command{
 	},
 	{
 		name: "wait_for_element",
-		desc: "Block until an element matching the selector becomes visible in a Chrome tab or app window, instead of polling list_elements/get_page_text in a manual loop — useful for SPA content that renders after navigation or a click settles. The selector is a CSS selector (pierces open Shadow DOM) or a semantic locator (role=/text=/label=/placeholder=/testid=). Fails with a timeout error after 'timeoutMs' (default 8000) if it never appears.",
+		desc: "Block until an element matching the selector becomes visible in a Chrome tab or app window, instead of polling list_elements/get_page_text in a manual loop — useful for SPA content that renders after navigation or a click settles. The selector is a CSS selector (pierces open Shadow DOM) or a semantic locator (role=/text=/label=/placeholder=/testid=; text=Saved waits for text to appear). gone=\"true\" waits for it to disappear instead (spinner, closing dialog). idleMs waits until no fetch/XHR has been in flight for that many ms (network idle) — alone, or after the element condition holds. Fails with a timeout error after 'timeoutMs' (default 8000).",
 		args: []argSpec{
-			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator to wait for."},
+			{name: "selector", typ: argString, desc: "CSS selector or semantic locator to wait for. Optional when idleMs is given."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 			{name: "timeoutMs", typ: argInt, desc: "Max time to wait in milliseconds (default 8000)."},
+			{name: "gone", typ: argString, desc: `"true" waits until no visible element matches the selector.`},
+			{name: "idleMs", typ: argInt, desc: "Also wait until the page's fetch/XHR traffic has been quiet this long, e.g. 500."},
 		},
 	},
 	{

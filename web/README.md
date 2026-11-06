@@ -46,7 +46,7 @@ One Go binary, three subcommands (mirrors `aglink-screen`):
 |---|---|
 | `aglink-web` / `aglink-web mcp` | stdio MCP server teleclaude spawns per worker (default). Thin forwarder. |
 | `aglink-web serve` | the persistent daemon the extension connects to. Auto-spawned by the bridge if not already up. |
-| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [button] [tabId]` / `list_elements [tabId] [max]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `get_value <selector> [tabId]` / `key <combo> [tabId]` / `scroll [selector] [dx] [dy] [tabId]` / `select_option <selector> [value] [label] [tabId]` / `wait_for_element <selector> [tabId] [timeoutMs]` / `activate_tab <tabId>` / `get_console_logs [tabId] [max]` / `close_tab [tabId]`. |
+| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [button] [tabId]` / `list_elements [tabId] [max]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `get_value <selector> [tabId]` / `key <combo> [tabId]` / `scroll [selector] [dx] [dy] [tabId]` / `select_option <selector> [value] [label] [tabId]` / `wait_for_element [selector] [tabId] [timeoutMs] [gone] [idleMs]` / `activate_tab <tabId>` / `get_console_logs [tabId] [max]` / `close_tab [tabId]`. |
 
 ## Security
 
@@ -402,6 +402,21 @@ list_flows
   바꿔 표식이 없어지면, 스냅숏 때 기록한 역할·이름(`button "저장"`)이 같은 요소가
   **화면에 하나뿐일 때만** 그 요소로 이어 준다. 둘 이상이면 추측하지 않고
   "no element matched" 로 실패한다 — 그때는 스냅숏을 다시 찍는다.
+
+## 기다리기 — `wait_for_element`
+
+```
+wait_for_element  selector="text=저장됨"                 ← 글자가 나타날 때까지
+wait_for_element  selector=".spinner"  gone="true"       ← 사라질 때까지
+wait_for_element  idleMs=500                             ← fetch/XHR 가 500ms 동안 없을 때까지
+wait_for_element  selector="#list"  idleMs=500           ← 요소가 보인 뒤, 통신도 잠잠해질 때까지
+```
+
+- 네트워크 대기는 페이지 자신의 fetch/XHR 만 센다(이미지·스크립트 제외). 크롬은
+  `network-capture.js` 가, 앱 창은 데몬의 CDP `Network` 이벤트가 진행 중인 요청을 센다.
+  시간이 다 되면 아직 끝나지 않은 요청 주소를 알려 준다.
+- 확장을 업데이트하기 전에 열려 있던 탭은 추적이 없어 `reload the page` 로 실패한다 —
+  새로고침하면 된다.
 
 ## 구조화 추출 — `query_all` 의 `fields` 와 표
 

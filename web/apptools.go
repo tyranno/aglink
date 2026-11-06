@@ -30,6 +30,7 @@ type appPage interface {
 	HandleDialog(ctx context.Context, accept bool, promptText string) error
 	Screenshot(ctx context.Context) (string, error)
 	ConsoleText(max int) string
+	NetworkIdle() (pending []string, count int, idleFor time.Duration)
 	NetworkText(ctx context.Context, max int, filter string) string
 }
 
@@ -354,25 +355,61 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		return strings.Join(lines, "\n"), nil
 
 	case "wait_for_element":
-		if sel == "" {
-			return "", errors.New("wait_for_element requires 'selector'")
+		gone := isTrue(fmt.Sprint(params["gone"]))
+		idleMs := intp(params, "idleMs", 0)
+		if sel == "" && idleMs <= 0 {
+			return "", errors.New("wait_for_element requires 'selector' (or 'idleMs' to wait for the network to go quiet)")
 		}
 		timeoutMs := intp(params, "timeoutMs", defaultWaitTimeoutMs)
 		deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 		for {
-			var r struct {
-				Found   bool   `json:"found"`
-				Visible bool   `json:"visible"`
-				Tag     string `json:"tag"`
+			elOk, tag := true, ""
+			if sel != "" {
+				var r struct {
+					Found   bool   `json:"found"`
+					Visible bool   `json:"visible"`
+					Tag     string `json:"tag"`
+				}
+				if err := callInto(ctx, p, "waitForElement", []any{sel}, &r); err != nil {
+					return "", err
+				}
+				shown := r.Found && r.Visible
+				elOk = shown != gone
+				tag = r.Tag
 			}
-			if err := callInto(ctx, p, "waitForElement", []any{sel}, &r); err != nil {
-				return "", err
+			netOk := true
+			var pending []string
+			var count int
+			var idle time.Duration
+			if elOk && idleMs > 0 {
+				pending, count, idle = p.NetworkIdle()
+				netOk = count == 0 && idle >= time.Duration(idleMs)*time.Millisecond
 			}
-			if r.Found && r.Visible {
-				return fmt.Sprintf("ok: found <%s> matching %s", r.Tag, sel), nil
+			if elOk && netOk {
+				var parts []string
+				if sel != "" {
+					if gone {
+						parts = append(parts, "no visible element matches "+sel)
+					} else {
+						parts = append(parts, fmt.Sprintf("found <%s> matching %s", tag, sel))
+					}
+				}
+				if idleMs > 0 {
+					parts = append(parts, fmt.Sprintf("network idle for %dms", idleMs))
+				}
+				return "ok: " + strings.Join(parts, "; "), nil
 			}
 			if !time.Now().Before(deadline) {
-				return "", fmt.Errorf("timed out after %dms waiting for a visible element matching %s", timeoutMs, sel)
+				switch {
+				case !elOk && gone:
+					return "", fmt.Errorf("timed out after %dms: an element matching %s is still visible", timeoutMs, sel)
+				case !elOk:
+					return "", fmt.Errorf("timed out after %dms waiting for a visible element matching %s", timeoutMs, sel)
+				case count > 0:
+					return "", fmt.Errorf("timed out after %dms waiting for the network to be idle for %dms — %d request(s) still pending: %s", timeoutMs, idleMs, count, strings.Join(pending, ", "))
+				default:
+					return "", fmt.Errorf("timed out after %dms waiting for the network to be idle for %dms — the last request ended %dms ago", timeoutMs, idleMs, idle.Milliseconds())
+				}
 			}
 			select {
 			case <-ctx.Done():

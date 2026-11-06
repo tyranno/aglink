@@ -656,28 +656,76 @@ const WAIT_FOR_ELEMENT_POLL_MS = 150;
 // waitForElement blocks until a selector matches a visible element in the
 // tab, instead of the caller polling list_elements/get_page_text by hand —
 // useful for SPA content that renders after navigation/a click settles.
+// With gone it waits for the element to disappear instead (a spinner, a
+// closing dialog); with idleMs it also waits until no fetch/XHR has been in
+// flight for that long (network-capture.js keeps the count).
 async function waitForElement(params) {
   const selector = params.selector;
-  if (!selector) throw new Error("wait_for_element requires 'selector'");
+  const gone = params.gone === true || /^(true|yes|1|on)$/i.test(String(params.gone || ""));
+  const idleMs = params.idleMs || 0;
+  if (!selector && !idleMs) {
+    throw new Error("wait_for_element requires 'selector' (or 'idleMs' to wait for the network to go quiet)");
+  }
   const tabId = await activeTabId(params);
   const timeoutMs = params.timeoutMs || 8000;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    await ensureHelpers(tabId);
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (name, args) => globalThis.__aglinkPage[name](...args),
-      args: ["waitForElement", [selector]],
-    });
-    const r = results && results[0] && results[0].result;
-    if (r && r.found && r.visible) {
-      return `ok: found <${r.tag}> matching ${selector}`;
+    let elOk = true;
+    let tag = "";
+    if (selector) {
+      await ensureHelpers(tabId);
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (name, args) => globalThis.__aglinkPage[name](...args),
+        args: ["waitForElement", [selector]],
+      });
+      const r = results && results[0] && results[0].result;
+      const shown = !!(r && r.found && r.visible);
+      elOk = gone ? !shown : shown;
+      if (shown) tag = r.tag;
     }
-    if (Date.now() >= deadline) {
-      throw new Error(`timed out after ${timeoutMs}ms waiting for a visible element matching ${selector}`);
+    let net = null;
+    if (elOk && idleMs) {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: () => {
+          const s = window.__aglinkNetState;
+          if (!s) return null;
+          return { pending: Array.from(s.pending.values()).slice(0, 3), count: s.pending.size, idle: Date.now() - s.last };
+        },
+      });
+      net = results && results[0] && results[0].result;
+      if (!net) {
+        throw new Error("network tracking is not active in this tab (it loaded before the aglink-web extension was updated) — reload the page");
+      }
     }
+    const netOk = !idleMs || (net && net.count === 0 && net.idle >= idleMs);
+    if (elOk && netOk) return waitDoneText(selector, gone, tag, idleMs);
+    if (Date.now() >= deadline) throw new Error(waitTimeoutText(selector, gone, elOk, idleMs, net, timeoutMs));
     await new Promise((resolve) => setTimeout(resolve, WAIT_FOR_ELEMENT_POLL_MS));
   }
+}
+
+// waitDoneText / waitTimeoutText word waitForElement's outcome. Mirrored in
+// apptools.go.
+function waitDoneText(selector, gone, tag, idleMs) {
+  const parts = [];
+  if (selector) parts.push(gone ? `no visible element matches ${selector}` : `found <${tag}> matching ${selector}`);
+  if (idleMs) parts.push(`network idle for ${idleMs}ms`);
+  return "ok: " + parts.join("; ");
+}
+
+function waitTimeoutText(selector, gone, elOk, idleMs, net, timeoutMs) {
+  if (!elOk) {
+    return gone
+      ? `timed out after ${timeoutMs}ms: an element matching ${selector} is still visible`
+      : `timed out after ${timeoutMs}ms waiting for a visible element matching ${selector}`;
+  }
+  const busy = net.count > 0
+    ? `${net.count} request(s) still pending: ${net.pending.join(", ")}`
+    : `the last request ended ${net.idle}ms ago`;
+  return `timed out after ${timeoutMs}ms waiting for the network to be idle for ${idleMs}ms — ${busy}`;
 }
 
 // screenshot captures the visible viewport of a tab as a base64 PNG (no data:

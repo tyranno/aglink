@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 // errDialogOpen means an alert/confirm/prompt is up in the app. While one is
@@ -67,6 +68,11 @@ func openAppTarget(t cdpTarget, port int) (*appTarget, error) {
 
 // ConsoleText is get_console_logs for this window.
 func (a *appTarget) ConsoleText(max int) string { return a.logs.consoleText(max) }
+
+// NetworkIdle reports the window's in-flight fetch/XHR, for wait_for_element.
+func (a *appTarget) NetworkIdle() (pending []string, count int, idleFor time.Duration) {
+	return a.logs.networkIdle()
+}
 
 // NetworkText is get_network_requests for this window.
 func (a *appTarget) NetworkText(ctx context.Context, max int, filter string) string {

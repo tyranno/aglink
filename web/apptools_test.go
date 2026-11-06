@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakePage scripts what each shared page function returns, so the Go
@@ -23,6 +24,9 @@ type fakePage struct {
 	}
 	evalErr error
 	eval    string // the Runtime.evaluate result EvalResult returns, as JSON
+
+	pending []string      // in-flight requests NetworkIdle reports
+	idleFor time.Duration // how long NetworkIdle says the network is quiet
 
 	rawResults map[string]string // CDP method -> JSON Raw returns (default {})
 	rawParams  map[string]any    // last params each CDP method was sent
@@ -71,6 +75,9 @@ func (f *fakePage) Raw(ctx context.Context, method string, params any) (json.Raw
 	return json.RawMessage(`{}`), nil
 }
 func (f *fakePage) ConsoleText(max int) string { return fmt.Sprintf("console(max=%d)", max) }
+func (f *fakePage) NetworkIdle() ([]string, int, time.Duration) {
+	return f.pending, len(f.pending), f.idleFor
+}
 func (f *fakePage) NetworkText(ctx context.Context, max int, filter string) string {
 	return fmt.Sprintf("network(max=%d,filter=%s)", max, filter)
 }
@@ -348,5 +355,32 @@ func TestAppQueryAllFieldsAndTables(t *testing.T) {
 	f.results["queryAll"] = `{"lines":["{\"이름\":\"홍길동\",\"나이\":\"30\"}"]}`
 	if r := run(t, f, "query_all", map[string]any{"selector": "table"}); r.Text != `{"이름":"홍길동","나이":"30"}` {
 		t.Fatalf("table rows: %q", r.Text)
+	}
+}
+
+func TestAppWaitForElementGoneAndIdle(t *testing.T) {
+	f := &fakePage{results: map[string]string{"waitForElement": `{"found":false}`}}
+	if r := run(t, f, "wait_for_element", map[string]any{"selector": ".spinner", "gone": "true"}); r.Text != "ok: no visible element matches .spinner" {
+		t.Fatalf("gone: %+v", r)
+	}
+	f.results["waitForElement"] = `{"found":true,"visible":true,"tag":"div"}`
+	if r := run(t, f, "wait_for_element", map[string]any{"selector": ".spinner", "gone": "true", "timeoutMs": 50}); !strings.Contains(r.Error, "an element matching .spinner is still visible") {
+		t.Fatalf("gone timeout: %+v", r)
+	}
+
+	f.idleFor = time.Second
+	if r := run(t, f, "wait_for_element", map[string]any{"selector": ".list", "idleMs": 500}); r.Text != "ok: found <div> matching .list; network idle for 500ms" {
+		t.Fatalf("element + idle: %+v", r)
+	}
+	f.pending = []string{"http://x/api/slow"}
+	if r := run(t, f, "wait_for_element", map[string]any{"idleMs": 500, "timeoutMs": 50}); !strings.Contains(r.Error, "1 request(s) still pending: http://x/api/slow") {
+		t.Fatalf("busy: %+v", r)
+	}
+	f.pending, f.idleFor = nil, 100*time.Millisecond
+	if r := run(t, f, "wait_for_element", map[string]any{"idleMs": 500, "timeoutMs": 50}); !strings.Contains(r.Error, "the last request ended 100ms ago") {
+		t.Fatalf("not quiet long enough: %+v", r)
+	}
+	if r := run(t, f, "wait_for_element", map[string]any{}); !strings.Contains(r.Error, "requires 'selector'") {
+		t.Fatalf("no condition: %+v", r)
 	}
 }

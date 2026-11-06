@@ -124,3 +124,37 @@ test("extract rejects fields that are not a JSON object", () => {
   assert.match(sb.__aglinkPage.extract("div", "nope", 5).error, /JSON object/);
   assert.match(sb.__aglinkPage.extract("div", "[1]", 5).error, /JSON object/);
 });
+
+test("network-capture.js counts fetch and XHR in flight", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const vm = require("node:vm");
+  let finish;
+  const fetchDone = new Promise((r) => (finish = r));
+  class XHR {
+    open() {}
+    setRequestHeader() {}
+    addEventListener(type, fn) { this.onend = fn; }
+    send() {}
+  }
+  const sb = {
+    Date, Map, String, JSON, Promise, Headers: class {},
+    fetch: () => fetchDone,
+    XMLHttpRequest: XHR,
+  };
+  sb.window = sb;
+  vm.createContext(sb);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "network-capture.js"), "utf8"), sb);
+  const st = sb.__aglinkNetState;
+  const p = sb.fetch("/api/a");
+  const x = new sb.XMLHttpRequest();
+  x.open("GET", "/api/b");
+  x.send();
+  assert.deepStrictEqual(Array.from(st.pending.values()), ["/api/a", "/api/b"]);
+  x.onend();
+  assert.strictEqual(st.pending.size, 1);
+  finish({ status: 200, headers: { get: () => "application/json" }, clone: () => ({ text: async () => "{}" }) });
+  await p;
+  await new Promise((r) => setTimeout(r, 10));
+  assert.strictEqual(st.pending.size, 0);
+});

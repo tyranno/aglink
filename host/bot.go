@@ -2270,27 +2270,7 @@ func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
 		return
 	}
 
-	// A voice note (or short audio file) is transcribed and sent as text when a
-	// whisper server is configured (voice.go).
-	if secs, ok := voiceSeconds(msg); ok && secs <= maxVoiceSeconds && b.ingestVoice(chatID, savePath, caption) {
-		return
-	}
 	b.ingestAttachment(chatID, savePath, caption, OriginTelegram)
-}
-
-// voiceSeconds reports whether the message is speech to transcribe (a voice
-// note, or an audio file with nothing else attached) and how long it is.
-func voiceSeconds(msg *tgbotapi.Message) (int, bool) {
-	if len(msg.Photo) > 0 || msg.Document != nil || msg.Video != nil {
-		return 0, false
-	}
-	switch {
-	case msg.Audio != nil:
-		return msg.Audio.Duration, true
-	case msg.Voice != nil:
-		return msg.Voice.Duration, true
-	}
-	return 0, false
 }
 
 // attachmentsDir is the one directory aglink saves attachments into. Both
@@ -2789,7 +2769,6 @@ func helpText() string {
 그냥 말하세요. 예) "myapp 로그인 버그 이어서 보자", "voice 서버에 헬스체크 추가해줘"
 → 어느 프로젝트의 어느 대화인지 알아서 찾아 작업합니다.
 사진·파일 첨부: 그냥 보내면 Claude가 분석합니다.
-음성 메시지: 받아 적어 글로 처리합니다 (whisper 서버를 설정했을 때).
 
 명령어:
 !project add <이름> <경로>   프로젝트 등록

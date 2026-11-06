@@ -18,8 +18,3 @@ On the PC, point aglink-desktop at it:
 
 When the server does not answer, the app falls back to the local whisper.
 There is no authentication; keep the port on a trusted network.
-
-The aglink host uses the same server for Telegram voice notes: set
-`voice.whisper_url` in config.yaml (or `AGLINK_WHISPER_URL`). Voice notes are
-OGG/Opus; install `ffmpeg` on the host so it sends WAV, or start the server
-with `--convert` (needs ffmpeg on the server).

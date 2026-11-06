@@ -19,6 +19,7 @@
   let query = $state("");
   let category = $state(""); // "" = all
   let deleting = $state(""); // path waiting for the second "지우기" click
+  let found = $state({}); // path -> {count, hits}: query found in what was said or the write-up
 
   async function load() {
     loading = true;
@@ -73,8 +74,27 @@
     const q = query.trim().toLowerCase();
     return meetings.filter((m) => {
       if (category && categoryOf(m) !== category) return false;
-      return !q || `${m.title} ${m.category} ${m.gist} ${m.name} ${m.preview}`.toLowerCase().includes(q);
+      return !q || !!found[m.path] || `${m.title} ${m.category} ${m.gist} ${m.name}`.toLowerCase().includes(q);
     });
+  });
+
+  // The whole of every meeting is searched (meeting.go), a moment after typing.
+  $effect(() => {
+    const q = query.trim();
+    void voice.meetingSavedAt;
+    if (!q) {
+      found = {};
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = JSON.parse((await VoiceService.MeetingSearch(q)) || "{}");
+        if (query.trim() === q) found = res;
+      } catch (error) {
+        loadError = `찾지 못했어요: ${error?.message || error}`;
+      }
+    }, 250);
+    return () => clearTimeout(t);
   });
 
   // Starting or ending meeting mode adds or closes a file, and a finished
@@ -122,7 +142,7 @@
   </div>
 
   <div class="shrink-0 px-3 pt-3">
-    <input class="w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1.5 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400" placeholder="제목·내용 검색" bind:value={query} />
+    <input class="w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1.5 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400" placeholder="제목·받아 적은 말 전체에서 찾기" bind:value={query} />
     {#if categories.length > 1}
       <div class="mt-2 flex flex-wrap gap-1">
         <button class={`${chip} ${category === "" ? chipOn : chipOff}`} onclick={() => (category = "")}>전체 {meetings.length}</button>
@@ -155,6 +175,16 @@
           </div>
           <div class="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">{m.title ? `${dayLabel(m.started)} · ` : ""}{m.lines}줄 · {sizeLabel(m.bytes)}</div>
           <div class="mt-1 line-clamp-2 text-xs leading-4 text-slate-500 dark:text-slate-400">{m.gist || m.preview || "받아 적은 말이 없어요."}</div>
+          {#if query.trim() && found[m.path]}
+            <div class="mt-1 rounded bg-amber-50 dark:bg-amber-950/30 px-1.5 py-1 text-[11px] leading-4 text-amber-900 dark:text-amber-200">
+              {#each found[m.path].hits as h}
+                <div class="truncate" title={h}>{h}</div>
+              {/each}
+              {#if found[m.path].count > found[m.path].hits.length}
+                <div class="text-amber-700/70 dark:text-amber-300/70">외 {found[m.path].count - found[m.path].hits.length}곳 더</div>
+              {/if}
+            </div>
+          {/if}
         </button>
         <div class="flex flex-wrap justify-end gap-1 px-2 pb-1.5">
           {#if m.summary}

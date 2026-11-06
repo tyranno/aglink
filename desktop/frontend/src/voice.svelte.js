@@ -3695,9 +3695,12 @@ async function noteMeetingPiece(t, wav, at) {
       vlog(`meeting echo dropped ${quote(text)}`);
       return;
     }
+    // -1: no voice enrolled, so nobody is told apart and no one is labelled.
+    const score = await speakerScore(wav);
+    const mine = isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S));
+    const who = score === -1 ? "" : mine ? "나" : "상대";
     if (text.length <= MEETING_CMD_MAX_CHARS && (MEETING_STOP_RE.test(text) || MEETING_ADVICE_RE.test(text))) {
-      const score = await speakerScore(wav);
-      if (isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
+      if (mine) {
         if (MEETING_STOP_RE.test(text)) {
           vlog(`meeting stop ${quote(text)}`);
           void stopMeeting(true, false);
@@ -3709,35 +3712,65 @@ async function noteMeetingPiece(t, wav, at) {
       }
       vlog(`meeting command from other voice (${score.toFixed(2)}) ${quote(text)}`);
     }
-    meetingBuf.push(text);
-    let total = meetingBuf.reduce((n, s) => n + s.length, 0);
-    while (total > MEETING_MAX_CHARS && meetingBuf.length > 1) total -= meetingBuf.shift().length;
-    await VoiceService.MeetingNote(at, text);
+    keepMeetingLine(who ? `${who}: ${text}` : text);
+    await VoiceService.MeetingNote(at, who, text);
   } catch (err) {
     vlog(`meeting note failed: ${err?.message || err}`);
   }
 }
 
-// requestMeetingAdvice sends what has been heard so far for one AI turn,
-// read aloud as usual; the buffer is not cleared, so a later "조언해 줘" in
-// the same meeting still has everything said before it too.
+function keepMeetingLine(line) {
+  meetingBuf.push(line);
+  let total = meetingBuf.reduce((n, s) => n + s.length, 0);
+  while (total > MEETING_MAX_CHARS && meetingBuf.length > 1) total -= meetingBuf.shift().length;
+}
+
+let meetingAdviceBusy = false;
+
+// requestMeetingAdvice asks the AI about what has been heard so far, apart
+// from any chat (AskAI), reads the answer out and writes it into the meeting
+// too; the buffer is not cleared, so a later "조언해 줘" in the same meeting
+// still has everything said before it. Without claude on this computer it
+// goes to a conversation as one turn instead.
 export async function requestMeetingAdvice() {
   if (!meetingBuf.length) {
     void speak("아직 들은 말이 없어요.");
     return;
+  }
+  if (meetingAdviceBusy) {
+    void speak("조언을 생각하는 중이에요. 잠시만 기다려 주세요.");
+    return;
+  }
+  const prompt = meetingAdvicePrompt(meetingBuf.join("\n"));
+  const pieces = meetingBuf.length;
+  meetingAdviceBusy = true;
+  void speak("들은 내용을 보고 조언을 생각해 볼게요.");
+  try {
+    const answer = String(await VoiceService.AskAI(prompt)).trim();
+    vlog(`meeting advice (${pieces} pieces) ${quote(answer, 60)}`);
+    if (voice.meeting) {
+      keepMeetingLine(`aglink 조언: ${answer}`);
+      void VoiceService.MeetingNote((Date.now() - voice.meetingStartedAt) / 1000, "aglink 조언", answer).catch(() => {});
+    }
+    await waitSpeechDone();
+    void speak(answer, "full");
+    return;
+  } catch (err) {
+    vlog(`meeting advice AskAI failed: ${err?.message || err}`);
+  } finally {
+    meetingAdviceBusy = false;
   }
   const target = assistPane(null);
   if (!target) {
     void speak("열린 대화가 없어서 조언을 구하지 못했어요.");
     return;
   }
-  const why = await sendTurn(target, meetingAdvicePrompt(meetingBuf.join("\n")), { read: true });
+  const why = await sendTurn(target, prompt, { read: true });
   if (why) {
     void speak(`${why}. 잠시 뒤에 다시 말씀해 주세요.`);
     return;
   }
-  vlog(`meeting advice asked (${meetingBuf.length} pieces)`);
-  void speak("들은 내용을 보고 조언을 생각해 볼게요.");
+  vlog(`meeting advice asked in chat (${pieces} pieces)`);
 }
 
 // stopMeeting closes the mic and the text file, and throws the in-memory
@@ -3791,9 +3824,10 @@ Events.On("tray:meeting", () => void (voice.meeting ? stopMeeting() : startMeeti
 // When a meeting ends, the AI reads what was written down and answers with a
 // title for what the meeting was about, a category, a summary, decisions and
 // to-dos; that is saved next to it as "회의 … 정리.md" (meeting.go) and the
-// meeting list shows the title. The turn goes to a conversation like
-// "방금 녹음 정리해 줘" does, but the answer is not read out. A busy
-// conversation is retried for a while; the 회의 tab's "정리하기" does it by hand.
+// meeting list shows the title. It is asked apart from any chat (AskAI); only
+// without claude on this computer does it go to a conversation as a turn
+// that is not read out, a busy one retried for a while. The 회의 tab's
+// "정리하기" does it by hand.
 
 const MEETING_WRITEUP_MIN_PIECES = 2;
 const MEETING_WRITEUP_MAX_CHARS = 30000; // longer talk keeps its start and end
@@ -3810,8 +3844,8 @@ function trimMiddleText(text, max) {
 // was the meeting just ended; then a busy conversation is tried again later
 // and nothing is said unless it goes wrong for good.
 export async function summarizeMeeting(path, { auto = false, tries = 0 } = {}) {
-  if (voice.meetingWriting && voice.meetingWriting !== path) {
-    if (!auto) flash("다른 회의를 정리하는 중이에요");
+  if (voice.meetingWriting) {
+    if (!auto) flash(voice.meetingWriting === path ? "이 회의를 정리하는 중이에요" : "다른 회의를 정리하는 중이에요");
     if (auto && tries < MEETING_WRITEUP_RETRIES) setTimeout(() => void summarizeMeeting(path, { auto, tries: tries + 1 }), MEETING_WRITEUP_RETRY_MS);
     return;
   }
@@ -3828,8 +3862,21 @@ export async function summarizeMeeting(path, { auto = false, tries = 0 } = {}) {
     return;
   }
   const name = path.split(/[/\\]/).pop().replace(/\.txt$/i, "");
+  const prompt = meetingSummaryPrompt(name, trimMiddleText(body, MEETING_WRITEUP_MAX_CHARS));
+  // Apart from any chat first: no waiting for a busy one, nothing put in it.
+  voice.meetingWriting = path;
+  if (!auto) flash("📝 회의를 정리하고 있어요");
+  vlog(`meeting write-up asked ${name} (${body.length} chars)`);
+  try {
+    const md = String(await VoiceService.AskAI(prompt));
+    saveMeetingWriteUp({ path, text: md });
+    return;
+  } catch (err) {
+    vlog(`meeting write-up AskAI failed: ${err?.message || err}`);
+    voice.meetingWriting = "";
+  }
   const target = assistPane(null);
-  const why = target ? await sendTurn(target, meetingSummaryPrompt(name, trimMiddleText(body, MEETING_WRITEUP_MAX_CHARS)), { saveTo: path, kind: "meeting", quiet: true }) : "열린 대화가 없어요";
+  const why = target ? await sendTurn(target, prompt, { saveTo: path, kind: "meeting", quiet: true }) : "열린 대화가 없어요";
   if (why) {
     vlog(`meeting write-up not sent (${why}) ${name}`);
     if (auto && tries < MEETING_WRITEUP_RETRIES) {
@@ -3840,8 +3887,7 @@ export async function summarizeMeeting(path, { auto = false, tries = 0 } = {}) {
     return;
   }
   voice.meetingWriting = path;
-  vlog(`meeting write-up asked ${name} (${body.length} chars)`);
-  if (!auto) flash("📝 회의를 정리하고 있어요");
+  vlog(`meeting write-up asked in chat ${name}`);
 }
 
 // saveMeetingWriteUp saves the finished write-up turn next to its meeting.

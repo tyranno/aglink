@@ -61,15 +61,24 @@ func (v *VoiceService) MeetingStart() (string, error) {
 }
 
 // MeetingNote writes a recognised line to the meeting's text file, stamped
-// with the time into the meeting where it was said (atSec).
-func (v *VoiceService) MeetingNote(atSec float64, text string) error {
+// with the time into the meeting where it was said (atSec) and who said it
+// ("나", "상대", "aglink 조언"; "" when voices cannot be told apart).
+func (v *VoiceService) MeetingNote(atSec float64, who, text string) error {
 	meeting.mu.Lock()
 	defer meeting.mu.Unlock()
 	if meeting.txt == nil {
 		return errors.New("회의 모드가 아닙니다")
 	}
-	_, err := fmt.Fprintf(meeting.txt, "[%s] %s\n", clockOf(int(atSec)), strings.TrimSpace(text))
+	_, err := meeting.txt.WriteString(meetingLine(atSec, who, text))
 	return err
+}
+
+func meetingLine(atSec float64, who, text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if who = strings.TrimSpace(who); who != "" {
+		return fmt.Sprintf("[%s] %s: %s\n", clockOf(int(atSec)), who, text)
+	}
+	return fmt.Sprintf("[%s] %s\n", clockOf(int(atSec)), text)
 }
 
 // MeetingStop closes the meeting's text file and reports it as JSON {"path"}.
@@ -268,4 +277,54 @@ func (v *VoiceService) MeetingSaveSummary(txtPath, md string) (string, error) {
 	}
 	title, _, _ := parseMeetingSummary(md)
 	return title, nil
+}
+
+// maxMeetingSearchHits is how many matching lines one meeting shows.
+const maxMeetingSearchHits = 5
+
+// MeetingSearch finds query in everything said in the saved meetings and in
+// their write-ups, as JSON {path: {"count", "hits"}} — hits being the first
+// matching lines, so the list can show where it was said.
+func (v *VoiceService) MeetingSearch(query string) (string, error) {
+	q := strings.ToLower(strings.TrimSpace(query))
+	out := map[string]any{}
+	if q == "" {
+		return "{}", nil
+	}
+	dir, err := meetingDir()
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".txt") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		count, hits := 0, []string{}
+		for _, f := range []string{p, meetingSummaryPath(p)} {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			for i, ln := range strings.Split(string(b), "\n") {
+				ln = strings.TrimSpace(ln)
+				if ln == "" || (f == p && i == 0) || !strings.Contains(strings.ToLower(ln), q) {
+					continue
+				}
+				count++
+				if len(hits) < maxMeetingSearchHits {
+					hits = append(hits, ln)
+				}
+			}
+		}
+		if count > 0 {
+			out[p] = map[string]any{"count": count, "hits": hits}
+		}
+	}
+	b, _ := json.Marshal(out)
+	return string(b), nil
 }

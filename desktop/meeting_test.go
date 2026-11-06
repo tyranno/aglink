@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMeeting_WritesNotesFile(t *testing.T) {
@@ -16,10 +17,10 @@ func TestMeeting_WritesNotesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := v.MeetingNote(65.4, " 안녕하세요 "); err != nil {
+	if err := v.MeetingNote(65.4, "", " 안녕하세요 "); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.MeetingNote(130.0, "다음 안건으로 넘어가죠"); err != nil {
+	if err := v.MeetingNote(130.0, "나", "다음 안건으로 넘어가죠"); err != nil {
 		t.Fatal(err)
 	}
 	out, err := v.MeetingStop()
@@ -32,10 +33,10 @@ func TestMeeting_WritesNotesFile(t *testing.T) {
 		t.Fatalf("stop = %s", out)
 	}
 	txt, _ := os.ReadFile(path)
-	if !strings.Contains(string(txt), "[01:05] 안녕하세요\n") || !strings.Contains(string(txt), "[02:10] 다음 안건으로 넘어가죠\n") {
+	if !strings.Contains(string(txt), "[01:05] 안녕하세요\n") || !strings.Contains(string(txt), "[02:10] 나: 다음 안건으로 넘어가죠\n") {
 		t.Fatalf("notes = %q", txt)
 	}
-	if err := v.MeetingNote(1, "끝난 뒤"); err == nil {
+	if err := v.MeetingNote(1, "", "끝난 뒤"); err == nil {
 		t.Fatal("note after stop should fail")
 	}
 }
@@ -49,7 +50,7 @@ func TestMeeting_ListReadDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = v.MeetingNote(3, "첫 번째 말")
+	_ = v.MeetingNote(3, "", "첫 번째 말")
 	out, err := v.MeetingList()
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +89,7 @@ func TestMeeting_SummaryTitle(t *testing.T) {
 	t.Setenv("HOME", home)
 	v := &VoiceService{}
 	path, _ := v.MeetingStart()
-	_ = v.MeetingNote(1, "장비 납기 이야기")
+	_ = v.MeetingNote(1, "상대", "장비 납기 이야기")
 	_, _ = v.MeetingStop()
 	md := "# 장비 납기 일정 조율\r\n**분류:** 업무 회의\r\n\r\n## 3줄 요약\r\n- 납기를 2주 미루기로 함\r\n- 둘째\r\n\r\n## 결정 사항\r\n- 없음\r\n"
 	title, err := v.MeetingSaveSummary(path, md)
@@ -107,5 +108,36 @@ func TestMeeting_SummaryTitle(t *testing.T) {
 	_ = v.MeetingDelete(path)
 	if _, err := os.Stat(list[0].Summary); !os.IsNotExist(err) {
 		t.Fatal("the write-up should go with the meeting")
+	}
+}
+
+func TestMeeting_Search(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	v := &VoiceService{}
+	path, _ := v.MeetingStart()
+	_ = v.MeetingNote(1, "상대", "USB 마이크는 월요일에 연결해요")
+	_ = v.MeetingNote(9, "나", "광고는 22일 이후에")
+	_, _ = v.MeetingStop()
+	_, _ = v.MeetingSaveSummary(path, "# 출시 준비\n분류: 업무 회의\n\n## 할 일\n- 마이크 연결 (월요일)\n")
+	out, err := v.MeetingSearch("마이크")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res map[string]struct {
+		Count int
+		Hits  []string
+	}
+	_ = json.Unmarshal([]byte(out), &res)
+	got, ok := res[path]
+	if !ok || got.Count != 2 || !strings.Contains(got.Hits[0], "상대: USB 마이크") {
+		t.Fatalf("search = %s", out)
+	}
+	if out, _ := v.MeetingSearch(time.Now().Format("2006-01-02")); out != "{}" {
+		t.Fatalf("the header line should not match: %s", out)
+	}
+	if out, _ := v.MeetingSearch("  "); out != "{}" {
+		t.Fatalf("empty query = %s", out)
 	}
 }

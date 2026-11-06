@@ -37,11 +37,11 @@ Unicode true
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "Korean"
 
-VIProductVersion "1.0.0.0"
+VIProductVersion "1.2.0.0"
 VIAddVersionKey /LANG=${LANG_KOREAN} "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey /LANG=${LANG_KOREAN} "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=${LANG_KOREAN} "FileDescription" "aglink Installer"
-VIAddVersionKey /LANG=${LANG_KOREAN} "FileVersion" "1.0.0.0"
+VIAddVersionKey /LANG=${LANG_KOREAN} "FileVersion" "1.2.0.0"
 
 ; ===== Install =====
 Section "Install"
@@ -107,7 +107,7 @@ Section "Install"
     ; --- Uninstaller + Add/Remove Programs ---
     WriteUninstaller "$INSTDIR\uninstall.exe"
     WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
-    WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "1.0.0"
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "1.2.0"
     WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
     WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"

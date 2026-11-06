@@ -12,10 +12,12 @@ import (
 // Semantic version. major.minor are manual milestones — bump the constants below
 // on meaningful releases. The patch number is the git commit count, injected at
 // build time by handleUpdate's -ldflags so every commit advances it
-// automatically (v1.1.<count>), giving a human-comparable "newer > older".
+// automatically, giving a human-comparable "newer > older". versionBaseCount is
+// the commit count where this major.minor began, so the patch restarts at 0.
 const (
-	versionMajor = 1
-	versionMinor = 1
+	versionMajor     = 1
+	versionMinor     = 2
+	versionBaseCount = 577
 )
 
 // Injected at build time via -ldflags (see handleUpdate). All empty on a plain
@@ -26,16 +28,18 @@ var (
 	buildTime        = "" // RFC3339 build timestamp
 )
 
-// runningVersion renders the human-comparable version string, e.g. "v1.1.42",
-// or "v1.1.dev" for an unstamped dev build.
+// runningVersion renders the human-comparable version string, e.g. "v1.2.3",
+// or "v1.2.dev" for an unstamped dev build.
 func runningVersion() string {
 	return formatVersion(buildCommitCount)
 }
 
-// formatVersion renders v<major>.<minor>.<count>; a blank count becomes "dev".
+// formatVersion renders v<major>.<minor>.<patch>; a blank count becomes "dev".
 func formatVersion(count string) string {
 	if count == "" {
 		count = "dev"
+	} else if n, err := strconv.Atoi(count); err == nil && n >= versionBaseCount {
+		count = strconv.Itoa(n - versionBaseCount)
 	}
 	return fmt.Sprintf("v%d.%d.%s", versionMajor, versionMinor, count)
 }

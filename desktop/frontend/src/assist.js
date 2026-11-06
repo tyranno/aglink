@@ -258,6 +258,12 @@ export function tapeSummaryPrompt(name, text, notion) {
   return `[녹음 정리] 아래는 녹음(${name})을 받아 적은 글이에요. 한국어 마크다운으로 정리해 주세요: ## 3줄 요약 / ## 결정 사항 / ## 할 일 (담당·기한이 나오면 함께). 없는 항목은 "없음". ${save}\n\n---\n${text}`;
 }
 
+// meetingAdvicePrompt is the one AI turn "조언해 줘" sends with what the room
+// has said so far (also kept, as it is heard, in a text file on disk).
+export function meetingAdvicePrompt(text) {
+  return `[회의 조언] 아래는 지금 자리에서 받아 적은, 아직 끝나지 않은 대화예요. 지금까지 나온 이야기를 보고 한국어로 조언해 주세요 — 결론 먼저, 필요하면 이유를 한두 마디만, 도구는 쓰지 말고 말로 읽을 답만 주세요.\n\n---\n${text}`;
+}
+
 // briefingPrompt is the morning briefing's one AI turn, kept short.
 export function briefingPrompt(now, region, schedule) {
   const date = now.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" });

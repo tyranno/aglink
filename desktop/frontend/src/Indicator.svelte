@@ -12,6 +12,7 @@
   let speed = $state(0);
   let chatTitle = $state("");
   let textOnly = $state(false);
+  let meeting = $state(false);
 
   let lastSeq = 0;
 
@@ -28,6 +29,7 @@
     if (typeof d.textOnly === "boolean") textOnly = d.textOnly;
     if (Number.isFinite(d.speed)) speed = d.speed;
     chatTitle = typeof d.chat === "string" ? d.chat : "";
+    if (typeof d.meeting === "boolean") meeting = d.meeting;
   });
 
   Events.On("voice:reply", (event) => {
@@ -93,7 +95,12 @@
       title={barge ? "읽는 중에 말하면 멈추고 들어요 — 눌러서 주고받기로" : "다 읽은 뒤에 들어요 — 눌러서 끼어들기로"}
       >{barge ? "끼어들기" : "주고받기"}</button
     >
-    <button class="close" onclick={() => Events.Emit("tray:conversation")} title={phase === "recording" ? "녹음 끝내기" : "음성 대화 끝내기"}>✕</button>
+    <button
+      class="close"
+      onclick={() => Events.Emit("tray:conversation")}
+      title={meeting ? "회의 모드 끝내기" : phase === "recording" ? "녹음 끝내기" : "음성 대화 끝내기"}
+      >✕</button
+    >
   </div>
 </div>
 

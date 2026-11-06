@@ -80,6 +80,14 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 			_ = exec.Command("explorer.exe", dir).Start()
 		}
 	})
+	// Meeting mode, the same as "지금부터 듣고 있어".
+	menu.Add("회의 모드 시작 / 끝").OnClick(func(*application.Context) {
+		app.Event.Emit("tray:meeting")
+	})
+	menu.Add("회의 목록").OnClick(func(*application.Context) {
+		show()
+		app.Event.Emit("tray:meetings")
+	})
 	menu.Add("음성 설정").OnClick(func(*application.Context) {
 		show()
 		app.Event.Emit("tray:voiceSettings")

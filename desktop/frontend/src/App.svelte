@@ -10,6 +10,7 @@
   import ClaudeAuthPanel from "./ClaudeAuthPanel.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import UsagePanel from "./UsagePanel.svelte";
+  import MeetingPanel from "./MeetingPanel.svelte";
   import VoicePanel from "./VoicePanel.svelte";
   import ImageWindow from "./ImageWindow.svelte";
   import CloneScript from "./CloneScript.svelte";
@@ -56,7 +57,7 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { theme, setTheme } from "./themeStore.svelte.js";
-  import { voice } from "./voice.svelte.js";
+  import { voice, startMeeting, stopMeeting } from "./voice.svelte.js";
 
   // The conversation voice chat is talking to, marked in the list.
   function isVoiceConv(id) {
@@ -80,10 +81,10 @@
   let settingsTab = $state("settings");
   // 알려진 탭 값만 복원한다 — 저장된 값이 낯설면 "chat"으로 떨어뜨려야, 렌더링
   // 분기의 마지막 else(MCP)가 알 수 없는 값을 떠안는 일이 없다.
-  const SIDEBAR_TABS = ["chat", "playbook", "reservation", "mcp", "usage"];
+  const SIDEBAR_TABS = ["chat", "playbook", "reservation", "meeting", "mcp", "usage"];
   let sidebarTab = $state(
     SIDEBAR_TABS.includes(sidebarPrefs.tab) ? sidebarPrefs.tab : "chat",
-  ); // 대화 목록 / 업무 관리 / 예약 / MCP
+  ); // 대화 목록 / 업무 관리 / 예약 / 회의 / MCP
   let sidebarCollapsed = $state(sidebarPrefs.collapsed === true);
   $effect(() => {
     // Re-runs whenever either changes → persists the current sidebar state.
@@ -120,6 +121,13 @@
     } catch (error) {
       preview = { open: true, name: path, path, content: "", error: String(error), isMarkdown: false };
     }
+  }
+
+  // 회의 목록: the meeting tab of the sidebar (header 🗂, tray "회의 목록").
+  function showMeetings() {
+    view = "chat";
+    sidebarCollapsed = false;
+    sidebarTab = "meeting";
   }
 
   function closePreview() {
@@ -504,6 +512,9 @@
       handleFrame(event.data || {});
     });
 
+    // The tray menu's "회의 목록".
+    const offMeetings = Events.On("tray:meetings", showMeetings);
+
     // The tray menu's "음성 설정".
     const offVoiceSettings = Events.On("tray:voiceSettings", () => {
       void openSettings("voice");
@@ -551,6 +562,7 @@
       offStatus();
       offFrame();
       offVoiceSettings();
+      offMeetings();
       window.clearInterval(tickTimer);
       window.clearInterval(workerTimer);
       document.removeEventListener("click", clickAway);
@@ -578,6 +590,27 @@
         {versionBadgeText()}
       </span>
       <div class="ml-auto flex items-center gap-2">
+        <button
+          class={`flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm ${voice.meeting ? "border-rose-400 bg-rose-600 text-white hover:bg-rose-700" : "border-white/20 bg-white/5 text-slate-100 hover:bg-white/10"}`}
+          onclick={() => (voice.meeting ? stopMeeting() : startMeeting())}
+          title={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작 — 주변 대화를 받아 적고, “조언해 줘”라고 하면 조언해요"}
+          aria-label={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}
+        >
+          {#if voice.meeting}
+            <span class="h-2 w-2 animate-pulse rounded-full bg-white"></span>
+            <span class="font-mono text-xs">{voice.meetingClock || "00:00"}</span>
+          {:else}
+            🎙<span class="text-xs">회의</span>
+          {/if}
+        </button>
+        <button
+          class="grid h-8 w-8 place-items-center rounded-md border border-white/20 bg-white/5 text-sm text-slate-100 hover:bg-white/10"
+          onclick={showMeetings}
+          title="회의 목록"
+          aria-label="회의 목록"
+        >
+          🗂
+        </button>
         <button
           class="grid h-8 w-8 place-items-center rounded-md border border-white/20 bg-white/5 text-sm text-slate-100 hover:bg-white/10"
           onclick={cycleTheme}
@@ -637,6 +670,10 @@
                 class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "reservation" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "reservation")}
               >예약</button>
+              <button
+                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "meeting" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
+                onclick={() => (sidebarTab = "meeting")}
+              >회의</button>
               <button
                 class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "mcp" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
                 onclick={() => (sidebarTab = "mcp")}
@@ -852,6 +889,8 @@
               <PlaybookPanel />
             {:else if sidebarTab === "reservation"}
               <ReservationPanel />
+            {:else if sidebarTab === "meeting"}
+              <MeetingPanel onopen={openPreview} />
             {:else if sidebarTab === "usage"}
               <UsagePanel />
             {:else}

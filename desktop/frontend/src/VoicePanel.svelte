@@ -26,6 +26,10 @@
     stopTape,
     openTapeFolder,
     summarizeTape,
+    startMeeting,
+    stopMeeting,
+    requestMeetingAdvice,
+    openMeetingFolder,
     assist,
     setDaily,
     refreshMemos,
@@ -284,6 +288,25 @@
           <button class={button} onclick={() => (voice.taping ? stopTape() : startTape())}>{voice.taping ? "녹음 끝내기" : "녹음 시작"}</button>
           <button class={button} disabled={voice.taping} onclick={() => summarizeTape()}>방금 녹음 정리</button>
           <button class={button} onclick={openTapeFolder}>폴더 열기</button>
+        </div>
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div class={label}>회의 모드</div>
+          <div class={desc}>
+            “지금부터 듣고 있어”라고 하면 녹음과 달리 소리 파일은 남기지 않고, 주변에서 하는 말을 받아 적어 문서 폴더의 “aglink 회의”에 글로 저장해요.
+            “조언해 줘”라고 하면 그때까지 들은 내용을 보고 조언을 말해 드리고(계속 들어요), “그만 들어”라고 하면 끝내요 — 받아 적은 글은 끝낸 뒤에도 파일로 남아요.
+            등록한 목소리(사장님)만 시작·조언 요청·끝내기를 할 수 있어요 — 다른 사람 말로는 켜지거나 꺼지지 않아요.
+            {voice.meeting ? `지금 회의 모드로 듣고 있어요 (${voice.meetingClock || "00:00"}).` : ""}
+          </div>
+        </div>
+        <div class="flex shrink-0 gap-2">
+          <button class={button} onclick={() => (voice.meeting ? stopMeeting() : startMeeting())}>{voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}</button>
+          <button class={button} disabled={!voice.meeting} onclick={() => requestMeetingAdvice()}>지금까지로 조언 구하기</button>
+          <button class={button} onclick={openMeetingFolder}>폴더 열기</button>
         </div>
       </div>
     </div>

@@ -32,7 +32,7 @@ import {
 } from "./paneStore.svelte.js";
 import { alarms, parseAlarm, addAlarm, removeAlarm, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
 import { describeCron } from "./schedule.js";
-import { parsePc, parseUsage, usageText, parseDaily, dailyDue, dayKey, clockLabel, parseMemo, MAX_MEMO_CMD_CHARS, parseTapeSummary, tapeSummaryPrompt, briefingPrompt } from "./assist.js";
+import { parsePc, parseUsage, usageText, parseDaily, dailyDue, dayKey, clockLabel, parseMemo, MAX_MEMO_CMD_CHARS, parseTapeSummary, tapeSummaryPrompt, briefingPrompt, meetingAdvicePrompt } from "./assist.js";
 
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
 const BARGE_STORAGE_KEY = "aglink.voice.barge"; // "0": take turns, the mic waits for the reading
@@ -183,6 +183,9 @@ export const voice = $state({
   taping: false, // "녹음해 줘": recording until "녹음 끝내"
   tapeStartedAt: 0,
   tapeClock: "", // "03:12", shown while recording
+  meeting: false, // "지금부터 듣고 있어": listens to whoever is around, kept in memory only
+  meetingStartedAt: 0,
+  meetingClock: "", // "03:12", shown while meeting mode is on
   done: null, // title of the chat whose work just finished, shown for a while
   doneAt: 0,
   vscode: null, // {folder, title}: what is said goes to Claude Code in that VS Code window
@@ -415,6 +418,10 @@ export async function toggleConversation(paneId) {
     setNote(paneId, "녹음하는 중이에요. “녹음 끝내”라고 하거나 트레이 메뉴에서 끝낸 뒤에 대화할 수 있어요.");
     return;
   }
+  if (voice.meeting) {
+    setNote(paneId, "회의 모드로 듣는 중이에요. “그만 들어”라고 하거나 표시등에서 끝낸 뒤에 대화할 수 있어요.");
+    return;
+  }
   if (voice.convPaneId) endConversation();
   voice.convPaneId = paneId;
   convActiveAt = Date.now();
@@ -499,7 +506,7 @@ async function watchResumedTurn(req) {
 // listenAlways starts conversation mode on the last conversation pane (or the
 // focused one) once one is connected — "always" listening needs no 🗣.
 async function listenAlways() {
-  for (let i = 0; i < 120 && voice.listenMode === "always" && !voice.convPaneId && !voice.taping; i++) {
+  for (let i = 0; i < 120 && voice.listenMode === "always" && !voice.convPaneId && !voice.taping && !voice.meeting; i++) {
     const paneId = wakePane();
     if (paneId && chat.connected && voice.status === "ready" && voice.phase === "idle" && !voice.speaking && !voice.enrolling) {
       vlog("always listening: conversation on");
@@ -534,7 +541,7 @@ let stateSeq = Date.now();
 
 $effect.root(() => {
   $effect(() => {
-    const active = !!voice.convPaneId || voice.taping || voice.done !== null;
+    const active = !!voice.convPaneId || voice.taping || voice.meeting || voice.done !== null;
     let phase = "waiting";
     // What was sent is shown while waiting, so a mishearing is caught at once.
     let label = voice.heard ? `${quote(voice.heard, 30)} 답변 기다리는 중` : "답변을 기다리는 중";
@@ -548,6 +555,10 @@ $effect.root(() => {
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
     else if (voice.done !== null) [phase, label] = ["done", voice.speaking ? "작업이 끝났어요 — 답변을 읽어요" : "작업이 끝났어요"];
     else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
+    // Meeting mode shows after speaking (an advice reply reading through still
+    // shows "speaking") but otherwise as its own, so it is clear to anyone in
+    // the room that the mic is on, not finishing some other wait.
+    else if (voice.meeting) [phase, label] = ["recording", `회의 모드로 듣는 중 ${voice.meetingClock || "00:00"} — “조언해 줘”라고 하면 조언해 드려요`];
     // Which chat the conversation is talking to, shown under the status line.
     const chatTitle = (voice.done || (active && paneConversationMeta(pane(voice.convPaneId)?.target)?.title)) || "";
     Events.Emit("voice:state", {
@@ -561,6 +572,7 @@ $effect.root(() => {
       wake: voice.waking,
       wakeName: wakeNameLabel(), // for the tray tooltip
       textOnly: voice.textOnly,
+      meeting: voice.meeting,
     });
   });
 });
@@ -570,6 +582,10 @@ $effect.root(() => {
 Events.On("tray:conversation", () => {
   if (voice.taping) {
     void stopTape();
+    return;
+  }
+  if (voice.meeting) {
+    void stopMeeting();
     return;
   }
   if (!voice.convPaneId && voice.done !== null) {
@@ -777,6 +793,10 @@ function noteDone(target) {
 
 export async function toggleVoiceInput(paneId) {
   clearVoiceNote();
+  if (voice.meeting) {
+    setNote(paneId, "회의 모드로 듣는 중이에요. 그냥 말씀하시면 들려요 — 끝내시려면 “그만 들어”라고 하세요.");
+    return;
+  }
   if (voice.phase === "listening") {
     stopRecording(true);
     return;
@@ -1457,7 +1477,7 @@ function isCommandText(text) {
   if (t.length > MAX_ALARM_CHARS) return false;
   if (parseAlarm(t)) return true;
   if (t.length > MAX_COMMAND_CHARS) return false;
-  return [TAPE_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_USE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, ENROLL_RE, UNENROLL_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
+  return [TAPE_START_RE, MEETING_START_RE, TAPE_FOLDER_RE, WAKE_NAME_SET_RE, WAKE_NAME_ADD_RE, LISTEN_ALWAYS_RE, LISTEN_WAKE_RE, CLONE_RE, CLONE_LEAD_RE, CLONE_USE_RE, CLONE_OFF_RE, TEXT_ONLY_ON_RE, TEXT_ONLY_OFF_RE, ENROLL_RE, UNENROLL_RE, DETAIL_RE, SHORT_RE, REPEAT_RE, SLOWER_RE, FASTER_RE, SPEED_RESET_RE, LIST_RE, NOW_RE, NTH_RE, NEW_CONV_RE, BACK_RE, ALARM_LIST_RE, ALARM_CANCEL_RE, PB_LIST_RE, BARGE_HUSH_RE].some((re) => re.test(t));
 }
 
 const DIALOGUE_RE = /(?:^|\s)-\s/g; // a speaker turn in whisper's output
@@ -1483,6 +1503,10 @@ async function runVoiceCommand(paneId, text) {
   if (t.length > MAX_COMMAND_CHARS) return false;
   if (TAPE_START_RE.test(t)) {
     void startTape();
+    return true;
+  }
+  if (MEETING_START_RE.test(t)) {
+    void startMeeting();
     return true;
   }
   if (TAPE_FOLDER_RE.test(t)) {
@@ -1860,12 +1884,12 @@ let briefingSkip = ""; // why the due briefing was last not sent, logged once
 // sent yet (not connected, the chat busy) is tried again on the next check.
 function checkDaily() {
   const now = new Date();
-  if (dailyDue(assist.evening, now) && !voice.enrolling) {
+  if (dailyDue(assist.evening, now) && !voice.enrolling && !voice.meeting) {
     setDaily("evening", { last: dayKey(now) });
     vlog("evening round-up");
     void readEvening(true).catch((err) => vlog(`evening round-up failed: ${err?.message || err}`));
   }
-  if (dailyDue(assist.briefing, now) && !briefingSending && !voice.enrolling && !voice.taping) {
+  if (dailyDue(assist.briefing, now) && !briefingSending && !voice.enrolling && !voice.taping && !voice.meeting) {
     briefingSending = true;
     sendBriefing(null)
       .then((why) => {
@@ -3235,7 +3259,7 @@ $effect.root(() => {
     if (voice.convPaneId) rememberConvPane(voice.convPaneId);
   });
   $effect(() => {
-    const want = voice.listenMode !== "manual" && voice.status === "ready" && !voice.convPaneId && !voice.taping && voice.phase === "idle" && !voice.enrolling && !voice.speaking;
+    const want = voice.listenMode !== "manual" && voice.status === "ready" && !voice.convPaneId && !voice.taping && !voice.meeting && voice.phase === "idle" && !voice.enrolling && !voice.speaking;
     if (want && !wakeOn) {
       wakeOn = true;
       void startWake();
@@ -3267,9 +3291,40 @@ const TAPE_MAX_SEGMENT_MS = 12000; // a long stretch of talk is written down in 
 const TAPE_MIN_SPEECH_MS = 300;
 const TAPE_PREROLL_CHUNKS = 3;
 
+// ---- meeting mode ("지금부터 듣고 있어") ----
+//
+// Unlike recording, no audio touches disk — but everyone's talk while it is
+// on is written down as it is heard, to a text file under Documents\aglink
+// 회의 (meeting.go), named with the date and time it started. The same text
+// is also kept in memory (meetingBuf, capped) for "조언해 줘" to send as one
+// AI turn; that in-memory copy is thrown away the moment the session ends —
+// by "그만 들어", the ✕ on the indicator, or the tray menu close — but the
+// file on disk stays, so what was said can be read back afterwards.
+// "조언해 줘" sends what has been heard so far as one AI turn and reads the
+// answer aloud; listening carries on afterwards unless told to stop. Only
+// the enrolled voice (목소리 등록) can start it, ask for advice or end it —
+// nobody else in the room can start, extend or stop a session just by what
+// they say — and whoever is unenrolled still has everything they say heard
+// and included, which is the point of the feature.
+// "지금부터"/"이제부터" is required on the bare forms (never just "계속
+// 들어"/"항상 들어", which is LISTEN_ALWAYS_RE's always-on wake setting).
+const MEETING_START_RE = cmdRE(String.raw`(지금부터|이제부터)\s*(계속\s*)?(듣고\s*있어|들어|듣기\s*시작해?)|회의\s*(모드)?\s*(켜|시작해?)`);
+const MEETING_ADVICE_RE = cmdRE(String.raw`(조언|의견)\s*(좀\s*)?(해|구해|부탁해)`);
+const MEETING_STOP_RE = cmdRE(String.raw`그만\s*들어|듣기\s*(를|을)?\s*(그만|끝|끝내|끝내자|종료|멈춰|중지|정지|꺼)|회의\s*(모드)?\s*(끝|끝내|종료|꺼)`);
+const MEETING_CMD_MAX_CHARS = 20; // "조언해 줘" / "그만 들어" are said on their own
+const MEETING_SEGMENT_END_MS = 700;
+const MEETING_MAX_SEGMENT_MS = 12000;
+const MEETING_MIN_SPEECH_MS = 300;
+const MEETING_PREROLL_CHUNKS = 3;
+const MEETING_MAX_CHARS = 12000; // the buffer is capped; the oldest talk is dropped first
+
 let tapeRec = null;
 let tapeResume = null; // the conversation pane to go back to
 let tapeClockTimer = null;
+let meetingRec = null;
+let meetingResume = null; // the conversation pane to go back to
+let meetingClockTimer = null;
+let meetingBuf = []; // plain lines heard while meeting mode is on; never written to disk
 
 function tapeLength(sec) {
   const s = Math.round(sec);
@@ -3492,6 +3547,237 @@ export function openTapeFolder() {
 }
 
 Events.On("tray:tape", () => void (voice.taping ? stopTape() : startTape()));
+
+function meetingClockStr() {
+  const s = Math.floor((Date.now() - voice.meetingStartedAt) / 1000);
+  const mm = `${Math.floor((s % 3600) / 60)}`.padStart(2, "0");
+  const ss = `${s % 60}`.padStart(2, "0");
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+export async function startMeeting() {
+  if (voice.meeting) {
+    void speak("이미 회의 모드로 듣고 있어요. 끝내시려면 그만 들어, 라고 하세요.");
+    return;
+  }
+  if (voice.taping) {
+    void speak("녹음하는 중이에요. 녹음 끝내, 라고 하신 뒤에 말씀해 주세요.");
+    return;
+  }
+  let path;
+  try {
+    path = await VoiceService.MeetingStart();
+  } catch (err) {
+    vlog(`meeting start failed: ${err?.message || err}`);
+    void speak("회의 기록 파일을 만들지 못해서 회의 모드를 시작하지 못했어요.");
+    return;
+  }
+  meetingResume = voice.convPaneId;
+  voice.meeting = true; // first, so ending the conversation does not start the wake word
+  meetingBuf = [];
+  voice.meetingStartedAt = Date.now();
+  voice.meetingClock = "00:00";
+  clearInterval(meetingClockTimer);
+  meetingClockTimer = setInterval(() => (voice.meetingClock = meetingClockStr()), 1000);
+  if (voice.convPaneId) endConversation();
+  vlog(`meeting mode start ${path}`);
+  await speak("회의 모드로 들을게요. 들은 내용은 글로 받아 적어서 저장해 둘게요. 조언해 줘, 라고 하시면 조언해 드리고, 그만 들어, 라고 하시면 끝낼게요.", "full");
+  await waitSpeechDone();
+  if (!voice.meeting) return;
+  voice.meetingStartedAt = Date.now(); // the buffer starts here
+  await openMeetingMic();
+}
+
+async function openMeetingMic() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (error) {
+    vlog(`meeting mic failed: ${error?.message || error}`);
+    await stopMeeting(false);
+    void speak("마이크를 열 수 없어서 회의 모드를 끝냈어요.");
+    return;
+  }
+  if (!voice.meeting || meetingRec) {
+    stream.getTracks().forEach((tr) => tr.stop());
+    return;
+  }
+  const ctx = new AudioContext();
+  const source = ctx.createMediaStreamSource(stream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  const startedAt = performance.now();
+  const t = {
+    stream,
+    ctx,
+    source,
+    node,
+    frames: 0,
+    chunks: [],
+    first: -1,
+    firstAt: 0,
+    lastAt: 0,
+    loud: 0,
+    segFrames: 0,
+    noise: 0,
+    noiseN: 0,
+    notes: Promise.resolve(), // recognitions, one at a time and in order
+  };
+  meetingRec = t;
+  node.onaudioprocess = (e) => {
+    if (meetingRec !== t) return;
+    const input = new Float32Array(e.inputBuffer.getChannelData(0));
+    const chunkStart = t.frames;
+    t.frames += input.length;
+    t.chunks.push(input);
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+    const rms = Math.sqrt(sum / input.length);
+    const now = performance.now();
+    if (now - startedAt < 400) {
+      t.noise = (t.noise * t.noiseN + rms) / (t.noiseN + 1);
+      t.noiseN++;
+      return;
+    }
+    // Our own voice reading an advice reply back must not be heard again: the
+    // same echo gate as a normal conversation's barge-in recorder.
+    const ref = refLevel(now);
+    if (ref > 0.01) noteEchoRatio(rms / ref);
+    const echoFloor = ref > 0 ? Math.max(echoGain ?? 0, ECHO_GAIN_MIN) * ref * ECHO_MARGIN : 0;
+    const threshold = Math.max(0.012, t.noise * 3, echoFloor);
+    if (rms > threshold) {
+      if (t.first < 0) {
+        t.first = t.chunks.length - 1;
+        t.firstAt = now;
+        t.segFrames = Math.max(0, chunkStart - Math.min(t.first, MEETING_PREROLL_CHUNKS) * input.length);
+      }
+      t.lastAt = now;
+      t.loud++;
+    } else if (t.first < 0) t.noise = t.noise * 0.98 + rms * 0.02;
+    if (t.first < 0) {
+      if (t.chunks.length > MEETING_PREROLL_CHUNKS) t.chunks.splice(0, t.chunks.length - MEETING_PREROLL_CHUNKS);
+      return;
+    }
+    if (now - t.lastAt > MEETING_SEGMENT_END_MS || now - t.firstAt > MEETING_MAX_SEGMENT_MS) {
+      const long = t.lastAt - t.firstAt >= MEETING_MIN_SPEECH_MS && t.loud >= 3;
+      const from = Math.max(0, t.first - MEETING_PREROLL_CHUNKS);
+      const pad = new Float32Array(Math.round(ctx.sampleRate * WAKE_PAD_S));
+      const wav = long ? asrWav(downsample(concat([...t.chunks.slice(from), pad]), ctx.sampleRate, TARGET_RATE), TARGET_RATE) : null;
+      const at = t.segFrames / ctx.sampleRate;
+      t.chunks = [];
+      t.first = -1;
+      t.loud = 0;
+      if (wav) t.notes = t.notes.then(() => noteMeetingPiece(t, wav, at));
+    }
+  };
+  source.connect(node);
+  node.connect(ctx.destination);
+  vlog("meeting mode listening");
+}
+
+// noteMeetingPiece hears one piece: the enrolled voice saying "조언해 줘" or
+// "그만 들어" is acted on and not kept; anything else — theirs or anyone
+// else's — is added to the in-memory buffer (for "조언해 줘") and written
+// down in the meeting's text file (at: seconds into the meeting it was said).
+async function noteMeetingPiece(t, wav, at) {
+  try {
+    const text = (await VoiceService.Transcribe(toBase64(wav))).trim();
+    if (!text || meetingRec !== t) return;
+    if (isEcho(text, replyText)) {
+      vlog(`meeting echo dropped ${quote(text)}`);
+      return;
+    }
+    if (text.length <= MEETING_CMD_MAX_CHARS && (MEETING_STOP_RE.test(text) || MEETING_ADVICE_RE.test(text))) {
+      const score = await speakerScore(wav);
+      if (isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
+        if (MEETING_STOP_RE.test(text)) {
+          vlog(`meeting stop ${quote(text)}`);
+          void stopMeeting(true, false);
+        } else {
+          vlog(`meeting advice asked ${quote(text)}`);
+          void requestMeetingAdvice();
+        }
+        return;
+      }
+      vlog(`meeting command from other voice (${score.toFixed(2)}) ${quote(text)}`);
+    }
+    meetingBuf.push(text);
+    let total = meetingBuf.reduce((n, s) => n + s.length, 0);
+    while (total > MEETING_MAX_CHARS && meetingBuf.length > 1) total -= meetingBuf.shift().length;
+    await VoiceService.MeetingNote(at, text);
+  } catch (err) {
+    vlog(`meeting note failed: ${err?.message || err}`);
+  }
+}
+
+// requestMeetingAdvice sends what has been heard so far for one AI turn,
+// read aloud as usual; the buffer is not cleared, so a later "조언해 줘" in
+// the same meeting still has everything said before it too.
+export async function requestMeetingAdvice() {
+  if (!meetingBuf.length) {
+    void speak("아직 들은 말이 없어요.");
+    return;
+  }
+  const target = assistPane(null);
+  if (!target) {
+    void speak("열린 대화가 없어서 조언을 구하지 못했어요.");
+    return;
+  }
+  const why = await sendTurn(target, meetingAdvicePrompt(meetingBuf.join("\n")), { read: true });
+  if (why) {
+    void speak(`${why}. 잠시 뒤에 다시 말씀해 주세요.`);
+    return;
+  }
+  vlog(`meeting advice asked (${meetingBuf.length} pieces)`);
+  void speak("들은 내용을 보고 조언을 생각해 볼게요.");
+}
+
+// stopMeeting closes the mic and the text file, and throws the in-memory
+// advice buffer away (what was written to disk stays); waitNotes lets a
+// piece still being recognised land first (not when called from one of them).
+export async function stopMeeting(spoken = true, waitNotes = true) {
+  if (!voice.meeting) return;
+  voice.meeting = false;
+  clearInterval(meetingClockTimer);
+  meetingClockTimer = null;
+  const t = meetingRec;
+  meetingRec = null;
+  if (t) {
+    t.node.onaudioprocess = null;
+    try {
+      t.source.disconnect();
+      t.node.disconnect();
+    } catch {}
+    t.stream.getTracks().forEach((tr) => tr.stop());
+    void t.ctx.close();
+    if (waitNotes) await Promise.race([t.notes, new Promise((r) => setTimeout(r, 4000))]);
+  }
+  let res = {};
+  try {
+    res = JSON.parse(await VoiceService.MeetingStop());
+  } catch (err) {
+    vlog(`meeting stop failed: ${err?.message || err}`);
+  }
+  vlog(`meeting mode end ${res.path || "?"} (${meetingBuf.length} pieces heard)`);
+  meetingBuf = []; // the advice buffer only; the text file written along the way stays on disk
+  // Back to how it was: the conversation that was on, or listening always.
+  const back = meetingResume && pane(meetingResume)?.target ? meetingResume : voice.listenMode === "always" ? wakePane() : null;
+  meetingResume = null;
+  if (back && !voice.convPaneId) {
+    voice.convPaneId = back;
+    convActiveAt = Date.now();
+    saveConversation(back);
+  }
+  if (spoken) void speak("회의 모드를 끝냈어요. 들은 내용은 문서 폴더의 aglink 회의에 저장해 두었어요.", "full");
+  if (back) resumeListening();
+}
+
+Events.On("tray:meeting", () => void (voice.meeting ? stopMeeting() : startMeeting()));
+
+export function openMeetingFolder() {
+  return VoiceService.OpenMeetingFolder().catch((err) => vlog(`meeting folder failed: ${err?.message || err}`));
+}
 
 // getVoices() is empty until the voice list loads; touching it starts the load.
 if (typeof speechSynthesis !== "undefined") speechSynthesis.getVoices();

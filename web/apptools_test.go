@@ -326,3 +326,27 @@ func TestAppUnsupportedMethods(t *testing.T) {
 		t.Errorf("transport errors pass through: %+v", r)
 	}
 }
+
+func TestAppQueryAllFieldsAndTables(t *testing.T) {
+	f := &fakePage{results: map[string]string{
+		"extract": `{"lines":["{\"name\":\"사과\",\"url\":\"/a\"}","{\"name\":\"배\",\"url\":null}"],"total":3}`,
+	}}
+	r := run(t, f, "query_all", map[string]any{"selector": ".item", "fields": `{"name":"h3","url":"a@href"}`, "max": 2})
+	want := "{\"name\":\"사과\",\"url\":\"/a\"}\n{\"name\":\"배\",\"url\":null}\n… [1 more matched — raise max]"
+	if r.Text != want {
+		t.Fatalf("fields:\n%q\nwant\n%q", r.Text, want)
+	}
+	if f.calls[0] != `extract[".item","{\"name\":\"h3\",\"url\":\"a@href\"}",2]` {
+		t.Fatalf("fields are passed through as the raw JSON string: %s", f.calls[0])
+	}
+
+	f.results["extract"] = `{"error":"fields must be a JSON object"}`
+	if r := appCall(context.Background(), f, testPages, "query_all", map[string]any{"selector": ".item", "fields": "x"}); r.Error != "fields must be a JSON object" {
+		t.Fatalf("page-side error: %+v", r)
+	}
+
+	f.results["queryAll"] = `{"lines":["{\"이름\":\"홍길동\",\"나이\":\"30\"}"]}`
+	if r := run(t, f, "query_all", map[string]any{"selector": "table"}); r.Text != `{"이름":"홍길동","나이":"30"}` {
+		t.Fatalf("table rows: %q", r.Text)
+	}
+}

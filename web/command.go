@@ -136,12 +136,13 @@ var commands = []command{
 	},
 	{
 		name: "query_all",
-		desc: "Scrape MANY elements at once: for every element matching the selector (CSS or semantic locator — pierces open Shadow DOM), return one line with its tag, visible text, and requested attributes. This is the crawling workhorse — pull a whole list of search results, product cards, table rows, or links in a single call instead of looping list_elements/get_attribute per element. With no 'attrs', links auto-include their href (so `query_all a[href]` is a link harvester for building a crawl frontier). Pass 'attrs' as a comma-separated list (e.g. 'href,data-id,aria-label') to pull specific fields; use 'text' in attrs to force the textContent column.",
+		desc: "Scrape MANY elements at once: for every element matching the selector (CSS or semantic locator — pierces open Shadow DOM), return one line with its tag, visible text, and requested attributes. This is the crawling workhorse — pull a whole list of search results, product cards, table rows, or links in a single call instead of looping list_elements/get_attribute per element. With no 'attrs', links auto-include their href (so `query_all a[href]` is a link harvester for building a crawl frontier). Pass 'attrs' as a comma-separated list (e.g. 'href,data-id,aria-label') to pull specific fields; use 'text' in attrs to force the textContent column. For structured data pass 'fields' instead and get one JSON object per element (e.g. selector '.product' fields '{\"name\":\"h3\",\"url\":\"a@href\",\"price\":\".price\"}'). A selector that matches only <table> elements returns their rows as JSON objects keyed by the header cells.",
 		args: []argSpec{
 			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator matching the set of elements to extract."},
 			{name: "attrs", typ: argString, desc: "Optional comma-separated attribute names to pull per element (e.g. 'href,data-id'). Omit to just get tag+text (+href for links)."},
 			{name: "max", typ: argInt, desc: "Maximum number of elements to return (default 200)."},
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
+			{name: "fields", typ: argString, desc: `Optional JSON object of name -> "css" (text of the first match inside each element), "css@attr" (its attribute), "@attr" (the element's own attribute) or "" (the element's own text). Returns one JSON object per element; missing fields are null.`},
 		},
 	},
 	{

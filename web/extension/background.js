@@ -503,12 +503,22 @@ async function getHtml(params) {
 // shadow piercing, visible-first). With no attrs, links auto-include href so
 // `query_all a[href]` harvests a page's links; pass attrs to pull specific
 // fields (href, data-*, aria-*), or "text" to force the textContent column.
+// With 'fields' it returns one JSON object per element (page-actions.js
+// P.extract); a selector matching only <table>s returns their rows as JSON.
 async function queryAll(params) {
   const selector = params.selector;
   if (!selector) throw new Error("query_all requires 'selector'");
   const tabId = await activeTabId(params);
   await ensureHelpers(tabId);
   const max = params.max || 200;
+  if (params.fields) {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (name, args) => globalThis.__aglinkPage[name](...args),
+      args: ["extract", [selector, params.fields, max]],
+    });
+    return formatExtract((results && results[0] && results[0].result) || {}, selector);
+  }
   const attrs = (params.attrs || "")
     .split(",")
     .map((s) => s.trim())
@@ -519,6 +529,7 @@ async function queryAll(params) {
     args: ["queryAll", [selector, attrs, max]],
   });
   const els = (results && results[0] && results[0].result) || [];
+  if (els.lines) return els.lines.join("\n");
   if (els.length === 0) return `(no elements matched selector: ${selector})`;
   return els
     .map((e, i) => {
@@ -526,6 +537,16 @@ async function queryAll(params) {
       return `${i} | ${e.tag} | ${JSON.stringify(e.text)}${attrStr ? " | " + attrStr : ""}`;
     })
     .join("\n");
+}
+
+// formatExtract renders P.extract's result. Mirrored in apptools.go.
+function formatExtract(r, selector) {
+  if (r.error) throw new Error(r.error);
+  const lines = r.lines || [];
+  if (lines.length === 0) return `(no elements matched selector: ${selector})`;
+  let out = lines.join("\n");
+  if (r.total > lines.length) out += `\n… [${r.total - lines.length} more matched — raise max]`;
+  return out;
 }
 
 // evalExpression runs a JS expression in the page's MAIN world (like

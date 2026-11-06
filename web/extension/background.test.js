@@ -390,6 +390,43 @@ test("queryAll formats one line per element and needs a selector", async () => {
   assert.strictEqual(await empty.queryAll({ selector: ".none" }), "(no elements matched selector: .none)");
 });
 
+test("queryAll with fields calls extract and reports what max left out", async () => {
+  const calls = [];
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: {
+        executeScript: async (opts) => {
+          calls.push(opts);
+          return [{ result: { lines: ['{"a":"1"}'], total: 4 } }];
+        },
+      },
+    })
+  );
+  assert.strictEqual(await sb.queryAll({ selector: ".c", fields: '{"a":"b"}', max: 1 }), '{"a":"1"}\n… [3 more matched — raise max]');
+  const run = calls.find((c) => typeof c.func === "function");
+  assert.strictEqual(run.args[0], "extract");
+  assert.deepStrictEqual(Array.from(run.args[1]), [".c", '{"a":"b"}', 1]);
+
+  const bad = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { error: "fields must be a JSON object" } }] },
+    })
+  );
+  await assert.rejects(() => bad.queryAll({ selector: ".c", fields: "x" }), /fields must be a JSON object/);
+});
+
+test("queryAll returns table rows as JSON lines", async () => {
+  const sb = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 1, active: true }] },
+      scripting: { executeScript: async () => [{ result: { lines: ['{"이름":"홍길동"}'] } }] },
+    })
+  );
+  assert.strictEqual(await sb.queryAll({ selector: "table" }), '{"이름":"홍길동"}');
+});
+
 test("evalExpression returns json, surfaces page errors, needs an expression", async () => {
   const ok = loadBackground(
     makeChrome({
@@ -710,7 +747,7 @@ test("page-actions.js defines every shared page function", () => {
   vm.runInContext(src, sb);
   const want = ["getPageText", "elementExists", "click", "doubleClick", "hover", "drag", "getHtml",
     "queryAll", "evalExpression", "getAttribute", "listElements", "waitForElement", "typeText",
-    "getValue", "keyCombo", "scroll", "selectOption", "snapshot"];
+    "getValue", "keyCombo", "scroll", "selectOption", "snapshot", "extract"];
   for (const n of want) assert.strictEqual(typeof sb.__aglinkPage[n], "function", n);
   assert.strictEqual(sb.__aglinkPage.constants.KEY_SPECS.f5.key, "F5", "F-key table must be complete");
 });

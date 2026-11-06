@@ -220,6 +220,10 @@
   P.queryAll = (sel, attrList, maxEls) => {
         const helper = globalThis.__aglink;
         const cands = helper ? helper.resolveAll(sel) : Array.from(document.querySelectorAll(sel));
+        // A selector that matches only tables reads them as rows (P.tableRows).
+        if (attrList.length === 0 && cands.length && cands.every((el) => el.tagName === "TABLE")) {
+          return { lines: tableRows(cands, maxEls) };
+        }
         const out = [];
         for (const el of cands) {
           if (out.length >= maxEls) break;
@@ -241,6 +245,92 @@
         }
         return out;
       };
+
+  const clean = (s) => String(s == null ? "" : s).trim().replace(/\s+/g, " ");
+
+  // tableRows turns each <table> into one JSON object per body row, keyed by
+  // its header cells (thead, or a first row of <th>); columns without a
+  // header are c1, c2, …. Several tables are introduced by "table N:".
+  function tableRows(tables, maxRows) {
+    const lines = [];
+    let rows = 0;
+    tables.forEach((t, ti) => {
+      if (tables.length > 1) lines.push(`table ${ti}:`);
+      const trs = Array.from(t.querySelectorAll("tr"));
+      const cells = (tr) => Array.from(tr.children).filter((c) => c.tagName === "TD" || c.tagName === "TH");
+      let head = [];
+      const theadRow = t.querySelector("thead tr");
+      if (theadRow) head = cells(theadRow).map((c) => clean(c.textContent));
+      else if (trs.length && cells(trs[0]).every((c) => c.tagName === "TH")) head = cells(trs[0]).map((c) => clean(c.textContent));
+      const used = new Set();
+      const keys = head.map((k, i) => {
+        const key = k && !used.has(k) ? k : "c" + (i + 1);
+        used.add(key);
+        return key;
+      });
+      for (const tr of trs) {
+        if (theadRow ? tr.parentNode && tr.parentNode.tagName === "THEAD" : head.length && tr === trs[0]) continue;
+        const cs = cells(tr);
+        if (!cs.length) continue;
+        if (rows >= maxRows) { lines.push(`… [stopped at ${maxRows} rows — raise max]`); return; }
+        const rec = {};
+        cs.forEach((c, i) => { rec[keys[i] || "c" + (i + 1)] = clean(c.textContent).slice(0, 300); });
+        lines.push(JSON.stringify(rec));
+        rows++;
+      }
+    });
+    return lines;
+  }
+
+  // extract reads named fields from every element matching sel and returns one
+  // JSON object per element. fieldsJSON maps a name to "css" (text of the first
+  // match inside the element), "css@attr" (its attribute), "@attr" (the
+  // element's own attribute) or "" (the element's own text); a field that
+  // matches nothing is null. Input/select/textarea text is their value.
+  P.extract = (sel, fieldsJSON, maxEls) => {
+    let fields;
+    try {
+      fields = JSON.parse(fieldsJSON);
+    } catch (e) {
+      return { error: "fields must be a JSON object like {\"title\":\"h3\",\"url\":\"a@href\"}" };
+    }
+    if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+      return { error: "fields must be a JSON object of name -> \"css\" | \"css@attr\" | \"@attr\"" };
+    }
+    const specs = Object.keys(fields).map((name) => {
+      const spec = String(fields[name] == null ? "" : fields[name]).trim();
+      const at = spec.lastIndexOf("@");
+      const css = (at >= 0 ? spec.slice(0, at) : spec).trim();
+      return { name, css: css === "." ? "" : css, attr: at >= 0 ? spec.slice(at + 1).trim() : "" };
+    });
+    const helper = globalThis.__aglink;
+    const cands = helper ? helper.resolveAll(sel) : Array.from(document.querySelectorAll(sel));
+    const lines = [];
+    for (const el of cands) {
+      if (lines.length >= maxEls) break;
+      const rec = {};
+      for (const f of specs) {
+        let node = el;
+        if (f.css) {
+          try {
+            node = el.querySelector(f.css);
+          } catch (e) {
+            return { error: `field ${f.name}: bad selector ${f.css}` };
+          }
+        }
+        if (!node) { rec[f.name] = null; continue; }
+        if (f.attr && f.attr !== "text") {
+          rec[f.name] = node.getAttribute(f.attr);
+        } else if (!f.attr && /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName)) {
+          rec[f.name] = node.value;
+        } else {
+          rec[f.name] = clean(node.textContent).slice(0, 500);
+        }
+      }
+      lines.push(JSON.stringify(rec));
+    }
+    return { lines, total: cands.length };
+  };
 
   P.evalExpression = (expr) => {
         try {
@@ -550,6 +640,6 @@
   P.constants = { AGLINK_ID_ATTR, INTERACTIVE_SELECTOR, KEY_SPECS, MOD_PROPS };
   // Version of this file. The daemon re-injects into an app window whose copy
   // is older (apptarget.go pageActionsVersion); bump both together.
-  P.__v = 4;
+  P.__v = 5;
   globalThis.__aglinkPage = P;
 })();

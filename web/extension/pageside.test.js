@@ -71,3 +71,56 @@ test("ref= does not guess when the role and name are ambiguous", () => {
   }
   assert.strictEqual(sb.__aglink.resolve("ref=" + id), null);
 });
+
+test("query_all on tables returns rows keyed by the header cells", () => {
+  const table = h("table", {},
+    h("thead", {}, h("tr", {}, h("th", {}, "이름"), h("th", {}, " 나이 "), h("th", {}, ""))),
+    h("tbody", {},
+      h("tr", {}, h("td", {}, "홍길동"), h("td", {}, "30"), h("td", {}, "x")),
+      h("tr", {}, h("td", {}, "김철수"), h("td", {}, "41"))));
+  const sb = loadPage(table);
+  const r = sb.__aglinkPage.queryAll("table", [], 200);
+  assert.deepStrictEqual(Array.from(r.lines), [
+    JSON.stringify({ 이름: "홍길동", 나이: "30", c3: "x" }),
+    JSON.stringify({ 이름: "김철수", 나이: "41" }),
+  ]);
+  const capped = sb.__aglinkPage.queryAll("table", [], 1);
+  assert.strictEqual(capped.lines.length, 2);
+  assert.match(capped.lines[1], /stopped at 1 rows/);
+});
+
+test("a table without thead uses a first row of th, else c1, c2", () => {
+  const withTh = h("table", {}, h("tr", {}, h("th", {}, "A")), h("tr", {}, h("td", {}, "1")));
+  const plain = h("table", {}, h("tr", {}, h("td", {}, "x"), h("td", {}, "y")));
+  const sb = loadPage(withTh, plain);
+  const r = sb.__aglinkPage.queryAll("table", [], 200);
+  assert.deepStrictEqual(Array.from(r.lines), ["table 0:", '{"A":"1"}', "table 1:", '{"c1":"x","c2":"y"}']);
+});
+
+test("query_all still lists non-table matches as before", () => {
+  const sb = loadPage(h("a", { href: "/1" }, "First"));
+  const r = sb.__aglinkPage.queryAll("a", [], 200);
+  assert.ok(Array.isArray(r));
+  assert.strictEqual(r[0].text, "First");
+});
+
+test("extract reads named fields per element, in the caller's order", () => {
+  const card = (name, href, price) => h("div", { class: "card", "data-id": name },
+    h("h3", {}, " ", name, " "), href ? h("a", { href }, "more") : h("span", {}, "-"), h("span", { class: "price" }, price));
+  const sb = loadPage(card("사과", "/a", "1,000원"), card("배", null, "2,000원"), h("input", { class: "card", value: "v" }));
+  const fields = JSON.stringify({ name: "h3", url: "a@href", price: ".price", id: "@data-id", self: "" });
+  const r = sb.__aglinkPage.extract(".card", fields, 2);
+  assert.strictEqual(r.total, 3);
+  assert.deepStrictEqual(Array.from(r.lines), [
+    '{"name":"사과","url":"/a","price":"1,000원","id":"사과","self":"사과 more1,000원"}',
+    '{"name":"배","url":null,"price":"2,000원","id":"배","self":"배 -2,000원"}',
+  ]);
+  const input = sb.__aglinkPage.extract("input", JSON.stringify({ v: "" }), 5);
+  assert.deepStrictEqual(Array.from(input.lines), ['{"v":"v"}']);
+});
+
+test("extract rejects fields that are not a JSON object", () => {
+  const sb = loadPage(h("div", {}));
+  assert.match(sb.__aglinkPage.extract("div", "nope", 5).error, /JSON object/);
+  assert.match(sb.__aglinkPage.extract("div", "[1]", 5).error, /JSON object/);
+});

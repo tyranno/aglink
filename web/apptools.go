@@ -247,13 +247,32 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 				attrs = append(attrs, a)
 			}
 		}
+		max := intp(params, "max", defaultQueryMax)
+		if fields := str(params, "fields"); fields != "" {
+			var r extractResult
+			if err := callInto(ctx, p, "extract", []any{sel, fields, max}, &r); err != nil {
+				return "", err
+			}
+			return r.format(sel)
+		}
+		raw, err := p.CallPage(ctx, "queryAll", []any{sel, attrs, max})
+		if err != nil {
+			return "", err
+		}
+		// A selector matching only tables comes back as JSON rows.
+		var tables struct {
+			Lines []string `json:"lines"`
+		}
+		if json.Unmarshal(raw, &tables) == nil && tables.Lines != nil {
+			return strings.Join(tables.Lines, "\n"), nil
+		}
 		var els []struct {
 			Tag   string     `json:"tag"`
 			Text  string     `json:"text"`
 			Attrs [][]string `json:"attrs"`
 		}
-		if err := callInto(ctx, p, "queryAll", []any{sel, attrs, intp(params, "max", defaultQueryMax)}, &els); err != nil {
-			return "", err
+		if err := json.Unmarshal(raw, &els); err != nil {
+			return "", fmt.Errorf("query_all: unexpected result: %w", err)
 		}
 		if len(els) == 0 {
 			return fmt.Sprintf("(no elements matched selector: %s)", sel), nil
@@ -594,6 +613,28 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		return "", fmt.Errorf("not supported for app profiles: %s", method)
 	}
 	return "", fmt.Errorf("unknown method: %s", method)
+}
+
+// extractResult is page-actions.js P.extract's result; format mirrors
+// background.js formatExtract.
+type extractResult struct {
+	Lines []string `json:"lines"`
+	Total int      `json:"total"`
+	Error string   `json:"error"`
+}
+
+func (r extractResult) format(sel string) (string, error) {
+	if r.Error != "" {
+		return "", errors.New(r.Error)
+	}
+	if len(r.Lines) == 0 {
+		return fmt.Sprintf("(no elements matched selector: %s)", sel), nil
+	}
+	out := strings.Join(r.Lines, "\n")
+	if r.Total > len(r.Lines) {
+		out += fmt.Sprintf("\n… [%d more matched — raise max]", r.Total-len(r.Lines))
+	}
+	return out, nil
 }
 
 // waitLoaded polls until the window's document is complete (or the load

@@ -128,6 +128,11 @@ func (v *VoiceService) MeetingList() (string, error) {
 		Bytes   int64  `json:"bytes"`
 		Preview string `json:"preview"`
 		Live    bool   `json:"live"`
+		// From the AI's write-up next to it (" 정리.md"), when there is one.
+		Title    string `json:"title"`
+		Category string `json:"category"`
+		Gist     string `json:"gist"`
+		Summary  string `json:"summary"`
 	}
 	out := []item{}
 	for _, e := range entries {
@@ -160,6 +165,10 @@ func (v *VoiceService) MeetingList() (string, error) {
 				}
 				it.Preview = string(prev)
 			}
+		}
+		if b, err := os.ReadFile(meetingSummaryPath(p)); err == nil {
+			it.Summary = meetingSummaryPath(p)
+			it.Title, it.Category, it.Gist = parseMeetingSummary(string(b))
 		}
 		out = append(out, it)
 	}
@@ -213,5 +222,50 @@ func (v *VoiceService) MeetingDelete(path string) error {
 	if live {
 		return errors.New("지금 듣고 있는 회의는 지울 수 없어요")
 	}
-	return os.Remove(p)
+	if err := os.Remove(p); err != nil {
+		return err
+	}
+	_ = os.Remove(meetingSummaryPath(p))
+	return nil
+}
+
+// meetingSummaryPath is where the AI's write-up of the meeting txtPath goes.
+func meetingSummaryPath(txtPath string) string {
+	return strings.TrimSuffix(txtPath, filepath.Ext(txtPath)) + " 정리.md"
+}
+
+// parseMeetingSummary reads the title ("# …"), the category ("분류: …") and
+// the first line under the summary heading from a meeting write-up.
+func parseMeetingSummary(md string) (title, category, gist string) {
+	inSummary := false
+	for _, ln := range strings.Split(md, "\n") {
+		ln = strings.TrimSpace(ln)
+		plain := strings.ReplaceAll(ln, "*", "")
+		switch {
+		case title == "" && strings.HasPrefix(ln, "# "):
+			title = strings.TrimSpace(strings.TrimPrefix(ln, "# "))
+		case category == "" && strings.HasPrefix(plain, "분류:"):
+			category = strings.TrimSpace(strings.TrimPrefix(plain, "분류:"))
+		case strings.HasPrefix(ln, "## "):
+			inSummary = strings.Contains(ln, "요약")
+		case inSummary && gist == "" && ln != "":
+			gist = strings.TrimSpace(strings.TrimLeft(plain, "-0123456789. "))
+		}
+	}
+	return
+}
+
+// MeetingSaveSummary writes the AI's write-up of the meeting txtPath next to
+// it and returns the title found in it.
+func (v *VoiceService) MeetingSaveSummary(txtPath, md string) (string, error) {
+	p, err := meetingFile(txtPath)
+	if err != nil {
+		return "", err
+	}
+	md = strings.TrimSpace(md)
+	if err := os.WriteFile(meetingSummaryPath(p), []byte(md+"\n"), 0o644); err != nil {
+		return "", err
+	}
+	title, _, _ := parseMeetingSummary(md)
+	return title, nil
 }

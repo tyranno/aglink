@@ -81,3 +81,31 @@ func TestMeeting_ListReadDelete(t *testing.T) {
 		t.Fatalf("after delete = %s", out)
 	}
 }
+
+func TestMeeting_SummaryTitle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	v := &VoiceService{}
+	path, _ := v.MeetingStart()
+	_ = v.MeetingNote(1, "장비 납기 이야기")
+	_, _ = v.MeetingStop()
+	md := "# 장비 납기 일정 조율\r\n**분류:** 업무 회의\r\n\r\n## 3줄 요약\r\n- 납기를 2주 미루기로 함\r\n- 둘째\r\n\r\n## 결정 사항\r\n- 없음\r\n"
+	title, err := v.MeetingSaveSummary(path, md)
+	if err != nil || title != "장비 납기 일정 조율" {
+		t.Fatalf("save = %q, %v", title, err)
+	}
+	out, _ := v.MeetingList()
+	var list []struct{ Title, Category, Gist, Summary string }
+	_ = json.Unmarshal([]byte(out), &list)
+	if len(list) != 1 || list[0].Title != "장비 납기 일정 조율" || list[0].Category != "업무 회의" || list[0].Gist != "납기를 2주 미루기로 함" || list[0].Summary == "" {
+		t.Fatalf("list = %s", out)
+	}
+	if _, err := v.MeetingSaveSummary(home+"/x.txt", md); err == nil {
+		t.Fatal("saving outside the meetings folder should fail")
+	}
+	_ = v.MeetingDelete(path)
+	if _, err := os.Stat(list[0].Summary); !os.IsNotExist(err) {
+		t.Fatal("the write-up should go with the meeting")
+	}
+}

@@ -264,6 +264,23 @@ export function meetingAdvicePrompt(text) {
   return `[회의 조언] 아래는 지금 자리에서 받아 적은, 아직 끝나지 않은 대화예요. 지금까지 나온 이야기를 보고 한국어로 조언해 주세요 — 결론 먼저, 필요하면 이유를 한두 마디만, 도구는 쓰지 말고 말로 읽을 답만 주세요.\n\n---\n${text}`;
 }
 
+// MEETING_CATEGORIES are the kinds a meeting write-up picks one from, so the
+// meeting list can be sorted by them.
+export const MEETING_CATEGORIES = ["업무 회의", "기술 검토", "일정·계획", "고객·영업", "인사·면담", "기타"];
+
+// meetingSummaryPrompt is the one AI turn that writes up a finished meeting:
+// a title from what it was about, a category, a summary, decisions and to-dos.
+// meeting.go reads the title and category back from the first lines.
+export function meetingSummaryPrompt(name, text) {
+  return `[회의 정리] 아래는 회의(${name})에서 받아 적은 글이에요 (음성 인식이라 잘못 들은 말이 섞여 있을 수 있어요). 도구는 쓰지 말고 아래 형식의 한국어 마크다운만 답해 주세요.
+첫 줄: "# 제목" — 무슨 내용의 회의였는지 알 수 있는 20자 안팎의 제목
+둘째 줄: "분류: " 뒤에 ${MEETING_CATEGORIES.join(" / ")} 중 하나
+그다음: ## 3줄 요약 / ## 주요 내용 (안건별로 짧게) / ## 결정 사항 / ## 할 일 (담당·기한이 나오면 함께). 없는 항목은 "없음".
+
+---
+${text}`;
+}
+
 // briefingPrompt is the morning briefing's one AI turn, kept short.
 export function briefingPrompt(now, region, schedule) {
   const date = now.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" });

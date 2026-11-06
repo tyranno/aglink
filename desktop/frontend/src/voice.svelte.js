@@ -32,7 +32,7 @@ import {
 } from "./paneStore.svelte.js";
 import { alarms, parseAlarm, addAlarm, removeAlarm, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
 import { describeCron } from "./schedule.js";
-import { parsePc, parseUsage, usageText, parseDaily, dailyDue, dayKey, clockLabel, parseMemo, MAX_MEMO_CMD_CHARS, parseTapeSummary, tapeSummaryPrompt, briefingPrompt, meetingAdvicePrompt } from "./assist.js";
+import { parsePc, parseUsage, usageText, parseDaily, dailyDue, dayKey, clockLabel, parseMemo, MAX_MEMO_CMD_CHARS, parseTapeSummary, tapeSummaryPrompt, briefingPrompt, meetingAdvicePrompt, meetingSummaryPrompt } from "./assist.js";
 
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
 const BARGE_STORAGE_KEY = "aglink.voice.barge"; // "0": take turns, the mic waits for the reading
@@ -186,6 +186,8 @@ export const voice = $state({
   meeting: false, // "지금부터 듣고 있어": listens to whoever is around, kept in memory only
   meetingStartedAt: 0,
   meetingClock: "", // "03:12", shown while meeting mode is on
+  meetingWriting: "", // the meeting file the AI is writing up now
+  meetingSavedAt: 0, // a write-up was saved: the meeting list reloads
   done: null, // title of the chat whose work just finished, shown for a while
   doneAt: 0,
   vscode: null, // {folder, title}: what is said goes to Claude Code in that VS Code window
@@ -1723,9 +1725,9 @@ function assistPane(paneId) {
 
 // sendTurn sends one AI turn from paneId as if typed, leaving what was in the
 // composer as it was. read: the answer is read out even outside conversation
-// mode; saveTo: it is saved as that recording's summary. "" when sent, else
-// why not.
-async function sendTurn(paneId, prompt, { read = false, saveTo = "" } = {}) {
+// mode; saveTo: it is saved as that recording's (kind "meeting": meeting's)
+// write-up; quiet: the answer is not read out. "" when sent, else why not.
+async function sendTurn(paneId, prompt, { read = false, saveTo = "", kind = "tape", quiet = false } = {}) {
   const p = pane(paneId);
   if (!p?.target) return "열린 대화가 없어요";
   if (!chat.connected) return "aglink 에 연결되어 있지 않아요";
@@ -1734,7 +1736,7 @@ async function sendTurn(paneId, prompt, { read = false, saveTo = "" } = {}) {
   if (p.attachments.length) return "입력창에 첨부한 파일이 있어요";
   const kept = p.composerText;
   if (read) speakNext.add(key);
-  if (saveTo) replySaves.set(key, { path: saveTo, text: "" });
+  if (saveTo) replySaves.set(key, { path: saveTo, text: "", kind, quiet });
   setPaneComposerValue(paneId, prompt);
   await sendFromPane(paneId);
   if (kept.trim()) setPaneComposerValue(paneId, kept);
@@ -1747,6 +1749,10 @@ function saveTurnReply(key) {
   const save = replySaves.get(key);
   if (!save) return;
   replySaves.delete(key);
+  if (save.kind === "meeting") {
+    saveMeetingWriteUp(save);
+    return;
+  }
   if (!save.text) return;
   VoiceService.SaveTapeSummary(save.path, save.text)
     .then((p) => {
@@ -2968,6 +2974,7 @@ setAssistantTextListener((key, text) => {
   if (STATUS_LINE_RE.test(text)) return;
   const save = replySaves.get(key);
   if (save) save.text = text; // the last one is the answer
+  if (save?.quiet) return; // a meeting write-up is saved, not read out
   // A remembered conversation counts before it has resumed after a restart,
   // so a reply that lands in that gap is still read out.
   const convId = voice.convPaneId || savedConversationPane();
@@ -3759,7 +3766,8 @@ export async function stopMeeting(spoken = true, waitNotes = true) {
   } catch (err) {
     vlog(`meeting stop failed: ${err?.message || err}`);
   }
-  vlog(`meeting mode end ${res.path || "?"} (${meetingBuf.length} pieces heard)`);
+  const heard = meetingBuf.length;
+  vlog(`meeting mode end ${res.path || "?"} (${heard} pieces heard)`);
   meetingBuf = []; // the advice buffer only; the text file written along the way stays on disk
   // Back to how it was: the conversation that was on, or listening always.
   const back = meetingResume && pane(meetingResume)?.target ? meetingResume : voice.listenMode === "always" ? wakePane() : null;
@@ -3769,11 +3777,89 @@ export async function stopMeeting(spoken = true, waitNotes = true) {
     convActiveAt = Date.now();
     saveConversation(back);
   }
-  if (spoken) void speak("회의 모드를 끝냈어요. 들은 내용은 문서 폴더의 aglink 회의에 저장해 두었어요.", "full");
+  // Two pieces or more: worth a title and a write-up.
+  const writeUp = !!res.path && heard >= MEETING_WRITEUP_MIN_PIECES;
+  if (writeUp) void summarizeMeeting(res.path, { auto: true });
+  if (spoken) void speak(`회의 모드를 끝냈어요. 들은 내용은 문서 폴더의 aglink 회의에 저장해 두었어요.${writeUp ? " 내용을 정리해서 제목을 붙여 둘게요." : ""}`, "full");
   if (back) resumeListening();
 }
 
 Events.On("tray:meeting", () => void (voice.meeting ? stopMeeting() : startMeeting()));
+
+// ---- meeting write-up ----
+//
+// When a meeting ends, the AI reads what was written down and answers with a
+// title for what the meeting was about, a category, a summary, decisions and
+// to-dos; that is saved next to it as "회의 … 정리.md" (meeting.go) and the
+// meeting list shows the title. The turn goes to a conversation like
+// "방금 녹음 정리해 줘" does, but the answer is not read out. A busy
+// conversation is retried for a while; the 회의 tab's "정리하기" does it by hand.
+
+const MEETING_WRITEUP_MIN_PIECES = 2;
+const MEETING_WRITEUP_MAX_CHARS = 30000; // longer talk keeps its start and end
+const MEETING_WRITEUP_RETRY_MS = 30000;
+const MEETING_WRITEUP_RETRIES = 20;
+
+function trimMiddleText(text, max) {
+  if (text.length <= max) return text;
+  const half = Math.floor(max / 2);
+  return `${text.slice(0, half)}\n…(중간 생략)…\n${text.slice(-half)}`;
+}
+
+// summarizeMeeting asks for the write-up of the meeting file path. auto: it
+// was the meeting just ended; then a busy conversation is tried again later
+// and nothing is said unless it goes wrong for good.
+export async function summarizeMeeting(path, { auto = false, tries = 0 } = {}) {
+  if (voice.meetingWriting && voice.meetingWriting !== path) {
+    if (!auto) flash("다른 회의를 정리하는 중이에요");
+    if (auto && tries < MEETING_WRITEUP_RETRIES) setTimeout(() => void summarizeMeeting(path, { auto, tries: tries + 1 }), MEETING_WRITEUP_RETRY_MS);
+    return;
+  }
+  let text = "";
+  try {
+    text = String(await VoiceService.MeetingRead(path));
+  } catch (err) {
+    vlog(`meeting read failed: ${err?.message || err}`);
+    return;
+  }
+  const body = text.replace(/^회의 [^\n]*\n/, "").trim();
+  if (!body) {
+    if (!auto) void speak("그 회의에는 받아 적은 말이 없어요.");
+    return;
+  }
+  const name = path.split(/[/\\]/).pop().replace(/\.txt$/i, "");
+  const target = assistPane(null);
+  const why = target ? await sendTurn(target, meetingSummaryPrompt(name, trimMiddleText(body, MEETING_WRITEUP_MAX_CHARS)), { saveTo: path, kind: "meeting", quiet: true }) : "열린 대화가 없어요";
+  if (why) {
+    vlog(`meeting write-up not sent (${why}) ${name}`);
+    if (auto && tries < MEETING_WRITEUP_RETRIES) {
+      setTimeout(() => void summarizeMeeting(path, { auto, tries: tries + 1 }), MEETING_WRITEUP_RETRY_MS);
+      return;
+    }
+    flash(`회의를 정리하지 못했어요 — ${why}`);
+    return;
+  }
+  voice.meetingWriting = path;
+  vlog(`meeting write-up asked ${name} (${body.length} chars)`);
+  if (!auto) flash("📝 회의를 정리하고 있어요");
+}
+
+// saveMeetingWriteUp saves the finished write-up turn next to its meeting.
+function saveMeetingWriteUp(save) {
+  if (voice.meetingWriting === save.path) voice.meetingWriting = "";
+  if (!save.text.trim()) {
+    flash("회의 정리 답이 비어 있어요");
+    return;
+  }
+  VoiceService.MeetingSaveSummary(save.path, save.text)
+    .then((title) => {
+      vlog(`meeting write-up saved ${quote(title || "?")}`);
+      voice.meetingSavedAt = Date.now();
+      flash(`📝 회의 정리: ${title || "저장했어요"}`);
+      if (title && !voice.meeting && !voice.taping) void speak(`회의를 ${title}, 으로 정리해 두었어요.`, "full");
+    })
+    .catch((err) => vlog(`meeting write-up save failed: ${err?.message || err}`));
+}
 
 export function openMeetingFolder() {
   return VoiceService.OpenMeetingFolder().catch((err) => vlog(`meeting folder failed: ${err?.message || err}`));

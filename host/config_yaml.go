@@ -137,6 +137,10 @@ type yamlConfig struct {
 		QuietHours string `yaml:"quiet_hours,omitempty"`
 		File       string `yaml:"file,omitempty"`
 	} `yaml:"heartbeat,omitempty"`
+	// Voice: speech-to-text for Telegram voice notes (voice.go).
+	Voice struct {
+		WhisperURL string `yaml:"whisper_url,omitempty"`
+	} `yaml:"voice,omitempty"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -267,6 +271,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.HeartbeatEvery = strings.TrimSpace(y.Heartbeat.Every)
 	c.HeartbeatQuietHours = strings.TrimSpace(y.Heartbeat.QuietHours)
 	c.HeartbeatFile = strings.TrimSpace(y.Heartbeat.File)
+	c.VoiceWhisperURL = strings.TrimSpace(y.Voice.WhisperURL)
 	return c
 }
 
@@ -350,6 +355,7 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Heartbeat.Every = c.HeartbeatEvery
 	y.Heartbeat.QuietHours = c.HeartbeatQuietHours
 	y.Heartbeat.File = c.HeartbeatFile
+	y.Voice.WhisperURL = c.VoiceWhisperURL
 	return y
 }
 

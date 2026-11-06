@@ -219,6 +219,30 @@ heartbeat:
 aglink recall 배포 nanopi     셸에서 (워커도 이 명령을 안내받아 직접 쓴다)
 ```
 
+### 텔레그램 음성 메시지
+
+음성 메시지(또는 10분 이하 오디오 파일)를 보내면 whisper 로 받아 적어 그 글을 내
+메시지로 넘기고, 무엇을 알아들었는지 먼저 짧게 돌려준다(`🎤 들은 말: …`). 원본
+파일 경로도 함께 넘어간다.
+
+필요한 것:
+
+- **whisper.cpp 서버** — `/inference` 를 받는 서버 주소를 `config.yaml` 의
+  `voice.whisper_url` 이나 환경변수 `AGLINK_WHISPER_URL` 로 준다(설정 파일이 우선).
+  GPU 서버를 새로 세우려면 [`whisper-server-linux/`](../whisper-server-linux/README.md).
+  데스크톱 앱이 PC 안에서 띄우는 whisper 는 주소가 매번 바뀌어 여기서 쓸 수 없다.
+- **ffmpeg (권장)** — 텔레그램 음성은 OGG/Opus 다. `ffmpeg` 가 PATH 에 있으면
+  16 kHz WAV 로 바꿔 보내므로 어떤 whisper 서버든 된다. 없으면 OGG 를 그대로 보내는데,
+  이때는 서버를 `--convert` 옵션(서버 쪽에 ffmpeg 필요)으로 띄워야 한다.
+
+```yaml
+voice:
+  whisper_url: http://10.0.0.5:8178
+```
+
+서버가 없거나 응답이 없으면, 또는 말소리를 못 알아들으면 예전처럼 파일 경로만
+넘어간다. 사용자에게 오류를 보내지 않고 로그에만 남긴다.
+
 
 ---
 

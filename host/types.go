@@ -133,6 +133,10 @@ type Config struct {
 	HeartbeatEvery      string // "30m", "2h" — "" = 30m
 	HeartbeatQuietHours string // "23:00-07:00"; "" = that default, "off" = none
 	HeartbeatFile       string // checklist path; "" = <data dir>/HEARTBEAT.md
+
+	// VoiceWhisperURL is the whisper.cpp server Telegram voice notes are
+	// transcribed with (voice.go); "" = AGLINK_WHISPER_URL, else none.
+	VoiceWhisperURL string
 }
 
 // ConversationTurn represents one exchange in a conversation.

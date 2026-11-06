@@ -130,6 +130,13 @@ type yamlConfig struct {
 		Tools      []string `yaml:"tools,omitempty"`
 		TimeoutSec int      `yaml:"timeout_sec,omitempty"`
 	} `yaml:"approvals,omitempty"`
+	// Heartbeat: periodic check-in over a checklist file (heartbeat.go).
+	Heartbeat struct {
+		Enabled    bool   `yaml:"enabled"`
+		Every      string `yaml:"every,omitempty"`
+		QuietHours string `yaml:"quiet_hours,omitempty"`
+		File       string `yaml:"file,omitempty"`
+	} `yaml:"heartbeat,omitempty"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -256,6 +263,10 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.SSHHosts = y.SSH.Hosts
 	c.ApprovalTools = y.Approvals.Tools
 	c.ApprovalTimeoutSec = y.Approvals.TimeoutSec
+	c.HeartbeatEnabled = y.Heartbeat.Enabled
+	c.HeartbeatEvery = strings.TrimSpace(y.Heartbeat.Every)
+	c.HeartbeatQuietHours = strings.TrimSpace(y.Heartbeat.QuietHours)
+	c.HeartbeatFile = strings.TrimSpace(y.Heartbeat.File)
 	return c
 }
 
@@ -335,6 +346,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.SSH.Hosts = c.SSHHosts
 	y.Approvals.Tools = c.ApprovalTools
 	y.Approvals.TimeoutSec = c.ApprovalTimeoutSec
+	y.Heartbeat.Enabled = c.HeartbeatEnabled
+	y.Heartbeat.Every = c.HeartbeatEvery
+	y.Heartbeat.QuietHours = c.HeartbeatQuietHours
+	y.Heartbeat.File = c.HeartbeatFile
 	return y
 }
 

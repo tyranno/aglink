@@ -37,6 +37,10 @@ type queuedMsg struct {
 	// merged is how many user messages this entry carries (>1 after
 	// mergeQueuedHead combined a backlog; 0/1 = a single message).
 	merged int
+	// heartbeat: text is the checklist and the turn is a check-in
+	// (Manager.RunHeartbeat); hbManual = started by !heartbeat run.
+	heartbeat bool
+	hbManual  bool
 }
 
 // conversation is where this message's queue/timeout/cancel notices belong: the
@@ -763,7 +767,9 @@ func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 		}
 	}()
 
-	if msg.isTask {
+	if msg.heartbeat {
+		b.manager.RunHeartbeat(ctx, msg.chatID, msg.text, msg.hbManual, b)
+	} else if msg.isTask {
 		b.manager.HandleScheduledTask(ctx, msg.chatID, msg.text, msg.project, b)
 	} else if msg.target != nil {
 		b.manager.HandleWebTarget(ctx, msg.chatID, msg.text, *msg.target, b)
@@ -860,6 +866,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleRemind(reply, chatID, text, fields)
 	case "!cron":
 		b.handleCron(reply, chatID, text, fields)
+	case "!heartbeat":
+		b.handleHeartbeat(reply, chatID, fields)
 	case "!history":
 		b.handleHistory(reply, chatID, fields)
 	case "!backend":
@@ -2783,6 +2791,12 @@ func helpText() string {
 !task pause|resume|cancel <id>              관리
 !task update <id> --cron|--prompt|--script|--depends-on <값>
 !task help                                  상세 도움말
+
+정기 점검 (알릴 것이 있을 때만 말합니다):
+!heartbeat                   상태 (점검 목록 파일 위치 포함)
+!heartbeat on [주기]|off      켜기/끄기 (기본 30분마다, 밤 23:00-07:00 은 쉼)
+!heartbeat interval <주기>    주기 변경 — 예: 30m, 1h
+!heartbeat run               지금 한 번 점검
 
 히스토리:
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회

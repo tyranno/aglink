@@ -367,6 +367,8 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		_, err := bot.runPlaybook(chatID, id)
 		return err // the scheduler logs it and tells the task's conversation
 	})
+	sched.SetHeartbeat(bot.fireHeartbeat)
+	ensureHeartbeatFromConfig(cfg, sched)
 	manager.SetScheduler(sched)
 	go sched.Run()
 

@@ -33,6 +33,7 @@ type Scheduler struct {
 	webSend     func(chatID int64, tgt Target, text string)
 	webDispatch func(chatID int64, tgt Target, text string)
 	runPlaybook func(chatID int64, playbookID string) error // tasks with a PlaybookID
+	heartbeat   func(chatID int64)                          // the taskKindHeartbeat task
 }
 
 // lateAfter: a one-shot reminder delivered later than this (the host was off,
@@ -78,6 +79,13 @@ func (s *Scheduler) SetPlaybookRun(f func(int64, string) error) {
 	s.mu.Unlock()
 }
 
+// SetHeartbeat wires how the heartbeat task runs when it fires (heartbeat.go).
+func (s *Scheduler) SetHeartbeat(f func(int64)) {
+	s.mu.Lock()
+	s.heartbeat = f
+	s.mu.Unlock()
+}
+
 // Load reads tasks.json; migrates schedule.json if tasks.json is absent.
 func (s *Scheduler) Load() error {
 	s.mu.Lock()
@@ -117,6 +125,11 @@ func (s *Scheduler) Run() {
 	var missed []missedRun
 	now := time.Now()
 	for _, t := range s.tasks {
+		// Already registered before Run (ensureHeartbeatFromConfig): a second
+		// entry would fire it twice.
+		if _, ok := s.cronEntries[t.ID]; ok {
+			continue
+		}
 		if t.Status == "pending" {
 			if m, ok := missedRepeat(t, now); ok {
 				missed = append(missed, m)
@@ -239,6 +252,18 @@ func (s *Scheduler) fire(taskID string) bool {
 		return false
 	}
 	t.LastFired = time.Now()
+	if t.Kind == taskKindHeartbeat {
+		chatID, hbFn := t.ChatID, s.heartbeat
+		_ = s.save()
+		s.mu.Unlock()
+		// Never falls through to dispatch: its Prompt is a label, not a job.
+		if hbFn != nil {
+			go hbFn(chatID)
+		} else {
+			log.Printf("[scheduler] heartbeat task %s fired but no heartbeat runner is wired — dropped", taskID)
+		}
+		return true
+	}
 	chatID, project, prompt, script, isTask := t.ChatID, t.Project, t.Prompt, t.Script, t.IsTask
 	var web *Target
 	if t.Target != nil && t.Target.IsWeb() && t.Target.ID != "" {
@@ -345,7 +370,8 @@ type missedRun struct {
 // while the host was not running. Missed runs are not replayed; the caller
 // sends a single notice instead.
 func missedRepeat(t *Task, now time.Time) (missedRun, bool) {
-	if t.CronExpr == "" {
+	// A check-in missed while the host was off is not worth a notice.
+	if t.CronExpr == "" || t.Kind == taskKindHeartbeat {
 		return missedRun{}, false
 	}
 	from := t.LastFired

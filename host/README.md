@@ -147,6 +147,7 @@ aglink_chat:
 | `!task add <주기> [task] <프롬프트>` | 반복 작업 등록 (cron) |
 | `!task list` | 작업 목록 |
 | `!task pause/resume/cancel <ID>` | 작업 제어 |
+| `!heartbeat [on [주기]\|off\|interval <주기>\|run]` | 정기 점검 — 알릴 것이 있을 때만 말함 |
 | `!history [프로젝트] [날짜]` | 대화 히스토리 조회 |
 | `!backend [claude\|codex]` | AI 백엔드 전환 |
 | `!update` | 새 버전 빌드 & 자동 재시작 (Windows) |
@@ -163,6 +164,41 @@ aglink_chat:
 !task add 0 9 * * 1-5 task 평일 오전 스탠드업 준비
 !task add @every 2h 서버 상태 확인해줘
 !task add 30m --script ~/scripts/check.sh task 체크 결과 분석
+```
+
+### 정기 점검 (heartbeat)
+
+정해 둔 주기마다 봇이 점검 목록을 훑어보고, **알릴 것이 있을 때만** 말을 건다.
+알릴 것이 없으면 워커가 `HEARTBEAT_OK` 한 줄로 답하고, 사용자에게는 아무것도
+가지 않는다.
+
+점검 목록은 `~/.aglink/HEARTBEAT.md` 에 평범한 글로 적는다. 파일이 없거나
+제목(`#`)·주석만 있으면 **모델을 부르지 않는다** — 비용이 들지 않는다.
+
+```markdown
+# 점검 목록
+- 받은 메일 중 오늘 답해야 하는 것이 있는지
+- 내일 아침 일정이 겹치지 않는지
+```
+
+```
+!heartbeat              상태 (켜짐/꺼짐, 다음 점검, 점검 목록 위치, 마지막 결과)
+!heartbeat on [주기]     켜기 — 기본 30분마다 (5분 이상)
+!heartbeat off          끄기
+!heartbeat interval 1h  주기 바꾸기
+!heartbeat run          지금 한 번 (조용한 시간에도, 알릴 것이 없어도 알려 줌)
+```
+
+켜고 끈 상태와 주기는 `tasks.json` 에 예약 작업(`💓 정기 점검`)으로 저장되어 재시작
+뒤에도 유지된다. 모든 점검은 하나의 전용 세션을 이어 쓰고(24회마다 새로 시작), 결과는
+`~/.aglink/heartbeat.json` 에 남는다. `config.yaml` 로 처음부터 켜 둘 수도 있다:
+
+```yaml
+heartbeat:
+  enabled: true              # 첫 기동 때 작업을 만든다. 이후엔 !heartbeat 가 우선
+  every: 30m
+  quiet_hours: "23:00-07:00" # 이 시간엔 건너뜀. 기본값이 이것, "off" 면 없음
+  # file: ~/notes/HEARTBEAT.md   # 기본 ~/.aglink/HEARTBEAT.md
 ```
 
 

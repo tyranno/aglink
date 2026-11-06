@@ -81,10 +81,18 @@
   let settingsTab = $state("settings");
   // 알려진 탭 값만 복원한다 — 저장된 값이 낯설면 "chat"으로 떨어뜨려야, 렌더링
   // 분기의 마지막 else(MCP)가 알 수 없는 값을 떠안는 일이 없다.
-  const SIDEBAR_TABS = ["chat", "playbook", "reservation", "meeting", "mcp", "usage"];
+  // 탭은 아이콘만 보이고 이름은 툴팁으로 — 글자로 두면 탭이 늘 때 두 줄로 접힌다.
+  const SIDEBAR_TABS = [
+    { id: "chat", icon: "💬", label: "대화" },
+    { id: "playbook", icon: "📋", label: "업무 관리" },
+    { id: "reservation", icon: "⏰", label: "예약" },
+    { id: "meeting", icon: "🎤", label: "회의" },
+    { id: "mcp", icon: "🧩", label: "MCP" },
+    { id: "usage", icon: "📊", label: "사용량" },
+  ];
   let sidebarTab = $state(
-    SIDEBAR_TABS.includes(sidebarPrefs.tab) ? sidebarPrefs.tab : "chat",
-  ); // 대화 목록 / 업무 관리 / 예약 / 회의 / MCP
+    SIDEBAR_TABS.some((t) => t.id === sidebarPrefs.tab) ? sidebarPrefs.tab : "chat",
+  ); // 대화 목록 / 업무 관리 / 예약 / 회의 / MCP / 사용량
   let sidebarCollapsed = $state(sidebarPrefs.collapsed === true);
   $effect(() => {
     // Re-runs whenever either changes → persists the current sidebar state.
@@ -658,30 +666,14 @@
                 title="사이드바 숨기기"
                 aria-label="사이드바 숨기기"
               >«</button>
-              <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "chat" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
-                onclick={() => (sidebarTab = "chat")}
-              >대화</button>
-              <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "playbook" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
-                onclick={() => (sidebarTab = "playbook")}
-              >업무 관리</button>
-              <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "reservation" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
-                onclick={() => (sidebarTab = "reservation")}
-              >예약</button>
-              <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "meeting" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
-                onclick={() => (sidebarTab = "meeting")}
-              >회의</button>
-              <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "mcp" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
-                onclick={() => (sidebarTab = "mcp")}
-              >MCP</button>
-              <button
-                class={`h-full flex-1 border-b-2 text-[13px] font-semibold transition ${sidebarTab === "usage" ? "border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900"}`}
-                onclick={() => (sidebarTab = "usage")}
-              >사용량</button>
+              {#each SIDEBAR_TABS as t (t.id)}
+                <button
+                  class={`h-full flex-1 border-b-2 text-[17px] leading-none transition ${sidebarTab === t.id ? "border-blue-600 bg-white/80 dark:border-blue-400 dark:bg-slate-700/70" : "border-transparent opacity-75 hover:bg-slate-200/70 hover:opacity-100 dark:hover:bg-slate-700/50"}`}
+                  onclick={() => (sidebarTab = t.id)}
+                  title={t.label}
+                  aria-label={t.label}
+                >{t.icon}</button>
+              {/each}
             </div>
             {#if sidebarTab === "chat"}
             <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 dark:border-slate-700 px-3">

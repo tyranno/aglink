@@ -208,10 +208,11 @@ var commands = []command{
 	},
 	{
 		name:  "screenshot",
-		desc:  "Capture the visible viewport of a Chrome tab or app window as a PNG image, so it can be looked at directly instead of read as text. Prefer get_page_text for reading content — use this only when the visual layout itself matters (e.g. verifying a rendered page, a chart, a CAPTCHA). If 'tabId' is given and it isn't the active tab of its window, it is switched to first (mirrors aglink-screen's focus-before-capture). If omitted, the active tab of the focused window is used.",
+		desc:  "Capture the visible viewport of a Chrome tab or app window as a PNG image, so it can be looked at directly instead of read as text. Prefer get_page_text for reading content — use this only when the visual layout itself matters (e.g. verifying a rendered page, a chart, a CAPTCHA). If 'tabId' is given and it isn't the active tab of its window, it is switched to first (mirrors aglink-screen's focus-before-capture). If omitted, the active tab of the focused window is used. Give 'selector' to capture just one element (scrolled into view; the part inside the viewport) — a much smaller image than the whole viewport.",
 		image: true,
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
+			{name: "selector", typ: argString, desc: "Optional CSS selector or semantic locator (role=/text=/ref=…) of one element to capture instead of the viewport."},
 		},
 	},
 	{

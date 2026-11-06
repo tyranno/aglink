@@ -384,3 +384,27 @@ func TestAppWaitForElementGoneAndIdle(t *testing.T) {
 		t.Fatalf("no condition: %+v", r)
 	}
 }
+
+func TestAppElementScreenshot(t *testing.T) {
+	f := &fakePage{
+		results:    map[string]string{"rectOf": `{"found":true,"x":-10,"y":100,"width":200,"height":50,"vw":800,"vh":600,"sx":0,"sy":300}`},
+		rawResults: map[string]string{"Page.captureScreenshot": `{"data":"ELEMENT"}`},
+	}
+	if r := run(t, f, "screenshot", map[string]any{"selector": "#chart"}); r.Text != "ELEMENT" {
+		t.Fatalf("element screenshot: %+v", r)
+	}
+	clip := f.rawParams["Page.captureScreenshot"].(map[string]any)["clip"].(map[string]any)
+	// Clipped to the viewport (x from 0, width 190), then moved to page coordinates.
+	if clip["x"] != 0.0 || clip["y"] != 400.0 || clip["width"] != 190.0 || clip["height"] != 50.0 {
+		t.Fatalf("clip: %v", clip)
+	}
+
+	f.results["rectOf"] = `{"found":false}`
+	if r := run(t, f, "screenshot", map[string]any{"selector": "#none"}); r.Error != "no element matched selector: #none" {
+		t.Fatalf("missing: %+v", r)
+	}
+	f.results["rectOf"] = `{"found":true,"x":0,"y":900,"width":10,"height":10,"vw":800,"vh":600}`
+	if r := run(t, f, "screenshot", map[string]any{"selector": "#below"}); !strings.Contains(r.Error, "outside the visible viewport") {
+		t.Fatalf("offscreen: %+v", r)
+	}
+}

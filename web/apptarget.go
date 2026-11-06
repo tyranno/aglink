@@ -213,7 +213,7 @@ func (a *appTarget) EvalResult(ctx context.Context, expr string) (*evalResult, e
 const needInjectMarker = "__aglinkNeedInject"
 
 // pageActionsVersion must equal P.__v in extension/page-actions.js.
-const pageActionsVersion = 5
+const pageActionsVersion = 6
 
 // CallPage runs globalThis.__aglinkPage[name](...args) in the page. The check
 // for the shared scripts is folded into the same round trip, so an already

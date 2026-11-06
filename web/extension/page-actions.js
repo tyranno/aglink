@@ -206,6 +206,20 @@
         return { found: true, srcTag: src.tagName.toLowerCase(), dstTag: dst.tagName.toLowerCase() };
       };
 
+  // rectOf scrolls an element into view and returns its box in CSS px
+  // relative to the viewport, plus the viewport size and scroll offset, for an
+  // element screenshot.
+  P.rectOf = (sel) => {
+    const el = globalThis.__aglink ? globalThis.__aglink.resolve(sel) : document.querySelector(sel);
+    if (!el) return { found: false };
+    el.scrollIntoView({ block: "center", inline: "center" });
+    const r = el.getBoundingClientRect();
+    return {
+      found: true, x: r.left, y: r.top, width: r.width, height: r.height,
+      vw: window.innerWidth, vh: window.innerHeight, sx: window.scrollX || 0, sy: window.scrollY || 0,
+    };
+  };
+
   P.getHtml = (sel) => {
         let el;
         if (sel) {
@@ -640,6 +654,6 @@
   P.constants = { AGLINK_ID_ATTR, INTERACTIVE_SELECTOR, KEY_SPECS, MOD_PROPS };
   // Version of this file. The daemon re-injects into an app window whose copy
   // is older (apptarget.go pageActionsVersion); bump both together.
-  P.__v = 5;
+  P.__v = 6;
   globalThis.__aglinkPage = P;
 })();

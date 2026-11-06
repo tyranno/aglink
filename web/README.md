@@ -46,7 +46,7 @@ One Go binary, three subcommands (mirrors `aglink-screen`):
 |---|---|
 | `aglink-web` / `aglink-web mcp` | stdio MCP server teleclaude spawns per worker (default). Thin forwarder. |
 | `aglink-web serve` | the persistent daemon the extension connects to. Auto-spawned by the bridge if not already up. |
-| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [button] [tabId]` / `list_elements [tabId] [max]` / `screenshot [tabId]` (base64 PNG in `text`) / `type <selector> <text> [tabId]` / `get_value <selector> [tabId]` / `key <combo> [tabId]` / `scroll [selector] [dx] [dy] [tabId]` / `select_option <selector> [value] [label] [tabId]` / `wait_for_element [selector] [tabId] [timeoutMs] [gone] [idleMs]` / `activate_tab <tabId>` / `get_console_logs [tabId] [max]` / `close_tab [tabId]`. |
+| `aglink-web cmd <sub>` | no-LLM fast-path; prints `{"text","error"}` JSON. `list_tabs` / `navigate <url> [tabId]` / `get_page_text [tabId] [maxChars]` / `click <selector> [button] [tabId]` / `list_elements [tabId] [max]` / `screenshot [tabId] [selector]` (base64 PNG in `text`; with a selector, just that element) / `type <selector> <text> [tabId]` / `get_value <selector> [tabId]` / `key <combo> [tabId]` / `scroll [selector] [dx] [dy] [tabId]` / `select_option <selector> [value] [label] [tabId]` / `wait_for_element [selector] [tabId] [timeoutMs] [gone] [idleMs]` / `activate_tab <tabId>` / `get_console_logs [tabId] [max]` / `close_tab [tabId]`. |
 
 ## Security
 
@@ -417,6 +417,14 @@ wait_for_element  selector="#list"  idleMs=500           ← 요소가 보인 �
   시간이 다 되면 아직 끝나지 않은 요청 주소를 알려 준다.
 - 확장을 업데이트하기 전에 열려 있던 탭은 추적이 없어 `reload the page` 로 실패한다 —
   새로고침하면 된다.
+
+## 요소 하나만 찍기 — `screenshot selector=…`
+
+`screenshot` 에 `selector`(CSS, `role=`/`text=`/`ref=eN` …)를 주면 그 요소를 화면
+가운데로 스크롤한 뒤 **그 요소의 상자만** 잘라 돌려준다. 차트·카드 하나를 볼 때
+화면 전체보다 이미지가 훨씬 작아 토큰이 덜 든다. 크롬은 `captureVisibleTab` 결과를
+확장에서 잘라 내고(`OffscreenCanvas`), 앱 창은 CDP `Page.captureScreenshot` 의
+`clip` 을 쓴다. 화면보다 큰 요소는 화면 안에 들어온 부분만 찍힌다.
 
 ## 구조화 추출 — `query_all` 의 `fields` 와 표
 

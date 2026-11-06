@@ -733,7 +733,9 @@ function waitTimeoutText(selector, gone, elOk, idleMs, net, timeoutMs) {
 // text-result payload — see protocol.go's doc comment on why this stays
 // text-based end to end). captureVisibleTab only captures the *active* tab of
 // a window, so a non-active tabId is switched to first (mirrors aglink-screen's
-// focus_window-before-capture behavior).
+// focus_window-before-capture behavior). With a selector the element is
+// scrolled into view and the capture is cropped to it (the part inside the
+// viewport) — a much smaller image than the whole viewport.
 async function screenshot(params) {
   let tabId = params.tabId;
   let windowId;
@@ -748,9 +750,43 @@ async function screenshot(params) {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!active) throw new Error("no active tab");
     windowId = active.windowId;
+    tabId = active.id;
+  }
+  let rect = null;
+  if (params.selector) {
+    await ensureHelpers(tabId);
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (name, args) => globalThis.__aglinkPage[name](...args),
+      args: ["rectOf", [params.selector]],
+    });
+    rect = results && results[0] && results[0].result;
+    if (!rect || !rect.found) throw new Error(`no element matched selector: ${params.selector}`);
+    if (!rect.width || !rect.height) throw new Error(`element matching ${params.selector} is not visible (zero size)`);
+    await new Promise((r) => setTimeout(r, 100)); // let the scroll paint
   }
   const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+  if (rect) return await cropPng(dataUrl, rect);
   return dataUrl.replace(/^data:image\/png;base64,/, "");
+}
+
+// cropPng cuts an element's box (CSS px, viewport-relative, from
+// page-actions.js P.rectOf) out of a captureVisibleTab data URL. The capture
+// is in device pixels, so the scale is its width over the viewport's.
+async function cropPng(dataUrl, r) {
+  const full = await createImageBitmap(await (await fetch(dataUrl)).blob());
+  const scale = full.width / r.vw;
+  const x = Math.max(0, Math.floor(r.x * scale));
+  const y = Math.max(0, Math.floor(r.y * scale));
+  const w = Math.min(full.width, Math.ceil((r.x + r.width) * scale)) - x;
+  const h = Math.min(full.height, Math.ceil((r.y + r.height) * scale)) - y;
+  if (w <= 0 || h <= 0) throw new Error("the element is outside the visible viewport");
+  const canvas = new OffscreenCanvas(w, h);
+  canvas.getContext("2d").drawImage(full, x, y, w, h, 0, 0, w, h);
+  const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
 }
 
 // typeText sets an input/textarea/contenteditable's value and fires input+change

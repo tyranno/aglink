@@ -753,6 +753,48 @@ test("waitForElement combines an element and network idle", async () => {
   );
 });
 
+test("screenshot with a selector crops the capture to the element", async () => {
+  const calls = [];
+  const sb = loadBackground(
+    makeChrome({
+      tabs: {
+        query: async () => [{ id: 3, active: true, windowId: 9 }],
+        captureVisibleTab: async () => "data:image/png;base64,FULL",
+      },
+      scripting: {
+        executeScript: async (opts) => {
+          calls.push(opts);
+          return [{ result: { found: true, x: 100, y: 50, width: 40, height: 1000, vw: 800, vh: 600 } }];
+        },
+      },
+    })
+  );
+  let drawn;
+  sb.fetch = async () => ({ blob: async () => "blob" });
+  sb.createImageBitmap = async () => ({ width: 1600, height: 1200 });
+  sb.OffscreenCanvas = class {
+    constructor(w, h) { this.size = [w, h]; }
+    getContext() { return { drawImage: (...a) => (drawn = a) }; }
+    async convertToBlob() { return { arrayBuffer: async () => new Uint8Array([104, 105]).buffer }; }
+  };
+  sb.btoa = (s) => Buffer.from(s, "binary").toString("base64");
+  sb.Uint8Array = Uint8Array;
+  sb.String = String;
+  assert.strictEqual(await sb.screenshot({ selector: "#chart" }), "aGk=");
+  // 2x device pixels; the box is cut off at the bottom of the viewport.
+  assert.deepStrictEqual(drawn.slice(1), [200, 100, 80, 1100, 0, 0, 80, 1100]);
+  const run = calls.find((c) => typeof c.func === "function");
+  assert.strictEqual(run.args[0], "rectOf");
+
+  const none = loadBackground(
+    makeChrome({
+      tabs: { query: async () => [{ id: 3, active: true, windowId: 9 }] },
+      scripting: { executeScript: async () => [{ result: { found: false } }] },
+    })
+  );
+  await assert.rejects(() => none.screenshot({ selector: "#x" }), /no element matched selector: #x/);
+});
+
 test("waitForElement requires a selector", async () => {
   const sb = loadBackground(makeChrome());
   await assert.rejects(() => sb.waitForElement({}), /wait_for_element requires 'selector'/);
@@ -833,7 +875,7 @@ test("page-actions.js defines every shared page function", () => {
   vm.runInContext(src, sb);
   const want = ["getPageText", "elementExists", "click", "doubleClick", "hover", "drag", "getHtml",
     "queryAll", "evalExpression", "getAttribute", "listElements", "waitForElement", "typeText",
-    "getValue", "keyCombo", "scroll", "selectOption", "snapshot", "extract"];
+    "getValue", "keyCombo", "scroll", "selectOption", "snapshot", "extract", "rectOf"];
   for (const n of want) assert.strictEqual(typeof sb.__aglinkPage[n], "function", n);
   assert.strictEqual(sb.__aglinkPage.constants.KEY_SPECS.f5.key, "F5", "F-key table must be complete");
 });

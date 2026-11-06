@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -124,7 +125,42 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		return fmt.Sprintf("ok: certificate errors are ignored in this window while aglink-web stays attached; reloaded — %s — %s", title, href), nil
 
 	case "screenshot":
-		return p.Screenshot(ctx)
+		if sel == "" {
+			return p.Screenshot(ctx)
+		}
+		// rectOf's box: found, x, y, width, height, vw, vh, sx, sy (CSS px).
+		var box map[string]any
+		if err := callInto(ctx, p, "rectOf", []any{sel}, &box); err != nil {
+			return "", err
+		}
+		if found, _ := box["found"].(bool); !found {
+			return "", notFound()
+		}
+		n := func(k string) float64 { v, _ := box[k].(float64); return v }
+		// Clip to the part inside the viewport, then to page coordinates,
+		// which is what Page.captureScreenshot's clip is in.
+		x0, y0 := math.Max(0, n("x")), math.Max(0, n("y"))
+		x1, y1 := math.Min(n("vw"), n("x")+n("width")), math.Min(n("vh"), n("y")+n("height"))
+		if n("width") <= 0 || n("height") <= 0 {
+			return "", fmt.Errorf("element matching %s is not visible (zero size)", sel)
+		}
+		if x1 <= x0 || y1 <= y0 {
+			return "", errors.New("the element is outside the visible viewport")
+		}
+		shot, err := p.Raw(ctx, "Page.captureScreenshot", map[string]any{
+			"format": "png",
+			"clip":   map[string]any{"x": x0 + n("sx"), "y": y0 + n("sy"), "width": x1 - x0, "height": y1 - y0, "scale": 1},
+		})
+		if err != nil {
+			return "", err
+		}
+		var img struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(shot, &img); err != nil || img.Data == "" {
+			return "", errors.New("screenshot: no image data")
+		}
+		return img.Data, nil
 
 	case "get_page_text":
 		var r struct {

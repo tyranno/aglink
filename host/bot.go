@@ -870,6 +870,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleHeartbeat(reply, chatID, fields)
 	case "!history":
 		b.handleHistory(reply, chatID, fields)
+	case "!recall":
+		b.handleRecall(reply, chatID, text)
 	case "!backend":
 		b.handleBackend(reply, chatID, fields)
 	case "!model":
@@ -2801,6 +2803,10 @@ func helpText() string {
 히스토리:
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
 !history list [프로젝트|all]          날짜 목록 (all = 전체 프로젝트)
+!recall <검색어>                      모든 대화의 메모·기록에서 찾기 (예: !recall 배포 nanopi)
+
+공유 기억: ~/.aglink/memory/USER.md 에 적힌 내 정보·취향은 모든 대화가 압니다.
+           "앞으로 존댓말로 해줘" 처럼 말하면 Claude가 직접 갱신합니다.
 
 !compact   지금까지의 텔레그램 대화 핵심을 이 대화 전용 메모리 파일(.aglink/memory/telegram.md)에 저장하고
            세션을 새로 시작 (컨텍스트가 길어져 느려졌을 때 사용)

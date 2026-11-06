@@ -113,8 +113,14 @@ func main() {
 			line += " " + buildTime
 		}
 		fmt.Println(line)
+	case "recall":
+		// Past-conversation search for a worker's shell (sharedmemory.go).
+		if err := runRecallCLI(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 	default:
-		fmt.Println("usage: aglink [run [config-path]] | setup [config-path] | setup telegram [config-path] | version")
+		fmt.Println("usage: aglink [run [config-path]] | setup [config-path] | setup telegram [config-path] | recall <words> | version")
 	}
 }
 

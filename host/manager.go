@@ -1461,6 +1461,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		}
 	}
 	globalMemory := readGlobalMemory()
+	// A fresh session also gets the shared user profile and how to search past
+	// conversations (sharedmemory.go); a resumed one already carries both.
+	freshGlobal := withUserProfile(globalMemory, readUserProfile())
+	turnGlobal := globalMemory
+	if !resume {
+		turnGlobal = freshGlobal
+	}
 	projectMemory := ""
 	if pPath != "" {
 		projectMemory = readProjectMemory(pPath, workConv.ID)
@@ -1470,8 +1477,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		projectMemory = readProjectMemory(workConv.WorkDir, workConv.ID)
 	}
 	memPath := conversationMemoryPath(pPath, workConv.ID)
-	prompt := buildContextPrompt(text, promptSummary, globalMemory, projectMemory, memPath, historyForPrompt)
+	prompt := buildContextPrompt(text, promptSummary, turnGlobal, projectMemory, memPath, historyForPrompt)
 	if !resume {
+		prompt += sharedMemoryReminder()
 		workConv.MemoryFlushSent = false
 	} else if sessionNearReset(backend, workConv) && !workConv.MemoryFlushSent {
 		prompt += memoryFlushReminder(memPath)
@@ -1549,7 +1557,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				recoverySummary = joinSummaries(parentSummary, sum)
 				summaryUsed = true
 			}
-			recoveryPrompt := buildContextPrompt(text, recoverySummary, globalMemory, projectMemory, memPath, recoveryHistory)
+			recoveryPrompt := buildContextPrompt(text, recoverySummary, freshGlobal, projectMemory, memPath, recoveryHistory) + sharedMemoryReminder()
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
@@ -1648,7 +1656,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			}
 			// Reactive context-overflow split: continue seamlessly in a new series
 			// (summary carried); keep it internal — logged below, not sent to the user.
-			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, memPath, nil)
+			retryPrompt := buildContextPrompt(text, overflowSummary, freshGlobal, projectMemory, memPath, nil) + sharedMemoryReminder()
 			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
 
 			// Restart the heartbeat for the retry turn. It runs under the same ctx, so

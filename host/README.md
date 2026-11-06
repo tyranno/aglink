@@ -149,6 +149,7 @@ aglink_chat:
 | `!task pause/resume/cancel <ID>` | 작업 제어 |
 | `!heartbeat [on [주기]\|off\|interval <주기>\|run]` | 정기 점검 — 알릴 것이 있을 때만 말함 |
 | `!history [프로젝트] [날짜]` | 대화 히스토리 조회 |
+| `!recall <검색어>` | 모든 대화의 메모·기록에서 찾기 |
 | `!backend [claude\|codex]` | AI 백엔드 전환 |
 | `!update` | 새 버전 빌드 & 자동 재시작 (Windows) |
 | `!help` | 전체 도움말 |
@@ -199,6 +200,23 @@ heartbeat:
   every: 30m
   quiet_hours: "23:00-07:00" # 이 시간엔 건너뜀. 기본값이 이것, "off" 면 없음
   # file: ~/notes/HEARTBEAT.md   # 기본 ~/.aglink/HEARTBEAT.md
+```
+
+### 대화끼리 나누는 기억
+
+대화마다 메모리 파일(`<프로젝트>/.aglink/memory/<대화>.md`)이 따로 있지만, 나에 대한
+것은 모든 대화가 함께 알아야 한다.
+
+- **사용자 프로필** `~/.aglink/memory/USER.md` — 호칭, 말투, 쓰는 환경처럼 오래
+  가는 정보. 새 세션이 시작될 때마다 내용(2000자까지)과 함께 "사용자가 이런 걸
+  말하면 여기 반영하라"는 짧은 안내가 들어간다. 이어지는 턴에는 다시 넣지 않는다.
+  "앞으로 존댓말로 해줘" 라고 하면 워커가 직접 고친다. 손으로 고쳐도 된다.
+- **지난 대화 찾기** — 모든 프로젝트·웹 대화의 메모리 파일과 날짜별 기록
+  (`~/.aglink/history/`)을 단어로 찾는다. 대소문자 무시, 단어가 많이 맞는 순.
+
+```
+!recall 배포 nanopi           채팅에서
+aglink recall 배포 nanopi     셸에서 (워커도 이 명령을 안내받아 직접 쓴다)
 ```
 
 

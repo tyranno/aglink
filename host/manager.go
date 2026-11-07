@@ -376,8 +376,14 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	// Signal completion however this turn ends. runWorker signals its own, but
 	// the early returns below (routing errors, a missing backend, a schedule
 	// request) never reach it, and a web client that already showed its working
-	// indicator would spin forever behind an answer that had arrived.
-	defer s.Done(chatID)
+	// indicator would spin forever behind an answer that had arrived. doneHere
+	// is cleared right before the runWorker call so that path isn't double-signaled.
+	doneHere := true
+	defer func() {
+		if doneHere {
+			s.Done(chatID)
+		}
+	}()
 
 	// Backend auto-switch pre-check (unchanged behavior).
 	if target := detectBackendSwitchIntent(text); target != "" && target != m.Backend() {
@@ -460,6 +466,7 @@ func (m *Manager) handleTelegram(ctx context.Context, chatID int64, text string,
 	}
 	m.telegramMu.Lock()
 	defer m.telegramMu.Unlock()
+	doneHere = false
 	m.runWorker(ctx, chatID, text, m.telegramSink(project), workDir, tc, s, client, backend)
 }
 
@@ -588,8 +595,14 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 
 	// Signal completion however this turn ends: the early returns below (unknown
 	// conversation, missing backend) never reach runWorker, which is the only
-	// other place that signals it.
-	defer s.Done(chatID)
+	// other place that signals it. doneHere is cleared right before each
+	// runWorker call so that path isn't double-signaled.
+	doneHere := true
+	defer func() {
+		if doneHere {
+			s.Done(chatID)
+		}
+	}()
 
 	if !tgt.IsWeb() {
 		// Telegram stream: the default for kind "telegram", and for any unknown
@@ -626,6 +639,7 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		}
 		m.telegramMu.Lock()
 		defer m.telegramMu.Unlock()
+		doneHere = false
 		m.runWorker(ctx, chatID, text, m.telegramSink(project), workDir, tc, s, client, backend)
 		return
 	}
@@ -647,6 +661,7 @@ func (m *Manager) HandleWebTarget(ctx context.Context, chatID int64, text string
 		workDir = resolveHomeDir(m.cfg())
 	}
 	_ = m.store.SetActive("", c.ID)
+	doneHere = false
 	m.runWorker(ctx, chatID, text, m.newWebConvSink(), workDir, c, s, client, backend)
 }
 

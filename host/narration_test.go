@@ -208,6 +208,7 @@ func TestTypingLoops_RefreshUntilStop(t *testing.T) {
 	if l.running(7) {
 		t.Fatal("loop still registered after stop")
 	}
+	time.Sleep(15 * time.Millisecond) // a send already in flight at stop may still land
 	mu.Lock()
 	after := n
 	mu.Unlock()
@@ -272,5 +273,14 @@ func TestConfigYAML_TurnStats(t *testing.T) {
 	c2, err := unmarshalConfigYAML(b)
 	if err != nil || !c2.TurnStats {
 		t.Fatalf("round trip lost ui.turn_stats (%v)", err)
+	}
+}
+
+func TestVoiceEchoText(t *testing.T) {
+	if got := voiceEchoText(voiceInputPrefix + "커밋해 줘"); got != "🎤 커밋해 줘" {
+		t.Fatalf("got %q", got)
+	}
+	if got := voiceEchoText("그냥 입력"); got != "그냥 입력" {
+		t.Fatalf("got %q", got)
 	}
 }

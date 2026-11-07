@@ -170,3 +170,16 @@ func (g *narrationGate) flushLocked() {
 	g.last = time.Now()
 	g.send(text)
 }
+
+// voiceInputPrefix is what the desktop app puts in front of a dictated message
+// so the model reads misheard words by sound (desktop paneStore VOICE_PREFIX).
+// It is for the model only; echoes to people show a 🎤 instead.
+const voiceInputPrefix = "[음성 입력 — 받아쓰기 오타가 있을 수 있으니 발음이 비슷한 말로 해석]\n"
+
+// voiceEchoText renders user input for display to people.
+func voiceEchoText(text string) string {
+	if rest, ok := strings.CutPrefix(text, voiceInputPrefix); ok {
+		return "🎤 " + rest
+	}
+	return text
+}

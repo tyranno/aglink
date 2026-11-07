@@ -312,7 +312,7 @@ func (t *telegramChannel) Progress(tgt Target, chatID int64, text string) {
 // input is never mirrored into Telegram.
 func (t *telegramChannel) EchoUser(tgt Target, chatID int64, text, origin string) {
 	if origin == OriginWeb {
-		_ = t.Send(tgt, chatID, "🌐 (웹) "+text)
+		_ = t.Send(tgt, chatID, "🌐 (웹) "+voiceEchoText(text))
 	}
 }
 

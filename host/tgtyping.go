@@ -55,6 +55,11 @@ func (l *typingLoops) start(chatID int64) {
 		for {
 			select {
 			case <-ticker.C:
+				select {
+				case <-stop: // stopped while the tick was pending
+					return
+				default:
+				}
 				l.send(chatID)
 			case <-stop:
 				return

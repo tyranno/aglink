@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWithUserProfile(t *testing.T) {
@@ -114,6 +115,41 @@ func TestSearchRecall(t *testing.T) {
 	}
 	if out := formatRecall("x", nil); !strings.Contains(out, "찾지 못했어요") {
 		t.Errorf("empty format = %q", out)
+	}
+}
+
+func TestSearchRecall_SpokenForms(t *testing.T) {
+	docs := recallDocs(recallFixture(t))
+
+	// Particles and endings on the query words: "배포를" → 배포, "로그인했어" → 로그인.
+	hits := searchRecall(docs, "nanopi에 배포를", 5)
+	if len(hits) == 0 || hits[0].doc.name != "myapp · 배포 정리" {
+		t.Fatalf("particle query top = %+v", hits)
+	}
+	if hits := searchRecall(docs, "로그인했어", 5); len(hits) == 0 || hits[0].doc.name != "myapp · 로그인 버그" {
+		t.Errorf("ending query = %+v", hits)
+	}
+	// Spacing differs from the note: "쿠키만료" finds "쿠키 만료".
+	if hits := searchRecall(docs, "세션쿠키만료", 5); len(hits) == 0 || hits[0].doc.name != "myapp · 로그인 버그" {
+		t.Errorf("spacing query = %+v", hits)
+	}
+	// A short word whose stem would be one rune stays whole.
+	if got := recallStem("속도"); got != "속도" {
+		t.Errorf("recallStem(속도) = %q", got)
+	}
+}
+
+func TestSearchRecall_RareWordWeighs(t *testing.T) {
+	now := time.Now()
+	docs := []recallDoc{
+		{kind: "메모", name: "a", when: now, text: "음성 설정 음성 설정"},
+		{kind: "메모", name: "b", when: now, text: "음성 화자인증 기준 0.5"},
+		{kind: "메모", name: "c", when: now, text: "음성 이야기"},
+		{kind: "메모", name: "d", when: now, text: "음성 메모"},
+	}
+	hits := searchRecall(docs, "음성 화자인증", 5)
+	if len(hits) == 0 || hits[0].doc.name != "b" {
+		t.Errorf("rare word should lead: %+v", hits)
 	}
 }
 

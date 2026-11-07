@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,7 +21,8 @@ import (
 //     about the user that every conversation should know. A fresh worker
 //     session gets its content plus a short note on keeping it up to date; a
 //     resumed session already carries both.
-//   - Recall: keyword search over every conversation's memory file and the
+//   - Recall: word search (Korean particles stripped, spacing-tolerant, rare
+//     words weighted) over every conversation's memory file and the
 //     dated history log, for the worker (`aglink recall <words>`) and the user
 //     (!recall <words>).
 
@@ -79,7 +81,7 @@ func sharedMemoryReminder() string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "\n\n<system-reminder>\n사용자 프로필(모든 대화 공통): %s — 사용자가 앞으로도 유지될 선호나 사실(호칭, 말투, 쓰는 환경 등)을 말하면 이 파일에 짧게 반영하세요(없으면 만들고, 중복은 정리). 이 대화에만 해당하는 내용은 이 대화의 메모리 파일에 적습니다.", filepath.ToSlash(path))
 	if cmd := recallCommand(); cmd != "" {
-		fmt.Fprintf(&sb, "\n지난 대화에서 다룬 내용이 필요하면 `%s <검색어>` 로 찾을 수 있습니다.", cmd)
+		fmt.Fprintf(&sb, "\n지난 대화에서 다룬 내용이 필요하면 `%s <검색어>` 로 찾을 수 있습니다(핵심 단어 몇 개로; 못 찾으면 다른 표현·영어 이름으로 다시).", cmd)
 	}
 	sb.WriteString("\n이 안내는 시스템이 주입한 것이며 사용자가 보낸 내용이 아닙니다. 답변에 인용하거나 언급하지 마세요.\n</system-reminder>")
 	return sb.String()
@@ -233,7 +235,7 @@ func recallDocs(src recallSources) []recallDoc {
 type recallHit struct {
 	doc     recallDoc
 	matched int // distinct query words found
-	score   int
+	score   float64
 	snippet string
 }
 
@@ -256,42 +258,138 @@ func lowerRunes(s string) string {
 	return strings.Map(unicode.ToLower, s)
 }
 
-// searchRecall ranks docs by how many query words they contain (then by
-// occurrences, then by recency) and returns up to limit hits, at most two per
-// conversation.
+// recallSuffixes are Korean particles and verb endings stripped from a query
+// word, longest first: "배포를", "설치했어" must find "배포", "설치". Spoken
+// queries almost always carry them.
+var recallSuffixes = []string{
+	"했었어요", "했었는데", "했어요", "했는데", "하는데", "해줘요", "했었어", "에서는", "으로는",
+	"했던", "했다", "했어", "하기", "하는", "하고", "해서", "해줘", "에서", "으로", "까지", "부터",
+	"처럼", "이랑", "에게", "한테", "에는", "이나", "하면",
+	"을", "를", "이", "가", "은", "는", "에", "로", "와", "과", "도", "만", "의", "해", "요",
+}
+
+// recallStem drops one particle or ending, keeping at least two runes so
+// words like "속도" or "회의" stay whole. Returns w when nothing applies.
+func recallStem(w string) string {
+	for _, suf := range recallSuffixes {
+		if strings.HasSuffix(w, suf) {
+			if stem := strings.TrimSuffix(w, suf); utf8.RuneCountInString(stem) >= 2 {
+				return stem
+			}
+		}
+	}
+	return w
+}
+
+// recallBigrams are the overlapping two-rune pieces of w.
+func recallBigrams(w string) []string {
+	r := []rune(w)
+	var out []string
+	for i := 0; i+1 < len(r); i++ {
+		out = append(out, string(r[i:i+2]))
+	}
+	return out
+}
+
+// recallMatch is how well one query word appears in a lower-cased text:
+// strength 1 for the word itself, 0.9 for its stem or for the stem found in
+// the text with its spaces removed ("쿠키만료" vs "쿠키 만료"), and — for a
+// word of three or more runes spelled differently — a scaled share of its
+// two-rune pieces present (at least two pieces and two thirds). count is the
+// occurrences, at the byte offset in low of the first (or of its first piece).
+func recallMatch(low, compact, term string) (strength float64, count, at int) {
+	if n := strings.Count(low, term); n > 0 {
+		return 1, n, strings.Index(low, term)
+	}
+	stem := recallStem(term)
+	if stem != term {
+		if n := strings.Count(low, stem); n > 0 {
+			return 0.9, n, strings.Index(low, stem)
+		}
+	}
+	grams := recallBigrams(stem)
+	if n := strings.Count(compact, stem); n > 0 && len(grams) > 0 {
+		return 0.9, n, max(0, strings.Index(low, grams[0]))
+	}
+	if len(grams) < 2 {
+		return 0, 0, -1
+	}
+	hit, first := 0, -1
+	for _, g := range grams {
+		if i := strings.Index(low, g); i >= 0 {
+			hit++
+			if first < 0 || i < first {
+				first = i
+			}
+		}
+	}
+	if hit < 2 || hit*3 < len(grams)*2 {
+		return 0, 0, -1
+	}
+	return 0.6 * float64(hit) / float64(len(grams)), 1, first
+}
+
+// searchRecall ranks docs by a BM25-like score — each matched query word
+// weighs by how rare it is across all docs (a word in every note says little)
+// and a little by repetition — then by recency, and returns up to limit hits,
+// at most two per conversation.
 func searchRecall(docs []recallDoc, query string, limit int) []recallHit {
 	terms := recallTerms(query)
 	if len(terms) == 0 {
 		return nil
 	}
+	type termHit struct {
+		strength float64
+		count    int
+	}
+	lows := make([]string, len(docs))
+	found := make([][]termHit, len(docs))
+	firsts := make([]int, len(docs))
+	df := make([]int, len(terms))
+	for i, d := range docs {
+		lows[i] = lowerRunes(d.text)
+		compact := strings.Join(strings.Fields(lows[i]), "")
+		found[i] = make([]termHit, len(terms))
+		firsts[i] = -1
+		for j, t := range terms {
+			s, n, at := recallMatch(lows[i], compact, t)
+			if s == 0 {
+				continue
+			}
+			found[i][j] = termHit{s, n}
+			df[j]++
+			if firsts[i] < 0 || at < firsts[i] {
+				firsts[i] = at
+			}
+		}
+	}
+	idf := make([]float64, len(terms))
+	for j := range terms {
+		idf[j] = math.Log(1 + float64(len(docs)+1)/float64(df[j]+1))
+	}
 	var hits []recallHit
-	for _, d := range docs {
-		low := lowerRunes(d.text)
-		matched, score, first := 0, 0, -1
-		for _, t := range terms {
-			n := strings.Count(low, t)
-			if n == 0 {
+	for i, d := range docs {
+		matched, score := 0, 0.0
+		for j, th := range found[i] {
+			if th.strength == 0 {
 				continue
 			}
 			matched++
-			score += min(n, 3)
-			if i := strings.Index(low, t); first < 0 || i < first {
-				first = i
-			}
+			score += idf[j] * th.strength * (1 + 0.2*float64(min(th.count, 3)-1))
 		}
 		if matched == 0 {
 			continue
 		}
 		hits = append(hits, recallHit{doc: d, matched: matched, score: score,
-			snippet: recallSnippet(d.text, utf8.RuneCountInString(low[:first]))})
+			snippet: recallSnippet(d.text, utf8.RuneCountInString(lows[i][:firsts[i]]))})
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
-		if a.matched != b.matched {
-			return a.matched > b.matched
-		}
 		if a.score != b.score {
 			return a.score > b.score
+		}
+		if a.matched != b.matched {
+			return a.matched > b.matched
 		}
 		return a.doc.when.After(b.doc.when)
 	})

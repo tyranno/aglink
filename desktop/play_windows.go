@@ -8,10 +8,12 @@ import (
 	"unsafe"
 )
 
-// The reply is played here with winmm rather than by the page: a WebView2
-// hidden in the tray does not play <audio>, so a spoken reply stayed silent
-// until the window was opened again. It plays asynchronously, because only an
-// async PlaySound can be cut off — barge-in has to silence it at once.
+// The reply is played here with winmm when the page cannot play it: a WebView2
+// hidden in the tray did not play <audio>, so a spoken reply stayed silent
+// until the window was opened again. The page plays it first now, because the
+// mic's echo cancellation hears only what the page plays (playWav in
+// voice.svelte.js). It plays asynchronously, because only an async PlaySound
+// can be cut off — barge-in has to silence it at once.
 
 var procPlaySound = syscall.NewLazyDLL("winmm.dll").NewProc("PlaySoundW")
 

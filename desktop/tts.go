@@ -269,7 +269,8 @@ func (v *VoiceService) ServiceShutdown() error {
 
 // PlayWav plays a base64 WAV from Synthesize through the OS and returns when it
 // has finished. gen numbers the reading it belongs to (see StopWav). The
-// frontend falls back to <audio> if it fails.
+// frontend plays in the page first and comes here only when it cannot; it
+// falls back to <audio> if this fails too.
 func (v *VoiceService) PlayWav(b64 string, gen int) error {
 	wav, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {

@@ -3207,11 +3207,18 @@ function stopWake() {
 async function checkWake(w, wav) {
   w.busy = true;
   try {
-    const text = (await VoiceService.Transcribe(toBase64(wav))).trim();
+    const [raw, score] = await Promise.all([VoiceService.Transcribe(toBase64(wav)), speakerScore(wav)]);
+    const text = raw.trim();
     if (!text || wakeRec !== w) return;
     const end = wakeMatch(text);
     if (end < 0) {
       vlog(`wake: not the name ${quote(text, 20)}`); // to see how the name gets written
+      return;
+    }
+    // The name alone is not enough: someone else in the room (or a TV) saying
+    // it must not open the mic and send what follows.
+    if (!isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
+      vlog(`wake: other voice dropped (${score.toFixed(2)}) ${quote(text)}`);
       return;
     }
     const rest = text.slice(end).replace(WAKE_TAIL_RE, "").trim();

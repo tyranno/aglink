@@ -93,7 +93,7 @@ export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4",
 export const CLONE_VOICE = "C"; // the recorded voice (cloneVoice); only it is repainted
 const isTTSVoice = (name) => TTS_VOICES.includes(name) || name === CLONE_VOICE;
 export const WAKE_EVERY_TIME = -1; // each answer ends the conversation: every request starts with the name
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.4, listenMode: "wake", wakeIdleMin: WAKE_EVERY_TIME, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.4, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
 const OLD_SPEAKER_MIN = 0.3;
 const MAX_WAKE_NAMES = 5;
 // How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on

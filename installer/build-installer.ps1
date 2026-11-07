@@ -47,7 +47,19 @@ Write-Host "  built desktop frontend"
 Build-GoHelper "chat" "aglink-chat.exe"
 Build-GoHelper "screen" "aglink-screen.exe"
 Build-GoHelper "web" "aglink-web.exe"
-Build-GoHelper "desktop" "aglink-desktop.exe" "-H windowsgui -s -w"
+# Plain go build leaves out the icon and manifest that wails build adds, so
+# the installed app showed the blank default icon on the taskbar and in
+# shortcuts. Compile them into a .syso that go build picks up, then remove it.
+$syso = Join-Path $root "desktop\rsrc_windows_amd64.syso"
+Push-Location (Join-Path $root "desktop")
+& go run github.com/tc-hib/go-winres@v0.3.3 simply --icon build\windows\icon.ico --manifest gui --arch amd64 --out rsrc
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "desktop icon resource failed" }
+Pop-Location
+try {
+  Build-GoHelper "desktop" "aglink-desktop.exe" "-H windowsgui -s -w"
+} finally {
+  Remove-Item $syso -ErrorAction SilentlyContinue
+}
 
 # AI setup guide + the Chrome extension aglink-web needs (minus its tests).
 Copy-Item (Join-Path $here "AI-SETUP.md") $stage -Force

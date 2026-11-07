@@ -57,6 +57,9 @@ type yamlConfig struct {
 	// reset/recovery. See convsummary.go.
 	Context struct {
 		SummaryOnReset *bool `yaml:"summary_on_reset,omitempty"` // nil → true
+		// MemoryConsolidate tidies memory files once a conversation idles
+		// (nil → true). See memconsolidate.go.
+		MemoryConsolidate *bool `yaml:"memory_consolidate,omitempty"`
 	} `yaml:"context"`
 	// UI: how turns read in the chat.
 	UI struct {
@@ -147,6 +150,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 		AllowScripts:         false,
 		ConversationTTLDays:  30,
 		SummaryOnReset:       true,
+		MemoryConsolidate:    true,
 		ScreenPromptAdaptive: true,
 		PersistentWorker:     true,
 	}
@@ -214,6 +218,9 @@ func yamlToConfig(y *yamlConfig) *Config {
 	}
 	if y.Context.SummaryOnReset != nil {
 		c.SummaryOnReset = *y.Context.SummaryOnReset
+	}
+	if y.Context.MemoryConsolidate != nil {
+		c.MemoryConsolidate = *y.Context.MemoryConsolidate
 	}
 	c.TurnStats = y.UI.TurnStats
 	c.WebControl = y.WebControl.Enabled
@@ -308,9 +315,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.ScreenControl.KeepAwake = c.ScreenKeepAwake
 	y.ScreenControl.BinaryPath = c.ScreenBinaryPath
 	y.ScreenControl.MaxScreenshotLongEdge = c.ScreenMaxScreenshotLongEdge
-	ap, sor := c.ScreenPromptAdaptive, c.SummaryOnReset
+	ap, sor, mc := c.ScreenPromptAdaptive, c.SummaryOnReset, c.MemoryConsolidate
 	y.ScreenControl.AdaptivePrompt = &ap
 	y.Context.SummaryOnReset = &sor
+	y.Context.MemoryConsolidate = &mc
 	y.UI.TurnStats = c.TurnStats
 	y.WebControl.Enabled = c.WebControl
 	y.WebControl.BinaryPath = c.WebBinaryPath

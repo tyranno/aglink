@@ -47,6 +47,11 @@ type Manager struct {
 	summaryMu       sync.Mutex
 	summaries       map[string]convSummaryState
 	summaryInflight map[string]bool
+
+	// memMu guards memFiles: per memory file idle timer and last consolidated
+	// size (see memconsolidate.go), keyed by absolute path.
+	memMu    sync.Mutex
+	memFiles map[string]*memFileState
 }
 
 func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *ConfigHolder) *Manager {
@@ -1900,6 +1905,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 
 	// Update Worker status to completed
 	_ = m.workerStatus.UpdateStatus(project, workConv.ID, "completed", "")
+	// Tidy the memory files this turn may have grown once the conversation goes
+	// quiet (memconsolidate.go). Same root readProjectMemory reads from.
+	memRoot := pPath
+	if memRoot == "" {
+		memRoot = workConv.WorkDir
+	}
+	m.scheduleMemoryConsolidation(project, workConv.ID, memRoot)
 
 	// Completion notice with elapsed time (ui.turn_stats only — the answer
 	// itself already tells the user the turn is done).

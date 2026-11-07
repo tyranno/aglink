@@ -61,6 +61,12 @@ type Config struct {
 	// true. 요약 실패 시 기존 방식으로 폴백. See convsummary.go.
 	SummaryOnReset bool
 
+	// MemoryConsolidate (yaml context.memory_consolidate, default true): 대화가
+	// 잠잠해지면 매니저 모델로 메모리 파일(<dir>/memory/<id>.md, USER.md)의 중복·
+	// 낡은 내용을 정리한다. 백업을 남기고, 결과가 미심쩍으면 버린다. See
+	// memconsolidate.go.
+	MemoryConsolidate bool
+
 	// TurnStats (yaml ui.turn_stats, default false) sends the per-turn usage/cost
 	// footer and the "✅ 작업 완료 (N초)" notice after each answer. The stats are
 	// recorded either way (usage views, get_usage_stats).

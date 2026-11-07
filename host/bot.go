@@ -440,6 +440,14 @@ func (b *Bot) Run() {
 			if update.UpdateID+1 > offset {
 				offset = update.UpdateID + 1
 			}
+			if cq := update.CallbackQuery; cq != nil && cq.From != nil {
+				if b.isAllowed(cq.From.ID, cq.From.UserName) {
+					go b.handleCallback(cq)
+				} else {
+					log.Printf("[bot] denied button from user %d (%s)", cq.From.ID, cq.From.UserName)
+				}
+				continue
+			}
 			if update.Message == nil || update.Message.From == nil {
 				continue
 			}

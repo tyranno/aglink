@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // Approvals: ask the user before an agent runs a tool they marked as risky.
@@ -168,16 +170,29 @@ func (b *Bot) askApproval(source, tool, summary string, timeout time.Duration) (
 		approvals.Unlock()
 	}()
 
-	msg := fmt.Sprintf("🔐 승인 요청 #%s — %s · %s\n%s\n\n승인: !ok %s    거부: !no %s\n(%d초 안에 답이 없으면 거부합니다)",
+	msg := fmt.Sprintf("🔐 승인 요청 #%s — %s · %s\n%s\n\n버튼을 누르거나 !ok %s / !no %s\n(%d초 안에 답이 없으면 거부합니다)",
 		req.ID, source, tool, truncate(req.Summary, 600), req.ID, req.ID, int(timeout.Seconds()))
 	sent := 0
-	if b.api != nil { // Telegram: the chat message itself is the prompt
+	var asked []tgbotapi.Message
+	if b.api != nil { // Telegram: the chat message itself is the prompt, with buttons to answer it
 		for _, id := range b.cfg().AllowedUserIDs {
-			if err := b.Send(id, msg); err == nil {
+			m := tgbotapi.NewMessage(id, msg)
+			m.ReplyMarkup = approvalKeyboard(req.ID)
+			if sm, err := b.api.Send(m); err == nil {
+				asked = append(asked, sm)
 				sent++
+			} else {
+				log.Printf("[approval] telegram send: %v", err)
 			}
 		}
 	}
+	verdict := "⌛ 시간 초과로 거부"
+	// The buttons go once the request is answered, so an old one cannot be tapped.
+	defer func() {
+		for _, m := range asked {
+			_, _ = b.api.Send(tgbotapi.NewEditMessageText(m.Chat.ID, m.MessageID, msg+"\n\n→ "+verdict))
+		}
+	}()
 	// Desktop / web chat: a dialog with buttons.
 	sent += broadcastControl(approvalEvent("approval", map[string]any{
 		"id": req.ID, "source": source, "tool": tool, "summary": truncate(req.Summary, 600), "timeoutSec": int(timeout.Seconds()),
@@ -191,17 +206,44 @@ func (b *Bot) askApproval(source, tool, summary string, timeout time.Duration) (
 	case ok := <-req.done:
 		log.Printf("[approval] #%s %v", req.ID, map[bool]string{true: "approved", false: "denied"}[ok])
 		if ok {
+			verdict = "✅ 승인됨"
 			return true, "사용자가 승인했습니다"
 		}
+		verdict = "🚫 거부됨"
 		return false, "사용자가 거부했습니다"
 	case <-time.After(timeout):
 		log.Printf("[approval] #%s timed out", req.ID)
-		if b.api != nil {
-			for _, id := range b.cfg().AllowedUserIDs {
-				_ = b.Send(id, fmt.Sprintf("⌛ 승인 요청 #%s (%s) 시간 초과로 거부했습니다.", req.ID, tool))
-			}
-		}
 		return false, fmt.Sprintf("%d초 안에 승인되지 않아 거부했습니다", int(timeout.Seconds()))
+	}
+}
+
+// approvalKeyboard is the 승인/거부 buttons under a Telegram request: a tap on
+// the phone instead of typing "!ok k7".
+func approvalKeyboard(id string) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("✅ 승인", "ap:ok:"+id),
+		tgbotapi.NewInlineKeyboardButtonData("🚫 거부", "ap:no:"+id),
+	))
+}
+
+// handleCallback answers a button tap. The request's message loses its
+// buttons when askApproval returns; the tap itself gets a short toast.
+func (b *Bot) handleCallback(cq *tgbotapi.CallbackQuery) {
+	toast := ""
+	if rest, ok := strings.CutPrefix(cq.Data, "ap:"); ok {
+		answer, id, _ := strings.Cut(rest, ":")
+		req, msg := resolveApproval(id, answer == "ok")
+		switch {
+		case req == nil:
+			toast = msg
+		case answer == "ok":
+			toast = "✅ 승인했습니다"
+		default:
+			toast = "🚫 거부했습니다"
+		}
+	}
+	if _, err := b.api.Request(tgbotapi.NewCallback(cq.ID, toast)); err != nil {
+		log.Printf("[approval] callback answer: %v", err)
 	}
 }
 

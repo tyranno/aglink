@@ -322,12 +322,39 @@
     const d = document.createElement("div");
     d.className = "msg " + role;
     const md = window.TCMarkdown;
-    if (role === "user" || !md) d.textContent = text;
+    if (role === "user") d.textContent = userDisplayText(text);
+    else if (!md) d.textContent = text;
     else { d.classList.add("md"); d.appendChild(md.renderMarkdown(text)); }
     log.appendChild(d);
     scrollToBottom();
     return d;
   }
+  // The desktop app tells the model a message was dictated with this prefix
+  // (desktop voice.svelte.js VOICE_PREFIX); the bubble shows a 🎤 instead.
+  const VOICE_PREFIX = "[음성 입력 — 받아쓰기 오타가 있을 수 있으니 발음이 비슷한 말로 해석]\n";
+  function userDisplayText(text) {
+    return text && text.startsWith(VOICE_PREFIX) ? "🎤 " + text.slice(VOICE_PREFIX.length) : text;
+  }
+
+  // markReceived puts a small "✓ 확인함" under the latest user bubble once the
+  // host has picked the message up (its turn's first "typing" frame). Only a
+  // bubble still waiting for its answer is marked; repeat frames are no-ops.
+  function markReceived() {
+    for (let el = log.lastElementChild; el; el = el.previousElementSibling) {
+      if (!el.classList.contains("msg")) continue;
+      if (el.classList.contains("assistant")) return;
+      if (!el.classList.contains("user")) continue;
+      if (el.dataset.ack) return;
+      el.dataset.ack = "1";
+      const mark = document.createElement("div");
+      mark.className = "ack";
+      mark.textContent = "✓ 확인함 · 작업 중";
+      el.after(mark);
+      scrollToBottom();
+      return;
+    }
+  }
+
   function addImage(caption, b64) {
     const d = document.createElement("div");
     d.className = "msg assistant";
@@ -577,6 +604,8 @@
     if (f.type === "text") add("assistant", f.text);
     else if (f.type === "image") addImage(f.caption || "", f.data);
     else if (f.type === "user") add("user", f.text); // input echoed from another channel (e.g. Telegram)
+    else if (f.type === "narration") add("narration", f.text); // the model's own mid-turn note, not saved in history
+    else if (f.type === "typing") markReceived();
   }
 
   // Marks a topic button as having unseen frames.

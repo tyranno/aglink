@@ -100,6 +100,8 @@ header .icon-button { background: transparent; border-color: rgba(255, 255, 255,
 .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
 .msg.assistant { align-self: flex-start; background: rgba(255, 255, 255, 0.9); color: #0f172a; }
 .msg.system { align-self: center; background: #fef3c7; color: #92400e; font-size: 12px; box-shadow: none; }
+.msg.narration { align-self: flex-start; background: transparent; color: #475569; font-size: 13px; font-style: italic; box-shadow: none; border-left: 3px solid #93c5fd; border-radius: 0 8px 8px 0; padding: 4px 10px; }
+.ack { align-self: flex-end; margin-top: -4px; font-size: 11px; color: #64748b; }
 .msg img { max-width: 100%; border-radius: 6px; display: block; }
 
 /* Markdown-rendered bubbles. The bubble's pre-wrap is for verbatim user text;

@@ -2411,7 +2411,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       convActiveAt = Date.now();
       if (ONCE_TEXT_RE.test(text)) textOnce.add(targetKey(p.target));
       sendFailures = 0;
-      await sendFromPane(paneId);
+      await sendFromPane(paneId, { voice: true }); // the bubble shows "🎤 인식했습니다", the model gets VOICE_PREFIX
     }
     else {
       setNote(paneId, "aglink 에 연결되어 있지 않아 입력창에만 넣었습니다.");

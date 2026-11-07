@@ -1061,8 +1061,41 @@ export function paneWorkingText(target) {
   return `작업 진행 중 (${elapsed})`;
 }
 
+// VOICE_PREFIX tells the model a message was dictated, so it reads
+// misheard words by sound. Only the model sees it: the bubble shows
+// "🎤 인식했습니다" instead (userMessage), also for history from the host.
+export const VOICE_PREFIX = "[음성 입력 — 받아쓰기 오타가 있을 수 있으니 발음이 비슷한 말로 해석]\n";
+
+function userMessage(text) {
+  text = text || "";
+  if (text.startsWith(VOICE_PREFIX)) return { role: "user", text: text.slice(VOICE_PREFIX.length), image: "", voice: true };
+  return { role: "user", text, image: "" };
+}
+
+// markReceived flags the newest user message still waiting for its answer
+// once the host picks the turn up (its first "typing" frame); the bubble then
+// shows "✓ 확인함". Repeat frames during the turn change nothing.
+function markReceived(key) {
+  const current = chat.messagesByKey.get(key);
+  if (!current) return;
+  for (let i = current.length - 1; i >= 0; i--) {
+    const m = current[i];
+    if (m.role === "assistant") return;
+    if (m.role !== "user") continue;
+    if (m.ack) return;
+    const next = [...current];
+    next[i] = { ...m, ack: true };
+    chat.messagesByKey = new Map(chat.messagesByKey).set(key, next);
+    return;
+  }
+}
+
 function messageFromFrame(frame) {
   if (!frame) return null;
+  if (frame.type === "narration") {
+    // The model's own mid-turn note ("먼저 테스트를 돌려볼게요"); not saved in history.
+    return { role: "narration", text: frame.text || "", image: "" };
+  }
   if (frame.type === "text") {
     return { role: "assistant", text: frame.text || "", image: "" };
   }
@@ -1074,7 +1107,7 @@ function messageFromFrame(frame) {
     };
   }
   if (frame.type === "user") {
-    return { role: "user", text: frame.text || "", image: "" };
+    return userMessage(frame.text);
   }
   return null;
 }
@@ -1170,11 +1203,15 @@ export async function selectTargetInPane(paneId, rawTarget) {
     const raw = await ControlService.GetHistory(normalized.kind, normalized.id || "");
     const data = parseJSON(raw, { turns: [] });
     const history = Array.isArray(data.turns)
-      ? data.turns.map((turn) => ({
-          role: turn.role || "assistant",
-          text: turn.text || "",
-          image: turn.image || turn.data || "",
-        }))
+      ? data.turns.map((turn) =>
+          turn.role === "user"
+            ? { ...userMessage(turn.text), image: turn.image || turn.data || "" }
+            : {
+                role: turn.role || "assistant",
+                text: turn.text || "",
+                image: turn.image || turn.data || "",
+              },
+        )
       : [];
     const flushed = flushBufferedFrames(key, history);
     chat.messagesByKey = new Map(chat.messagesByKey).set(key, flushed);
@@ -1293,7 +1330,9 @@ export function showCommandMenuForPane(p) {
   return commandCandidatesForPane(p).length > 0 && !p.commandMenuHidden;
 }
 
-export async function sendFromPane(paneId) {
+// sendFromPane sends the pane's composer. voice: the text was dictated — the
+// model gets VOICE_PREFIX in front of it, the bubble a 🎤 mark.
+export async function sendFromPane(paneId, { voice = false } = {}) {
   const p = pane(paneId);
   if (!p?.target) return;
   const key = targetKey(p.target);
@@ -1322,12 +1361,12 @@ export async function sendFromPane(paneId) {
   }
 
   if (!canSendPane(p)) return;
-  pushMessageToKey(key, { role: "user", text: caption, image: "" });
+  pushMessageToKey(key, { role: "user", text: caption, image: "", ...(voice ? { voice: true } : {}) });
   startWorking(key);
   rememberSentHistory(key, caption);
   clearPaneComposer(paneId);
   try {
-    await ControlService.SendText(caption, p.target.kind, p.target.id || "");
+    await ControlService.SendText(voice ? VOICE_PREFIX + caption : caption, p.target.kind, p.target.id || "");
     void loadConversations();
   } catch (error) {
     pushMessageToKey(key, { role: "system", text: `전송 실패: ${error}` });
@@ -1577,6 +1616,7 @@ export function handleFrame(frame) {
   if (frame.type === "typing") {
     startWorking(key);
     chat.progressByKey = new Map(chat.progressByKey).set(key, []);
+    markReceived(key);
   }
   if (frame.type === "done") {
     stopWorking(key);

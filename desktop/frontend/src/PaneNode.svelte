@@ -255,13 +255,18 @@
 
             {#each messagesForPane(p.target) as message, mIndex (`${mIndex}-${message.role}-${message.text}-${message.image}`)}
               <div class={`flex w-full ${message.role === "user" ? "justify-end" : message.role === "system" ? "justify-center" : "justify-start"}`}>
-                <div class={`min-w-0 max-w-[92%] overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
+                <div class={message.role === "narration"
+                  ? "min-w-0 max-w-[92%] overflow-hidden border-l-2 border-blue-300 dark:border-blue-700 py-0.5 pl-2.5 pr-2 italic text-slate-500 dark:text-slate-400"
+                  : `min-w-0 max-w-[92%] overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
                   message.role === "user"
                     ? "bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-300 ring-blue-200 dark:ring-blue-900/40"
                     : message.role === "system"
                       ? "bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 ring-amber-200 dark:ring-amber-800"
                       : "bg-white/95 dark:bg-slate-900/95 text-slate-900 dark:text-slate-300 ring-slate-200 dark:ring-slate-700"
                 }`}>
+                  {#if message.role === "user" && message.voice}
+                    <div class="mb-0.5 text-[11px] text-blue-700/80 dark:text-blue-400/80">🎤 인식했습니다:</div>
+                  {/if}
                   {#if message.text}
                     {#if message.role === "user"}
                       <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{message.text}</div>
@@ -277,6 +282,9 @@
                       title="클릭하면 창으로 크게 봅니다 (이동·크기조절 가능)"
                       onclick={() => openLightbox(`data:image/png;base64,${message.image}`)}
                     />
+                  {/if}
+                  {#if message.role === "user" && message.ack}
+                    <div class="mt-0.5 text-right text-[10px] text-blue-500/80 dark:text-blue-400/70" title="aglink 가 메시지를 받아 작업을 시작했습니다">✓ 확인함</div>
                   {/if}
                 </div>
               </div>

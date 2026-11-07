@@ -76,6 +76,7 @@ func main() {
 		},
 		Windows: application.WindowsOptions{
 			WebviewUserDataPath:   webviewUserDataPath(),
+			EnabledFeatures:       echoCancelFeatures(),
 			AdditionalBrowserArgs: append(backgroundArgs(), devtoolsArgs()...),
 		},
 	})
@@ -116,6 +117,15 @@ func devtoolsArgs() []string {
 		return []string{"--remote-debugging-port=" + p}
 	}
 	return nil
+}
+
+// echoCancelFeatures turns on Chromium's "Chrome-wide" echo cancellation: the
+// mic's canceller then takes everything the page plays (Web Audio, <audio>) as
+// its reference, not only WebRTC calls. Chrome has it on by default but Edge,
+// and so WebView2, need not; the spoken reply plays in the page for this (see
+// playWav in voice.svelte.js). A name Chromium no longer knows is ignored.
+func echoCancelFeatures() []string {
+	return []string{"ChromeWideEchoCancellation"}
 }
 
 // backgroundArgs keeps the page running at full speed while the window is

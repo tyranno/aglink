@@ -211,6 +211,19 @@
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
+          <div class={label}>앱 안에서 읽기 (에코 제거)</div>
+          <div class={desc}>켜면 답변을 앱 안에서 재생해서, 마이크가 제 목소리를 지우고 끼어드는 말씀만 들어요. 앱 안에서 재생할 수 없을 때는 저절로 Windows로 재생해요. 트레이에 둘 때 소리가 나지 않으면 꺼 주세요.</div>
+        </div>
+        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input type="checkbox" checked={voice.pagePlayback} onchange={(e) => setVoiceSettings({ pagePlayback: e.currentTarget.checked })} />
+          사용
+        </label>
+      </div>
+    </div>
+
+    <div class={card}>
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
           <div class={label}>듣는 방식</div>
           <div class={desc}>
             {#if voice.listenMode === "wake"}

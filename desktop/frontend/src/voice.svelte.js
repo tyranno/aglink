@@ -111,7 +111,7 @@ export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4",
 export const CLONE_VOICE = "C"; // the recorded voice (cloneVoice); only it is repainted
 const isTTSVoice = (name) => TTS_VOICES.includes(name) || name === CLONE_VOICE;
 export const WAKE_EVERY_TIME = -1; // each answer ends the conversation: every request starts with the name
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.5, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.5, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false, pagePlayback: true };
 const OLD_SPEAKER_MIN = 0.3;
 const OLD_SPEAKER_MIN_2 = 0.4; // default before speakerMinV 3 — a loud nearby voice scored 0.45 and got through during barge-in
 const MAX_WAKE_NAMES = 5;
@@ -159,6 +159,7 @@ function loadSettings() {
     wakeDefault: typeof s.wakeDefault === "boolean" ? s.wakeDefault : true,
     summary: typeof s.summary === "boolean" ? s.summary : VOICE_DEFAULTS.summary,
     textOnly: typeof s.textOnly === "boolean" ? s.textOnly : VOICE_DEFAULTS.textOnly,
+    pagePlayback: typeof s.pagePlayback === "boolean" ? s.pagePlayback : VOICE_DEFAULTS.pagePlayback,
   };
 }
 
@@ -215,7 +216,7 @@ export const voice = $state({
   done: null, // title of the chat whose work just finished, shown for a while
   doneAt: 0,
   vscode: null, // {folder, title}: what is said goes to Claude Code in that VS Code window
-  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, listenMode, wakeIdleMin, summary
+  ...loadSettings(), // ttsVoice, ttsSpeed, speakerMin, listenMode, wakeIdleMin, summary, pagePlayback
 });
 
 let flashTimer = null;
@@ -246,6 +247,7 @@ export function setVoiceSettings(patch) {
   if (!voice.wakeDefault && !voice.wakeNames.length) voice.wakeDefault = true; // always some name to wake on
   if (typeof patch.summary === "boolean") voice.summary = patch.summary;
   if (typeof patch.textOnly === "boolean") voice.textOnly = patch.textOnly;
+  if (typeof patch.pagePlayback === "boolean") voice.pagePlayback = patch.pagePlayback;
   try {
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
@@ -261,6 +263,7 @@ export function setVoiceSettings(patch) {
         wakeDefault: voice.wakeDefault,
         summary: voice.summary,
         textOnly: voice.textOnly,
+        pagePlayback: voice.pagePlayback,
       }),
     );
   } catch {}
@@ -908,6 +911,7 @@ async function startRecording(paneId, barge = false) {
   }
   micFailures = 0;
   voice.problem = "";
+  logMicProcessing(stream);
   if (!barge) voice.heard = "";
   if (barge && (recorder || voice.convPaneId !== paneId || !voice.speaking)) {
     stream.getTracks().forEach((t) => t.stop());
@@ -2625,13 +2629,15 @@ export function setSpeakEnabled(on) {
 
 // ---- echo reference ----
 //
-// The mic's own echo cancellation cannot help: it only knows what the page
-// plays, and the reply plays through Windows (PlayWav). But we know exactly
-// what is playing and when, so the mic level our voice alone produces can be
-// predicted: the clip's loudness envelope times a room gain learned from the
-// mic while it plays. Sound below a margin over that never starts a segment,
-// so our own voice is not transcribed at all; the text comparison (isEcho)
-// stays as the second line.
+// The mic's own echo cancellation only knows what the page plays. The reply
+// now plays in the page (playWavContext) so it can, but it still falls back to
+// Windows (PlayWav), where the canceller hears nothing of it. Either way we
+// know exactly what is playing and when, so the mic level our voice alone
+// produces can be predicted: the clip's loudness envelope times a room gain
+// learned from the mic while it plays (with the canceller working that gain
+// just comes out lower). Sound below a margin over that never starts a
+// segment, so our own voice is not transcribed at all; the text comparison
+// (isEcho) stays as the second line.
 const REF_FRAME_MS = 20;
 const REF_BEFORE_MS = 700; // speaker + mic latency + a small room's reverb tail: the mic hears now what played this long ago
 const REF_AFTER_MS = 100; // PlayWav starts a little after it is called
@@ -2736,6 +2742,10 @@ export function stopSpeaking() {
   if (audio) {
     audio.pause();
     audio = null;
+  }
+  if (pageClip) {
+    pageClip.stop();
+    pageClip = null;
   }
   if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
   voice.speaking = false;
@@ -2909,11 +2919,25 @@ async function supertonicReady() {
   return ttsReady;
 }
 
-// playWav plays through the OS first: the page cannot play <audio> while the
-// window is hidden in the tray.
+// playWav plays in the page first, through Web Audio: only what the page
+// plays reaches the mic's echo canceller as the far end (Chromium's AEC3, made
+// page-wide by echoCancelFeatures in main.go), so talking over the reading is
+// heard without our own voice under it. When the page cannot play — its
+// AudioContext does not run, as the window hidden in the tray kept <audio>
+// from playing before — or the setting is off, the OS plays it as before.
 async function playWav(b64, gen) {
   if (gen !== speakGen) return;
   const ref = addPlayRef(b64);
+  if (voice.pagePlayback && !pageStalled) {
+    if (await playWavContext(b64, gen)) return;
+    if (gen !== speakGen) return;
+    // Started over by the OS: the reference starts over with it.
+    if (ref) {
+      const length = ref.endAt - ref.startAt;
+      ref.startAt = performance.now();
+      ref.endAt = ref.startAt + length;
+    }
+  }
   if (nativeOK) {
     nativePlaying = true;
     try {
@@ -2928,6 +2952,78 @@ async function playWav(b64, gen) {
     }
   }
   return playWavPage(b64, gen);
+}
+
+// The page's player. One AudioContext is kept for every clip: a new one each
+// time costs a device open per sentence.
+const PAGE_START_MS = 400; // a context whose clock has not moved by then is not playing
+let playCtx = null;
+let pageClip = null; // {stop} of the clip playWavContext is playing now
+let pageStalled = false; // the page could not play — the OS plays until the window is shown again
+let aecLogged = false; // the mic's echo cancellation settings are logged once
+
+// logMicProcessing notes once whether the mic really got echo cancellation:
+// the constraint is only a request.
+function logMicProcessing(stream) {
+  if (aecLogged) return;
+  aecLogged = true;
+  const s = stream.getAudioTracks()[0]?.getSettings?.() || {};
+  vlog(`mic echoCancellation=${s.echoCancellation} noiseSuppression=${s.noiseSuppression} autoGainControl=${s.autoGainControl}`);
+}
+
+if (typeof document !== "undefined")
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) pageStalled = false;
+  });
+
+// playWavContext plays a clip in the page and resolves when it ends or is cut
+// off: true, or false when it could not play (then nothing was heard of it).
+async function playWavContext(b64, gen) {
+  try {
+    if (!playCtx || playCtx.state === "closed") playCtx = new AudioContext({ latencyHint: "interactive" });
+    const ctx = playCtx;
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const buffer = await ctx.decodeAudioData(bytes.buffer);
+    if (ctx.state !== "running") await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, PAGE_START_MS))]);
+    if (gen !== speakGen) return true;
+    if (ctx.state !== "running") throw new Error(`AudioContext ${ctx.state}`);
+    const node = ctx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(ctx.destination);
+    const startedAt = ctx.currentTime;
+    return await new Promise((resolve) => {
+      let watch = 0;
+      const clip = {
+        stop(played = true) {
+          clearTimeout(watch);
+          node.onended = null;
+          try {
+            node.stop();
+          } catch {}
+          node.disconnect();
+          if (pageClip === clip) pageClip = null;
+          resolve(played);
+        },
+      };
+      pageClip = clip;
+      node.onended = () => clip.stop();
+      // A context can report "running" yet not render (a suspended webview):
+      // its clock then stands still, and the clip goes to the OS instead.
+      watch = setTimeout(() => {
+        if (ctx.currentTime - startedAt >= (PAGE_START_MS / 1000) * 0.5) return;
+        console.warn("[voice] page playback stalled, playing through Windows");
+        pageStalled = true;
+        clip.stop(false);
+      }, PAGE_START_MS);
+      node.start();
+    });
+  } catch (err) {
+    console.warn("[voice] page playback failed, playing through Windows", err);
+    pageStalled = true;
+    return false;
+  }
 }
 
 function playWavPage(b64, gen) {

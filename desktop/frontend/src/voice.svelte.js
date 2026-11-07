@@ -172,6 +172,7 @@ export const voice = $state({
   convPaneId: null, // pane in conversation mode
   phase: "idle", // idle | listening | transcribing
   level: 0, // 0..1 mic level while listening
+  hearing: false, // sound loud enough to be speech is in the clip being recorded
   speakEnabled: loadSpeakEnabled(),
   bargeEnabled: loadBargeEnabled(), // conversation mode: talking over the reading interrupts it
   speaking: false,
@@ -563,7 +564,7 @@ $effect.root(() => {
     if (voice.taping) [phase, label] = ["recording", `녹음 중 ${voice.tapeClock || "00:00"} — “녹음 끝내”라고 하면 멈춰요`];
     else if (voice.problem) [phase, label] = ["problem", voice.problem];
     else if (voice.flash) [phase, label] = ["note", voice.flash];
-    else if (voice.phase === "listening") [phase, label] = ["listening", "듣는 중 — 말씀하세요"];
+    else if (voice.phase === "listening") [phase, label] = ["listening", voice.hearing ? "말소리 듣는 중" : "듣는 중 — 말씀하세요"];
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
     else if (voice.done !== null) [phase, label] = ["done", voice.speaking ? "작업이 끝났어요 — 답변을 읽어요" : "작업이 끝났어요"];
     else if (voice.speaking) [phase, label] = ["speaking", "답변을 읽는 중"];
@@ -585,6 +586,7 @@ $effect.root(() => {
       wakeName: wakeNameLabel(), // for the tray tooltip
       textOnly: voice.textOnly,
       meeting: voice.meeting,
+      hearing: phase === "listening" && voice.hearing,
     });
   });
 });
@@ -953,6 +955,7 @@ async function startRecording(paneId, barge = false) {
       rec.speechSum = 0;
       rec.barge = false;
       rec.startedAt = now;
+      voice.hearing = false;
       voice.paneId = paneId;
       voice.phase = "listening";
     }
@@ -968,6 +971,7 @@ async function startRecording(paneId, barge = false) {
       if (rec.firstSpeechChunk < 0) {
         rec.firstSpeechChunk = rec.chunks.length - 1;
         rec.firstSpeechAt = now;
+        if (!rec.barge) voice.hearing = true;
       }
       rec.lastSpeechAt = now;
       rec.loudChunks++;
@@ -1006,6 +1010,7 @@ async function startRecording(paneId, barge = false) {
   node.connect(ctx.destination); // the processor only runs while connected; its output is silence
 
   voice.level = 0;
+  voice.hearing = false;
   if (barge) return; // "listening" only once the reading is over, so the indicator says "읽는 중"
   voice.paneId = paneId;
   voice.phase = "listening";
@@ -2305,6 +2310,7 @@ function stopRecording(transcribe, heard = null) {
   const rec = recorder;
   if (!rec) return;
   recorder = null;
+  voice.hearing = false;
   rec.stopped = transcribe; // a segment check still in flight may add to the prefix
   rec.node.onaudioprocess = null;
   try {

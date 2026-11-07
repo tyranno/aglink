@@ -58,6 +58,30 @@ func setupVSCodeVoice(app *application.App) {
 		}
 		push(c, map[string]any{"type": "prompt", "text": text})
 	})
+	// The attached window shows what the voice is doing on its status bar.
+	var (
+		stateMu   sync.Mutex
+		order     stateOrder
+		lastState string
+	)
+	app.Event.On("voice:state", func(e *application.CustomEvent) {
+		m, _ := e.Data.(map[string]any)
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		if m == nil || !order.fresh(m) {
+			return
+		}
+		ev := vscodeStateEvent(m)
+		vscodeVoice.mu.Lock()
+		c := vscodeVoice.attached
+		vscodeVoice.mu.Unlock()
+		key := fmt.Sprintf("%p %v", c, ev) // a newly attached window gets the state too
+		if c == nil || key == lastState {
+			return
+		}
+		lastState = key
+		push(c, ev)
+	})
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", vscodeVoicePort))
 	if err != nil {
 		log.Printf("[vscode] voice bridge off: %v", err)
@@ -70,6 +94,18 @@ func setupVSCodeVoice(app *application.App) {
 	mux.HandleFunc("POST /vscode/stop", func(w http.ResponseWriter, r *http.Request) { vscodeStop(app, w, r) })
 	go func() { _ = http.Serve(l, mux) }()
 	log.Printf("[vscode] voice bridge on 127.0.0.1:%d", vscodeVoicePort)
+}
+
+// vscodeStateEvent is the part of a "voice:state" the extension draws.
+func vscodeStateEvent(m map[string]any) map[string]any {
+	active, _ := m["active"].(bool)
+	phase, _ := m["phase"].(string)
+	label, _ := m["label"].(string)
+	hearing, _ := m["hearing"].(bool)
+	if !active {
+		phase, label, hearing = "", "", false
+	}
+	return map[string]any{"type": "state", "phase": phase, "label": strings.TrimPrefix(label, "🗣 "), "hearing": hearing}
 }
 
 func push(c *vscodeClient, ev map[string]any) {

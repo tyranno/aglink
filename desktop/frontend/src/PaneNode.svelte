@@ -428,7 +428,7 @@
           </button>
 
           <button
-            class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.paneId === p.id && voice.phase === "listening" ? "border-red-400 bg-red-50 text-red-600 dark:border-red-500 dark:bg-red-950/40" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
+            class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.paneId === p.id && voice.phase === "listening" ? "border-red-500 bg-red-500 text-white shadow-[0_0_0_3px_rgba(239,68,68,0.3)] animate-pulse dark:border-red-400 dark:bg-red-500" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
             onclick={() => toggleVoiceInput(p.id)}
             disabled={!p.target || (voice.phase !== "idle" && voice.paneId !== p.id) || (voice.paneId === p.id && voice.phase === "transcribing")}
             title={voice.paneId === p.id && voice.phase === "listening" ? "녹음 멈추고 보내기" : "말로 입력 (Ctrl+M)"}
@@ -438,7 +438,7 @@
           </button>
 
           <button
-            class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.convPaneId === p.id ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-950/40" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
+            class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.convPaneId === p.id ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_0_0_3px_rgba(16,185,129,0.3)] dark:border-emerald-400 dark:bg-emerald-500" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
             onclick={() => toggleConversation(p.id)}
             disabled={!p.target || (voice.convPaneId !== p.id && voice.phase !== "idle")}
             title={voice.convPaneId === p.id ? "음성 대화 끝내기" : "음성 대화 (Ctrl+Shift+M) — 답변을 읽어 주고 끝나면 다시 듣습니다"}

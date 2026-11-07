@@ -74,7 +74,12 @@ Get-ChildItem (Join-Path $root "web\extension") -File |
 Write-Host "[3/3] makensis..."
 $makensis = @((Join-Path $env:USERPROFILE '.aglink\tools\nsis-3.11\makensis.exe'),'C:\Program Files (x86)\NSIS\makensis.exe') | Where-Object { (Test-Path $_) -and ((& $_ -VERSION) -match '^v3') } | Select-Object -First 1
 if (-not $makensis) { throw "NSIS 3 (makensis.exe) not found" }
-& $makensis /INPUTCHARSET UTF8 (Join-Path $here "aglink-setup.nsi")
+# Stamp the installer with the version aglink itself reports (host/version.go).
+$verSrc = Get-Content -Raw (Join-Path $root "host\version.go")
+$base = [int]([regex]::Match($verSrc, 'versionBaseCount\s*=\s*(\d+)').Groups[1].Value)
+$version = "1.2." + ([int]$count - $base)
+Write-Host ("  installer version: " + $version)
+& $makensis /INPUTCHARSET UTF8 "/DVERSION=$version" (Join-Path $here "aglink-setup.nsi")
 if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
 
 $out = Join-Path $root "aglink-Setup.exe"

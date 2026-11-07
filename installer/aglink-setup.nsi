@@ -10,6 +10,10 @@
 !define PRODUCT_NAME "aglink"
 !define PRODUCT_PUBLISHER "aglink"
 !define PRODUCT_EXE "aglink.exe"
+; build-installer.ps1 passes /DVERSION=1.2.<patch>, the same number aglink reports.
+!ifndef VERSION
+  !define VERSION "1.2.0"
+!endif
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 
 Name "${PRODUCT_NAME}"
@@ -37,11 +41,11 @@ Unicode true
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "Korean"
 
-VIProductVersion "1.2.0.0"
+VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=${LANG_KOREAN} "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey /LANG=${LANG_KOREAN} "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=${LANG_KOREAN} "FileDescription" "aglink Installer"
-VIAddVersionKey /LANG=${LANG_KOREAN} "FileVersion" "1.2.0.0"
+VIAddVersionKey /LANG=${LANG_KOREAN} "FileVersion" "${VERSION}.0"
 
 ; ===== Install =====
 Section "Install"
@@ -106,7 +110,9 @@ Section "Install"
     ; --- Start Menu shortcuts ---
     CreateDirectory "$SMPROGRAMS\aglink"
     CreateShortcut "$SMPROGRAMS\aglink\aglink 데스크톱.lnk" "$INSTDIR\aglink-desktop.exe"
-    CreateShortcut "$SMPROGRAMS\aglink\aglink 웹 UI.lnk" "http://127.0.0.1:27271"
+    ; A .lnk cannot point at a URL (it came out with no target); use a .url.
+    Delete "$SMPROGRAMS\aglink\aglink 웹 UI.lnk"
+    WriteINIStr "$SMPROGRAMS\aglink\aglink 웹 UI.url" "InternetShortcut" "URL" "http://127.0.0.1:27271"
     CreateShortcut "$SMPROGRAMS\aglink\설치·설정 가이드 (AI용).lnk" "$INSTDIR\AI-SETUP.md"
     CreateShortcut "$SMPROGRAMS\aglink\크롬 확장 폴더 열기.lnk" "$INSTDIR\chrome-extension"
     CreateShortcut "$SMPROGRAMS\aglink\제거.lnk" "$INSTDIR\uninstall.exe"
@@ -114,7 +120,7 @@ Section "Install"
     ; --- Uninstaller + Add/Remove Programs ---
     WriteUninstaller "$INSTDIR\uninstall.exe"
     WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
-    WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "1.2.0"
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
     WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
     WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
@@ -153,6 +159,7 @@ Section "Uninstall"
     Delete "$DESKTOP\aglink.lnk"
     Delete "$SMPROGRAMS\aglink\aglink 데스크톱.lnk"
     Delete "$SMPROGRAMS\aglink\aglink 웹 UI.lnk"
+    Delete "$SMPROGRAMS\aglink\aglink 웹 UI.url"
     Delete "$SMPROGRAMS\aglink\설치·설정 가이드 (AI용).lnk"
     Delete "$SMPROGRAMS\aglink\크롬 확장 폴더 열기.lnk"
     Delete "$SMPROGRAMS\aglink\제거.lnk"

@@ -50,9 +50,10 @@ Build-GoHelper "web" "aglink-web.exe"
 # Plain go build leaves out the icon and manifest that wails build adds, so
 # the installed app showed the blank default icon on the taskbar and in
 # shortcuts. Compile them into a .syso that go build picks up, then remove it.
+# The icon goes in as group 3, the ID wails loads the window icon from.
 $syso = Join-Path $root "desktop\rsrc_windows_amd64.syso"
 Push-Location (Join-Path $root "desktop")
-& go run github.com/tc-hib/go-winres@v0.3.3 simply --icon build\windows\icon.ico --manifest gui --arch amd64 --out rsrc
+& go run github.com/tc-hib/go-winres@v0.3.3 make --in build\windows\winres.json --arch amd64 --out rsrc
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "desktop icon resource failed" }
 Pop-Location
 try {

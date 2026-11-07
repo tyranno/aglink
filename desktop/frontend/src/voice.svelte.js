@@ -50,6 +50,24 @@ const CONV_SILENCE_STOP_MS = 2200; // conversation mode: room for "음…" mid-s
 const EARLY_STOP_MS = 800; // conversation mode with fast recognition: a pause this long is tried as the end
 const SENTENCE_END_RE = /(요|니다|죠)[.!?~]*$|(까|다|네|야|지|어|아|해|래|게|자|니|군|걸)[.!?~]+$/; // a finished Korean sentence
 const GOES_ON_RE = /(니까|는데|는데요)[.~]*$/; // "그러니까…", "했는데…" lead into more
+// Silero VAD (VoiceService.VadProbs) next to the level gate: a chunk counts as
+// speech only when it is loud enough and the model also hears a voice in it,
+// so a fan, the TV's music or a door neither starts a clip nor keeps one open.
+// No answer (not installed, starting, stuck) leaves the level alone to decide.
+const VAD_ON = 0.5; // speech probability that starts speech
+const VAD_OFF = 0.35; // ...and under which it ends (Silero's own hysteresis)
+const VAD_STALE_MS = 400; // an answer older than this is not trusted
+const VAD_LOG_CHUNKS = 6; // a loud stretch the VAD turned down this long (~0.5 s) is logged
+// Smart Turn v3 (VoiceService.TurnEnd) at a short pause: from the sound of the
+// turn so far it tells a finished sentence from a "음…" or a rising "그래서".
+// Sure it is finished: sent at once. Sure it is not: the pause may run to
+// TURN_HOLD_MS before the clip ends. In between, or with no model, the fixed
+// pauses and tryEarlyStop's transcript check decide as before.
+const TURN_PAUSE_MS = [400, 1200]; // pauses at which the turn so far is checked
+const TURN_COMPLETE = 0.85; // the model's own bar is 0.5; cutting the user off is worse than waiting
+const TURN_UNFINISHED = 0.3;
+const TURN_HOLD_MS = 3500; // hard cap on a pause the model says is mid-thought
+const TURN_MAX_S = 8; // the model reads the last 8 s
 const ECHO_TAIL_MS = 1000; // speech starting this soon after the reading may be its tail
 const NO_SPEECH_MS = 8000; // give up if nothing is said
 const CONV_NO_SPEECH_MS = 20000; // conversation mode re-opens the mic after this much silence
@@ -329,6 +347,10 @@ function speakerMinFor(mixed) {
 }
 
 let recorder = null; // active recording session
+let vadSeq = 0; // names each mic stream fed to the VAD
+let vadTrusted = false; // the VAD has answered lately; logged when it comes and goes
+let vadMissingLogged = false;
+let turnMissingLogged = false;
 let resumeTimer = null; // conversation mode: waits for the reading to finish
 let endAfterReply = false; // "매번 부르기": the answer read out goes back to waiting for the name
 let convActiveAt = 0; // conversation mode: last time something was said or answered
@@ -939,6 +961,12 @@ async function startRecording(paneId, barge = false) {
     prefix: "", // what the user said over the reading
     earlyFor: 0, // lastSpeechAt of the pause already tried as the end
     bargeDone: Promise.resolve(), // segment checks in flight
+    vad: newVad("rec"),
+    turnFor: -1, // lastSpeechAt of the pause the turn model has been asked about
+    turnStep: 0, // ...how many of TURN_PAUSE_MS it has been asked at
+    turnEnd: -1, // lastSpeechAt of a pause the model called the end
+    turnEndChunk: 0, // chunks there were when it said so
+    turnHold: -1, // lastSpeechAt of a pause the model called mid-thought
   };
   recorder = rec;
 
@@ -946,6 +974,7 @@ async function startRecording(paneId, barge = false) {
     if (recorder !== rec) return;
     const input = e.inputBuffer.getChannelData(0);
     rec.chunks.push(new Float32Array(input));
+    feedVad(rec.vad, input, ctx.sampleRate);
     let sum = 0;
     for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
     const rms = Math.sqrt(sum / input.length);
@@ -984,7 +1013,10 @@ async function startRecording(paneId, barge = false) {
     // never trust a gain below ECHO_GAIN_MIN while a reply is playing.
     const echoFloor = ref > 0 ? Math.max(echoGain ?? 0, ECHO_GAIN_MIN) * ref * ECHO_MARGIN : 0;
     const threshold = Math.max(0.012, rec.noiseFloor * 3, echoFloor);
-    if (rms > threshold) {
+    const loud = rms > threshold;
+    const vad = vadSays(rec.vad, now);
+    noteVadRun(rec, loud && vad === false, rec.barge ? "barge" : "rec");
+    if (loud && vad !== false) {
       if (rec.firstSpeechChunk < 0) {
         rec.firstSpeechChunk = rec.chunks.length - 1;
         rec.firstSpeechAt = now;
@@ -1011,9 +1043,23 @@ async function startRecording(paneId, barge = false) {
       }
       return;
     }
+    if (rec.firstSpeechChunk >= 0) {
+      const step = rec.turnFor === rec.lastSpeechAt ? rec.turnStep : 0;
+      if (step < TURN_PAUSE_MS.length && now - rec.lastSpeechAt > TURN_PAUSE_MS[step] && !rec.turnBusy) checkTurn(rec, step);
+      // The model's "finished" is acted on a chunk later, and two if this one
+      // is loud: the VAD answers a chunk behind, so speech starting again just
+      // as the model answered is not yet counted.
+      if (rec.turnEnd === rec.lastSpeechAt && rec.chunks.length > rec.turnEndChunk + (loud ? 1 : 0)) {
+        stopRecording(true);
+        return;
+      }
+    }
     if (rec.firstSpeechChunk >= 0 && voice.fast && voice.convPaneId === paneId && now - rec.lastSpeechAt > EARLY_STOP_MS && rec.earlyFor !== rec.lastSpeechAt) tryEarlyStop(rec);
-    if (rec.firstSpeechChunk >= 0 && now - rec.lastSpeechAt > (voice.convPaneId === paneId ? CONV_SILENCE_STOP_MS : SILENCE_STOP_MS)) stopRecording(true);
-    else if (rec.firstSpeechChunk < 0 && rec.prefix && now - Math.max(rec.lastSpeechAt, rec.startedAt) > CONV_SILENCE_STOP_MS) stopRecording(true);
+    const pause = voice.convPaneId === paneId ? CONV_SILENCE_STOP_MS : SILENCE_STOP_MS;
+    if (rec.firstSpeechChunk >= 0 && now - rec.lastSpeechAt > (rec.turnHold === rec.lastSpeechAt ? Math.max(pause, TURN_HOLD_MS) : pause)) {
+      if (rec.turnHold === rec.lastSpeechAt) vlog(`turn: held pause reached ${(TURN_HOLD_MS / 1000).toFixed(1)} s, sending`);
+      stopRecording(true);
+    } else if (rec.firstSpeechChunk < 0 && rec.prefix && now - Math.max(rec.lastSpeechAt, rec.startedAt) > CONV_SILENCE_STOP_MS) stopRecording(true);
     else if (rec.firstSpeechChunk < 0 && now - rec.startedAt > (voice.convPaneId === paneId ? CONV_NO_SPEECH_MS : NO_SPEECH_MS)) {
       stopRecording(false);
       // Conversation mode never times out: it only ends on "그만", 🗣 or the
@@ -1044,6 +1090,111 @@ function endIfIdle(paneId) {
   vlog("conversation idle → waiting for the wake word");
   endConversation();
   return true;
+}
+
+// newVad is one mic's stream into the VAD; Silero keeps its state per stream.
+function newVad(tag) {
+  return { id: `${tag}-${++vadSeq}`, pending: [], busy: false, first: true, off: false, prob: 0, at: 0, speech: false };
+}
+
+// feedVad sends a chunk to the VAD, one request at a time per stream; chunks
+// recorded while one is out go with the next, so the stream stays whole.
+function feedVad(v, input, rate) {
+  if (v.off) return;
+  v.pending.push(downsample(input, rate, TARGET_RATE));
+  if (v.busy) return;
+  const pcm = pcm16Base64(concat(v.pending));
+  v.pending = [];
+  v.busy = true;
+  const reset = v.first;
+  v.first = false;
+  VoiceService.VadProbs(v.id, pcm, reset)
+    .then((probs) => {
+      if (!probs.length) return;
+      if (!vadTrusted) vlog("vad: answering — speech now needs both the level and a voice");
+      vadTrusted = true;
+      v.prob = Math.max(...probs);
+      v.at = performance.now();
+      if (v.prob >= VAD_ON) v.speech = true;
+      else if (v.prob < VAD_OFF) v.speech = false;
+    })
+    .catch((err) => {
+      const msg = String(err?.message || err);
+      if (msg.includes("starting")) return;
+      if (msg.includes("not installed")) {
+        v.off = true;
+        if (!vadMissingLogged) vlog("vad: not installed — the level alone decides");
+        vadMissingLogged = true;
+        return;
+      }
+      if (vadTrusted) vlog(`vad: failed (${msg}) — the level alone decides`);
+      vadTrusted = false;
+    })
+    .finally(() => {
+      v.busy = false;
+    });
+}
+
+// vadSays: true or false when the VAD has heard this stream lately, null when
+// it has not and the level must decide alone.
+function vadSays(v, now) {
+  return v.off || now - v.at > VAD_STALE_MS ? null : v.speech;
+}
+
+// noteVadRun logs a loud stretch the VAD did not take for speech, once it is over.
+function noteVadRun(o, turnedDown, tag) {
+  if (turnedDown) {
+    o.vadRun = (o.vadRun || 0) + 1;
+    o.vadPeak = Math.max(o.vadPeak || 0, o.vad.prob);
+    return;
+  }
+  if (o.vadRun >= VAD_LOG_CHUNKS) vlog(`vad: ${tag}: ${((o.vadRun * 4096) / o.ctx.sampleRate).toFixed(1)} s of sound with no voice in it (p ≤ ${o.vadPeak.toFixed(2)}) ignored`);
+  o.vadRun = 0;
+  o.vadPeak = 0;
+}
+
+// checkTurn asks the turn model whether the user has finished, from the last
+// TURN_MAX_S of the clip with the pause so far at its end. Its answer counts
+// only if nobody has spoken since; step is which of TURN_PAUSE_MS this is.
+function checkTurn(rec, step) {
+  const at = rec.lastSpeechAt;
+  rec.turnFor = at;
+  rec.turnStep = step + 1;
+  rec.turnBusy = true;
+  const rate = rec.ctx.sampleRate;
+  const chunkMs = (4096 / rate) * 1000;
+  const from = Math.max(0, rec.firstSpeechChunk - Math.ceil(PREROLL_MS / chunkMs), rec.chunks.length - Math.ceil((TURN_MAX_S * 1000) / chunkMs));
+  const pcm = pcm16Base64(downsample(concat(rec.chunks.slice(from)), rate, TARGET_RATE));
+  const pause = ((performance.now() - at) / 1000).toFixed(1);
+  const asked = performance.now();
+  VoiceService.TurnEnd(pcm)
+    .then((p) => {
+      if (p < 0) {
+        if (!turnMissingLogged) vlog("turn: model unavailable — fixed pauses decide");
+        turnMissingLogged = true;
+        return;
+      }
+      turnMissingLogged = false;
+      const took = Math.round(performance.now() - asked);
+      const said = `${p.toFixed(2)} at ${pause} s pause (${took} ms)`;
+      if (recorder !== rec || rec.lastSpeechAt !== at) {
+        vlog(`turn: ${said}, but speech went on`);
+      } else if (p >= TURN_COMPLETE) {
+        vlog(`turn: complete ${said}`);
+        rec.turnEnd = at;
+        rec.turnEndChunk = rec.chunks.length;
+      } else if (p < TURN_UNFINISHED) {
+        if (rec.turnHold !== at) vlog(`turn: unfinished ${said} — waiting up to ${(TURN_HOLD_MS / 1000).toFixed(1)} s`);
+        else vlog(`turn: still unfinished ${said}`);
+        rec.turnHold = at;
+      } else {
+        vlog(`turn: unsure ${said}`);
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      rec.turnBusy = false;
+    });
 }
 
 // takeClip encodes the audio from just before the first speech as whisper input.
@@ -1091,6 +1242,12 @@ function tryEarlyStop(rec) {
       return;
     }
     if (recorder !== rec || rec.lastSpeechAt !== at || !SENTENCE_END_RE.test(text) || GOES_ON_RE.test(text)) return;
+    // The turn model heard a voice trailing off mid-thought; whisper still
+    // writes a full stop after "…했어요" that is about to go on.
+    if (rec.turnHold === at) {
+      vlog(`early: ${quote(text)} reads finished, but the turn model says not yet — waiting`);
+      return;
+    }
     vlog(`early end ${quote(text)}`);
     stopRecording(true, text);
   })();
@@ -3260,12 +3417,13 @@ async function startWake() {
   const source = ctx.createMediaStreamSource(stream);
   const node = ctx.createScriptProcessor(4096, 1, 1);
   const startedAt = performance.now();
-  const w = { stream, ctx, source, node, chunks: [], first: -1, firstAt: 0, lastAt: 0, loud: 0, noise: 0, noiseN: 0, busy: false };
+  const w = { stream, ctx, source, node, chunks: [], first: -1, firstAt: 0, lastAt: 0, loud: 0, noise: 0, noiseN: 0, busy: false, vad: newVad("wake") };
   wakeRec = w;
   node.onaudioprocess = (e) => {
     if (wakeRec !== w) return;
     const input = e.inputBuffer.getChannelData(0);
     w.chunks.push(new Float32Array(input));
+    feedVad(w.vad, input, ctx.sampleRate);
     let sum = 0;
     for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
     const rms = Math.sqrt(sum / input.length);
@@ -3275,14 +3433,17 @@ async function startWake() {
       w.noiseN++;
       return;
     }
-    if (rms > Math.max(0.012, w.noise * 3)) {
+    const loud = rms > Math.max(0.012, w.noise * 3);
+    const vad = vadSays(w.vad, now);
+    noteVadRun(w, loud && vad === false, "wake");
+    if (loud && vad !== false) {
       if (w.first < 0) {
         w.first = w.chunks.length - 1;
         w.firstAt = now;
       }
       w.lastAt = now;
       w.loud++;
-    } else if (w.first < 0) {
+    } else if (!loud && w.first < 0) {
       // Follow a slowly changing room, but not the talking itself.
       w.noise = w.noise * 0.98 + rms * 0.02;
     }

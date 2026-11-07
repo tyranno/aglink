@@ -29,3 +29,21 @@ copy speaker_server.py .
 
 Say "목소리 등록" in voice conversation to record ~15 s of the user (saved as
 `me.wav` / `me.pt`); "목소리 등록 해제" forgets it.
+
+## turn-server
+
+`turn_server.py` (used by `turn.go`) hears whether the mic has a voice in it
+(Silero VAD) and whether the user has finished their turn (Smart Turn v3), on
+the CPU with ONNX Runtime — no torch. Same venv (`onnxruntime`, `numpy`), plus
+the two models under `turn/`:
+
+```
+venv\Scripts\python -m pip install onnxruntime numpy
+mkdir turn
+curl -Lo turn\silero_vad.onnx https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+curl -Lo turn\smart-turn-v3.2-cpu.onnx https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
+copy turn_server.py .
+```
+
+Either model may be left out; without both, the mic goes by its level and
+fixed pauses as before.

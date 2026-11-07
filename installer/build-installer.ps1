@@ -36,6 +36,14 @@ function Build-GoHelper($relDir, $outName, $ldflags = "") {
 }
 
 $env:GOWORK = "off"
+# The desktop binary embeds frontend\dist; rebuild it so UI changes are not
+# shipped stale (plain go build never touches it).
+Push-Location (Join-Path $root "desktop\frontend")
+if (-not (Test-Path "node_modules")) { & cmd /c "npm install --no-audit --no-fund 2>&1"; if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm install failed" } }
+& cmd /c "npm run build 2>&1" | Out-Null
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "desktop frontend build failed" }
+Pop-Location
+Write-Host "  built desktop frontend"
 Build-GoHelper "chat" "aglink-chat.exe"
 Build-GoHelper "screen" "aglink-screen.exe"
 Build-GoHelper "web" "aglink-web.exe"

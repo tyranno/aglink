@@ -104,6 +104,12 @@ func (r *remoteChatChannel) Done(tgt Target, _ int64) {
 	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "done", Target: &tgt}})
 }
 func (r *remoteChatChannel) Progress(tgt Target, _ int64, text string) {
+	if isNarration(text) {
+		// The model's mid-turn narration: shown in the conversation itself,
+		// styled apart from the final answer (not persisted to history).
+		r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "narration", Text: narrationBody(text), Target: &tgt}})
+		return
+	}
 	r.push(controlOut{Kind: "frame", Frame: &wsFrame{Type: "progress", Text: text, Target: &tgt}})
 }
 func (r *remoteChatChannel) EchoUser(tgt Target, _ int64, text, origin string) {

@@ -37,6 +37,9 @@ type queuedMsg struct {
 	// merged is how many user messages this entry carries (>1 after
 	// mergeQueuedHead combined a backlog; 0/1 = a single message).
 	merged int
+	// tgMsgIDs are the Telegram message ids this entry answers (receipt
+	// reactions: 👀 when accepted, 👍 when its turn finishes).
+	tgMsgIDs []int
 }
 
 // conversation is where this message's queue/timeout/cancel notices belong: the
@@ -236,11 +239,14 @@ func (b *Bot) isAllowed(userID int64, username string) bool {
 // can delegate to the Hub. Registered in the Hub as a global channel — it can
 // address any chatID, so it receives fan-out for every conversation.
 type telegramChannel struct {
-	api *tgbotapi.BotAPI
+	api    *tgbotapi.BotAPI
+	typing *typingLoops // nil (tests): Typing sends a single action
 }
 
 func newTelegramChannel(api *tgbotapi.BotAPI) *telegramChannel {
-	return &telegramChannel{api: api}
+	t := &telegramChannel{api: api}
+	t.typing = newTypingLoops(t.sendTyping)
+	return t
 }
 
 // Every telegramChannel method ignores the Target: the Hub already withholds
@@ -268,17 +274,36 @@ func (t *telegramChannel) SendPhoto(_ Target, chatID int64, png []byte, caption 
 	return err
 }
 
+// Typing shows "typing…" and keeps it up until Done (Telegram drops a single
+// chat action after ~5s — see typingLoops).
 func (t *telegramChannel) Typing(_ Target, chatID int64) {
+	if t.typing == nil {
+		t.sendTyping(chatID)
+		return
+	}
+	t.typing.start(chatID)
+}
+
+func (t *telegramChannel) sendTyping(chatID int64) {
 	if _, err := t.api.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
 		log.Printf("[tg] typing error: %v", err)
 	}
 }
 
-// Done is a no-op for Telegram — it has no persistent "working" indicator to clear.
-func (t *telegramChannel) Done(Target, int64) {}
+// Done stops the typing indicator Typing keeps alive.
+func (t *telegramChannel) Done(_ Target, chatID int64) {
+	if t.typing != nil {
+		t.typing.stop(chatID)
+	}
+}
 
-// Progress is a no-op for Telegram — it has no live progress view to update.
-func (t *telegramChannel) Progress(Target, int64, string) {}
+// Progress relays the model's mid-turn narration as a normal message. Tool-use
+// lines are dropped — Telegram has no live progress view to put them in.
+func (t *telegramChannel) Progress(tgt Target, chatID int64, text string) {
+	if isNarration(text) {
+		_ = t.Send(tgt, chatID, narrationBody(text))
+	}
+}
 
 // EchoUser relays user input that originated from the web to Telegram. A Telegram
 // user's own message is already visible in their client, so telegram-origin is a
@@ -454,7 +479,8 @@ func (b *Bot) Run() {
 				b.handleAttach(b.sessionReply(tgt), chatID, laneKeyOf(tgt), []string{"!attach", name})
 				continue
 			}
-			b.dispatchText(chatID, text, OriginTelegram)
+			b.react(chatID, []int{update.Message.MessageID}, reactionSeen)
+			b.dispatchTextMsg(chatID, text, OriginTelegram, update.Message.MessageID)
 		}
 	}
 }
@@ -468,6 +494,16 @@ func (b *Bot) dispatchText(chatID int64, text, origin string) {
 // dispatchTextOpt is dispatchText with control over queue merging: noMerge
 // keeps the message a turn of its own (see mergeQueuedHead).
 func (b *Bot) dispatchTextOpt(chatID int64, text, origin string, noMerge bool) {
+	b.dispatchTextFull(chatID, text, origin, noMerge, 0)
+}
+
+// dispatchTextMsg is dispatchText for a Telegram message, remembering its id
+// so the finished turn can mark it with a reaction.
+func (b *Bot) dispatchTextMsg(chatID int64, text, origin string, tgMsgID int) {
+	b.dispatchTextFull(chatID, text, origin, false, tgMsgID)
+}
+
+func (b *Bot) dispatchTextFull(chatID int64, text, origin string, noMerge bool, tgMsgID int) {
 	// Mirror the user's input to the OTHER channel so both web and Telegram show
 	// what was typed, wherever it was entered. Each channel no-ops for its own
 	// origin (ChannelSender.EchoUser), so the origin channel never double-echoes.
@@ -479,7 +515,11 @@ func (b *Bot) dispatchTextOpt(chatID int64, text, origin string, noMerge bool) {
 		b.dispatchHook(chatID, text)
 		return
 	}
-	b.dispatch(queuedMsg{chatID: chatID, text: text, origin: origin, noMerge: noMerge})
+	msg := queuedMsg{chatID: chatID, text: text, origin: origin, noMerge: noMerge}
+	if tgMsgID != 0 {
+		msg.tgMsgIDs = []int{tgMsgID}
+	}
+	b.dispatch(msg)
 }
 
 // dispatchTargeted routes a web message to its explicit target: the global
@@ -559,10 +599,10 @@ func (b *Bot) dispatch(msg queuedMsg) {
 			// Queued follow-ups are folded into one turn when the running one ends
 			// (finishTurn → mergeQueuedHead), so a per-message position is moot.
 			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID,
-				"📋 이 대화가 처리 중입니다 — 지금 작업이 끝나면 이어서 실행됩니다 (그 사이 보낸 메시지는 순서대로 하나로 합쳐 처리됩니다).")
+				"👀 받았어요. 지금 작업 끝나면 이어서 볼게요.")
 		case !msg.isTask:
 			_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
-				"📋 이 대화가 처리 중입니다 — 앞선 요청 %d건 뒤에 이어서 실행됩니다.", ahead))
+				"👀 받았어요. 앞의 요청 %d건 끝나면 이어서 볼게요.", ahead))
 		default:
 			log.Printf("[scheduler] 예약 작업: 대화 처리 중 — 뒤에 대기")
 		}
@@ -587,7 +627,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 	b.mu.Unlock()
 	if !msg.isTask {
 		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, fmt.Sprintf(
-			"📋 대기열 추가 — 동시 실행 대화 %d/%d. 앞선 대화가 끝나면 시작됩니다.", running, maxW))
+			"👀 받았어요. 다른 대화 작업(%d/%d)이 끝나는 대로 시작할게요.", running, maxW))
 	} else {
 		log.Printf("[scheduler] 예약 작업 대기열 추가 — 동시 대화 %d/%d", running, maxW)
 	}
@@ -785,6 +825,8 @@ func (b *Bot) runTurn(key string, msg queuedMsg, queued bool) {
 		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, turnTimeoutMessage(cause, idle, effCap))
 	case ctx.Err() == context.Canceled:
 		_ = b.ReplyTo(msg.conversation()).Send(msg.chatID, "🛑 작업이 취소되었습니다.")
+	default:
+		b.react(msg.chatID, msg.tgMsgIDs, reactionDone)
 	}
 }
 

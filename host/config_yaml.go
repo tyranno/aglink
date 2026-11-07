@@ -58,6 +58,10 @@ type yamlConfig struct {
 	Context struct {
 		SummaryOnReset *bool `yaml:"summary_on_reset,omitempty"` // nil → true
 	} `yaml:"context"`
+	// UI: how turns read in the chat.
+	UI struct {
+		TurnStats bool `yaml:"turn_stats,omitempty"` // per-turn usage/cost + "작업 완료" lines; default off
+	} `yaml:"ui,omitempty"`
 	Scripts struct {
 		Allow           bool     `yaml:"allow"`
 		AllowedCommands []string `yaml:"allowed_commands"`
@@ -211,6 +215,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	if y.Context.SummaryOnReset != nil {
 		c.SummaryOnReset = *y.Context.SummaryOnReset
 	}
+	c.TurnStats = y.UI.TurnStats
 	c.WebControl = y.WebControl.Enabled
 	c.WebBinaryPath = y.WebControl.BinaryPath
 	c.NotionControl = y.NotionControl.Enabled
@@ -306,6 +311,7 @@ func configToYAML(c *Config) *yamlConfig {
 	ap, sor := c.ScreenPromptAdaptive, c.SummaryOnReset
 	y.ScreenControl.AdaptivePrompt = &ap
 	y.Context.SummaryOnReset = &sor
+	y.UI.TurnStats = c.TurnStats
 	y.WebControl.Enabled = c.WebControl
 	y.WebControl.BinaryPath = c.WebBinaryPath
 	y.NotionControl.Enabled = c.NotionControl

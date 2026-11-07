@@ -212,8 +212,30 @@ func workerBaseArgs(cfg *Config, req RunRequest, screenBin, webBin, goonoBin str
 	default:
 		args = append(args, "--session-id", req.SessionID)
 	}
-	args = append(args, pluginWorkerArgsOpts(cfg, screenBin, webBin, goonoBin, req.ScreenBrief)...)
+	args = append(args, withChatStylePrompt(pluginWorkerArgsOpts(cfg, screenBin, webBin, goonoBin, req.ScreenBrief))...)
 	return args
+}
+
+// chatStylePrompt tells the worker how to talk in a chat: announce a multi-step
+// job and each new step in one short sentence (those lines reach the user as
+// narration while the turn runs — see narrationTracker), and answer conclusion
+// first. Every turn pays for it, so it stays short. Kept on one line with no
+// quotes: without a plugin it is the only --append-system-prompt value, and a
+// .cmd claude shim passes args through cmd.exe (see preferNativeClaude).
+const chatStylePrompt = "대화 방식: 이것은 채팅입니다. 여러 단계 작업은 시작 전에 무엇을 할지 한 문장으로 먼저 말하고, 다음 단계로 넘어갈 때도 한 문장으로 짧게 알리세요(이 말은 작업 중에 사용자에게 바로 전달됩니다). 최종 답은 결론부터, 대화하듯 간결하게. 표와 제목은 정말 필요할 때만."
+
+// withChatStylePrompt puts chatStylePrompt in front of the plugin args' appended
+// system prompt, or adds one when no plugin supplied any. The CLI accepts only a
+// single --append-system-prompt (see pluginWorkerArgs).
+func withChatStylePrompt(pluginArgs []string) []string {
+	out := append([]string(nil), pluginArgs...)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == "--append-system-prompt" {
+			out[i+1] = chatStylePrompt + "\n\n" + out[i+1]
+			return out
+		}
+	}
+	return append(out, "--append-system-prompt", chatStylePrompt)
 }
 
 // Run executes a Worker turn in the project directory and returns the final text.
@@ -237,19 +259,29 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 		// small buffered channels) so a slow callback — e.g. a Telegram send — can
 		// never backpressure the stdout reader and stall the worker. Text is dropped
 		// if its buffer fills; images use a larger buffer and are also drop-safe.
-		progressCh := make(chan string, 32)
+		// Narration shares the progress channel (tagged) so it keeps its order
+		// relative to the tool lines around it.
+		type progressItem struct {
+			text      string
+			narration bool
+		}
+		progressCh := make(chan progressItem, 32)
 		imageCh := make(chan capturedImage, 16)
 		consumerDone := make(chan struct{})
 		go func() {
 			for progressCh != nil || imageCh != nil {
 				select {
-				case msg, ok := <-progressCh:
+				case it, ok := <-progressCh:
 					if !ok {
 						progressCh = nil
 						continue
 					}
-					if req.OnProgress != nil {
-						req.OnProgress(msg)
+					if it.narration {
+						if req.OnNarration != nil {
+							req.OnNarration(it.text)
+						}
+					} else if req.OnProgress != nil {
+						req.OnProgress(it.text)
 					}
 				case img, ok := <-imageCh:
 					if !ok {
@@ -263,11 +295,20 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 			}
 			close(consumerDone)
 		}()
+		var narr narrationTracker
 		stdout, stderr, err := r.streamTurn(ctx, req, args, func(line string) {
+			if req.OnNarration != nil {
+				if text := narr.feed(line); text != "" {
+					select {
+					case progressCh <- progressItem{text: text, narration: true}:
+					default: // consumer busy — drop this narration
+					}
+				}
+			}
 			if req.OnProgress != nil {
 				if msg := formatProgressEvent(line); msg != "" {
 					select {
-					case progressCh <- msg:
+					case progressCh <- progressItem{text: msg}:
 					default: // consumer busy — drop this progress line
 					}
 				}

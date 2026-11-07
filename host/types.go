@@ -61,6 +61,11 @@ type Config struct {
 	// true. 요약 실패 시 기존 방식으로 폴백. See convsummary.go.
 	SummaryOnReset bool
 
+	// TurnStats (yaml ui.turn_stats, default false) sends the per-turn usage/cost
+	// footer and the "✅ 작업 완료 (N초)" notice after each answer. The stats are
+	// recorded either way (usage views, get_usage_stats).
+	TurnStats bool
+
 	ConversationTTLDays int    // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 	WebChat             bool   // local web chat transport enabled
 	WebChatAddr         string // web chat bind address (localhost only), default 127.0.0.1:27271
@@ -449,6 +454,12 @@ type RunRequest struct {
 	// by claudeRunner; codexRunner ignores it (codex already streams JSONL events
 	// via logCodexEvent).
 	OnProgress func(string)
+
+	// OnNarration, when non-nil, is called with the model's own mid-turn text: an
+	// assistant text block that a later tool call proved was not the final answer
+	// (see narrationTracker). Only claudeRunner's stream-json turns (one-shot and
+	// persistent) produce it; other runners ignore it.
+	OnNarration func(string)
 
 	// OnImage, when non-nil, is called with each image (PNG bytes + caption) that a
 	// tool returns during the turn — e.g. a screen MCP screenshot/capture_window/

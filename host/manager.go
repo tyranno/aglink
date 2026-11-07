@@ -37,8 +37,8 @@ type Manager struct {
 
 	telegramMu sync.Mutex // serializes turns on the single global telegram conversation
 
-	// durationsMu/turnDurations back the "recent average" turn-time estimate
-	// shown when a new turn starts — see recordTurnDuration/estimateTurnDuration.
+	// durationsMu/turnDurations keep recent turn times per backend — see
+	// recordTurnDuration/estimateTurnDuration.
 	durationsMu   sync.Mutex
 	turnDurations map[string][]time.Duration // backend name → rolling window of completed-turn durations
 
@@ -546,6 +546,7 @@ func (m *Manager) CompactTelegramConversation(ctx context.Context, chatID int64,
 	}
 
 	s.Typing(chatID)
+	defer s.Done(chatID) // stops the typing indicator Typing started
 	_ = s.Send(chatID, "🗜 대화 압축 중...")
 
 	res, err := client.Run(ctx, RunRequest{
@@ -1103,18 +1104,6 @@ func (m *Manager) estimateTurnDuration(backend string) (avg time.Duration, sampl
 	return total / time.Duration(len(ds)), len(ds), true
 }
 
-// formatMinSec renders a duration as "N분 M초" (or "M초" under a minute),
-// matching runHeartbeat's own elapsed-time formatting below.
-func formatMinSec(d time.Duration) string {
-	secs := int(d.Seconds())
-	mins := secs / 60
-	secs %= 60
-	if mins == 0 {
-		return fmt.Sprintf("%d초", secs)
-	}
-	return fmt.Sprintf("%d분 %d초", mins, secs)
-}
-
 // runHeartbeat sends a periodic "still going" text message every 2 minutes
 // while a Worker turn is in flight, and — critically — also refreshes the
 // channel's live "typing" signal on each tick (s.Typing), not just once at
@@ -1130,42 +1119,67 @@ func formatMinSec(d time.Duration) string {
 // instead of the routine message, so the user gets a heads-up (and a chance
 // to !cancel or !timeout) before the turn is stopped. A ctx without a tracker
 // (no watchdog) just gets the routine message.
-func runHeartbeat(ctx context.Context, s MessageSender, chatID int64, label string, startTime time.Time, done <-chan struct{}) {
-	ticker := time.NewTicker(2 * time.Minute)
+//
+// narration (may be nil) is the turn's narration relay: the routine "still
+// going" text is skipped while the model's own narration has reached the user
+// within the last heartbeat interval — it already says the turn is alive, in
+// better words. Warnings are always sent.
+func runHeartbeat(ctx context.Context, s MessageSender, chatID int64, label string, startTime time.Time, done <-chan struct{}, narration *narrationGate) {
+	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	act := turnActivityFrom(ctx)
 	for {
 		select {
 		case <-ticker.C:
 			s.Typing(chatID) // refresh the live-signal independent of the text bubble below
-			_ = s.Send(chatID, heartbeatMessage(label, time.Now(), startTime, act))
+			now := time.Now()
+			msg, warn := heartbeatText(label, now, startTime, act)
+			if warn || !narratedRecently(narration.LastSent(), now) {
+				_ = s.Send(chatID, msg)
+			}
 		case <-done:
 			return
 		}
 	}
 }
 
+// heartbeatInterval is how often runHeartbeat ticks.
+const heartbeatInterval = 2 * time.Minute
+
+// narratedRecently reports whether narration reached the user within the last
+// heartbeat interval (last is zero when none has).
+func narratedRecently(last, now time.Time) bool {
+	return !last.IsZero() && now.Sub(last) < heartbeatInterval
+}
+
 // heartbeatMessage builds one heartbeat line. act may be nil.
 func heartbeatMessage(label string, now, startTime time.Time, act *turnActivity) string {
+	msg, _ := heartbeatText(label, now, startTime, act)
+	return msg
+}
+
+// heartbeatText is heartbeatMessage plus whether the line is a warning (the
+// turn is about to be stopped) rather than the routine "still going" note.
+func heartbeatText(label string, now, startTime time.Time, act *turnActivity) (msg string, warn bool) {
 	elapsed := now.Sub(startTime)
 	mins, secs := int(elapsed.Minutes()), int(elapsed.Seconds())%60
-	msg := fmt.Sprintf("⏳ %s... (%d분 %d초 경과)", label, mins, secs)
+	msg = fmt.Sprintf("⏳ %s... (%d분 %d초 경과)", label, mins, secs)
 	if act == nil {
-		return msg
+		return msg, false
 	}
 	quiet := now.Sub(act.Last())
 	if capLeft := act.Deadline().Sub(now); capLeft > 0 && capLeft <= 2*time.Minute {
 		return fmt.Sprintf("%s — 곧 최대 작업 시간(%s)에 도달합니다. 더 필요하면 !timeout +<분>, 그만두려면 !cancel",
-			msg, formatLimit(act.Deadline().Sub(act.start)))
+			msg, formatLimit(act.Deadline().Sub(act.start))), true
 	}
 	if idleLeft := act.idle - quiet; idleLeft > 0 && idleLeft <= 2*time.Minute {
 		return fmt.Sprintf("%s — %d분째 진행 출력이 없습니다. %s 동안 활동이 없으면 중단됩니다. 그만두려면 !cancel",
-			msg, int(quiet.Minutes()), formatLimit(act.idle))
+			msg, int(quiet.Minutes()), formatLimit(act.idle)), true
 	}
 	if quiet >= 2*time.Minute {
 		msg += fmt.Sprintf(" · 마지막 활동 %d분 전", int(quiet.Minutes()))
 	}
-	return msg
+	return msg, false
 }
 
 // validWorkDirOrHome falls back to the service home when workDir no longer
@@ -1280,6 +1294,18 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	}); ok {
 		onProgress = func(msg string) { ps.Progress(chatID, msg) }
 	}
+	// Relay the model's own mid-turn narration ("먼저 테스트를 돌려볼게요") on the
+	// same path, tagged so each channel can show it as a message of its own
+	// (narration.go). Throttled; closed before the final answer is sent.
+	var narration *narrationGate
+	var onNarration func(string)
+	if ps, ok := s.(interface {
+		Progress(int64, string)
+	}); ok {
+		narration = newNarrationGate(func(text string) { ps.Progress(chatID, narrationPrefix+text) })
+		onNarration = narration.Add
+		defer narration.Close()
+	}
 
 	// Maybe pre-emptively split a long conversation into a fresh continuation
 	// series. This RESETS the CLI session, which throws away the backend's prompt
@@ -1374,14 +1400,11 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		}
 	}
 
-	// Give the user a sense of scale before the wait starts, not just silence
-	// until the (up to 2-minute-away) first heartbeat tick — a turn that
-	// finishes in 90s currently produces zero progress signal at all.
-	if avg, samples, ok := m.estimateTurnDuration(backend); ok {
-		_ = s.Send(chatID, fmt.Sprintf("⏳ 작업 시작 (최근 %d건 평균 %s)", samples, formatMinSec(avg)))
-	}
+	// No "작업 시작" text here: receipt is acknowledged where the message arrives
+	// (a 👀 reaction on Telegram, a ✓ under the bubble on web/desktop), and the
+	// model's own narration covers progress from there.
 	heartbeatDone := make(chan struct{})
-	go runHeartbeat(ctx, s, chatID, "작업 진행 중", startTime, heartbeatDone)
+	go runHeartbeat(ctx, s, chatID, "작업 진행 중", startTime, heartbeatDone, narration)
 
 	// Decide whether to resume the backend's server-side session. Normally we
 	// resume once the conversation has started. Codex is the exception: `exec
@@ -1522,6 +1545,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		Model:       workerModel,
 		OnImage:     onImage,
 		OnProgress:  onProgress,
+		OnNarration: onNarration,
 		OwnerLabel:  screenOwnerLabel(chatID, workConv),
 		ScreenBrief: screenBrief,
 	})
@@ -1561,7 +1585,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			// The retry is a full fresh turn (may take a while); keep a heartbeat
 			// alive for it — the original one was already closed above.
 			recoverDone := make(chan struct{})
-			go runHeartbeat(ctx, s, chatID, "세션 복구 진행 중", startTime, recoverDone)
+			go runHeartbeat(ctx, s, chatID, "세션 복구 진행 중", startTime, recoverDone, narration)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:      recoveryPrompt,
 				WorkDir:     workDir,
@@ -1570,6 +1594,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				Model:       workerModel,
 				OnImage:     onImage,
 				OnProgress:  onProgress,
+				OnNarration: onNarration,
 				OwnerLabel:  screenOwnerLabel(chatID, workConv),
 				ScreenBrief: screenBrief,
 			})
@@ -1590,7 +1615,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			resumeHistory := historyForContext(workConv.History[:pendingIdx], true)
 			resumePrompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, memPath, resumeHistory)
 			recoverDone := make(chan struct{})
-			go runHeartbeat(ctx, s, chatID, "세션 복구 진행 중", startTime, recoverDone)
+			go runHeartbeat(ctx, s, chatID, "세션 복구 진행 중", startTime, recoverDone, narration)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:      resumePrompt,
 				WorkDir:     workDir,
@@ -1599,6 +1624,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				Model:       workerModel,
 				OnImage:     onImage,
 				OnProgress:  onProgress,
+				OnNarration: onNarration,
 				OwnerLabel:  screenOwnerLabel(chatID, workConv),
 				ScreenBrief: screenBrief,
 			})
@@ -1662,7 +1688,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			// Restart the heartbeat for the retry turn. It runs under the same ctx, so
 			// the same activity watchdog (idle window + absolute cap) covers it.
 			retryDone := make(chan struct{})
-			go runHeartbeat(ctx, s, chatID, "재시작 진행 중", startTime, retryDone)
+			go runHeartbeat(ctx, s, chatID, "재시작 진행 중", startTime, retryDone, narration)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:      retryPrompt,
 				WorkDir:     workDir,
@@ -1671,6 +1697,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 				Model:       workerModel,
 				OnImage:     onImage,
 				OnProgress:  onProgress,
+				OnNarration: onNarration,
 				OwnerLabel:  screenOwnerLabel(chatID, workConv),
 				ScreenBrief: screenBrief,
 			})
@@ -1827,12 +1854,17 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// yet include the turn it just watched stream in live, silently losing it
 	// once the client's history reload replaces the DOM (see aglink-chat's
 	// selectTarget/replaceChildren).
+	// Any narration still held back belongs in front of the answer.
+	narration.Close()
 	_ = sendChunked(s, chatID, res.Text)
 
 	// Compact per-turn cache/cost footer (claude only; codex/opencode report no
 	// usage so this stays empty for them). Sent as its own short line, not folded
 	// into res.Text, so it never pollutes saved history or the next prompt.
-	if line := formatUsageLine(turnUsage, convUsage, res.IsError); line != "" {
+	// Off unless ui.turn_stats is set — the numbers are still recorded
+	// (recordTurnStat above) for the usage views.
+	turnStats := m.cfg().TurnStats
+	if line := formatUsageLine(turnUsage, convUsage, res.IsError); line != "" && turnStats {
 		_ = s.Send(chatID, line)
 	}
 
@@ -1854,9 +1886,11 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// Update Worker status to completed
 	_ = m.workerStatus.UpdateStatus(project, workConv.ID, "completed", "")
 
-	// Send completion notification with elapsed time
-	completionMsg := formatCompletion(elapsed)
-	_ = s.Send(chatID, completionMsg)
+	// Completion notice with elapsed time (ui.turn_stats only — the answer
+	// itself already tells the user the turn is done).
+	if turnStats {
+		_ = s.Send(chatID, formatCompletion(elapsed))
+	}
 }
 
 // describeActive returns a human-readable active pointer (used by !status-like replies).

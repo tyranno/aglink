@@ -74,11 +74,14 @@ func mergeQueuedHead(q []queuedMsg) []queuedMsg {
 		return q
 	}
 	texts := make([]string, 0, n)
+	var ids []int
 	for _, m := range q[:n] {
 		texts = append(texts, m.text)
+		ids = append(ids, m.tgMsgIDs...)
 	}
 	merged := head
 	merged.text = strings.Join(texts, mergeQueuedSeparator)
+	merged.tgMsgIDs = ids
 	merged.merged = n
 	out := make([]queuedMsg, 0, len(q)-n+1)
 	out = append(out, merged)

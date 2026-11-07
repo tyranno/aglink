@@ -385,23 +385,33 @@ func TestEstimateTurnDuration_RollingWindowCap(t *testing.T) {
 	}
 }
 
-// End-to-end: the estimate message appears once there's enough turn history
-// for that backend, and never claims an estimate before then.
-func TestHandle_Telegram_ShowsEstimateOnceEnoughHistory(t *testing.T) {
-	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
+// A turn reads as a conversation: by default only the answer is sent — no
+// "작업 시작 (평균…)" lead-in, no usage footer, no "✅ 작업 완료". ui.turn_stats
+// brings the footer and the completion notice back.
+func TestHandle_Telegram_TurnStatsOnlyWhenEnabled(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "ok", OutputTokens: 10, CacheReadTokens: 100, CostUSD: 0.01}}
 	m, _, _ := tgManager(t, fc)
 
-	for i := 1; i <= 4; i++ {
+	for i := 1; i <= 4; i++ { // enough samples that the old estimate would have shown
 		f := &fakeSender{}
 		m.Handle(context.Background(), 1, "작업 진행", OriginTelegram, f)
 		sent := strings.Join(f.sent, "\n")
-		hasEstimate := contains(sent, "최근") && contains(sent, "평균")
-		if i < 3 && hasEstimate {
-			t.Errorf("turn %d: estimate shown too early with only %d prior sample(s): %v", i, i-1, f.sent)
+		if contains(sent, "평균") || contains(sent, "작업 완료") || contains(sent, "📊") {
+			t.Errorf("turn %d: stats/estimate sent by default: %v", i, f.sent)
 		}
-		if i >= 4 && !hasEstimate {
-			t.Errorf("turn %d: expected an estimate after %d prior samples, got: %v", i, i-1, f.sent)
+		if !contains(sent, "ok") {
+			t.Errorf("turn %d: answer missing: %v", i, f.sent)
 		}
+	}
+
+	cfg := *m.cfg()
+	cfg.TurnStats = true
+	m.cfgh.Set(&cfg)
+	f := &fakeSender{}
+	m.Handle(context.Background(), 1, "작업 진행", OriginTelegram, f)
+	sent := strings.Join(f.sent, "\n")
+	if !contains(sent, "✅ 작업 완료") || !contains(sent, "📊") {
+		t.Errorf("ui.turn_stats on: want usage footer and completion notice, got %v", f.sent)
 	}
 }
 

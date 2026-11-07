@@ -274,6 +274,7 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 		{Title: "토큰 절약", Group: settingsGroupAI, Desc: "긴 대화의 비용을 줄이는 옵션입니다. 기본값(켜짐)을 권장합니다. 대화별 모델 고정은 채팅에서 !model 로 합니다.", Fields: []settingField{
 			{Key: "context.summary_on_reset", Label: "세션 정리 시 요약 사용", Desc: "대화가 길어져 세션을 새로 시작할 때, 예전 대화 기록을 통째로 다시 넣는 대신 매니저 모델이 만든 요약 + 최근 몇 턴만 넣습니다. 요약에 실패하면 예전 방식으로 자동 전환됩니다.", Type: "bool", Value: cfg.SummaryOnReset},
 			{Key: "screen_control.adaptive_prompt", Label: "화면 제어 안내 축약", Desc: "화면 제어를 아직 쓰지 않은 대화에는 긴 화면 제어 안내 대신 짧은 요약만 넣습니다. 화면을 한 번 쓰거나 화면 관련 요청이 오면 그 대화부터 전체 안내를 넣습니다.", Type: "bool", Value: cfg.ScreenPromptAdaptive},
+			{Key: "ui.turn_stats", Label: "답변 뒤 사용량·소요 시간 표시", Desc: "켜면 답변마다 이번 턴의 토큰·비용 줄과 '✅ 작업 완료 (N초)'를 함께 보냅니다. 꺼도 사용량은 기록되어 사용량 화면에서 볼 수 있습니다.", Type: "bool", Value: cfg.TurnStats},
 		}},
 
 		// ── 무료·로컬 AI 탭 (opencode 선택 시에만 표시) ────────────────
@@ -404,6 +405,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.ScreenPromptAdaptive = asBool(v)
 		case "context.summary_on_reset":
 			cfg.SummaryOnReset = asBool(v)
+		case "ui.turn_stats":
+			cfg.TurnStats = asBool(v)
 		case "screen_control.keep_awake":
 			cfg.ScreenKeepAwake = asBool(v)
 		case "screen_control.elevated":

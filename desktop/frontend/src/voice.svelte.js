@@ -94,8 +94,9 @@ export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4",
 export const CLONE_VOICE = "C"; // the recorded voice (cloneVoice); only it is repainted
 const isTTSVoice = (name) => TTS_VOICES.includes(name) || name === CLONE_VOICE;
 export const WAKE_EVERY_TIME = -1; // each answer ends the conversation: every request starts with the name
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.4, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.5, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
 const OLD_SPEAKER_MIN = 0.3;
+const OLD_SPEAKER_MIN_2 = 0.4; // default before speakerMinV 3 — a loud nearby voice scored 0.45 and got through during barge-in
 const MAX_WAKE_NAMES = 5;
 // How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on
 // from the start and stays on; "manual" — only 🗣 / Ctrl+Shift+M / the tray.
@@ -130,8 +131,11 @@ function loadSettings() {
   return {
     ttsVoice: isTTSVoice(s.ttsVoice) ? s.ttsVoice : VOICE_DEFAULTS.ttsVoice,
     ttsSpeed: Number.isFinite(s.ttsSpeed) ? clamp(s.ttsSpeed, SPEED_RANGE) : VOICE_DEFAULTS.ttsSpeed,
-    // 0.3 was the old default: too loose — nearby talk at 0.34–0.47 got through.
-    speakerMin: Number.isFinite(s.speakerMin) && !(s.speakerMinV !== 2 && s.speakerMin === OLD_SPEAKER_MIN) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
+    // 0.3 and 0.4 were the old defaults: too loose — nearby talk got through.
+    speakerMin:
+      Number.isFinite(s.speakerMin) && !(s.speakerMinV !== 3 && (s.speakerMin === OLD_SPEAKER_MIN || s.speakerMin === OLD_SPEAKER_MIN_2))
+        ? clamp(s.speakerMin, SPEAKER_MIN_RANGE)
+        : VOICE_DEFAULTS.speakerMin,
     listenMode: LISTEN_MODES.includes(s.listenMode) ? s.listenMode : s.wake === false ? "manual" : VOICE_DEFAULTS.listenMode,
     wakeIdleMin: s.wakeIdleV === 2 && WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
     wakeNames: cleanWakeNames(s.wakeNames),
@@ -231,7 +235,7 @@ export function setVoiceSettings(patch) {
         ttsVoice: voice.ttsVoice,
         ttsSpeed: voice.ttsSpeed,
         speakerMin: voice.speakerMin,
-        speakerMinV: 2,
+        speakerMinV: 3,
         listenMode: voice.listenMode,
         wakeIdleMin: voice.wakeIdleMin,
         wakeIdleV: 2,
@@ -1074,6 +1078,13 @@ function checkBargeSegment(rec, wavBytes, level) {
     if (!isUserVoice(score, speakerMinFor(true) + (quiet ? QUIET_EXTRA_BAR : 0))) {
       vlog(`other voice dropped (barge, ${score.toFixed(2)}, level ${level.toFixed(3)}${quiet ? " quiet" : ""}) ${quote(text)}`);
       logHeard(text, score, false, quiet ? "작은 소리" : "읽는 중");
+      return;
+    }
+    // Same as the main path: whisper writes a back-and-forth between people in
+    // the room as "- 그쵸. - 네.", which can score like the user by chance.
+    if ((text.match(DIALOGUE_RE) || []).length >= 2) {
+      vlog(`dialogue dropped (barge) ${quote(text)}`);
+      logHeard(text, score, false, "주변 대화");
       return;
     }
     if (BARGE_HUSH_RE.test(text)) {

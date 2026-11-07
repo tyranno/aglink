@@ -3017,12 +3017,13 @@ setAssistantTextListener((key, text) => {
 // ---- wake word ----
 //
 // With conversation mode off, the mic waits for "아글링크": it cuts what it
-// hears into short pieces, and a piece that starts with the name (in the
-// enrolled voice, if there is one) starts conversation mode on the last
+// hears into short pieces, and a piece that starts with the name — in
+// anyone's voice, enrolled or not — starts conversation mode on the last
 // conversation pane. Anything said after the name in the same breath ("아글링크,
-// 오늘 날씨 어때?") is sent right away. The pieces go through the same GPU
-// recognition as conversation mode; with a voice enrolled, other voices are
-// dropped by the much cheaper voice check first.
+// 오늘 날씨 어때?") is sent right away. Once conversation mode is on, commands
+// are still checked against the enrolled voice (isUserVoice elsewhere) — only
+// the wake word itself is open to anyone, so someone nearby cannot be heard
+// as a command but can still get the user's attention by name.
 
 // Whisper writes the name many ways ("아그링크~", "어글링크", "아글링", "아글랭크");
 // the last syllable is often swallowed.
@@ -3206,11 +3207,6 @@ function stopWake() {
 async function checkWake(w, wav) {
   w.busy = true;
   try {
-    const score = await speakerScore(wav);
-    if (!isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
-      vlog(`wake: other voice (${score.toFixed(2)})`);
-      return;
-    }
     const text = (await VoiceService.Transcribe(toBase64(wav))).trim();
     if (!text || wakeRec !== w) return;
     const end = wakeMatch(text);
@@ -3219,7 +3215,7 @@ async function checkWake(w, wav) {
       return;
     }
     const rest = text.slice(end).replace(WAKE_TAIL_RE, "").trim();
-    vlog(`wake ${score >= 0 ? score.toFixed(2) + " " : ""}${quote(text)}`);
+    vlog(`wake ${quote(text)}`);
     await wakeUp(rest);
   } catch (err) {
     vlog(`wake check failed: ${err?.message || err}`);

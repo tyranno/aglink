@@ -72,6 +72,10 @@ Start-Process "$dir\aglink-Setup.exe" -ArgumentList '/S' -Verb RunAs -Wait
 
 ## 3. 설정 파일 만들기 (처음 설치일 때)
 
+설정 파일이 없으면 aglink 가 처음 시작할 때 **웹 채팅 전용 기본 설정을 스스로 만든다**(텔레그램 없음,
+화면 제어 끔, 설치된 CLI 중 하나를 기본 백엔드로). 그래서 설치만 해도 웹·데스크톱 앱으로 바로 쓸 수
+있고, 텔레그램이나 화면 제어가 필요할 때만 아래처럼 설정을 고친다.
+
 `aglink.exe setup` 이라는 대화형 마법사도 있지만 진짜 터미널 입력이 필요해서 AI 가 돌릴 수 없다.
 AI 는 아래처럼 **`%USERPROFILE%\.aglink\config.yaml` 을 직접 쓴다**. 먼저 사용자에게 두 가지를 묻는다.
 

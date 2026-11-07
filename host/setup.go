@@ -71,10 +71,11 @@ func RunSetup(cfgPath string) error {
 	// practice (main.go's boot already tolerates no bot token; the wizard
 	// didn't offer that path at all).
 	fmt.Println("\n[1/5] 사용 방식")
-	useTelegram, err := confirm(in, "   텔레그램 봇을 연결할까요? 아니요를 고르면 웹 채팅만으로 시작합니다 (나중에 `aglink setup telegram`으로 언제든 추가 가능) [Y/n]: ")
+	ans, err := prompt(in, "   텔레그램 봇을 연결할까요? 기본(Enter)은 웹 채팅만으로 시작합니다 (나중에 `aglink setup telegram`으로 언제든 추가 가능) [y/N]: ")
 	if err != nil {
 		return err
 	}
+	useTelegram := strings.EqualFold(ans, "y") || strings.EqualFold(ans, "yes")
 
 	var api *tgbotapi.BotAPI
 	userID := webOnlyPlaceholderUserID
@@ -431,6 +432,42 @@ type writeConfigOpts struct {
 	aglinkChat    bool   // web chat frontend (implies chat_control)
 	webControl    bool   // aglink-web browser control
 	screenControl bool   // aglink-screen desktop control (opt-in even when installed)
+}
+
+// configFileExists reports whether any config (the YAML path in use, or a legacy
+// config.txt awaiting migration) is on disk — distinguishing a first run from a
+// broken config the user should fix.
+func configFileExists(dir, cfgPath string) bool {
+	for _, p := range []string{cfgPath, filepath.Join(dir, "config.txt")} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// writeDefaultConfig writes the config a first run gets without asking anything:
+// web chat only (no Telegram), the first installed backend, browser control on
+// when present, screen control off. Used when the logon task starts aglink with
+// no config — there is no terminal to run the wizard in.
+func writeDefaultConfig(cfgPath string) error {
+	backend := "claude"
+	if _, err := findClaude(""); err != nil {
+		if p, _ := findCodex(""); p != "" {
+			backend = "codex"
+		} else if p, _ := findOpencode(""); p != "" {
+			backend = "opencode"
+		}
+	}
+	exe, _ := os.Executable()
+	return writeConfigFile(cfgPath, writeConfigOpts{
+		userID:  webOnlyPlaceholderUserID,
+		backend: backend,
+		// Always on: with no Telegram token it is the only way in, and validate()
+		// rejects a config that has neither.
+		aglinkChat: true,
+		webControl: resolveAglinkBinary("aglink-web", "", exe) != "",
+	})
 }
 
 // writeConfigFile writes a complete config.yaml with sensible defaults.

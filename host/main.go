@@ -184,8 +184,19 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	} else {
 		cfg, err = LoadConfig(cfgPath)
 	}
+	if err != nil && !configFileExists(dir, cfgPath) {
+		// First run (e.g. right after the installer's `aglink start`): no config at
+		// all. Write a web-chat-only default instead of opening the wizard — the
+		// logon task has nobody at a terminal, and Telegram is optional anyway
+		// (`aglink setup telegram` adds it later).
+		log.Printf("[config] 설정 파일이 없어 웹 채팅 전용 기본 설정을 만듭니다: %s (텔레그램은 `aglink setup telegram`으로 추가)", cfgPath)
+		if werr := writeDefaultConfig(cfgPath); werr != nil {
+			return fmt.Errorf("기본 설정 생성 실패: %w", werr)
+		}
+		cfg, err = LoadConfig(cfgPath)
+	}
 	if err != nil {
-		// No (or incomplete) config → run the interactive wizard, then reload.
+		// Incomplete config → run the interactive wizard, then reload.
 		if !isInteractive() {
 			return fmt.Errorf("%w\n대화형 터미널에서 `aglink setup`을 먼저 실행하세요 (%s)", err, cfgPath)
 		}

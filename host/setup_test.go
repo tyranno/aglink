@@ -124,3 +124,26 @@ func TestMergeTelegramUserID(t *testing.T) {
 		})
 	}
 }
+
+// A first run with no config (the installer's logon task) must boot web-only,
+// with no Telegram token and no wizard.
+func TestWriteDefaultConfig_WebOnlyBoots(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if configFileExists(dir, path) {
+		t.Fatal("empty dir must report no config")
+	}
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatalf("writeDefaultConfig: %v", err)
+	}
+	if !configFileExists(dir, path) {
+		t.Fatal("config must exist after writeDefaultConfig")
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("default config must load and validate: %v", err)
+	}
+	if cfg.TelegramBotToken != "" || !cfg.AglinkChat || cfg.ScreenControl {
+		t.Errorf("want web-only, screen off; got token=%q aglinkChat=%v screen=%v", cfg.TelegramBotToken, cfg.AglinkChat, cfg.ScreenControl)
+	}
+}

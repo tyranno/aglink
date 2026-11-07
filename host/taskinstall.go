@@ -21,8 +21,8 @@ const taskName = "aglink"
 
 // taskXML builds a Task Scheduler 1.2 definition: at-logon trigger for userID,
 // highest privileges (silent elevation), no execution time limit (a gateway runs
-// for days), and restart-on-failure. command runs from workDir.
-func taskXML(userID, command, workDir string) string {
+// for days), and restart-on-failure. command args runs from workDir.
+func taskXML(userID, command, args, workDir string) string {
 	esc := func(s string) string {
 		s = strings.ReplaceAll(s, "&", "&amp;")
 		s = strings.ReplaceAll(s, "<", "&lt;")
@@ -66,11 +66,29 @@ func taskXML(userID, command, workDir string) string {
   <Actions Context="Author">
     <Exec>
       <Command>` + esc(command) + `</Command>
-      <Arguments>run</Arguments>
+      <Arguments>` + esc(args) + `</Arguments>
       <WorkingDirectory>` + esc(workDir) + `</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>`
+}
+
+// hiddenConsoleCommand wraps `exe run` in `conhost.exe --headless` so the logon
+// task starts aglink without a terminal window. aglink is a console program; run
+// directly, the task would open a conhost/Windows Terminal window that sits on
+// the desktop and kills aglink when closed. A headless conhost still gives it
+// (and the handoff restarts it spawns, which inherit the console) a real console,
+// just with no window. Falls back to running exe directly if conhost is missing.
+func hiddenConsoleCommand(exe string) (command, args string) {
+	sysRoot := os.Getenv("SystemRoot")
+	if sysRoot == "" {
+		sysRoot = `C:\Windows`
+	}
+	conhost := filepath.Join(sysRoot, "System32", "conhost.exe")
+	if _, err := os.Stat(conhost); err != nil {
+		return exe, "run"
+	}
+	return conhost, `--headless "` + exe + `" run`
 }
 
 // utf16LE encodes s as UTF-16 little-endian with a leading BOM, the byte format
@@ -98,7 +116,8 @@ func installTask() error {
 	if err != nil {
 		return fmt.Errorf("현재 사용자 확인 실패: %w", err)
 	}
-	xml := taskXML(u.Username, exe, filepath.Dir(exe))
+	command, args := hiddenConsoleCommand(exe)
+	xml := taskXML(u.Username, command, args, filepath.Dir(exe))
 
 	tmp, err := os.CreateTemp("", "aglink-task-*.xml")
 	if err != nil {
@@ -119,7 +138,7 @@ func installTask() error {
 		return fmt.Errorf("schtasks 등록 실패: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	fmt.Printf("자동시작 작업 '%s' 등록 완료 (로그온 시 관리자 권한으로 실행).\n", taskName)
-	fmt.Printf("  대상: %s run\n", exe)
+	fmt.Printf("  대상: %s run (창 없이 실행)\n", exe)
 	fmt.Printf("  사용자: %s\n", u.Username)
 	fmt.Println("지금 바로 시작하려면: aglink start   (또는 다음 로그온 때 자동 시작)")
 	return nil

@@ -315,7 +315,7 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 	// -otxt writes UTF-8 to a file; reading stdout instead would depend on the
 	// console code page.
 	cmd := exec.CommandContext(ctx, cli,
-		"-m", model, "-f", in, "-l", "ko",
+		"-m", model, "-f", in, "-l", "ko", "--prompt", whisperPrompt,
 		"-t", fmt.Sprint(min(runtime.NumCPU(), 8)),
 		"-ac", fmt.Sprint(audioContext(len(wav))),
 		"-nt", "-np", "-otxt", "-of", outBase)
@@ -333,12 +333,41 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 	return text, nil
 }
 
+// whisperPrompt is whisper's initial prompt (whisper-cli --prompt, the
+// server's "prompt" field): words it otherwise mishears — product names and
+// dev terms said in Korean — so they come out spelled the way they are used.
+const whisperPrompt = "aglink, 에이지링크, 텔레그램, 클로드, 코덱스, 깃허브, 설치, 배포, 커밋, 푸시."
+
+// isPromptEcho reports a transcript that is just whisperPrompt read back —
+// what whisper tends to produce for silence once it has a prompt. A short
+// request that happens to use one or two of its words is not an echo.
+func isPromptEcho(phrases []string) bool {
+	vocab := strings.FieldsFunc(whisperPrompt, func(r rune) bool { return r == ',' || r == '.' })
+	for i := range vocab {
+		vocab[i] = strings.TrimSpace(vocab[i])
+	}
+	n := 0
+	for _, p := range phrases {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		if !slices.Contains(vocab, p) {
+			return false
+		}
+		n++
+	}
+	return n >= 3
+}
+
 // cleanTranscript joins whisper's lines and drops silence hallucinations.
 func cleanTranscript(s string) string {
 	s = bracketNoteRe.ReplaceAllString(s, " ") // "[감사합니다]", "[음악]": whisper's non-speech notes
 	s = newsSignoffRe.ReplaceAllString(s, " ")
 	s = strings.Join(strings.Fields(s), " ")
 	phrases := strings.FieldsFunc(s, func(r rune) bool { return strings.ContainsRune(".!?,-", r) })
+	if isPromptEcho(phrases) {
+		return ""
+	}
 	for _, p := range phrases {
 		if p = strings.TrimSpace(p); p != "" && !slices.Contains(whisperHallucinations, p) {
 			return s

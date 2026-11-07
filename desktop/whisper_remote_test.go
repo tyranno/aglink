@@ -13,6 +13,10 @@ func TestConnectRemoteWhisper(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		if r.FormValue("prompt") != whisperPrompt || r.FormValue("language") != "ko" {
+			http.Error(w, "missing prompt/language", http.StatusBadRequest)
+			return
+		}
 		_, _ = w.Write([]byte("안녕하세요"))
 	}))
 	defer srv.Close()

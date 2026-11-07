@@ -168,6 +168,7 @@ func (s *whisperServer) transcribe(wav []byte, timeout time.Duration) (string, e
 	_, _ = fw.Write(wav)
 	_ = mw.WriteField("response_format", "text")
 	_ = mw.WriteField("language", "ko")
+	_ = mw.WriteField("prompt", whisperPrompt)
 	_ = mw.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

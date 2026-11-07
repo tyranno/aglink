@@ -11,6 +11,7 @@
     SPEED_RANGE,
     SPEAKER_MIN_RANGE,
     WAKE_IDLE_CHOICES,
+    WAKE_EVERY_TIME,
     setVoiceSettings,
     setBargeEnabled,
     previewVoice,
@@ -260,7 +261,7 @@
       <div class="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <div class={label}>말이 없으면 대기로</div>
-          <div class={desc}>“부르면 듣기”일 때, 음성 대화에서 이 시간 동안 아무 말이 없으면 대화를 끝내고 다시 부르기를 기다려요.</div>
+          <div class={desc}>“부르면 듣기”일 때, 음성 대화에서 이 시간 동안 아무 말이 없으면 대화를 끝내고 다시 부르기를 기다려요. “매번 부르기”는 대답을 읽고 나면 바로 기다리기로 돌아가서, 말할 때마다 “아글링크”라고 불러야 해요.</div>
         </div>
         <select
           class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300"
@@ -269,7 +270,7 @@
           onchange={(e) => setVoiceSettings({ wakeIdleMin: Number(e.currentTarget.value) })}
         >
           {#each WAKE_IDLE_CHOICES as m (m)}
-            <option value={m}>{m === 0 ? "끝내지 않음" : `${m}분`}</option>
+            <option value={m}>{m === WAKE_EVERY_TIME ? "매번 부르기" : m === 0 ? "끝내지 않음" : `${m}분`}</option>
           {/each}
         </select>
       </div>

@@ -92,14 +92,15 @@ const SETTINGS_STORAGE_KEY = "aglink.voice.settings";
 export const TTS_VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]; // Supertonic: male, female
 export const CLONE_VOICE = "C"; // the recorded voice (cloneVoice); only it is repainted
 const isTTSVoice = (name) => TTS_VOICES.includes(name) || name === CLONE_VOICE;
-export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.4, listenMode: "wake", wakeIdleMin: 3, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
+export const WAKE_EVERY_TIME = -1; // each answer ends the conversation: every request starts with the name
+export const VOICE_DEFAULTS = { ttsVoice: "M2", ttsSpeed: 0.98, speakerMin: 0.4, listenMode: "wake", wakeIdleMin: WAKE_EVERY_TIME, summary: true, wakeNames: [], wakeDefault: true, textOnly: false };
 const OLD_SPEAKER_MIN = 0.3;
 const MAX_WAKE_NAMES = 5;
 // How the mic waits: "wake" — off until "아글링크"; "always" — conversation is on
 // from the start and stays on; "manual" — only 🗣 / Ctrl+Shift+M / the tray.
 // Outside "manual", "아글링크" also brings back a conversation ended with "그만".
 export const LISTEN_MODES = ["wake", "always", "manual"];
-export const WAKE_IDLE_CHOICES = [0, 1, 3, 5, 10]; // minutes without talk before conversation goes back to waiting; 0 = never
+export const WAKE_IDLE_CHOICES = [WAKE_EVERY_TIME, 0, 1, 3, 5, 10]; // minutes without talk before conversation goes back to waiting; 0 = never
 export const SPEED_RANGE = [0.7, 2.0];
 export const SPEAKER_MIN_RANGE = [0.1, 0.7];
 const SPEED_STEP = 0.1; // "더 천천히" / "더 빨리"
@@ -131,7 +132,7 @@ function loadSettings() {
     // 0.3 was the old default: too loose — nearby talk at 0.34–0.47 got through.
     speakerMin: Number.isFinite(s.speakerMin) && !(s.speakerMinV !== 2 && s.speakerMin === OLD_SPEAKER_MIN) ? clamp(s.speakerMin, SPEAKER_MIN_RANGE) : VOICE_DEFAULTS.speakerMin,
     listenMode: LISTEN_MODES.includes(s.listenMode) ? s.listenMode : s.wake === false ? "manual" : VOICE_DEFAULTS.listenMode,
-    wakeIdleMin: WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
+    wakeIdleMin: s.wakeIdleV === 2 && WAKE_IDLE_CHOICES.includes(s.wakeIdleMin) ? s.wakeIdleMin : VOICE_DEFAULTS.wakeIdleMin,
     wakeNames: cleanWakeNames(s.wakeNames),
     wakeDefault: typeof s.wakeDefault === "boolean" ? s.wakeDefault : true,
     summary: typeof s.summary === "boolean" ? s.summary : VOICE_DEFAULTS.summary,
@@ -232,6 +233,7 @@ export function setVoiceSettings(patch) {
         speakerMinV: 2,
         listenMode: voice.listenMode,
         wakeIdleMin: voice.wakeIdleMin,
+        wakeIdleV: 2,
         wakeNames: voice.wakeNames,
         wakeDefault: voice.wakeDefault,
         summary: voice.summary,
@@ -305,6 +307,7 @@ function speakerMinFor(mixed) {
 
 let recorder = null; // active recording session
 let resumeTimer = null; // conversation mode: waits for the reading to finish
+let endAfterReply = false; // "매번 부르기": the answer read out goes back to waiting for the name
 let convActiveAt = 0; // conversation mode: last time something was said or answered
 let micFailures = 0; // conversation mode: mic opens failed in a row
 const MAX_MIC_FAILURES = 3;
@@ -426,6 +429,7 @@ export async function toggleConversation(paneId) {
   }
   if (voice.convPaneId) endConversation();
   voice.convPaneId = paneId;
+  endAfterReply = false;
   convActiveAt = Date.now();
   saveConversation(paneId);
   await startRecording(paneId);
@@ -522,6 +526,7 @@ async function listenAlways() {
 export function endConversation(note) {
   const paneId = voice.convPaneId;
   voice.convPaneId = null;
+  endAfterReply = false;
   voice.heard = "";
   voice.problem = "";
   micFailures = 0;
@@ -627,6 +632,10 @@ export function setBargeEnabled(on) {
 Events.On("tray:barge", () => setBargeEnabled(!voice.bargeEnabled));
 Events.On("tray:textonly", () => setVoiceSettings({ textOnly: !voice.textOnly }));
 
+function everyTime() {
+  return voice.listenMode === "wake" && voice.wakeIdleMin === WAKE_EVERY_TIME;
+}
+
 // resumeListening opens the mic again once the reply has been read out.
 function resumeListening(delay = 200) {
   clearTimeout(resumeTimer);
@@ -640,6 +649,11 @@ function resumeListening(delay = 200) {
       (typeof speechSynthesis !== "undefined" && (speechSynthesis.speaking || speechSynthesis.pending));
     if (busy || voice.phase !== "idle") {
       resumeListening(300);
+      return;
+    }
+    if (endAfterReply && everyTime()) {
+      vlog("answered → waiting for the wake word");
+      endConversation();
       return;
     }
     void startRecording(paneId);
@@ -663,7 +677,10 @@ setTurnDoneListener((key) => {
     setAwaited(null);
     noteDone(keyTarget(key));
   } else if (p?.target && targetKey(p.target) === key) noteDone(p.target);
-  if (p?.target && targetKey(p.target) === key) resumeListening();
+  if (p?.target && targetKey(p.target) === key) {
+    endAfterReply = true;
+    resumeListening();
+  }
 });
 
 // ---- VS Code ----
@@ -733,6 +750,7 @@ Events.On("vscode:reply", (ev) => {
   vlog("VS Code answered");
   void speakReply(text, "vscode");
   textOnce.delete("vscode");
+  endAfterReply = true;
   resumeListening(); // text only: nothing is read, so the mic opens now
 });
 
@@ -993,8 +1011,9 @@ async function startRecording(paneId, barge = false) {
 // words that were kept (and answers) count as talk, so a noisy room whose
 // clips are all dropped still times out.
 function endIfIdle(paneId) {
-  if (voice.listenMode !== "wake" || voice.wakeIdleMin <= 0 || awaitedPane() === paneId) return false;
-  if (Date.now() - convActiveAt <= voice.wakeIdleMin * 60000) return false;
+  const idleMin = everyTime() ? 1 : voice.wakeIdleMin; // woken but nothing asked: back to waiting soon
+  if (voice.listenMode !== "wake" || idleMin <= 0 || awaitedPane() === paneId) return false;
+  if (Date.now() - convActiveAt <= idleMin * 60000) return false;
   vlog("conversation idle → waiting for the wake word");
   endConversation();
   return true;
@@ -2952,7 +2971,7 @@ export async function speak(md, mode = speechMode(), tail = "") {
   if (recorder && !recorder.barge && recorder.firstSpeechChunk < 0 && !recorder.prefix) stopRecording(false);
   if (paneId && voice.enrolling) {
     // the enrollment records on its own
-  } else if (paneId && voice.bargeEnabled && !recorder && voice.phase === "idle") void startRecording(paneId, true);
+  } else if (paneId && voice.bargeEnabled && !everyTime() && !recorder && voice.phase === "idle") void startRecording(paneId, true);
   else if (paneId && !recorder) resumeListening(); // taking turns: the mic opens after the reading
   if ((await supertonicReady()) && (await speakSupertonic(sentences, gen))) return;
   if (gen !== speakGen) return;

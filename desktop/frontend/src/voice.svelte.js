@@ -69,6 +69,16 @@ const ECHO_TRUST_MARGIN = 0.1; // this far over the voice bar is the user, whate
 // over our own voice, score lower and get a bar this much lower.
 const SPEAKER_MIXED_DROP = 0.1;
 const SPEAKER_SHORT_S = 1.2;
+// The user talking over the TV makes a long clip that is mostly the TV, and
+// the clip as a whole scores far under the bar ("지금 설치해" at 0.10). Such a
+// clip is scored again in short windows: the user's own stretch stands out,
+// and only that stretch is sent. A window needs a little more than the bar,
+// since a short stretch of someone else now and then scores high by chance.
+const RESCUE_MIN_S = 3; // shorter clips are only scored whole
+const RESCUE_WINDOW_S = 3; // over ADAPT_SECONDS, so a clean window also teaches the voice
+const RESCUE_HOP_S = 1.5;
+const RESCUE_MAX_WINDOWS = 12;
+const RESCUE_EXTRA_BAR = 0.05;
 const ENROLL_MS = 15000;
 const LISTEN_ALWAYS_RE = /^(항상|계속|늘)\s*(듣기|들어|들어\s*줘|켜\s*(둬|놔|놓아))(\s*(로|으로))?\s*(해|바꿔|해\s*줘|바꿔\s*줘|줘)?[.!?~\s]*$/;
 const LISTEN_WAKE_RE = /^(호출어|부르기|부르면|아글링크\s*(로|하면))\s*(로|으로)?\s*(켜|켜기|시작|바꿔|해|하자)\S*(\s*줘)?[.!?~\s]*$/;
@@ -1041,16 +1051,36 @@ function takeClip(rec) {
 // finished sentence is sent at once instead of after the full
 // CONV_SILENCE_STOP_MS wait. Speech resuming before it answers keeps the
 // recording going as usual.
+//
+// Only one try runs at a time: in a noisy room every short pause would
+// otherwise start another transcription of the whole, still growing clip. A
+// try that hears no words at all means the clip so far is only noise (a fan,
+// music under the TV); it is dropped, so it does not grow into a long clip
+// that buries what the user says next.
 function tryEarlyStop(rec) {
+  if (rec.earlyBusy) return;
   const at = rec.lastSpeechAt;
   rec.earlyFor = at;
+  rec.earlyBusy = true;
   const wav = takeClip(rec);
   void (async () => {
-    await rec.bargeDone;
     let text = "";
     try {
+      await rec.bargeDone;
       text = (await VoiceService.Transcribe(toBase64(wav))).trim();
     } catch {
+      return;
+    } finally {
+      rec.earlyBusy = false;
+    }
+    if (!text && recorder === rec && rec.lastSpeechAt === at && !rec.prefix && !rec.barge) {
+      vlog(`early: no words, ${clipSeconds(wav).toFixed(1)} s of noise dropped`);
+      rec.chunks.splice(0, Math.max(0, rec.chunks.length - 8)); // keep only the pre-roll
+      rec.firstSpeechChunk = -1;
+      rec.loudChunks = 0;
+      rec.speechSum = 0;
+      rec.startedAt = performance.now();
+      voice.hearing = false;
       return;
     }
     if (recorder !== rec || rec.lastSpeechAt !== at || !SENTENCE_END_RE.test(text) || GOES_ON_RE.test(text)) return;
@@ -2166,6 +2196,43 @@ function speakerScore(wav) {
   return VoiceService.SpeakerScore(toBase64(wav)).catch(() => -2);
 }
 
+// userWindow scores a long clip in RESCUE_WINDOW_S windows and returns the
+// stretch covered by the windows that sound like the user ({score, from, to}
+// in seconds, score the best window's), or null when none does.
+async function userWindow(wav, min) {
+  const secs = clipSeconds(wav);
+  if (secs < RESCUE_MIN_S) return null;
+  const hop = Math.max(RESCUE_HOP_S, (secs - RESCUE_WINDOW_S) / (RESCUE_MAX_WINDOWS - 1));
+  const starts = [];
+  for (let t = 0; t < secs - RESCUE_WINDOW_S; t += hop) starts.push(t);
+  starts.push(Math.max(0, secs - RESCUE_WINDOW_S)); // the end, where a request usually is
+  let best = -1;
+  let from = -1;
+  let to = -1;
+  for (const t of starts) {
+    const end = Math.min(secs, t + RESCUE_WINDOW_S);
+    const sc = await speakerScore(wavSlice(wav, t, end));
+    if (sc > best) best = sc;
+    if (sc < min) continue;
+    if (from < 0) from = t;
+    to = end;
+  }
+  return from >= 0 ? { score: best, from, to } : null;
+}
+
+// wavSlice cuts the from..to seconds out of a 16-bit mono clip at TARGET_RATE.
+function wavSlice(wav, from, to) {
+  const a = 44 + Math.max(0, Math.floor(from * TARGET_RATE)) * 2;
+  const b = Math.min(wav.length, 44 + Math.floor(to * TARGET_RATE) * 2);
+  const out = new Uint8Array(44 + Math.max(0, b - a));
+  out.set(wav.subarray(0, 44));
+  out.set(wav.subarray(a, b), 44);
+  const v = new DataView(out.buffer);
+  v.setUint32(4, out.length - 8, true);
+  v.setUint32(40, out.length - 44, true);
+  return out;
+}
+
 function isUserVoice(score, min) {
   return score === -1 || score >= min;
 }
@@ -2345,10 +2412,21 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     let heard = known ?? (wavBytes ? (await VoiceService.Transcribe(toBase64(wavBytes))).trim() : "");
     // Someone else in the room (or the reply from the speakers) is not sent once
     // the user has enrolled their voice.
-    const score = await scoring;
+    let score = await scoring;
     const level = rec && rec.loudChunks > 0 ? rec.speechSum / rec.loudChunks : 0;
     const quiet = conv() && isQuiet(level);
     const bar = speakerMinFor(clipSeconds(wavBytes) < SPEAKER_SHORT_S) + (quiet ? QUIET_EXTRA_BAR : 0);
+    const rescued = heard && conv() && wavBytes && !quiet && score >= 0 && score < bar ? await userWindow(wavBytes, bar + RESCUE_EXTRA_BAR) : null;
+    if (rescued) {
+      const whole = score;
+      const secs = clipSeconds(wavBytes);
+      score = rescued.score;
+      if (rescued.from > 0.2 || rescued.to < secs - 0.2) {
+        const part = (await VoiceService.Transcribe(toBase64(wavSlice(wavBytes, rescued.from, rescued.to)))).trim();
+        if (part) heard = part;
+      }
+      vlog(`voice rescued (window ${score.toFixed(2)}, whole ${whole.toFixed(2)}, ${rescued.from.toFixed(1)}-${rescued.to.toFixed(1)} of ${secs.toFixed(1)} s) ${quote(heard, 20)}`);
+    }
     if (heard && quiet && score < 0) {
       vlog(`quiet dropped (level ${level.toFixed(3)}) ${quote(heard)}`);
       logHeard(heard, score, false, "작은 소리");
@@ -2362,7 +2440,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     } else if (heard && score >= 0) {
       vlog(`voice ${score.toFixed(2)} level ${level.toFixed(3)} ${quote(heard, 20)}`);
       logHeard(heard, score, true);
-      if (score >= voice.speakerMin + QUIET_EXTRA_BAR) learnUserLevel(level);
+      if (score >= voice.speakerMin + QUIET_EXTRA_BAR && !rescued) learnUserLevel(level); // a rescued clip's level is mostly the TV
     }
     // whisper writes a back-and-forth as "- 그쵸. - 네.": people talking in the
     // room or on TV, not a request. Sent, each one cost a full AI turn.

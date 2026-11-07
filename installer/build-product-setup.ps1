@@ -31,8 +31,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $root = Split-Path -Parent $here
-$makensis = 'C:\Program Files (x86)\NSIS\makensis.exe'
-if (-not (Test-Path $makensis)) { throw "NSIS not found at $makensis" }
+$makensis = @((Join-Path $env:USERPROFILE '.aglink\tools\nsis-3.11\makensis.exe'),'C:\Program Files (x86)\NSIS\makensis.exe') | Where-Object { (Test-Path $_) -and ((& $_ -VERSION) -match '^v3') } | Select-Object -First 1
+if (-not $makensis) { throw "NSIS 3 (makensis.exe) not found" }
 
 # Version: 1.0.<commit count>. The commit count only grows, so a later build
 # always installs over an earlier one as an upgrade.

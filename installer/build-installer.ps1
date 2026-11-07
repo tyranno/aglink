@@ -42,8 +42,8 @@ Build-GoHelper "web" "aglink-web.exe"
 Build-GoHelper "desktop" "aglink-desktop.exe" "-H windowsgui -s -w"
 
 Write-Host "[3/3] makensis..."
-$makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
-if (-not (Test-Path $makensis)) { throw "NSIS not found at $makensis" }
+$makensis = @((Join-Path $env:USERPROFILE '.aglink\tools\nsis-3.11\makensis.exe'),'C:\Program Files (x86)\NSIS\makensis.exe') | Where-Object { (Test-Path $_) -and ((& $_ -VERSION) -match '^v3') } | Select-Object -First 1
+if (-not $makensis) { throw "NSIS 3 (makensis.exe) not found" }
 & $makensis /INPUTCHARSET UTF8 (Join-Path $here "aglink-setup.nsi")
 if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
 

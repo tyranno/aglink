@@ -6,10 +6,13 @@
 #   in:  {"op":"embed","wav":"C:/.../me.wav","out":"C:/.../me.pt"}
 #   in:  {"op":"score","wav":"C:/.../clip.wav","ref":"C:/.../me.pt","adapt_min":0.6}
 #
-# adapt_min: a clip of at least ADAPT_SECONDS scoring this high is surely the
-# user, so the enrolled embedding is nudged toward it (and saved). One
-# enrollment recording was made once, in one room, on one day; everyday clips
-# teach it how the user sounds through this mic, which widens the gap to others.
+# adapt_min: a clip of at least ADAPT_SECONDS scoring this high, not clipped
+# (peak < CLIP_PEAK_MAX), is surely the user, so the enrolled embedding is
+# nudged toward it (and saved). One enrollment recording was made once, in one
+# room, on one day; everyday clips teach it how the user sounds through this
+# mic, which widens the gap to others. A clipped/distorted clip is excluded
+# because its embedding is unreliable and must not be allowed to drift the
+# profile toward whoever was loud enough to clip the mic.
 #   out: {"ok":true,"score":0.71,"seconds":0.03}  or  {"ok":false,"error":"..."}
 import json
 import os
@@ -20,6 +23,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 ADAPT_SECONDS = 2.0
 ADAPT_WEIGHT = 0.1
 ANCHOR_MIN = 0.45  # learned clips must still match the enrollment itself
+CLIP_PEAK_MAX = 0.98  # a clipped/distorted clip must not teach the enrolled voice
 
 
 def answer(obj):
@@ -56,11 +60,12 @@ def main():
     def embed(path):
         wav, rate = torchaudio.load(path)
         wav = wav.mean(0, keepdim=True)
+        peak = wav.abs().max().item()
         if rate != 16000:
             wav = torchaudio.functional.resample(wav, rate, 16000)
         feats = fbank(wav.to(device))
         feats = feats - feats.mean(dim=1, keepdim=True)  # per-clip mean normalization, as trained
-        return model(feats).squeeze().float().cpu(), wav.shape[1] / 16000
+        return model(feats).squeeze().float().cpu(), wav.shape[1] / 16000, peak
 
     def ref(path):
         if path not in refs:
@@ -83,13 +88,13 @@ def main():
                 torch.save(embed(req["wav"])[0], req["out"])
                 refs.pop(req["out"], None)
             else:
-                e, seconds = embed(req["wav"])
+                e, seconds, peak = embed(req["wav"])
                 r = ref(req["ref"])
                 score = torch.nn.functional.cosine_similarity(e, r, dim=0).item()
                 out["score"] = round(score, 3)
                 lo = req.get("adapt_min")
                 base = req.get("base")  # the enrollment as recorded; never moves
-                sure = lo and score >= lo and seconds >= ADAPT_SECONDS
+                sure = lo and score >= lo and seconds >= ADAPT_SECONDS and peak < CLIP_PEAK_MAX
                 anchored = base and os.path.exists(base)
                 if sure and anchored and torch.nn.functional.cosine_similarity(e, ref(base), dim=0).item() >= ANCHOR_MIN:
                     n = torch.nn.functional.normalize

@@ -92,15 +92,19 @@ func spkRequestLocked(req map[string]any) (float64, error) {
 		return 0, errors.New("목소리 구별기가 응답하지 않습니다")
 	}
 	var resp struct {
-		OK    bool    `json:"ok"`
-		Error string  `json:"error"`
-		Score float64 `json:"score"`
+		OK      bool    `json:"ok"`
+		Error   string  `json:"error"`
+		Score   float64 `json:"score"`
+		Adapted bool    `json:"adapted"`
 	}
 	if err := json.Unmarshal(spk.out.Bytes(), &resp); err != nil {
 		return 0, err
 	}
 	if !resp.OK {
 		return 0, fmt.Errorf("목소리 구별기: %s", resp.Error)
+	}
+	if resp.Adapted {
+		log.Printf("[speaker] adapted toward a clip scoring %.3f", resp.Score)
 	}
 	return resp.Score, nil
 }
@@ -234,5 +238,8 @@ func stopSpeakerServer() {
 // speakerAdaptMin: a clip scoring at least this is surely the user, so
 // speaker_server.py nudges the enrolled voice toward it. The user's own clips
 // score ~0.45–0.7 against the one enrollment recording and others ≤0.3;
-// learning from everyday clips widens that gap.
-const speakerAdaptMin = 0.6
+// learning from everyday clips widens that gap. Kept well above speakerMin
+// (0.5 by default) so a clip that merely passes the send bar is not also
+// trusted to teach the profile — a loud, close family voice has scored as
+// high as 0.60, which must not count as "surely the user".
+const speakerAdaptMin = 0.75

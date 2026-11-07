@@ -79,6 +79,13 @@ const RESCUE_WINDOW_S = 3; // over ADAPT_SECONDS, so a clean window also teaches
 const RESCUE_HOP_S = 1.5;
 const RESCUE_MAX_WINDOWS = 12;
 const RESCUE_EXTRA_BAR = 0.05;
+// A long clip that only just passes as a whole may be several people talking
+// (a 45 s family conversation scored 0.60 against a bar of 0.5). It is scored
+// in windows too: unless most of them sound like the user it is dropped, and
+// otherwise only the user's stretch is sent.
+const LONG_CHECK_S = 10;
+const LONG_CHECK_MARGIN = 0.15;
+const LONG_CHECK_SHARE = 0.5;
 const ENROLL_MS = 15000;
 const LISTEN_ALWAYS_RE = /^(항상|계속|늘)\s*(듣기|들어|들어\s*줘|켜\s*(둬|놔|놓아))(\s*(로|으로))?\s*(해|바꿔|해\s*줘|바꿔\s*줘|줘)?[.!?~\s]*$/;
 const LISTEN_WAKE_RE = /^(호출어|부르기|부르면|아글링크\s*(로|하면))\s*(로|으로)?\s*(켜|켜기|시작|바꿔|해|하자)\S*(\s*줘)?[.!?~\s]*$/;
@@ -2197,8 +2204,9 @@ function speakerScore(wav) {
 }
 
 // userWindow scores a long clip in RESCUE_WINDOW_S windows and returns the
-// stretch covered by the windows that sound like the user ({score, from, to}
-// in seconds, score the best window's), or null when none does.
+// stretch covered by the windows that sound like the user ({score, from, to,
+// share} in seconds, score the best window's, share the part of the windows
+// that pass), or null when none does.
 async function userWindow(wav, min) {
   const secs = clipSeconds(wav);
   if (secs < RESCUE_MIN_S) return null;
@@ -2209,15 +2217,17 @@ async function userWindow(wav, min) {
   let best = -1;
   let from = -1;
   let to = -1;
+  let hits = 0;
   for (const t of starts) {
     const end = Math.min(secs, t + RESCUE_WINDOW_S);
     const sc = await speakerScore(wavSlice(wav, t, end));
     if (sc > best) best = sc;
     if (sc < min) continue;
+    hits++;
     if (from < 0) from = t;
     to = end;
   }
-  return from >= 0 ? { score: best, from, to } : null;
+  return from >= 0 ? { score: best, from, to, share: hits / starts.length } : null;
 }
 
 // wavSlice cuts the from..to seconds out of a 16-bit mono clip at TARGET_RATE.
@@ -2426,6 +2436,19 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
         if (part) heard = part;
       }
       vlog(`voice rescued (window ${score.toFixed(2)}, whole ${whole.toFixed(2)}, ${rescued.from.toFixed(1)}-${rescued.to.toFixed(1)} of ${secs.toFixed(1)} s) ${quote(heard, 20)}`);
+    }
+    const secs = clipSeconds(wavBytes);
+    const long = !rescued && heard && conv() && wavBytes && !quiet && score >= bar && score < bar + LONG_CHECK_MARGIN && secs >= LONG_CHECK_S;
+    const win = long ? await userWindow(wavBytes, bar) : null;
+    if (long && (!win || win.share < LONG_CHECK_SHARE)) {
+      vlog(`mixed voices dropped (whole ${score.toFixed(2)}, ${Math.round((win?.share ?? 0) * 100)}% of windows, ${secs.toFixed(1)} s) ${quote(heard)}`);
+      logHeard(heard, score, false, "여러 사람 대화");
+      flash("여러 사람 목소리라 넘겼어요");
+      heard = "";
+    } else if (win && (win.from > 0.2 || win.to < secs - 0.2)) {
+      const part = (await VoiceService.Transcribe(toBase64(wavSlice(wavBytes, win.from, win.to)))).trim();
+      if (part) heard = part;
+      vlog(`long clip trimmed (whole ${score.toFixed(2)}, ${Math.round(win.share * 100)}% of windows, ${win.from.toFixed(1)}-${win.to.toFixed(1)} of ${secs.toFixed(1)} s) ${quote(heard, 20)}`);
     }
     if (heard && quiet && score < 0) {
       vlog(`quiet dropped (level ${level.toFixed(3)}) ${quote(heard)}`);

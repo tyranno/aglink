@@ -15,6 +15,7 @@
 // is done and the reading has finished the mic opens again by itself, so the
 // user just keeps talking. Silence, "그만" or the 🗣 button ends it.
 import { Events } from "@wailsio/runtime";
+import { speakNumbers } from "./spokenNumbers.js";
 import { ControlService, VoiceService } from "../bindings/github.com/tyranno/aglink-desktop";
 import {
   chat,
@@ -1147,7 +1148,7 @@ export function readAloud(text) {
 
 function echoReference(reply) {
   const r = normalizeForEcho(reply);
-  return /[a-z0-9]/.test(r) ? r + normalizeForEcho(readAloud(reply)) : r;
+  return /[a-z0-9]/.test(r) ? r + normalizeForEcho(readAloud(reply)) + normalizeForEcho(speakNumbers(reply)) : r;
 }
 
 // isEcho: most of the segment's character pairs also occur in the reply being
@@ -2829,7 +2830,7 @@ function playWavPage(b64, gen) {
 function synthesize(sentence) {
   const early = prefetched.get(sentence);
   prefetched.delete(sentence);
-  return early ?? VoiceService.Synthesize(sentence, voice.ttsVoice, voice.ttsSpeed);
+  return early ?? VoiceService.Synthesize(speakNumbers(sentence), voice.ttsVoice, voice.ttsSpeed);
 }
 
 // prefetchSpeech makes a reply's first sentence as soon as its text arrives:
@@ -2839,7 +2840,7 @@ function prefetchSpeech(md) {
   if (ttsReady !== true) return;
   const first = splitSentences(speechText(md))[0];
   if (!first || prefetched.has(first)) return;
-  const p = VoiceService.Synthesize(first, voice.ttsVoice, voice.ttsSpeed);
+  const p = VoiceService.Synthesize(speakNumbers(first), voice.ttsVoice, voice.ttsSpeed);
   p.catch(() => {});
   prefetched.set(first, p);
   if (prefetched.size > 3) prefetched.delete(prefetched.keys().next().value);

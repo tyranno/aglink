@@ -32,3 +32,6 @@ Thumbs.db
 
 # Hand-out folder made by installer/build-product-setup.ps1
 dist/
+
+# Installer staging (rebuilt by installer/build-installer.ps1)
+installer/stage/

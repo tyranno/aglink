@@ -41,6 +41,15 @@ Build-GoHelper "screen" "aglink-screen.exe"
 Build-GoHelper "web" "aglink-web.exe"
 Build-GoHelper "desktop" "aglink-desktop.exe" "-H windowsgui -s -w"
 
+# AI setup guide + the Chrome extension aglink-web needs (minus its tests).
+Copy-Item (Join-Path $here "AI-SETUP.md") $stage -Force
+$ext = Join-Path $stage "chrome-extension"
+if (Test-Path $ext) { Remove-Item $ext -Recurse -Force }
+New-Item -ItemType Directory -Path $ext | Out-Null
+Get-ChildItem (Join-Path $root "web\extension") -File |
+  Where-Object { $_.Name -notlike "*.test.js" } |
+  Copy-Item -Destination $ext
+
 Write-Host "[3/3] makensis..."
 $makensis = @((Join-Path $env:USERPROFILE '.aglink\tools\nsis-3.11\makensis.exe'),'C:\Program Files (x86)\NSIS\makensis.exe') | Where-Object { (Test-Path $_) -and ((& $_ -VERSION) -match '^v3') } | Select-Object -First 1
 if (-not $makensis) { throw "NSIS 3 (makensis.exe) not found" }

@@ -25,7 +25,7 @@ Unicode true
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "aglink 설치"
 !define MUI_WELCOMEPAGE_TEXT "aglink는 Telegram·웹에서 claude / codex / opencode 를 구동하는 AI 게이트웨이입니다.$\r$\n$\r$\n※ 사전 준비: 이 프로그램은 이미 설치된 claude, codex, opencode CLI 를 사용합니다. 설치 전에 사용할 CLI가 준비돼 있어야 합니다(없어도 설치는 되지만 해당 백엔드는 동작하지 않습니다).$\r$\n$\r$\n설치 후 로그온 시 관리자 권한으로 자동 실행됩니다(화면제어용)."
-!define MUI_FINISHPAGE_TEXT "aglink 설치가 완료되었습니다.$\r$\n$\r$\n로그온 시 자동 시작되도록 등록되었습니다. 지금 바로 시작되었습니다.$\r$\n설정은 웹 UI(http://127.0.0.1:27271) 또는 데스크톱 앱에서 하세요."
+!define MUI_FINISHPAGE_TEXT "aglink 설치가 완료되었습니다.$\r$\n$\r$\n로그온 시 자동 시작되도록 등록되었습니다. 지금 바로 시작되었습니다.$\r$\n처음 설치라면 설정 파일을 만들어야 시작됩니다. Claude Code 에게 $\"$INSTDIR\AI-SETUP.md 대로 aglink 설정해줘$\" 라고 하면 AI 가 설정해 줍니다.$\r$\n직접 하려면 터미널에서 aglink.exe setup 을 실행하세요."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\aglink-desktop.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "aglink 데스크톱 앱 실행"
 
@@ -64,6 +64,11 @@ Section "Install"
     File "stage\aglink-desktop.exe"
     File "stage\aglink-screen.exe"
     File "stage\aglink-web.exe"
+    File "stage\AI-SETUP.md"
+    RMDir /r "$INSTDIR\chrome-extension"
+    SetOutPath "$INSTDIR\chrome-extension"
+    File /r "stage\chrome-extension\*.*"
+    SetOutPath "$INSTDIR"
 
     ; --- Dependency check (informational; install proceeds either way) ---
     DetailPrint "외부 CLI 확인 (claude/codex/opencode)..."
@@ -102,6 +107,8 @@ Section "Install"
     CreateDirectory "$SMPROGRAMS\aglink"
     CreateShortcut "$SMPROGRAMS\aglink\aglink 데스크톱.lnk" "$INSTDIR\aglink-desktop.exe"
     CreateShortcut "$SMPROGRAMS\aglink\aglink 웹 UI.lnk" "http://127.0.0.1:27271"
+    CreateShortcut "$SMPROGRAMS\aglink\설치·설정 가이드 (AI용).lnk" "$INSTDIR\AI-SETUP.md"
+    CreateShortcut "$SMPROGRAMS\aglink\크롬 확장 폴더 열기.lnk" "$INSTDIR\chrome-extension"
     CreateShortcut "$SMPROGRAMS\aglink\제거.lnk" "$INSTDIR\uninstall.exe"
 
     ; --- Uninstaller + Add/Remove Programs ---
@@ -138,12 +145,16 @@ Section "Uninstall"
     Delete "$INSTDIR\aglink-desktop.exe"
     Delete "$INSTDIR\aglink-screen.exe"
     Delete "$INSTDIR\aglink-web.exe"
+    Delete "$INSTDIR\AI-SETUP.md"
+    RMDir /r "$INSTDIR\chrome-extension"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
 
     Delete "$DESKTOP\aglink.lnk"
     Delete "$SMPROGRAMS\aglink\aglink 데스크톱.lnk"
     Delete "$SMPROGRAMS\aglink\aglink 웹 UI.lnk"
+    Delete "$SMPROGRAMS\aglink\설치·설정 가이드 (AI용).lnk"
+    Delete "$SMPROGRAMS\aglink\크롬 확장 폴더 열기.lnk"
     Delete "$SMPROGRAMS\aglink\제거.lnk"
     RMDir "$SMPROGRAMS\aglink"
 

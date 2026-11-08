@@ -49,7 +49,7 @@ type ttsServer struct {
 
 // ttsTimeout: a sentence takes well under 3 s; a server this slow is stuck and
 // is replaced.
-const ttsTimeout = 20 * time.Second
+const ttsTimeout = 12 * time.Second
 
 // ttsRetryAfter: after a failed start the Windows voice is used for a while
 // instead of trying again on every reply.
@@ -60,6 +60,10 @@ var (
 	tts       *ttsServer
 	ttsBadAt  time.Time // last failed start
 	ttsWarmed atomic.Bool
+	// ttsRestarting: a stuck server is replaced in the background. Until the new
+	// one is up requests fail at once, so the reply is read with the Windows
+	// voice instead of the app waiting a minute and more on a fresh start.
+	ttsRestarting atomic.Bool
 )
 
 func ttsBad() bool {
@@ -108,7 +112,7 @@ func supertonicReady() bool {
 func (v *VoiceService) TTSStatus() (string, error) {
 	warmTTSServer()
 	ttsMu.Lock()
-	bad := ttsBad()
+	bad := ttsBad() || ttsRestarting.Load()
 	ttsMu.Unlock()
 	b, _ := json.Marshal(map[string]any{"ready": supertonicReady() && !bad, "voice": defaultTTSVoice})
 	return string(b), nil
@@ -165,40 +169,67 @@ func (v *VoiceService) Synthesize(text, voiceName string, speed float64) (string
 	return base64.StdEncoding.EncodeToString(wav), nil
 }
 
-// ttsRequest sends one request, starting the server if needed and restarting
-// it once if it died. Callers hold ttsMu.
+// ttsRequest sends one request, starting the server if needed. A server that
+// died or hung is killed and replaced in the background, and this request
+// fails. Callers hold ttsMu.
 func ttsRequest(req map[string]any) error {
-	line, _ := json.Marshal(req)
-	for attempt := 0; attempt < 2; attempt++ {
-		if tts == nil {
-			if ttsBad() {
-				return errors.New("Supertonic 을 시작하지 못했습니다")
-			}
-			s, err := startTTSServer()
-			if err != nil {
-				ttsBadAt = time.Now()
-				log.Printf("[tts] start failed: %v", err)
-				return err
-			}
-			tts = s
-		}
-		if _, err := tts.in.Write(append(line, '\n')); err == nil && scanWithin(tts.out, ttsTimeout) {
-			var resp struct {
-				OK    bool   `json:"ok"`
-				Error string `json:"error"`
-			}
-			if err := json.Unmarshal(tts.out.Bytes(), &resp); err != nil {
-				return err
-			}
-			if !resp.OK {
-				return fmt.Errorf("Supertonic: %s", resp.Error)
-			}
-			return nil
-		}
-		log.Printf("[tts] supertonic-server died or hung — restarting")
-		stopTTSServer() // start a fresh one
+	if ttsRestarting.Load() {
+		return errors.New("Supertonic 을 다시 켜는 중입니다")
 	}
+	if tts == nil {
+		if ttsBad() {
+			return errors.New("Supertonic 을 시작하지 못했습니다")
+		}
+		s, err := startTTSServer()
+		if err != nil {
+			ttsBadAt = time.Now()
+			log.Printf("[tts] start failed: %v", err)
+			return err
+		}
+		tts = s
+	}
+	line, _ := json.Marshal(req)
+	if _, err := tts.in.Write(append(line, '\n')); err == nil && scanWithin(tts.out, ttsTimeout) {
+		var resp struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(tts.out.Bytes(), &resp); err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("Supertonic: %s", resp.Error)
+		}
+		return nil
+	}
+	log.Printf("[tts] supertonic-server died or hung — restarting in the background")
+	stopTTSServer()
+	restartTTSServer()
 	return errors.New("Supertonic 이 응답하지 않습니다")
+}
+
+// restartTTSServer starts a fresh server without holding ttsMu, so requests
+// in the meantime fail fast instead of queueing behind the start.
+func restartTTSServer() {
+	if ttsRestarting.Swap(true) {
+		return
+	}
+	go func() {
+		defer ttsRestarting.Store(false)
+		s, err := startTTSServer()
+		ttsMu.Lock()
+		defer ttsMu.Unlock()
+		if err != nil {
+			ttsBadAt = time.Now()
+			log.Printf("[tts] restart failed: %v", err)
+			return
+		}
+		if tts != nil {
+			s.stop()
+			return
+		}
+		tts = s
+	}()
 }
 
 // scanWithin reads the next line, giving up after d. A hung server is then
@@ -248,10 +279,14 @@ func stopTTSServer() {
 	if tts == nil {
 		return
 	}
-	_ = tts.in.Close()
-	_ = tts.cmd.Process.Kill()
-	_ = tts.cmd.Wait()
+	tts.stop()
 	tts = nil
+}
+
+func (s *ttsServer) stop() {
+	_ = s.in.Close()
+	_ = s.cmd.Process.Kill()
+	_ = s.cmd.Wait()
 }
 
 // ServiceShutdown stops the TTS and speech-recognition servers with the app.

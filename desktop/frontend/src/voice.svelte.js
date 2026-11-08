@@ -372,6 +372,7 @@ let vadMissingLogged = false;
 let turnMissingLogged = false;
 let resumeTimer = null; // conversation mode: waits for the reading to finish
 let endAfterReply = false; // "매번 부르기": the answer read out goes back to waiting for the name
+let endedByUser = false; // turned off on purpose: in "always" only the name brings it back, not just the voice
 let convActiveAt = 0; // conversation mode: last time something was said or answered
 let micFailures = 0; // conversation mode: mic opens failed in a row
 const MAX_MIC_FAILURES = 3;
@@ -494,6 +495,7 @@ export async function toggleConversation(paneId) {
   if (voice.convPaneId) endConversation();
   voice.convPaneId = paneId;
   endAfterReply = false;
+  endedByUser = false;
   convActiveAt = Date.now();
   saveConversation(paneId);
   await startRecording(paneId);
@@ -601,7 +603,10 @@ export function endConversation(note) {
   resumeTimer = null;
   if (recorder) stopRecording(false);
   stopSpeaking();
-  if (note && paneId) setNote(paneId, note);
+  if (note && paneId) {
+    setNote(paneId, note);
+    endedByUser = true;
+  }
   // Only an explicit "끝내" (which carries a note) keeps "always" off.
   if (!note && paneId && voice.listenMode === "always") setTimeout(() => void listenAlways(), 1000);
 }
@@ -3263,22 +3268,30 @@ async function speakSupertonic(sentences, gen) {
     flash("음성 엔진을 다시 켜는 중이라 기본 목소리로 읽어요");
     return false;
   }
+  let handedOff = false; // the Windows voice reads the rest and ends the reading
   try {
     for (let i = 0; gen === speakGen; i++) {
       const next = i + 1 < sentences.length ? synthesize(sentences[i + 1]) : null;
       next?.catch(() => {}); // awaited below; this only silences an abandoned one
       if (b64) await playWav(b64, gen);
       if (!next) break;
-      // One sentence that fails to synthesize is skipped, not the rest of the reply.
+      // A sentence that fails means Supertonic is stuck and being restarted;
+      // the rest of the reply is read with the Windows voice.
       b64 = await next.catch((err) => {
-        vlog(`Supertonic skipped a sentence: ${err?.message || err}`);
+        vlog(`Supertonic failed mid-reply, Windows voice for the rest: ${err?.message || err}`);
         return null;
       });
+      if (!b64 && gen === speakGen) {
+        ttsReady = null;
+        handedOff = true;
+        speakWindows(sentences.slice(i + 1), gen);
+        return true;
+      }
     }
   } catch (err) {
     console.warn("[voice] Supertonic sentence failed", err);
   } finally {
-    if (gen === speakGen) {
+    if (gen === speakGen && !handedOff) {
       voice.speaking = false;
       readingEndedAt = performance.now();
       if (echoGain !== null) vlog(`echo gain ${echoGain.toFixed(3)} (${echoRatios.length} samples)`);
@@ -3625,7 +3638,7 @@ async function checkWake(w, wav) {
     const end = wakeMatch(text);
     if (end < 0) {
       // "Always" needs no name: the user's own voice brings the conversation back.
-      if (voice.listenMode === "always" && isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
+      if (voice.listenMode === "always" && !endedByUser && isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
         vlog(`always: conversation back on the user's voice (${score.toFixed(2)}) ${quote(text)}`);
         await wakeUp(text);
         return;
@@ -3657,6 +3670,7 @@ async function wakeUp(rest) {
   stopWake();
   clearVoiceNote();
   voice.convPaneId = paneId;
+  endedByUser = false;
   convActiveAt = Date.now();
   saveConversation(paneId);
   await playChime(); // heard at once, before anything else

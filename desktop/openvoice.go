@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -237,10 +238,15 @@ func startPythonServer(dir, script, tag string) (*ttsServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	errOut, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	killWithApp(cmd.Process) // never left holding the GPU after the app is killed
+	go logPythonStderr(errOut, tag)
 	sc := bufio.NewScanner(out)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	if !scanWithin(sc, 2*time.Minute) || !strings.Contains(sc.Text(), `"ready": true`) {
@@ -250,6 +256,17 @@ func startPythonServer(dir, script, tag string) (*ttsServer, error) {
 	}
 	log.Printf("%s server started (pid %d) %s", tag, cmd.Process.Pid, sc.Text())
 	return &ttsServer{cmd: cmd, in: in, out: sc}, nil
+}
+
+// logPythonStderr relays a Python server's stderr (tracebacks, warnings) into
+// the app log under its tag, so a later crash leaves a reason behind instead
+// of just "not answering".
+func logPythonStderr(r io.Reader, tag string) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		log.Printf("%s stderr: %s", tag, sc.Text())
+	}
 }
 
 func stopOpenVoiceServer() {

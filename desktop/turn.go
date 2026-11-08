@@ -29,6 +29,7 @@ var (
 	turnSrv     *ttsServer
 	turnWarming atomic.Bool
 	turnBadAt   time.Time // last failed start; guarded by turnMu
+	turnHangs   int       // stalls in a row; guarded by turnMu
 )
 
 // turnTimeout: a request takes well under 0.2 s; one this slow is stuck. Much
@@ -94,9 +95,17 @@ func turnRequest(req map[string]any) (json.RawMessage, error) {
 	line, _ := json.Marshal(req)
 	if _, err := turnSrv.in.Write(append(line, '\n')); err != nil || !scanWithin(turnSrv.out, turnTimeout) {
 		stopTurnServerLocked()
-		turnBadAt = time.Now()
-		return nil, errors.New("turn server not answering")
+		// A one-off stall (the PC busy for a moment) restarts at once: a minute
+		// without the model cuts the user off at every pause.
+		if turnHangs++; turnHangs >= 3 {
+			turnBadAt = time.Now()
+			turnHangs = 0
+		} else {
+			go warmTurn()
+		}
+		return nil, fmt.Errorf("turn server not answering (op %v)", req["op"])
 	}
+	turnHangs = 0
 	var resp struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`

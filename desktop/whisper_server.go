@@ -111,7 +111,7 @@ func startWhisperServer() (*whisperServer, error) {
 		return nil, err
 	}
 	args := []string{"-l", "ko", "-t", "4", "--host", "127.0.0.1", "--port", fmt.Sprint(port)}
-	if ko := filepath.Join(filepath.Dir(model), whisperKoModel); fileExists(ko) {
+	if ko := filepath.Join(filepath.Dir(model), whisperKoModel); loadSTTModelPref() != "small" && fileExists(ko) {
 		model = ko
 		// -mc caps the text carried between 30 s windows, which the model card
 		// blames for loops on long audio; 64 still fits whisperPrompt (0 drops it).

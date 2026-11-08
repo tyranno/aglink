@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -45,6 +46,57 @@ const (
 	whisperKoModelURL = "https://huggingface.co/batiai/batisay-ko-turbo/resolve/main/" + whisperKoModel
 )
 
+// sttModelPref: which model the resident GPU server should load once the
+// Korean one is installed — "auto" (default) prefers it, "small" sticks to
+// the original ggml-small. Persisted so it survives a restart; see
+// loadSTTModelPref/saveSTTModelPref.
+var (
+	sttPrefMu     sync.Mutex
+	sttPref       = "auto"
+	sttPrefLoaded bool
+)
+
+func sttModelPrefPath() (string, error) {
+	dir, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "stt-model.json"), nil
+}
+
+func loadSTTModelPref() string {
+	sttPrefMu.Lock()
+	defer sttPrefMu.Unlock()
+	if sttPrefLoaded {
+		return sttPref
+	}
+	sttPrefLoaded = true
+	if p, err := sttModelPrefPath(); err == nil {
+		if b, err := os.ReadFile(p); err == nil {
+			var v struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(b, &v) == nil && (v.Model == "auto" || v.Model == "small") {
+				sttPref = v.Model
+			}
+		}
+	}
+	return sttPref
+}
+
+func saveSTTModelPref(model string) error {
+	sttPrefMu.Lock()
+	sttPref = model
+	sttPrefLoaded = true
+	sttPrefMu.Unlock()
+	p, err := sttModelPrefPath()
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(map[string]string{"model": model})
+	return os.WriteFile(p, b, 0o644)
+}
+
 // whisperHallucinations are what whisper emits for silence or noise — mostly
 // YouTube outro lines from its training data. A clip that transcribes to only
 // these (possibly repeated, as "-감사합니다. -감사합니다.") is treated as no
@@ -56,6 +108,26 @@ var bracketNoteRe = regexp.MustCompile(`\[[^\]]*\]|\([^)]{0,10}\)`)
 // newsSignoffRe: "MBC 뉴스 김상현입니다." — a newscaster's sign-off whisper
 // makes up for noise, with a different name each time.
 var newsSignoffRe = regexp.MustCompile(`(MBC|KBS|SBS|YTN|JTBC)\s*뉴스\s*\S{0,6}(입니다|였습니다)[.!]?`)
+
+// strayLatinRe: a lone 1–2 lowercase-letter word ("n.", "nn", "bc") the Korean
+// model makes up on quiet audio. Real terms come capitalized (PC, AI) or longer.
+var strayLatinRe = regexp.MustCompile(`^[a-z]{1,2}[.!?,]*$`)
+
+// dropStrayLatin removes those words, only from text that is Korean.
+func dropStrayLatin(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return unicode.Is(unicode.Hangul, r) }) {
+		return s
+	}
+	words := strings.Fields(s)
+	kept := words[:0]
+	for _, w := range words {
+		if w != "ok" && strayLatinRe.MatchString(w) {
+			continue
+		}
+		kept = append(kept, w)
+	}
+	return strings.Join(kept, " ")
+}
 
 var whisperHallucinations = []string{
 	"감사합니다",
@@ -123,6 +195,36 @@ func (v *VoiceService) VoiceStatus() (string, error) {
 		"supported":  runtime.GOOS == "windows" && runtime.GOARCH == "amd64",
 	})
 	return string(b), nil
+}
+
+// STTModelInfo reports the Korean-model preference as JSON:
+// {"pref":"auto"|"small","koAvailable":bool}. koAvailable is whether the
+// Korean model file is on disk — the preference only matters once it is.
+func (v *VoiceService) STTModelInfo() (string, error) {
+	_, model, err := whisperPaths()
+	if err != nil {
+		return "", err
+	}
+	ko := filepath.Join(filepath.Dir(model), whisperKoModel)
+	b, _ := json.Marshal(map[string]any{
+		"pref":        loadSTTModelPref(),
+		"koAvailable": fileExists(ko),
+	})
+	return string(b), nil
+}
+
+// SetSTTModel sets the Korean-model preference ("auto" or "small") and
+// restarts the resident GPU server so the change is picked up right away.
+func (v *VoiceService) SetSTTModel(model string) error {
+	if model != "auto" && model != "small" {
+		return fmt.Errorf("알 수 없는 모델 선택: %s", model)
+	}
+	if err := saveSTTModelPref(model); err != nil {
+		return err
+	}
+	stopWhisperServer()
+	warmWhisperServer()
+	return nil
 }
 
 // InstallVoice downloads whisper.cpp and the model in the background. It
@@ -371,7 +473,7 @@ func isPromptEcho(phrases []string) bool {
 func cleanTranscript(s string) string {
 	s = bracketNoteRe.ReplaceAllString(s, " ") // "[감사합니다]", "[음악]": whisper's non-speech notes
 	s = newsSignoffRe.ReplaceAllString(s, " ")
-	s = strings.Join(strings.Fields(s), " ")
+	s = dropStrayLatin(s)
 	phrases := strings.FieldsFunc(s, func(r rune) bool { return strings.ContainsRune(".!?,-", r) })
 	if isPromptEcho(phrases) {
 		return ""

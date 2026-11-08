@@ -308,6 +308,22 @@ export async function clearSpeaker() {
   vlog("speaker enrollment cleared");
 }
 
+// sttModelStatus: {"pref":"auto"|"small","koAvailable":bool} — koAvailable is
+// whether the Korean-tuned model is installed; the choice only matters once
+// it is.
+export async function sttModelStatus() {
+  try {
+    return JSON.parse(await VoiceService.STTModelInfo());
+  } catch {
+    return { pref: "auto", koAvailable: false };
+  }
+}
+
+export async function setSTTModel(model) {
+  await VoiceService.SetSTTModel(model);
+  vlog(`stt model → ${model}`);
+}
+
 // How loudly the user talks into this mic, learned from clips that are surely
 // them. People across the room or the TV reach the mic much quieter; a clip
 // well under the user's level must sound clearly like them to be sent. This
@@ -573,6 +589,7 @@ async function listenAlways() {
 
 export function endConversation(note) {
   const paneId = voice.convPaneId;
+  if (paneId) vlog(`conversation off${note ? ` (${note})` : ""}`);
   voice.convPaneId = null;
   endAfterReply = false;
   voice.heard = "";
@@ -585,6 +602,8 @@ export function endConversation(note) {
   if (recorder) stopRecording(false);
   stopSpeaking();
   if (note && paneId) setNote(paneId, note);
+  // Only an explicit "끝내" (which carries a note) keeps "always" off.
+  if (!note && paneId && voice.listenMode === "always") setTimeout(() => void listenAlways(), 1000);
 }
 
 // voice:state tells the Go side (and the indicator window shown while the app
@@ -677,6 +696,22 @@ export function setBargeEnabled(on) {
     resumeListening(); // the turn-taking mic opens after the reading
   }
 }
+
+// sendNow is the "지금 보내기" click: the recording ends now and what was heard
+// is sent as it is — the click says it is meant, whoever's voice it is, so the
+// speaker and room-noise checks are skipped.
+export function sendNow() {
+  const rec = recorder;
+  if (!rec || rec.barge || voice.phase !== "listening") return;
+  if (rec.firstSpeechChunk < 0 && !rec.prefix) {
+    flash("아직 들은 말이 없어요");
+    return;
+  }
+  rec.manual = true;
+  vlog("send now (clicked)");
+  stopRecording(true);
+}
+Events.On("indicator:send", sendNow);
 
 Events.On("tray:barge", () => setBargeEnabled(!voice.bargeEnabled));
 Events.On("tray:textonly", () => setVoiceSettings({ textOnly: !voice.textOnly }));
@@ -867,7 +902,7 @@ export async function toggleVoiceInput(paneId) {
     return;
   }
   if (voice.phase === "listening") {
-    stopRecording(true);
+    sendNow();
     return;
   }
   if (voice.phase === "transcribing") return;
@@ -2575,19 +2610,20 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
   voice.paneId = paneId;
   voice.phase = "transcribing";
   const conv = () => voice.convPaneId === paneId;
+  const screen = () => conv() && !rec?.manual;
   let relisten = false;
   let retry = false;
   try {
     if (rec) await rec.bargeDone;
-    const scoring = conv() && wavBytes ? speakerScore(wavBytes) : Promise.resolve(-1);
+    const scoring = screen() && wavBytes ? speakerScore(wavBytes) : Promise.resolve(-1);
     let heard = known ?? (wavBytes ? (await VoiceService.Transcribe(toBase64(wavBytes))).trim() : "");
     // Someone else in the room (or the reply from the speakers) is not sent once
     // the user has enrolled their voice.
     let score = await scoring;
     const level = rec && rec.loudChunks > 0 ? rec.speechSum / rec.loudChunks : 0;
-    const quiet = conv() && isQuiet(level);
+    const quiet = screen() && isQuiet(level);
     const bar = speakerMinFor(clipSeconds(wavBytes) < SPEAKER_SHORT_S) + (quiet ? QUIET_EXTRA_BAR : 0);
-    const rescued = heard && conv() && wavBytes && !quiet && score >= 0 && score < bar ? await userWindow(wavBytes, bar + RESCUE_EXTRA_BAR) : null;
+    const rescued = heard && screen() && wavBytes && !quiet && score >= 0 && score < bar ? await userWindow(wavBytes, bar + RESCUE_EXTRA_BAR) : null;
     if (rescued) {
       const whole = score;
       const secs = clipSeconds(wavBytes);
@@ -2599,7 +2635,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       vlog(`voice rescued (window ${score.toFixed(2)}, whole ${whole.toFixed(2)}, ${rescued.from.toFixed(1)}-${rescued.to.toFixed(1)} of ${secs.toFixed(1)} s) ${quote(heard, 20)}`);
     }
     const secs = clipSeconds(wavBytes);
-    const long = !rescued && heard && conv() && wavBytes && !quiet && score >= bar && score < bar + LONG_CHECK_MARGIN && secs >= LONG_CHECK_S;
+    const long = !rescued && heard && screen() && wavBytes && !quiet && score >= bar && score < bar + LONG_CHECK_MARGIN && secs >= LONG_CHECK_S;
     const win = long ? await userWindow(wavBytes, bar) : null;
     if (long && (!win || win.share < LONG_CHECK_SHARE)) {
       vlog(`mixed voices dropped (whole ${score.toFixed(2)}, ${Math.round((win?.share ?? 0) * 100)}% of windows, ${secs.toFixed(1)} s) ${quote(heard)}`);
@@ -2628,7 +2664,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
     }
     // whisper writes a back-and-forth as "- 그쵸. - 네.": people talking in the
     // room or on TV, not a request. Sent, each one cost a full AI turn.
-    if (heard && conv() && (heard.match(DIALOGUE_RE) || []).length >= 2) {
+    if (heard && screen() && (heard.match(DIALOGUE_RE) || []).length >= 2) {
       vlog(`dialogue dropped ${quote(heard)}`);
       logHeard(heard, score, false, "주변 대화");
       heard = "";
@@ -3588,6 +3624,12 @@ async function checkWake(w, wav) {
     if (!text || wakeRec !== w) return;
     const end = wakeMatch(text);
     if (end < 0) {
+      // "Always" needs no name: the user's own voice brings the conversation back.
+      if (voice.listenMode === "always" && isUserVoice(score, speakerMinFor(clipSeconds(wav) < SPEAKER_SHORT_S))) {
+        vlog(`always: conversation back on the user's voice (${score.toFixed(2)}) ${quote(text)}`);
+        await wakeUp(text);
+        return;
+      }
       vlog(`wake: not the name ${quote(text, 20)}`); // to see how the name gets written
       return;
     }

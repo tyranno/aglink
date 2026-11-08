@@ -20,6 +20,8 @@
     enrollVoice,
     speakerStatus,
     clearSpeaker,
+    sttModelStatus,
+    setSTTModel,
     cloneVoice,
     cloneVoiceStatus,
     clearCloneVoice,
@@ -39,13 +41,26 @@
 
   let speaker = $state({});
   let clone = $state({});
+  let stt = $state({ pref: "auto", koAvailable: false });
   let busy = $state(false);
 
   onMount(async () => {
     speaker = await speakerStatus();
     clone = await cloneVoiceStatus();
+    stt = await sttModelStatus();
     refreshMemos().catch(() => {});
   });
+
+  async function chooseSTTModel(model) {
+    if (model === stt.pref) return;
+    busy = true;
+    try {
+      await setSTTModel(model);
+      stt = { ...stt, pref: model };
+    } finally {
+      busy = false;
+    }
+  }
 
   // {h, m} as "07:30" for a time input, and back.
   const hhmm = (s) => `${String(s.h).padStart(2, "0")}:${String(s.m).padStart(2, "0")}`;
@@ -409,6 +424,33 @@
         </div>
       {/if}
     </div>
+
+    {#if stt.koAvailable}
+      <div class={card}>
+        <div class={label}>받아쓰기 모델</div>
+        <div class={desc}>
+          한국어로 추가 학습한 모델이 설치되어 있어요. 평소엔 그 모델로 받아쓰고, 기존 모델로 돌아가고 싶으면 아래에서 바꿀 수 있어요. 바꾸면 몇 초 안에 적용돼요.
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button
+            class={button}
+            disabled={busy}
+            aria-pressed={stt.pref === "auto"}
+            onclick={() => chooseSTTModel("auto")}
+          >
+            {stt.pref === "auto" ? "✓ " : ""}한국어 특화 모델
+          </button>
+          <button
+            class={button}
+            disabled={busy}
+            aria-pressed={stt.pref === "small"}
+            onclick={() => chooseSTTModel("small")}
+          >
+            {stt.pref === "small" ? "✓ " : ""}기존 모델
+          </button>
+        </div>
+      </div>
+    {/if}
 
     <div class={card}>
       <div class={label}>최근 들린 말</div>

@@ -80,6 +80,9 @@
         {/if}
       </span>
     </button>
+    {#if phase === "listening"}
+      <button class="mode send" onclick={() => Events.Emit("indicator:send")} title="듣기를 멈추고 지금까지 들은 말을 그대로 보냅니다">보내기</button>
+    {/if}
     {#if hasReply}
       <button class="mode" onclick={() => Events.Emit("reply:toggle")} title="마지막 답변 원문 보기">원문</button>
     {/if}
@@ -152,6 +155,10 @@
     border-radius: 13px;
     font-size: 12px;
     opacity: 0.85;
+  }
+  .mode.send {
+    border-color: #ef4444;
+    color: #fca5a5;
   }
   .mode:hover {
     opacity: 1;

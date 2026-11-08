@@ -105,3 +105,18 @@ func TestCleanTranscriptDropsParenNotes(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestCleanTranscriptStrayLatin(t *testing.T) {
+	cases := map[string]string{
+		"뭐야. nf. n bc 뭘 숫자에 내. n": "뭐야. 뭘 숫자에 내.",
+		"아이제 간다. 아이제. nn.":        "아이제 간다. 아이제.",
+		"지금 cpu 온리에서 PC로 AI 써":    "지금 cpu 온리에서 PC로 AI 써",
+		"ok 좋아":                   "ok 좋아",
+		"go to the store":         "go to the store",
+	}
+	for in, want := range cases {
+		if got := cleanTranscript(in); got != want {
+			t.Errorf("cleanTranscript(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

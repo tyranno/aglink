@@ -92,6 +92,11 @@ func setupVSCodeVoice(app *application.App) {
 	mux.HandleFunc("POST /vscode/attach", func(w http.ResponseWriter, r *http.Request) { vscodeAttach(app, w, r) })
 	mux.HandleFunc("POST /vscode/paste", func(w http.ResponseWriter, r *http.Request) { vscodePaste(app, w, r) })
 	mux.HandleFunc("POST /vscode/stop", func(w http.ResponseWriter, r *http.Request) { vscodeStop(app, w, r) })
+	// "보내기" in VS Code: end the listening now and send what was heard.
+	mux.HandleFunc("POST /vscode/send", func(w http.ResponseWriter, r *http.Request) {
+		app.Event.Emit("indicator:send")
+		w.WriteHeader(http.StatusNoContent)
+	})
 	go func() { _ = http.Serve(l, mux) }()
 	log.Printf("[vscode] voice bridge on 127.0.0.1:%d", vscodeVoicePort)
 }

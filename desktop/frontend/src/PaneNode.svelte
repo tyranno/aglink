@@ -45,7 +45,7 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
-  import { voice, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
+  import { voice, sendNow, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
 
   let { node } = $props();
 
@@ -406,6 +406,12 @@
               <span class="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                 <span class="block h-full bg-red-500 transition-[width] duration-75" style={`width:${Math.round(voice.level * 100)}%`}></span>
               </span>
+              <button
+                type="button"
+                class="shrink-0 rounded-full border border-red-400 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-500 dark:text-red-300 dark:hover:bg-red-950"
+                onclick={sendNow}
+                title="듣기를 멈추고 지금까지 들은 말을 그대로 보냅니다 (다른 사람 목소리도 보냄)"
+              >지금 보내기</button>
             {:else if voice.paneId === p.id && voice.phase === "transcribing"}
               <span>음성을 글자로 바꾸는 중…</span>
             {:else if voice.convPaneId === p.id}
@@ -439,7 +445,7 @@
             class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.paneId === p.id && voice.phase === "listening" ? "border-red-500 bg-red-500 text-white shadow-[0_0_0_3px_rgba(239,68,68,0.3)] animate-pulse dark:border-red-400 dark:bg-red-500" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
             onclick={() => toggleVoiceInput(p.id)}
             disabled={!p.target || (voice.phase !== "idle" && voice.paneId !== p.id) || (voice.paneId === p.id && voice.phase === "transcribing")}
-            title={voice.paneId === p.id && voice.phase === "listening" ? "녹음 멈추고 보내기" : "말로 입력 (Ctrl+M)"}
+            title={voice.paneId === p.id && voice.phase === "listening" ? "듣기 멈추고 지금까지 들은 말 보내기 (Ctrl+M)" : "말로 입력 (Ctrl+M)"}
             aria-label="음성 입력"
           >
             {voice.paneId === p.id && voice.phase === "transcribing" ? "…" : "🎤"}

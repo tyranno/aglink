@@ -110,9 +110,15 @@ func startWhisperServer() (*whisperServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	args := []string{"-l", "ko", "-t", "4", "--host", "127.0.0.1", "--port", fmt.Sprint(port)}
+	if ko := filepath.Join(filepath.Dir(model), whisperKoModel); fileExists(ko) {
+		model = ko
+		// -mc caps the text carried between 30 s windows, which the model card
+		// blames for loops on long audio; 64 still fits whisperPrompt (0 drops it).
+		args = append(args, "-sns", "-mc", "64")
+	}
 	exe := whisperServerPath()
-	cmd := exec.Command(exe, "-m", model, "-l", "ko", "-t", "4",
-		"--host", "127.0.0.1", "--port", fmt.Sprint(port))
+	cmd := exec.Command(exe, append([]string{"-m", model}, args...)...)
 	cmd.Dir = filepath.Dir(exe)
 	hideConsole(cmd)
 	started := time.Now()
@@ -134,7 +140,7 @@ func startWhisperServer() (*whisperServer, error) {
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	log.Printf("[voice] whisper-server ready on GPU in %s (pid %d)", time.Since(started).Round(time.Millisecond), cmd.Process.Pid)
+	log.Printf("[voice] whisper-server ready on GPU with %s in %s (pid %d)", filepath.Base(model), time.Since(started).Round(time.Millisecond), cmd.Process.Pid)
 	return s, nil
 }
 
@@ -256,25 +262,44 @@ func silentWav(d time.Duration) []byte {
 	return b.Bytes()
 }
 
-// installWhisperCUDA adds the CUDA build next to the CPU one when the PC has an
-// NVIDIA GPU. It is optional: a failure leaves speech recognition on the CPU.
+var (
+	cudaMu         sync.Mutex // one installWhisperCUDA at a time
+	gpuUpgradeOnce sync.Once
+)
+
+// installWhisperCUDA adds the CUDA build and the Korean model next to the CPU
+// ones when the PC has an NVIDIA GPU. It is optional: a failure leaves speech
+// recognition on the CPU, or the GPU server on the small model.
 func installWhisperCUDA() {
-	if fileExists(whisperServerPath()) || !hasNvidiaGPU() {
-		return
-	}
+	cudaMu.Lock()
+	defer cudaMu.Unlock()
 	dir, err := whisperDir()
 	if err != nil {
 		return
 	}
-	zipPath := filepath.Join(dir, "whisper-cuda.zip")
-	err = download(whisperCUDAURL, zipPath, "gpu")
-	if err == nil {
-		err = extractRelease(zipPath, filepath.Join(dir, whisperCUDADir), "whisper-server.exe")
-	}
-	os.Remove(zipPath)
-	if err != nil {
-		log.Printf("[voice] CUDA build not installed: %v", err)
+	ko := filepath.Join(dir, whisperKoModel)
+	if (fileExists(whisperServerPath()) && fileExists(ko)) || !hasNvidiaGPU() {
 		return
+	}
+	if !fileExists(whisperServerPath()) {
+		zipPath := filepath.Join(dir, "whisper-cuda.zip")
+		err = download(whisperCUDAURL, zipPath, "gpu")
+		if err == nil {
+			err = extractRelease(zipPath, filepath.Join(dir, whisperCUDADir), "whisper-server.exe")
+		}
+		os.Remove(zipPath)
+		if err != nil {
+			log.Printf("[voice] CUDA build not installed: %v", err)
+			return
+		}
+	}
+	if !fileExists(ko) {
+		if err := download(whisperKoModelURL, ko, "gpu"); err != nil {
+			log.Printf("[voice] Korean model not installed: %v", err)
+		} else if remoteWhisperURL() == "" {
+			log.Printf("[voice] Korean model installed, restarting whisper-server")
+			stopWhisperServer()
+		}
 	}
 	warmWhisperServer()
 }

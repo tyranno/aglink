@@ -37,6 +37,12 @@ const (
 	whisperBinURL   = "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip"
 	whisperModel    = "ggml-small.bin"
 	whisperModelURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + whisperModel
+
+	// whisperKoModel: whisper-large-v3-turbo fine-tuned on ~4,300 h of Korean
+	// (batiai, free for personal use). Too slow on the CPU, so only the GPU
+	// server loads it; whisper-cli keeps whisperModel.
+	whisperKoModel    = "ggml-batisay-ko-turbo-q5_0.bin"
+	whisperKoModelURL = "https://huggingface.co/batiai/batisay-ko-turbo/resolve/main/" + whisperKoModel
 )
 
 // whisperHallucinations are what whisper emits for silence or noise — mostly
@@ -104,6 +110,7 @@ func (v *VoiceService) VoiceStatus() (string, error) {
 	v.mu.Unlock()
 	ready := fileExists(cli) && fileExists(model)
 	if ready {
+		gpuUpgradeOnce.Do(func() { go installWhisperCUDA() }) // installs from before the Korean model get it too
 		warmWhisperServer()
 	}
 	warmTTSServer()

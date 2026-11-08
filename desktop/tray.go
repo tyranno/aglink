@@ -102,13 +102,14 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 	tray.SetIcon(trayIcon)
 	tray.SetTooltip("aglink")
 	tray.SetMenu(menu)
-	// The tooltip and a coloured dot on the icon say what voice conversation is
-	// doing, like the indicator.
+	// The tooltip says what voice conversation is doing, like the indicator.
+	// The icon itself used to change shape with it (mic/lines/hourglass/
+	// speaker/!), but that kept changing distractingly, so it now always
+	// stays the plain app icon.
 	var (
-		tipMu     sync.Mutex
-		tipOrder  stateOrder
-		lastTip   string
-		lastPhase string
+		tipMu    sync.Mutex
+		tipOrder stateOrder
+		lastTip  string
 	)
 	app.Event.On("voice:state", func(e *application.CustomEvent) {
 		m, _ := e.Data.(map[string]any)
@@ -117,7 +118,7 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 		if !tipOrder.fresh(m) {
 			return
 		}
-		tip, phase := "aglink", ""
+		tip := "aglink"
 		if m != nil {
 			if active, _ := m["active"].(bool); active {
 				if label, _ := m["label"].(string); label != "" {
@@ -127,7 +128,6 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 				if title, _ := m["chat"].(string); title != "" {
 					tip = "aglink · " + title + "\n" + strings.TrimPrefix(tip, "aglink — ")
 				}
-				phase, _ = m["phase"].(string)
 			} else if wake, _ := m["wake"].(bool); wake {
 				name, _ := m["wakeName"].(string) // the user's own name to wake on, if set
 				if name == "" {
@@ -139,11 +139,6 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 		if tip != lastTip {
 			lastTip = tip
 			tray.SetTooltip(tip)
-		}
-		// A passing note keeps the dot it had.
-		if phase != "note" && phase != lastPhase {
-			lastPhase = phase
-			tray.SetIcon(trayIconFor(phase))
 		}
 	})
 	tray.OnClick(func() {

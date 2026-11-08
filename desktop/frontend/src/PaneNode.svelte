@@ -45,7 +45,7 @@
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
-  import { voice, sendNow, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
+  import { voice, sendNow, skipReading, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
 
   let { node } = $props();
 
@@ -417,6 +417,14 @@
             {:else if voice.convPaneId === p.id}
               <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500"></span>
               <span>음성 대화 중 · {voice.speaking ? "답변을 읽는 중…" : "답변을 기다리는 중…"} 끝나면 다시 듣습니다</span>
+              {#if voice.speaking}
+                <button
+                  type="button"
+                  class="shrink-0 rounded-full border border-emerald-500 px-2 py-0.5 text-[11px] font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-400 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                  onclick={skipReading}
+                  title="답변 읽기를 여기서 멈추고 바로 다음 말을 듣습니다"
+                >그만 읽기</button>
+              {/if}
             {:else if voice.status === "installing"}
               <span class="shrink-0">음성 인식 내려받는 중 · {voice.installStage}</span>
               <span class="h-1.5 min-w-16 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
@@ -520,7 +528,7 @@
 
           <button
             class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm ${voice.speakEnabled ? "border-blue-400 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-950/40 dark:text-blue-300" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
-            onclick={() => (voice.speaking ? stopSpeaking() : setSpeakEnabled(!voice.speakEnabled))}
+            onclick={() => (voice.speaking ? skipReading() : setSpeakEnabled(!voice.speakEnabled))}
             title={voice.speaking ? "읽기 멈추기" : voice.speakEnabled ? "답변 읽어주기 켜짐 (끄려면 클릭)" : "답변 읽어주기 꺼짐 (켜려면 클릭)"}
             aria-label="답변 읽어주기"
             aria-pressed={voice.speakEnabled}

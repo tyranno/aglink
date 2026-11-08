@@ -97,6 +97,11 @@ func setupVSCodeVoice(app *application.App) {
 		app.Event.Emit("indicator:send")
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// "그만 읽기" in VS Code: stop reading the reply and listen for the next words.
+	mux.HandleFunc("POST /vscode/skip", func(w http.ResponseWriter, r *http.Request) {
+		app.Event.Emit("indicator:skip")
+		w.WriteHeader(http.StatusNoContent)
+	})
 	go func() { _ = http.Serve(l, mux) }()
 	log.Printf("[vscode] voice bridge on 127.0.0.1:%d", vscodeVoicePort)
 }

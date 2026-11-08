@@ -718,6 +718,17 @@ export function sendNow() {
 }
 Events.On("indicator:send", sendNow);
 
+// skipReading is the "그만 읽기" click: the reading stops here and, in a
+// conversation, the mic opens at once for the next thing to say.
+export function skipReading() {
+  const reading = voice.speaking || (typeof speechSynthesis !== "undefined" && (speechSynthesis.speaking || speechSynthesis.pending));
+  if (!reading) return;
+  vlog("reading skipped (clicked)");
+  stopSpeaking();
+  if (voice.convPaneId && !recorder) resumeListening(0);
+}
+Events.On("indicator:skip", skipReading);
+
 Events.On("tray:barge", () => setBargeEnabled(!voice.bargeEnabled));
 Events.On("tray:textonly", () => setVoiceSettings({ textOnly: !voice.textOnly }));
 
@@ -908,6 +919,10 @@ export async function toggleVoiceInput(paneId) {
   }
   if (voice.phase === "listening") {
     sendNow();
+    return;
+  }
+  if (voice.speaking && voice.convPaneId) {
+    skipReading(); // the same key moves the conversation on: the reading ends, the mic opens
     return;
   }
   if (voice.phase === "transcribing") return;

@@ -82,6 +82,8 @@
     </button>
     {#if phase === "listening"}
       <button class="mode send" onclick={() => Events.Emit("indicator:send")} title="듣기를 멈추고 지금까지 들은 말을 그대로 보냅니다">보내기</button>
+    {:else if phase === "speaking"}
+      <button class="mode skip" onclick={() => Events.Emit("indicator:skip")} title="답변 읽기를 여기서 멈추고 바로 다음 말을 듣습니다">그만 읽기</button>
     {/if}
     {#if hasReply}
       <button class="mode" onclick={() => Events.Emit("reply:toggle")} title="마지막 답변 원문 보기">원문</button>
@@ -155,6 +157,10 @@
     border-radius: 13px;
     font-size: 12px;
     opacity: 0.85;
+  }
+  .mode.skip {
+    border-color: #10b981;
+    color: #6ee7b7;
   }
   .mode.send {
     border-color: #ef4444;

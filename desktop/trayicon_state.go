@@ -16,6 +16,9 @@ func trayIconFor(phase string) []byte {
 	if phase == "" {
 		return trayIcon
 	}
+	if phase == "preparing" { // recognition still loading: the hourglass, as on the indicator
+		phase = "waiting"
+	}
 	b, err := trayStateIcons.ReadFile("trayicons/" + phase + ".png")
 	if err != nil {
 		return trayIcon

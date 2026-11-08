@@ -66,6 +66,14 @@ func fastWhisperReady() bool {
 	return ws != nil
 }
 
+// whisperWarming reports whether the resident GPU server is still loading its
+// model: clips sent meanwhile wait for it or go to the much slower whisper-cli.
+func whisperWarming() bool {
+	wsMu.Lock()
+	defer wsMu.Unlock()
+	return wsStarting
+}
+
 // warmWhisperServer starts the server in the background if it is installed and
 // not running yet. Safe to call often.
 func warmWhisperServer() {

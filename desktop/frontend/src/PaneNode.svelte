@@ -402,7 +402,7 @@
           <div class="mb-1 flex items-center gap-2 text-[12px] text-slate-600 dark:text-slate-400">
             {#if voice.paneId === p.id && voice.phase === "listening"}
               <span class="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500"></span>
-              <span>{voice.convPaneId === p.id ? "음성 대화 · 듣는 중… (끝내려면 “그만”)" : "듣는 중… 말을 멈추면 자동으로 보냅니다"}</span>
+              <span>{voice.warming ? "음성 인식 준비 중… 잠시 후 말씀하세요" : voice.convPaneId === p.id ? "음성 대화 · 듣는 중… (끝내려면 “그만”)" : "듣는 중… 말을 멈추면 자동으로 보냅니다"}</span>
               <span class="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                 <span class="block h-full bg-red-500 transition-[width] duration-75" style={`width:${Math.round(voice.level * 100)}%`}></span>
               </span>
@@ -453,7 +453,7 @@
             class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm disabled:cursor-not-allowed disabled:opacity-50 ${voice.paneId === p.id && voice.phase === "listening" ? "border-red-500 bg-red-500 text-white shadow-[0_0_0_3px_rgba(239,68,68,0.3)] animate-pulse dark:border-red-400 dark:bg-red-500" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
             onclick={() => toggleVoiceInput(p.id)}
             disabled={!p.target || (voice.phase !== "idle" && voice.paneId !== p.id) || (voice.paneId === p.id && voice.phase === "transcribing")}
-            title={voice.paneId === p.id && voice.phase === "listening" ? "듣기 멈추고 지금까지 들은 말 보내기 (Ctrl+M)" : "말로 입력 (Ctrl+M)"}
+            title={voice.paneId === p.id && voice.phase === "listening" ? "듣기 끄기 — 보내지 않고 취소 (Ctrl+M)" : "말로 입력 (Ctrl+M)"}
             aria-label="음성 입력"
           >
             {voice.paneId === p.id && voice.phase === "transcribing" ? "…" : "🎤"}

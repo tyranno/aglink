@@ -192,7 +192,10 @@ func (v *VoiceService) VoiceStatus() (string, error) {
 		"ready":      ready,
 		"installing": installing,
 		"fast":       fastWhisperReady(),
-		"supported":  runtime.GOOS == "windows" && runtime.GOARCH == "amd64",
+		// Recognition or the speaker check is still loading: what is said now
+		// is only handled once it is up, so the mic is shown as getting ready.
+		"warming":   whisperWarming() || spkWarming.Load(),
+		"supported": runtime.GOOS == "windows" && runtime.GOARCH == "amd64",
 	})
 	return string(b), nil
 }

@@ -216,6 +216,7 @@ export const voice = $state({
   readScript: "", // cloneVoice: the text to read, shown large (CloneScript.svelte)
   readUntil: 0, // when that recording ends; 0 = not started yet
   fast: false, // recognition runs on the resident GPU server (~0.3 s a clip)
+  warming: false, // recognition or the speaker check is still loading (shown as "준비 중")
   heard: "", // conversation mode: what was last sent, shown while the reply is awaited
   problem: "", // conversation mode: why the mic is not listening (shown by the indicator)
   note: "", // last error / hint, shown above the composer
@@ -409,6 +410,8 @@ export function clearVoiceNote() {
 
 // ---- install ----
 
+let warmPoll = null; // the next refreshVoiceStatus while the servers load
+
 export async function refreshVoiceStatus() {
   try {
     const s = JSON.parse(await VoiceService.VoiceStatus());
@@ -416,9 +419,17 @@ export async function refreshVoiceStatus() {
     else if (s.installing) voice.status = "installing";
     else voice.status = s.ready ? "ready" : "missing";
     voice.fast = s.fast === true;
+    voice.warming = s.warming === true;
   } catch {
     voice.status = "unsupported";
+    voice.warming = false;
   }
+  // The servers take 5-20 s to load after the app starts: asked again until
+  // they are up, so "준비 중" turns into "듣는 중" as soon as they are.
+  if (voice.warming && !warmPoll) warmPoll = setTimeout(() => {
+    warmPoll = null;
+    void refreshVoiceStatus();
+  }, 1000);
 }
 
 Events.On("voice:install", (event) => {
@@ -630,6 +641,8 @@ $effect.root(() => {
     if (voice.taping) [phase, label] = ["recording", `녹음 중 ${voice.tapeClock || "00:00"} — “녹음 끝내”라고 하면 멈춰요`];
     else if (voice.problem) [phase, label] = ["problem", voice.problem];
     else if (voice.flash) [phase, label] = ["note", voice.flash];
+    // The mic is open but what is said waits for recognition to load.
+    else if (voice.phase === "listening" && voice.warming) [phase, label] = ["preparing", "준비 중 — 잠시 후 말씀하세요"];
     else if (voice.phase === "listening") [phase, label] = ["listening", voice.hearing ? "말소리 듣는 중" : "듣는 중 — 말씀하세요"];
     else if (voice.phase === "transcribing") [phase, label] = ["transcribing", "알아듣는 중"];
     else if (voice.done !== null) [phase, label] = ["done", voice.speaking ? "작업이 끝났어요 — 답변을 읽어요" : "작업이 끝났어요"];
@@ -918,7 +931,10 @@ export async function toggleVoiceInput(paneId) {
     return;
   }
   if (voice.phase === "listening") {
-    sendNow();
+    // The mic button is a plain on/off switch: turning it off here cancels
+    // without sending. "지금 보내기" (sendNow) is the separate, explicit way
+    // to send what was heard so far.
+    stopRecording(false);
     return;
   }
   if (voice.speaking && voice.convPaneId) {

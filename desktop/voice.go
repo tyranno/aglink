@@ -36,7 +36,7 @@ const (
 	// Pinned build: whisper.cpp's version tags (v1.x) carry no binaries, the
 	// b-numbered build tags do.
 	whisperBinURL   = "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip"
-	whisperModel    = "ggml-medium.bin"
+	whisperModel    = "ggml-small.bin"
 	whisperModelURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + whisperModel
 
 	// whisperKoModel: whisper-large-v3-turbo fine-tuned on ~4,300 h of Korean
@@ -428,11 +428,7 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 	// -otxt writes UTF-8 to a file; reading stdout instead would depend on the
 	// console code page.
 	cmd := exec.CommandContext(ctx, cli,
-<<<<<<< Updated upstream
 		"-m", model, "-f", in, "-l", "ko", "--prompt", whisperPrompt,
-=======
-		"-m", model, "-f", in, "-l", "ko", "--prompt", whisperPrompt(),
->>>>>>> Stashed changes
 		"-t", fmt.Sprint(min(runtime.NumCPU(), 8)),
 		"-ac", fmt.Sprint(audioContext(len(wav))),
 		"-nt", "-np", "-otxt", "-of", outBase)

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -699,12 +700,16 @@ func (c *ControlService) ClaudeAuthCancel() (string, error) {
 	return string(data), err
 }
 
-// PickFile opens a native OS file picker and returns the chosen absolute path.
-func (c *ControlService) PickFile() (string, error) {
-	return application.Get().Dialog.OpenFile().
+// PickFiles opens a native OS file picker and returns the chosen absolute
+// paths; Ctrl/Shift-click selects several at once.
+func (c *ControlService) PickFiles() ([]string, error) {
+	paths, err := application.Get().Dialog.OpenFile().
 		CanChooseFiles(true).
 		CanChooseDirectories(false).
-		PromptForSingleSelection()
+		PromptForMultipleSelection()
+	// Wails collects the selection in a map, so restore a stable order.
+	sort.Strings(paths)
+	return paths, err
 }
 
 // SaveClipboardImage stores a pasted clipboard image data URL under aglink's

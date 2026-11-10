@@ -1420,9 +1420,8 @@ export async function cancelPane(paneId) {
 
 export async function pickAttachment(paneId) {
   try {
-    const sourcePath = await ControlService.PickFile();
-    if (!sourcePath) return;
-    await attachLocalFile(paneId, sourcePath);
+    const paths = await ControlService.PickFiles();
+    if (paths?.length) await attachPaths(paneId, paths);
   } catch (error) {
     chat.statusNote = `첨부 파일 선택 실패: ${error}`;
   }

@@ -1,4 +1,5 @@
 import { tick } from "svelte";
+import { Events } from "@wailsio/runtime";
 import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
 
 export const MAX_PANES = 4;
@@ -1421,19 +1422,43 @@ export async function pickAttachment(paneId) {
   try {
     const sourcePath = await ControlService.PickFile();
     if (!sourcePath) return;
-    const name = sourcePath.split(/[/\\]/).pop() || sourcePath;
-    let previewURL = "";
-    try {
-      previewURL = await ControlService.PreviewAttachmentImage(sourcePath);
-    } catch {
-      previewURL = "";
-    }
-    const path = await ControlService.StageAttachment(sourcePath);
-    appendPaneAttachment(paneId, { path, name, previewURL });
+    await attachLocalFile(paneId, sourcePath);
   } catch (error) {
     chat.statusNote = `첨부 파일 선택 실패: ${error}`;
   }
 }
+
+async function attachLocalFile(paneId, sourcePath) {
+  const name = sourcePath.split(/[/\\]/).pop() || sourcePath;
+  let previewURL = "";
+  try {
+    previewURL = await ControlService.PreviewAttachmentImage(sourcePath);
+  } catch {
+    previewURL = "";
+  }
+  const path = await ControlService.StageAttachment(sourcePath);
+  appendPaneAttachment(paneId, { path, name, previewURL });
+}
+
+// attachPaths attaches local files (dropped or copied in Explorer) to a pane.
+export async function attachPaths(paneId, paths) {
+  if (!pane(paneId)) return;
+  const failed = [];
+  for (const sourcePath of paths) {
+    try {
+      await attachLocalFile(paneId, sourcePath);
+    } catch (error) {
+      failed.push(`${sourcePath.split(/[/\\]/).pop()}: ${error}`);
+    }
+  }
+  chat.statusNote = failed.length ? `첨부 실패 — ${failed.join(", ")}` : "";
+}
+
+Events.On("files:dropped", (event) => {
+  const { files = [], paneId = "" } = event.data || {};
+  const target = pane(paneId) ? paneId : chat.focusedPaneId;
+  if (files.length) void attachPaths(target, files);
+});
 
 export function revokeAttachmentPreview(attachment) {
   if (attachment?.previewIsObjectURL && attachment.previewURL) {
@@ -1507,10 +1532,27 @@ function readFileAsDataURL(file) {
 export async function handleComposerPaste(paneId, event) {
   const p = pane(paneId);
   if (!p?.target) return;
+  const hasFiles = Array.from(event.clipboardData?.types || []).includes("Files");
+  // getAsFile only works while the event is being dispatched, so grab the
+  // images before awaiting anything.
   const files = imageFilesFromClipboard(event);
-  if (files.length === 0) return;
+  if (files.length === 0 && !hasFiles) return;
 
   event.preventDefault();
+  if (hasFiles) {
+    // Files copied in Explorer: attach the originals by path (any type, real
+    // name) instead of the anonymous blobs WebView2 hands over.
+    try {
+      const paths = await ControlService.ClipboardFiles();
+      if (paths?.length) {
+        await attachPaths(paneId, paths);
+        return;
+      }
+    } catch {
+      // fall back to the clipboard image below
+    }
+  }
+  if (files.length === 0) return;
   try {
     for (const file of files) {
       const dataURL = await readFileAsDataURL(file);

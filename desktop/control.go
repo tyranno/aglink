@@ -717,6 +717,12 @@ func (c *ControlService) SaveClipboardImage(dataURL string) (string, error) {
 	return writeStagedAttachmentBytes(data, ext)
 }
 
+// ClipboardFiles returns the paths of files copied in Explorer, empty when
+// the clipboard holds none, so paste can attach them like picked files.
+func (c *ControlService) ClipboardFiles() ([]string, error) {
+	return clipboardFilePaths()
+}
+
 // StageAttachment copies a native picked file into aglink's attachments
 // directory before UploadAttachment asks aglink to ingest it.
 func (c *ControlService) StageAttachment(path string) (string, error) {

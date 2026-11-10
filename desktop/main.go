@@ -25,6 +25,9 @@ func mainWindowOptions() application.WebviewWindowOptions {
 		MinHeight:        480,
 		BackgroundColour: application.NewRGB(238, 242, 255),
 		URL:              "/",
+		// Files dragged from Explorer onto a chat pane (data-file-drop-target)
+		// arrive as WindowFilesDropped with real paths; see setupFileDrop.
+		EnableFileDrop: true,
 	})
 }
 
@@ -90,6 +93,7 @@ func main() {
 	win.OnWindowEvent(events.Common.WindowDidResize, saveGeo)
 	win.OnWindowEvent(events.Common.WindowDidMove, saveGeo)
 	win.OnWindowEvent(events.Common.WindowClosing, saveGeo)
+	setupFileDrop(app, win)
 	setupIndicator(app)
 	setupVSCodeVoice(app)
 	setupTray(app, win)

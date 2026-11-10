@@ -109,3 +109,10 @@ select {
 textarea {
   field-sizing: content;
 }
+
+/* Wails adds this while files from Explorer are dragged over a chat pane. */
+.file-drop-target-active {
+  outline: 2px dashed #3b82f6;
+  outline-offset: -4px;
+  background-color: rgb(59 130 246 / 0.08);
+}

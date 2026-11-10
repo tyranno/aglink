@@ -176,7 +176,9 @@ claude mcp add --transport http --scope user \
 
 역터널을 VS Code 연결이 물고 있으면 그 창을 닫는 순간 포트가 죽는다. 상시로
 쓰려면 [`scripts/aglink-always-on.ps1`](../scripts/aglink-always-on.ps1) 을
-로그온 작업으로 걸어 둔다 — 데몬 둘과 포트별 터널을 확인해 **없는 것만** 띄운다.
+로그온 작업으로 걸어 둔다 — aglink-web 과 포트별 터널을 확인해 **없는 것만** 띄운다.
+aglink-screen 은 이 일반 권한 작업이 아니라 아래 별도 관리자 작업이 띄운다(터널은
+그대로 48220 을 넘겨 준다 — 터널은 포트만 보고 어느 프로세스·권한인지 상관없다).
 
 ```powershell
 # 확인만 (아무것도 바꾸지 않음)
@@ -218,6 +220,26 @@ long-poll 은 **실패만 로그에 남기므로**, 2026-09-07 에 죽었을 때
 **절대 재시작하지 않는다** — 다른 세션이 붙어 쓰는 데몬이라, 응답이 잠깐 늦었다고
 두 번째를 띄우면 포트를 두고 서로 싸운다. 그런 경우엔 `STALLED` 로 적고 사람에게
 넘긴다. 로그는 `~/.aglink/always-on.log`.
+
+### aglink-screen 을 관리자 권한으로 (무인 제어)
+
+`launch_app` 이 실행하는 프로그램이 UAC 없이 뜨게 하려면 **데몬 자체가 관리자**여야
+한다(자식이 권한을 물려받는다). UAC 창은 보안 데스크톱에 떠서 무엇으로도 누를 수
+없으니, "눌러서 통과"가 아니라 "애초에 안 뜨게" 하는 유일한 길이다. 호스트와 같은
+방식으로 `RunLevel Highest` 작업을 따로 건다(관리자 PowerShell 1회):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-screen-task.ps1
+```
+
+이러면 `aglink-always-on.ps1` 의 일반 권한 작업은 aglink-screen 을 더 이상 띄우지
+않고, 이 관리자 작업이 `-Screen_` 로 띄운다. 등록 직후에는 로그오프/로그온하거나
+관리자 권한으로 `aglink-screen serve` 를 한 번 띄워 바로 적용한다.
+
+> **보안 유의** — 관리자 데몬이 `127.0.0.1:48220` 에 떠 있으면, 그 포트에 닿는 다른
+> 프로그램이나 (SSH 역터널로 연결된) 원격 계정도 이 PC 에서 프로그램을 관리자로
+> 실행할 수 있다. 이 계정 UAC 를 끄는 것에 가까운 범위다. 감수할 PC 에서만 건다.
+> 되돌리려면 이 작업만 지우면 다시 일반 권한으로 돈다.
 
 ### 알아둘 것 셋
 

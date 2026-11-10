@@ -181,6 +181,18 @@ function loadSettings() {
   };
 }
 
+// micAudio: getUserMedia audio constraints. A speakerphone-style mic already
+// cancels echo and suppresses noise in hardware; running the browser's own
+// processing on top mangles words. Set localStorage "aglink.voice.rawMic" to
+// "1" to turn the browser's echo/noise processing off.
+function micAudio(autoGainControl) {
+  let raw = false;
+  try {
+    raw = localStorage.getItem("aglink.voice.rawMic") === "1";
+  } catch {}
+  return { channelCount: 1, echoCancellation: !raw, noiseSuppression: !raw, autoGainControl };
+}
+
 function loadSpeakEnabled() {
   try {
     return localStorage.getItem(SPEAK_STORAGE_KEY) === "1";
@@ -977,7 +989,7 @@ async function startRecording(paneId, barge = false) {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false },
+      audio: micAudio(false),
     });
   } catch (error) {
     if (barge) return; // the normal recording after the reading reports it
@@ -2581,7 +2593,7 @@ async function recordFor(ms) {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: micAudio(true),
     });
   } catch (error) {
     vlog(`mic failed: ${error?.message || error}`);
@@ -3576,7 +3588,7 @@ async function startWake() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false },
+      audio: micAudio(false),
     });
   } catch (error) {
     vlog(`wake mic failed: ${error?.message || error}`);
@@ -3878,7 +3890,7 @@ async function openTapeMic() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: micAudio(true),
     });
   } catch (error) {
     vlog(`tape mic failed: ${error?.message || error}`);

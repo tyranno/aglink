@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -808,14 +809,52 @@ type scriptResult struct {
 	Data      map[string]any `json:"data"`
 }
 
+var (
+	bashPathOnce sync.Once
+	bashPathVal  string
+)
+
+// bashPath resolves a single, deterministic bash interpreter for script prechecks.
+//
+// The machine can have several unrelated bash.exe on PATH (Git Bash, the WSL
+// launcher stub in System32, Cygwin, the WindowsApps WSL alias). A bare "bash"
+// lookup picks whichever wins PATH order for the *current* process — which drifted
+// under the scheduler's launch context and resolved to a bash that couldn't find
+// curl/sed/awk/perl, failing every run with exit status 127. Scripts under
+// .aglink/scripts/ are authored for Git Bash (its /c/... path style, its
+// curl/sed/awk/perl in usr/bin), so pin that explicitly instead of trusting PATH.
+func bashPath() string {
+	bashPathOnce.Do(func() {
+		if p := os.Getenv("AGLINK_BASH_PATH"); p != "" {
+			bashPathVal = p
+			return
+		}
+		for _, p := range []string{
+			`C:\Program Files\Git\bin\bash.exe`,
+			`C:\Program Files\Git\usr\bin\bash.exe`,
+		} {
+			if _, err := os.Stat(p); err == nil {
+				bashPathVal = p
+				return
+			}
+		}
+		log.Printf("[scheduler] Git Bash not found at its usual install path — falling back to PATH lookup for \"bash\"")
+		bashPathVal = "bash"
+	})
+	return bashPathVal
+}
+
 // runScriptPrecheck runs a bash script and parses {"wakeAgent": bool, "data": {...}}.
 // Returns wakeAgent=true on any failure (safe fallback: always run when uncertain).
 func runScriptPrecheck(script string) (wakeAgent bool, data map[string]any) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "bash", "-c", script).Output()
+	cmd := exec.CommandContext(ctx, bashPath(), "-c", script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		log.Printf("[scheduler] script precheck exec error: %v — defaulting wakeAgent=true", err)
+		log.Printf("[scheduler] script precheck exec error: %v (stderr: %q) — defaulting wakeAgent=true", err, strings.TrimSpace(stderr.String()))
 		return true, nil
 	}
 	var res scriptResult

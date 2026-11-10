@@ -52,6 +52,7 @@ export const chat = $state({
   overZone: null,
   webGroups: [],
   webGroupOf: new Map(),
+  archivedConvs: new Set(),
   dragOverGroupId: "",
   draggingGroupId: null,
   dragOverGroupReorder: null,
@@ -288,11 +289,46 @@ export function handleGroupHeaderDrop(event, groupId) {
 }
 
 export function webConvsInGroup(groupId) {
-  return chat.webConvs.filter((conv) => chat.webGroupOf.get(conv.id) === groupId);
+  return chat.webConvs.filter((conv) => !chat.archivedConvs.has(String(conv.id)) && chat.webGroupOf.get(conv.id) === groupId);
 }
 
 export function ungroupedWebConvs() {
-  return chat.webConvs.filter((conv) => !chat.webGroupOf.has(conv.id));
+  return chat.webConvs.filter((conv) => !chat.archivedConvs.has(String(conv.id)) && !chat.webGroupOf.has(conv.id));
+}
+
+// ---- archive: hides a conversation from the sidebar list without deleting
+// it (client-side only, like groups). Group assignment is kept so restoring
+// puts it back where it was. ----
+
+const ARCHIVED_STORAGE_KEY = "aglink-desktop:archivedConvs";
+
+function loadArchivedFromStorage() {
+  try {
+    const raw = localStorage.getItem(ARCHIVED_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data)) chat.archivedConvs = new Set(data.map(String));
+  } catch {
+    // Corrupt storage just starts with nothing archived.
+  }
+}
+
+loadArchivedFromStorage();
+
+export function setConversationArchived(convId, archived) {
+  const next = new Set(chat.archivedConvs);
+  if (archived) next.add(String(convId));
+  else next.delete(String(convId));
+  chat.archivedConvs = next;
+  try {
+    localStorage.setItem(ARCHIVED_STORAGE_KEY, JSON.stringify([...next]));
+  } catch {
+    // Ignore quota errors; archive just won't persist.
+  }
+}
+
+export function archivedWebConvs() {
+  return chat.webConvs.filter((conv) => chat.archivedConvs.has(String(conv.id)));
 }
 
 // ---- pane/split layout persistence (which conversations are open, how the

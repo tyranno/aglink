@@ -43,6 +43,8 @@
     deleteWebGroup,
     setConversationGroup,
     ungroupedWebConvs,
+    archivedWebConvs,
+    setConversationArchived,
     rootWebGroups,
     groupPathLabel,
     handleGroupDragOver,
@@ -110,6 +112,7 @@
   let configText = $state("");
   let configMsg = $state("");
   let openMenuId = $state("");
+  let showArchived = $state(false);
 
   // In-app file preview panel. A file path shown in a message (markdown.js marks
   // it with class "md-file-link") opens here, rendered — .md as Markdown, other
@@ -824,6 +827,9 @@
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; changeWebDirectory(conv); }}>
                             작업 폴더 변경
                           </button>
+                          <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={() => { openMenuId = ""; setConversationArchived(conv.id, !chat.archivedConvs.has(String(conv.id))); }}>
+                            {chat.archivedConvs.has(String(conv.id)) ? "보관 해제" : "보관 (목록에서 숨김)"}
+                          </button>
                           <button class="block w-full rounded-md px-3 py-2 text-left text-sm text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40" onclick={() => { openMenuId = ""; deleteWebConversation(conv); }}>
                             삭제
                           </button>
@@ -874,6 +880,23 @@
                       {@render webConvRow(conv)}
                     {/each}
                   </div>
+
+                  {#if archivedWebConvs().length > 0}
+                    <button
+                      class="mt-2 flex w-full items-center gap-1 rounded-md px-1 py-1 text-left text-[11px] font-bold tracking-[0.04em] text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
+                      onclick={() => (showArchived = !showArchived)}
+                    >
+                      <span>{showArchived ? "▾" : "▸"}</span>
+                      <span>보관함 ({archivedWebConvs().length})</span>
+                    </button>
+                    {#if showArchived}
+                      <div class="space-y-1 opacity-75">
+                        {#each archivedWebConvs() as conv (conv.id)}
+                          {@render webConvRow(conv)}
+                        {/each}
+                      </div>
+                    {/if}
+                  {/if}
                 </div>
               </div>
             </div>

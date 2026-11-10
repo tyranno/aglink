@@ -182,7 +182,11 @@ func (s *whisperServer) transcribe(wav []byte, timeout time.Duration) (string, e
 	_, _ = fw.Write(wav)
 	_ = mw.WriteField("response_format", "text")
 	_ = mw.WriteField("language", "ko")
+<<<<<<< Updated upstream
 	_ = mw.WriteField("prompt", whisperPrompt)
+=======
+	_ = mw.WriteField("prompt", whisperPrompt())
+>>>>>>> Stashed changes
 	_ = mw.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -317,4 +321,13 @@ func hasNvidiaGPU() bool {
 	hideConsole(cmd)
 	out, err := cmd.Output()
 	return err == nil && bytes.Contains(out, []byte("GPU"))
+}
+
+// whisperPrompt biases whisper toward the product names and jargon it tends to
+// mishear. AGLINK_WHISPER_PROMPT replaces the default list.
+func whisperPrompt() string {
+	if p := strings.TrimSpace(os.Getenv("AGLINK_WHISPER_PROMPT")); p != "" {
+		return p
+	}
+	return "aglink, 에이지링크, 구노, 이카운트, 노션, 클로드, 워커, 스케줄, 대화창, 프로젝트."
 }

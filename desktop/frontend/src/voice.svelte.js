@@ -3253,7 +3253,7 @@ async function playWavContext(b64, gen) {
       // A context can report "running" yet not render (a suspended webview):
       // its clock then stands still, and the clip goes to the OS instead.
       watch = setTimeout(() => {
-        if (ctx.currentTime - startedAt >= (PAGE_START_MS / 1000) * 0.5) return;
+        if (ctx.currentTime > startedAt) return; // a slow device start still moves the clock
         console.warn("[voice] page playback stalled, playing through Windows");
         pageStalled = true;
         clip.stop(false);

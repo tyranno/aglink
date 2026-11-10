@@ -21,7 +21,11 @@ const (
 	sndAsync     = 0x0001
 	sndNoDefault = 0x0002
 	sndMemory    = 0x0004
+	sndNoStop    = 0x0010
 )
+
+// tailWait bounds how long a clip waits for the one before it to finish.
+const tailWait = 1500 * time.Millisecond
 
 var (
 	playMu   sync.Mutex
@@ -44,23 +48,44 @@ func playWavNative(wav []byte, gen int) error {
 		playMu.Unlock()
 		return nil
 	}
-	stopLocked()
+	// The clip before may still be playing: winmm runs behind our clock by the
+	// time the device takes to wake, and starting over it cut off its last
+	// words. SND_NOSTOP starts this one only once winmm is done with that one.
+	deadline := time.Now().Add(tailWait)
+	for {
+		if r, _, _ := procPlaySound.Call(uintptr(unsafe.Pointer(&wav[0])), 0, sndMemory|sndAsync|sndNoDefault|sndNoStop); r != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			stopLocked()
+			if r, _, err := procPlaySound.Call(uintptr(unsafe.Pointer(&wav[0])), 0, sndMemory|sndAsync|sndNoDefault); r == 0 {
+				playMu.Unlock()
+				return err
+			}
+			break
+		}
+		playMu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		playMu.Lock()
+		if gen <= stopGen {
+			playMu.Unlock()
+			return nil
+		}
+	}
+	if playStop != nil {
+		close(playStop)
+	}
 	playing = wav
 	stop := make(chan struct{})
 	playStop = stop
-	r, _, err := procPlaySound.Call(uintptr(unsafe.Pointer(&wav[0])), 0, sndMemory|sndAsync|sndNoDefault)
 	playMu.Unlock()
-	if r == 0 {
-		return err
-	}
 	select {
 	case <-time.After(d + 50*time.Millisecond):
 	case <-stop:
 	}
 	playMu.Lock()
 	if playStop == stop {
-		playStop = nil
-		playing = nil
+		playStop = nil // playing stays set: winmm may still be reading its tail
 	}
 	playMu.Unlock()
 	return nil

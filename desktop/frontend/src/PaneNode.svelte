@@ -128,6 +128,8 @@
     <main
       class={`relative flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden ${color ? `border ${chat.panes.length > 1 && p.id === chat.focusedPaneId ? "border-blue-200 dark:border-blue-800/40" : color.border}` : ""}`}
       onclick={() => focusPane(p.id)}
+      data-file-drop-target
+      data-pane-id={p.id}
       ondragover={(event) => handlePaneDragOver(event, p.id)}
       ondragleave={() => handlePaneDragLeave(p.id)}
       ondrop={(event) => handlePaneDrop(event, p.id)}

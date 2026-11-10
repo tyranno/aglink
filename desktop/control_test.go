@@ -141,6 +141,35 @@ func TestStageAttachmentCopiesIntoAttachmentsDir(t *testing.T) {
 	}
 }
 
+func TestCleanupStagedAttachmentsRemovesOnlyStaleFiles(t *testing.T) {
+	home := setTestHome(t)
+	dir := filepath.Join(home, ".aglink", "attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create attachments dir: %v", err)
+	}
+
+	stale := filepath.Join(dir, "aglink-desktop-stale.png")
+	fresh := filepath.Join(dir, "aglink-desktop-fresh.png")
+	for _, p := range []string{stale, fresh} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	staleTime := time.Now().Add(-staleAttachmentAge - time.Hour)
+	if err := os.Chtimes(stale, staleTime, staleTime); err != nil {
+		t.Fatalf("set stale mtime: %v", err)
+	}
+
+	cleanupStagedAttachments()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale attachment still exists: err=%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh attachment was removed: %v", err)
+	}
+}
+
 func TestSaveClipboardImageRejectsNonImageDataURL(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("plain text"))
 

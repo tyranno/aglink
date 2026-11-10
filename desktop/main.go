@@ -84,6 +84,8 @@ func main() {
 		},
 	})
 
+	go cleanupStagedAttachments()
+
 	loadWindowState()
 	win := app.Window.NewWithOptions(mainWindowOptions())
 	// Persist the window size / position / maximised state so the window comes

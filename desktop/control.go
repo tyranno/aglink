@@ -295,6 +295,38 @@ func attachmentsStagingDir() (string, error) {
 	return filepath.Join(dir, "attachments"), nil
 }
 
+// staleAttachmentAge is how long a staged attachment is kept before
+// cleanupStagedAttachments removes it. Attachments only need to survive until
+// the message carrying them is sent, so this is generous slack for a paste or
+// picked file that never got sent.
+const staleAttachmentAge = 7 * 24 * time.Hour
+
+// cleanupStagedAttachments deletes staged attachment files older than
+// staleAttachmentAge. SaveClipboardImage and StageAttachment copy data into
+// this directory but nothing removes it afterwards, so left-behind pastes
+// accumulate there indefinitely without this.
+func cleanupStagedAttachments() {
+	dir, err := attachmentsStagingDir()
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleAttachmentAge)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
+}
+
 func writeStagedAttachmentBytes(data []byte, ext string) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("attachment is empty")

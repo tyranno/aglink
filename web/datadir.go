@@ -86,7 +86,10 @@ func readPort() int {
 	return configuredPort()
 }
 
-// daemonBaseURL is the localhost HTTP base for the bridge daemon.
+// daemonBaseURL is the HTTP base for the bridge daemon. It is loopback for
+// local use, but in a Remote-SSH session it resolves to the client PC (via
+// daemonHost/SSH_CONNECTION) so a remote worker reaches the daemon on the PC
+// it is driven from, with no configuration.
 func daemonBaseURL(port int) string {
-	return fmt.Sprintf("http://127.0.0.1:%d", port)
+	return fmt.Sprintf("http://%s:%d", daemonHost(), port)
 }

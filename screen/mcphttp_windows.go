@@ -142,10 +142,18 @@ func newRemoteMux(token string, watch *idleWatch) http.Handler {
 
 // RunScreenRemote serves the screen tools over MCP streamable HTTP at /mcp.
 func RunScreenRemote(addr string) error {
-	if strings.TrimSpace(addr) == "" {
-		addr = defaultRemoteAddr
-	}
 	token := remoteToken()
+	if strings.TrimSpace(addr) == "" {
+		// With a token set, serve the network interfaces (0.0.0.0) so a remote
+		// worker on another PC can reach this PC's screen server directly,
+		// token-gated. Without a token, stay loopback — never expose
+		// unauthenticated keyboard/mouse/screen control on the network.
+		if token != "" {
+			addr = "0.0.0.0:48220"
+		} else {
+			addr = defaultRemoteAddr
+		}
+	}
 	mux := newRemoteMux(token, newIdleWatch(resolveRemoteIdle()))
 
 	fmt.Fprintf(os.Stderr, "aglink-screen: serving MCP at http://%s/mcp\n", addr)

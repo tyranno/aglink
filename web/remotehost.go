@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 )
@@ -37,4 +39,30 @@ func bindAddrFor(port int, exposed bool) string {
 		return fmt.Sprintf("0.0.0.0:%d", port)
 	}
 	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
+// remoteIsLoopback reports whether an http.Request RemoteAddr is a loopback
+// peer.
+func remoteIsLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// loopbackOnly rejects any non-loopback peer. The extension-connection
+// endpoints (/ext, /vscode) are for local extensions only; once a token lets
+// the daemon bind the network interfaces, these must stay loopback so a
+// networked peer cannot impersonate the browser or a VS Code window. The drive
+// endpoints (/call, /mcp) carry the token instead and are reachable remotely.
+func loopbackOnly(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !remoteIsLoopback(r.RemoteAddr) {
+			http.Error(w, `{"error":"aglink-web: this endpoint is loopback-only"}`, http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }

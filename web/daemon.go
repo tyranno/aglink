@@ -137,8 +137,11 @@ func newDaemon(expectedExtID string) *Daemon {
 // can mount it on an httptest server.
 func (d *Daemon) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ext", d.handleExt)
-	mux.HandleFunc("/vscode", d.handleVSCode)
+	// /ext and /vscode are extension-connection endpoints for LOCAL extensions
+	// only. When a token exposes the daemon on the network, keep these loopback
+	// so a networked peer cannot impersonate the browser or a VS Code window.
+	mux.Handle("/ext", loopbackOnly(http.HandlerFunc(d.handleExt)))
+	mux.Handle("/vscode", loopbackOnly(http.HandlerFunc(d.handleVSCode)))
 	// /call and /mcp drive the browser; with an access token configured they
 	// require it (authtoken.go). /health stays open: it says only "ok".
 	mux.Handle("/call", requireToken(http.HandlerFunc(d.handleCall)))

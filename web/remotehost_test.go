@@ -30,3 +30,20 @@ func TestBindAddrFor(t *testing.T) {
 		t.Errorf("token: bindAddrFor(..,true) = %q, want 0.0.0.0", got)
 	}
 }
+
+func TestRemoteIsLoopback(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"127.0.0.1:5000", true},
+		{"[::1]:5000", true},
+		{"192.168.11.2:5000", false},
+		{"100.64.0.14:443", false},
+	}
+	for _, c := range cases {
+		if got := remoteIsLoopback(c.in); got != c.want {
+			t.Errorf("remoteIsLoopback(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}

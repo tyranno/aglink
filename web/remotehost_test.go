@@ -21,3 +21,12 @@ func TestDaemonHostFrom(t *testing.T) {
 		}
 	}
 }
+
+func TestBindAddrFor(t *testing.T) {
+	if got := bindAddrFor(48219, false); got != "127.0.0.1:48219" {
+		t.Errorf("no token: bindAddrFor(..,false) = %q, want loopback", got)
+	}
+	if got := bindAddrFor(48219, true); got != "0.0.0.0:48219" {
+		t.Errorf("token: bindAddrFor(..,true) = %q, want 0.0.0.0", got)
+	}
+}

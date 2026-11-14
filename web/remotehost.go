@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -24,4 +25,16 @@ func daemonHostFrom(sshConnection string) string {
 // Claude worker that spawned this stdio bridge).
 func daemonHost() string {
 	return daemonHostFrom(os.Getenv("SSH_CONNECTION"))
+}
+
+// bindAddrFor chooses the daemon's listen address. Loopback by default (local
+// use, unchanged). When an access token is configured the daemon also serves
+// the network interfaces (0.0.0.0) so a remote worker on another PC can reach
+// this PC's daemon directly — safe because the token gates /call and /mcp. No
+// token means no network exposure, so a default install is unchanged.
+func bindAddrFor(port int, exposed bool) string {
+	if exposed {
+		return fmt.Sprintf("0.0.0.0:%d", port)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }

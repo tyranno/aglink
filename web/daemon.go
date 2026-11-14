@@ -496,12 +496,15 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// runDaemon binds the configured port on loopback and serves until killed. It
-// writes the live port to the port file so the bridge can find it. Binding is
-// exclusive, so a second `serve` fails fast — the single-daemon guarantee.
+// runDaemon binds the configured port and serves until killed. It writes the
+// live port to the port file so the bridge can find it. Binding is exclusive,
+// so a second `serve` fails fast — the single-daemon guarantee. The address is
+// loopback by default; with an access token configured it also serves the
+// network interfaces so a remote worker on another PC can reach this daemon
+// (token-gated — see bindAddrFor / authtoken.go).
 func runDaemon() error {
 	port := configuredPort()
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := bindAddrFor(port, accessToken() != "")
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("bind %s (daemon already running?): %w", addr, err)

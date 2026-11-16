@@ -78,8 +78,12 @@ func forgetTokenCache() {
 // requireToken guards h with the access token, when one is configured.
 func requireToken(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Loopback peers are already on this machine (anything local can reach
+		// the daemon regardless), so they pass without a token — only network
+		// peers must authenticate. This keeps same-machine sessions working with
+		// no token or re-registration once a token is set to expose the network.
 		want := accessToken()
-		if want != "" {
+		if want != "" && !remoteIsLoopback(r.RemoteAddr) {
 			got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 			if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 				w.Header().Set("Content-Type", "application/json")

@@ -116,24 +116,35 @@ func TestRemoteMCPListsEveryScreenTool(t *testing.T) {
 }
 
 // TestRemoteMCPTokenGate — with a token configured, an unauthenticated request
-// must not reach the tools. This endpoint drives the keyboard and mouse, so a
-// gate that silently passed everything would be worse than no gate at all.
+// from a NETWORK peer must not reach the tools. This endpoint drives the
+// keyboard and mouse, so a gate that silently passed everything would be worse
+// than no gate at all. Loopback peers are exempt (already on this machine), so
+// RemoteAddr is set directly to exercise the network path without real sockets.
 func TestRemoteMCPTokenGate(t *testing.T) {
-	srv := serveTestMCP(t, "s3cret", nil)
+	mux := newRemoteMux("s3cret", nil)
 
-	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/mcp", body)
-	if err != nil {
-		t.Fatalf("build request: %v", err)
+	call := func(remoteAddr, bearer string) int {
+		req := httptest.NewRequest(http.MethodPost, "/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Content-Type", "application/json")
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST /mcp: %v", err)
+
+	if code := call("203.0.113.5:40000", ""); code != http.StatusUnauthorized {
+		t.Fatalf("network peer, no token: got %d, want 401", code)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("no-token request: got %d, want 401", resp.StatusCode)
+	if code := call("203.0.113.5:40000", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("network peer, wrong token: got %d, want 401", code)
+	}
+	// Loopback is exempt even with a token set.
+	if code := call("127.0.0.1:40000", ""); code == http.StatusUnauthorized {
+		t.Fatalf("loopback peer should be exempt, got 401")
 	}
 }
 

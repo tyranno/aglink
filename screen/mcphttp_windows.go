@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/subtle"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -101,8 +102,26 @@ func authorized(r *http.Request, token string) bool {
 	if token == "" {
 		return true
 	}
+	// Loopback peers are already on this machine — anything local can reach the
+	// port regardless — so they pass without a token; only network peers (the
+	// point of exposing 0.0.0.0) must authenticate. Same-machine sessions then
+	// keep working with no token once one is set to expose the network.
+	if screenRemoteIsLoopback(r.RemoteAddr) {
+		return true
+	}
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(got)), []byte(token)) == 1
+}
+
+// screenRemoteIsLoopback reports whether an http.Request RemoteAddr is a
+// loopback peer (127.0.0.0/8 or ::1).
+func screenRemoteIsLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // remoteHandler wraps the MCP handler with the token gate and the idle poke.

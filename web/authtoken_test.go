@@ -25,7 +25,7 @@ func postCall(t *testing.T, url, bearer string) int {
 	return resp.StatusCode
 }
 
-func TestAccessTokenGuardsCallAndMCP(t *testing.T) {
+func TestAccessTokenExemptsLoopback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("AGLINK_HOME", home)
 	forgetTokenCache()
@@ -45,25 +45,21 @@ func TestAccessTokenGuardsCallAndMCP(t *testing.T) {
 	}
 	forgetTokenCache()
 
-	if code := postCall(t, srv.URL, ""); code != http.StatusUnauthorized {
-		t.Fatalf("missing token: got %d", code)
-	}
-	if code := postCall(t, srv.URL, "wrong"); code != http.StatusUnauthorized {
-		t.Fatalf("wrong token: got %d", code)
-	}
-	if code := postCall(t, srv.URL, "s3cret"); code != http.StatusOK {
-		t.Fatalf("right token: got %d", code)
+	// httptest connects over loopback, which is exempt: a same-machine caller
+	// keeps working with no token even after one is set to expose the network.
+	if code := postCall(t, srv.URL, ""); code != http.StatusOK {
+		t.Fatalf("loopback without token should pass: got %d", code)
 	}
 
-	// /mcp is guarded the same way.
+	// /mcp is likewise open to loopback.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/mcp", bytes.NewReader([]byte(`{}`)))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("/mcp without token: got %d", resp.StatusCode)
+	if resp.StatusCode == http.StatusUnauthorized {
+		t.Fatalf("/mcp over loopback should not 401")
 	}
 
 	// /health stays open (ensureDaemon uses it).
@@ -76,10 +72,52 @@ func TestAccessTokenGuardsCallAndMCP(t *testing.T) {
 		t.Fatalf("/health: got %d", h.StatusCode)
 	}
 
-	// Local callers attach the token by themselves.
+	// Local callers attach the token by themselves (so a network hop still carries it).
 	r, _ := http.NewRequest(http.MethodPost, srv.URL+"/call", nil)
 	addTokenHeader(r)
 	if r.Header.Get("Authorization") != "Bearer s3cret" {
 		t.Fatalf("addTokenHeader: %q", r.Header.Get("Authorization"))
+	}
+}
+
+// TestRequireTokenNetworkPeer checks the gate for a non-loopback peer: with a
+// token configured, a network request must carry the right bearer; loopback is
+// exempt. RemoteAddr is set directly so no real network is needed.
+func TestRequireTokenNetworkPeer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AGLINK_HOME", home)
+	forgetTokenCache()
+	defer forgetTokenCache()
+	if err := os.WriteFile(filepath.Join(home, tokenFileName), []byte("s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	forgetTokenCache()
+
+	h := requireToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	call := func(remoteAddr, bearer string) int {
+		req := httptest.NewRequest(http.MethodPost, "/call", nil)
+		req.RemoteAddr = remoteAddr
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := call("203.0.113.5:40000", ""); code != http.StatusUnauthorized {
+		t.Fatalf("network peer, no token: got %d", code)
+	}
+	if code := call("203.0.113.5:40000", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("network peer, wrong token: got %d", code)
+	}
+	if code := call("203.0.113.5:40000", "s3cret"); code != http.StatusOK {
+		t.Fatalf("network peer, right token: got %d", code)
+	}
+	if code := call("127.0.0.1:40000", ""); code != http.StatusOK {
+		t.Fatalf("loopback peer should be exempt: got %d", code)
 	}
 }

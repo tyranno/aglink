@@ -157,6 +157,11 @@ function activate(context) {
   };
   start();
 
+  // The per-window channel for Remote-SSH (relay.js, bridge/extension.js).
+  const { relay, ensureBridge } = require("./relay");
+  context.subscriptions.push(vscode.commands.registerCommand("aglink.relay", (req) => relay(req, readPortFile)));
+  ensureBridge(vscode, context.extensionPath, log).catch((e) => log(`aglink-bridge: ${e.message}`));
+
   context.subscriptions.push(
     out,
     vscode.workspace.onDidChangeConfiguration((e) => {

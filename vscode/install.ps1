@@ -35,20 +35,22 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $here = $PSScriptRoot
-$pkg = Get-Content -Raw -Encoding UTF8 (Join-Path $here 'package.json') | ConvertFrom-Json
-$version = $pkg.version
-$files = @('package.json', 'extension.js', 'methods.js', 'terminals.js', 'README.md')
-
-$out = Join-Path $here "aglink-vscode-$version.vsix"
-if (Test-Path $out) { Remove-Item $out -Force }
-
 function Escape-Xml([string] $s) { [System.Security.SecurityElement]::Escape($s) }
 
+# Build-Vsix packs $dir's $files (README.md included if listed) into $out with
+# the given manifest ExtensionKind: "ui" for aglink-vscode, "workspace" for the
+# remote bridge.
+function Build-Vsix([string] $dir, [string[]] $files, [string] $kind, [string] $out) {
+$pkg = Get-Content -Raw -Encoding UTF8 (Join-Path $dir 'package.json') | ConvertFrom-Json
+if (Test-Path $out) { Remove-Item $out -Force }
+$readme = ''
+if ($files -contains 'README.md') { $readme = '    <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true"/>' }
 $contentTypes = @'
 <?xml version="1.0" encoding="utf-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension=".json" ContentType="application/json"/>
   <Default Extension=".js" ContentType="application/javascript"/>
+  <Default Extension=".vsix" ContentType="application/zip"/>
   <Default Extension=".md" ContentType="text/markdown"/>
   <Default Extension=".vsixmanifest" ContentType="text/xml"/>
 </Types>
@@ -58,13 +60,13 @@ $manifest = @"
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="$($pkg.name)" Version="$version" Publisher="$($pkg.publisher)"/>
+    <Identity Language="en-US" Id="$($pkg.name)" Version="$($pkg.version)" Publisher="$($pkg.publisher)"/>
     <DisplayName>$(Escape-Xml $pkg.displayName)</DisplayName>
     <Description xml:space="preserve">$(Escape-Xml $pkg.description)</Description>
     <Categories>Other</Categories>
     <Properties>
       <Property Id="Microsoft.VisualStudio.Code.Engine" Value="$($pkg.engines.vscode)"/>
-      <Property Id="Microsoft.VisualStudio.Code.ExtensionKind" Value="ui"/>
+      <Property Id="Microsoft.VisualStudio.Code.ExtensionKind" Value="$kind"/>
     </Properties>
   </Metadata>
   <Installation>
@@ -73,7 +75,7 @@ $manifest = @"
   <Dependencies/>
   <Assets>
     <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true"/>
-    <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true"/>
+$readme
   </Assets>
 </PackageManifest>
 "@
@@ -87,13 +89,27 @@ try {
         $w.Dispose()
     }
     foreach ($f in $files) {
-        $src = Join-Path $here $f
+        $src = Join-Path $dir $f
         if (-not (Test-Path $src)) { throw "missing $f" }
         [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $src, "extension/$f")
     }
 } finally {
     $zip.Dispose()
 }
+$pkg
+}
+
+# The remote half (bridge/) rides inside aglink-vscode, which installs it on
+# each Remote-SSH server it opens (relay.js ensureBridge).
+$bridgePkg = Build-Vsix (Join-Path $here 'bridge') @('package.json', 'extension.js') 'workspace' (Join-Path $here 'aglink-bridge.vsix')
+[System.IO.File]::WriteAllText((Join-Path $here 'bridge-version.json'), "{`"version`":`"$($bridgePkg.version)`"}", (New-Object System.Text.UTF8Encoding($false)))
+
+$pkg = Get-Content -Raw -Encoding UTF8 (Join-Path $here 'package.json') | ConvertFrom-Json
+$version = $pkg.version
+$files = @('package.json', 'extension.js', 'methods.js', 'terminals.js', 'relay.js', 'README.md', 'aglink-bridge.vsix', 'bridge-version.json')
+$out = Join-Path $here "aglink-vscode-$version.vsix"
+[void](Build-Vsix $here $files 'ui' $out)
+Get-ChildItem $here -Filter 'aglink-vscode-*.vsix' | Where-Object { $_.FullName -ne $out } | Remove-Item -Force
 Write-Host "packaged: $out"
 if ($PackageOnly) { return }
 
@@ -105,4 +121,12 @@ $installArgs = @('--install-extension', $out, '--force')
 if ($ExtensionsDir) { $installArgs = @('--extensions-dir', $ExtensionsDir) + $installArgs }
 & $code @installArgs
 if ($LASTEXITCODE -ne 0) { throw "code --install-extension failed ($LASTEXITCODE)" }
+
+# --force only marks the previous version obsolete; remove its folder so this
+# version is the only one on disk.
+$extDir = if ($ExtensionsDir) { $ExtensionsDir } else { Join-Path $env:USERPROFILE '.vscode\extensions' }
+$current = "$($pkg.publisher).$($pkg.name)-$version"
+Get-ChildItem $extDir -Directory -Filter "$($pkg.publisher).$($pkg.name)-*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne $current } |
+    ForEach-Object { Remove-Item $_.FullName -Recurse -Force; Write-Host "removed old $($_.Name)" }
 Write-Host "installed $($pkg.publisher).$($pkg.name) $version"

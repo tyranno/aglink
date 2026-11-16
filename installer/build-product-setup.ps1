@@ -83,12 +83,6 @@ function Build-Web {
         Where-Object { $_.Name -notlike '*.test.js' } |
         Copy-Item -Destination $ext
 
-    # VS Code extension, packaged by its own script.
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'vscode\install.ps1') -PackageOnly
-    if ($LASTEXITCODE -ne 0) { throw 'vsix packaging failed' }
-    $vsix = Get-ChildItem (Join-Path $root 'vscode') -Filter 'aglink-vscode-*.vsix' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    Copy-Item $vsix.FullName (Join-Path $stage 'aglink-vscode.vsix')
-
     Copy-Item (Join-Path $here 'start-web-daemon.vbs') $stage
     Copy-Item (Join-Path $here 'web-guide.html') (Join-Path $stage 'guide.html')
 

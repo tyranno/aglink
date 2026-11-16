@@ -3,9 +3,10 @@
 ; Built by installer\build-product-setup.ps1 -Product web, which defines
 ; VERSION, STAGE (the staged files) and OUTFILE.
 ;
-; Installs the aglink-web daemon, the Chrome extension folder and the
-; aglink-vscode extension; registers the MCP server with Claude Code; starts the
-; daemon now and at every logon. The Chrome extension itself has to be loaded by
+; Installs the aglink-web daemon and the Chrome extension folder; registers the
+; MCP server with Claude Code; starts the daemon now and at every logon. The VS
+; Code extension (aglink-vscode) is not part of this setup — it is installed on
+; its own with vscode\install.ps1. The Chrome extension itself has to be loaded by
 ; hand (Chrome only installs store extensions on its own) — the finish page
 ; opens the guide that walks through it.
 
@@ -72,7 +73,8 @@ Section "Install"
     DetailPrint "파일 설치..."
     File "${STAGE}\aglink-web.exe"
     File "${STAGE}\start-web-daemon.vbs"
-    File "${STAGE}\aglink-vscode.vsix"
+    ; Earlier versions shipped the VS Code extension here; drop the leftover.
+    Delete "$INSTDIR\aglink-vscode.vsix"
     File "${STAGE}\guide.html"
     ; Replace the extension folder wholesale so a file dropped in a later version
     ; does not linger. The folder name stays the same, which is what lets Chrome
@@ -87,30 +89,6 @@ Section "Install"
     !insertmacro McpEnvSetting "aglink-web" "AGLINK_WEB_CDP_PORTS" $OptCdpPorts $HasCdpPorts
     !insertmacro McpEnvSetting "aglink-web" "AGLINK_WEB_INSECURE_HOSTS" $OptInsecureHosts $HasInsecureHosts
     !insertmacro RegisterClaudeMCP "aglink-web" "$INSTDIR\aglink-web.exe"
-
-    ${If} $OptNoVSCode == "1"
-        DetailPrint "VS Code 확장 설치 건너뜀 (/NOVSCODE)"
-    ${Else}
-        StrCpy $1 ""
-        nsExec::ExecToStack 'cmd /c where code'
-        Pop $0
-        Pop $2
-        ${If} $0 == "0"
-            StrCpy $1 "code"
-        ${ElseIf} ${FileExists} "$LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd"
-            StrCpy $1 '"$LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd"'
-        ${EndIf}
-        ${If} $1 != ""
-            DetailPrint "VS Code 확장(aglink-vscode) 설치..."
-            nsExec::ExecToLog 'cmd /c $1 --install-extension "$INSTDIR\aglink-vscode.vsix" --force'
-            Pop $0
-            ${If} $0 != "0"
-                DetailPrint "  [경고] VS Code 확장 설치 실패(코드 $0) — VS Code 에서 '확장 → VSIX에서 설치'로 $INSTDIR\aglink-vscode.vsix 를 고르세요."
-            ${EndIf}
-        ${Else}
-            DetailPrint "  [안내] VS Code 를 찾지 못해 확장 설치를 건너뜁니다. 나중에 $INSTDIR\aglink-vscode.vsix 를 설치하세요."
-        ${EndIf}
-    ${EndIf}
 
     ${If} $OptNoAutostart == "1"
         DetailPrint "자동 시작 등록 건너뜀 (/NOAUTOSTART)"
@@ -135,14 +113,6 @@ Section "Uninstall"
     !insertmacro StopFromInstDir "aglink-web"
     !insertmacro UnregisterClaudeMCP "aglink-web"
     DeleteRegKey HKCU "Software\aglink\mcp-env\aglink-web"
-
-    nsExec::ExecToStack 'cmd /c where code'
-    Pop $0
-    Pop $1
-    ${If} $0 == "0"
-        nsExec::ExecToLog 'cmd /c code --uninstall-extension aglink.aglink-vscode'
-        Pop $0
-    ${EndIf}
 
     Delete "$INSTDIR\aglink-web.exe"
     Delete "$INSTDIR\start-web-daemon.vbs"

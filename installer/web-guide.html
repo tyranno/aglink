@@ -24,7 +24,7 @@
 <h1>aglink-web</h1>
 <p class="sub">Claude 가 브라우저 · Electron/Wails 앱 · 다른 VS Code 창을 <b>텍스트로</b> 읽고 조작하게 해 줍니다.</p>
 
-<p>설치 프로그램이 이미 해 둔 것: 데몬 설치와 자동 시작, Claude Code 에 MCP 서버 <code>aglink-web</code> 등록, VS Code 확장 <code>aglink-vscode</code> 설치(VS Code 가 있을 때). 남은 건 <b>크롬 확장 하나</b>뿐입니다.</p>
+<p>설치 프로그램이 이미 해 둔 것: 데몬 설치와 자동 시작, Claude Code 에 MCP 서버 <code>aglink-web</code> 등록. 남은 건 <b>크롬 확장 하나</b>뿐입니다.</p>
 
 <h2><span class="step">1</span>크롬 확장 불러오기 (처음 한 번)</h2>
 <ol>
@@ -85,7 +85,7 @@
 </ul>
 
 <h2>VS Code 창을 다루려면</h2>
-<p>설치 프로그램이 VS Code 확장을 깔아 두었습니다. VS Code 창마다 자동으로 붙어 <code>list_profiles</code> 에 <code>vscode:…</code> 로 나타납니다. <b>Remote-SSH 창도</b> 그대로 됩니다 — 확장은 이 PC 에서 돌고, 명령과 파일은 원격에서 처리됩니다.</p>
+<p>VS Code 확장 <code>aglink-vscode</code> 를 따로 설치해야 합니다(이 설치 프로그램은 깔지 않습니다). 설치하면 VS Code 창마다 자동으로 붙어 <code>list_profiles</code> 에 <code>vscode:…</code> 로 나타납니다. <b>Remote-SSH 창도</b> 그대로 됩니다 — 확장은 이 PC 에서 돌고, 명령과 파일은 원격에서 처리됩니다.</p>
 <p class="note">창이 안 보이면: VS Code 출력 패널에서 "aglink" 를 골라 로그를 보세요. 한 번만 창에서 <kbd>Ctrl+Shift+P</kbd> → "Developer: Reload Window" 를 하면 대부분 해결됩니다.</p>
 <p class="note">주의: <code>vscode_terminal_run</code> 은 그 창의 권한으로 명령을 실행합니다(원격 창이면 원격에서). 창 설정에서 <code>aglink.enabled</code> 를 끄면 그 창은 연결되지 않습니다.</p>
 

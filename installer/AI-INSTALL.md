@@ -14,7 +14,7 @@
 
 | 파일 | 설치되는 것 | 설치 위치 (관리자 권한 불필요) |
 |---|---|---|
-| `aglink-web-Setup.exe` | 브라우저·Electron/Wails 앱·VS Code 창을 **텍스트로** 읽고 조작하는 MCP 서버 + 크롬 확장 + VS Code 확장 | `%LOCALAPPDATA%\Programs\aglink-web` |
+| `aglink-web-Setup.exe` | 브라우저·Electron/Wails 앱·VS Code 창을 **텍스트로** 읽고 조작하는 MCP 서버 + 크롬 확장 | `%LOCALAPPDATA%\Programs\aglink-web` |
 | `aglink-screen-Setup.exe` | 일반 윈도우 프로그램 화면 조작(창 목록·접근성 트리·클릭·캡처) MCP 서버 | `%LOCALAPPDATA%\Programs\aglink-screen` |
 
 사용자가 따로 말하지 않으면 **둘 다** 설치한다. 웹·앱 작업만 한다고 하면 web 만 설치한다.
@@ -71,7 +71,7 @@ claude mcp list
   같은 이름의 등록을 지우고 자기 것으로 바꾼다. 이미 `...\Programs\aglink-web\aglink-web.exe mcp`
   처럼 이 설치 프로그램의 경로로 등록돼 있으면 업데이트이므로 그대로 진행한다.
 - 크롬을 쓸 거라면 크롬이 설치돼 있고 Google 계정으로 로그인돼 있어야 한다(확장이
-  로그인한 계정 이름으로 붙는다). VS Code 는 있으면 확장이 자동 설치되고, 없어도 된다.
+  로그인한 계정 이름으로 붙는다). VS Code 창을 다루려면 VS Code 확장(aglink-vscode)을 따로 설치한다 — 이 설치 프로그램은 깔지 않는다.
 
 ## 2. 설치 (조용히)
 
@@ -85,7 +85,7 @@ Start-Process .\aglink-screen-Setup.exe -ArgumentList '/S' -Wait
 설치 프로그램이 하는 일 — **추가 설정은 필요 없다**:
 
 - **aglink-web**: 이 설치 폴더에서 돌던 이전 버전만 종료 → 파일 설치 → Claude Code 에
-  `aglink-web` 등록(사용자 범위, stdio) → VS Code 가 있으면 `aglink-vscode` 확장 설치 →
+  `aglink-web` 등록(사용자 범위, stdio) →
   데몬을 지금 시작하고 로그온 때마다 자동 시작(`HKCU\...\Run`).
 - **aglink-screen**: 파일 설치 → Claude Code 에 `aglink-screen` 등록. 상시로 도는 것은
   없다(Claude 가 필요할 때 띄운다).
@@ -97,7 +97,7 @@ Start-Process .\aglink-screen-Setup.exe -ArgumentList '/S' -Wait
 | `/STEPDELAY=200` | 연속 동작(run_steps / run_sequence) 단계 사이 기본 대기 ms. 화면 전환 애니메이션이 있는 앱이면 150~300 |
 | `/INSECUREHOSTS=nas.local,10.0.0.5:8443` | (web) 인증서 경고를 자동으로 넘길 **사내** 호스트. 사용자가 이름을 댄 호스트만 넣는다 |
 | `/CDPPORTS=9222-9240,9333` | (web) Electron/Wails 앱을 찾을 포트. 기본값과 같으므로 보통 불필요 |
-| `/NOVSCODE` `/NOAUTOSTART` `/NOCLAUDE` | VS Code 확장 / 자동 시작 / Claude 등록을 건너뜀 |
+| `/NOAUTOSTART` `/NOCLAUDE` | 자동 시작 / Claude 등록을 건너뜀 |
 | `/D=C:\경로` | 설치 위치 변경 — **맨 끝에, 따옴표 없이** |
 
 예: `Start-Process .\aglink-web-Setup.exe -ArgumentList '/S /STEPDELAY=200' -Wait`
@@ -188,7 +188,7 @@ MCP 도구는 **Claude Code 세션이 시작될 때** 붙는다. 지금 설치�
 | 새 세션에 aglink 도구가 없음 | `claude mcp list` 에 등록이 있는지. 없으면 §3 수동 등록 |
 | `list_profiles` 에 크롬이 없음 | §5 를 했는지, 크롬에 로그인돼 있는지, `http://127.0.0.1:48219/health` 가 ok 인지 |
 | 새 도구가 `unknown method` | 크롬 확장 새로고침(§5 업데이트) |
-| VS Code 창이 안 보임 | VS Code 에서 Ctrl+Shift+P → "Developer: Reload Window". 그래도 안 되면 `code --install-extension "$env:LOCALAPPDATA\Programs\aglink-web\aglink-vscode.vsix" --force` |
+| VS Code 창이 안 보임 | VS Code 에서 Ctrl+Shift+P → "Developer: Reload Window". 그래도 안 되면 aglink-vscode 확장이 설치돼 있는지 확인(`code --list-extensions`) |
 | Electron/Wails 앱이 안 보임 | 앱이 디버그 포트로 떠 있어야 한다. Electron 은 `앱.exe --remote-debugging-port=9222` |
 | aglink-screen 클릭이 안 먹고 경고가 붙음 | 대상 앱이 관리자 권한이면 윈도우가 막는다(UIPI) — Claude Code 를 관리자 권한으로 실행 |
 
@@ -217,6 +217,6 @@ MCP 도구는 **Claude Code 세션이 시작될 때** 붙는다. 지금 설치�
 & "$env:LOCALAPPDATA\Programs\aglink-screen\uninstall.exe" /S
 ```
 
-제거는 자동 시작·Claude 등록(이 설치가 만든 것만)·VS Code 확장까지 되돌린다. 사용자 설정
+제거는 자동 시작·Claude 등록(이 설치가 만든 것만)을 되돌린다. 사용자 설정
 `%USERPROFILE%\.aglink` 와 §4 의 권한 규칙은 남는다. 크롬 확장은 `chrome://extensions` 에서
 직접 삭제한다.

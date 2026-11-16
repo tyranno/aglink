@@ -4,7 +4,7 @@ aglink 의 세 제품은 **각각 따로** 설치·배포할 수 있다.
 
 | 설치 파일 | 무엇 | 권한 | 설치 위치 |
 |---|---|---|---|
-| `aglink-web-Setup.exe` | aglink-web 데몬 + 크롬 확장 + VS Code 확장(aglink-vscode) | 사용자 | `%LOCALAPPDATA%\Programs\aglink-web` |
+| `aglink-web-Setup.exe` | aglink-web 데몬 + 크롬 확장 | 사용자 | `%LOCALAPPDATA%\Programs\aglink-web` |
 | `aglink-screen-Setup.exe` | aglink-screen (화면 제어 MCP) | 사용자 | `%LOCALAPPDATA%\Programs\aglink-screen` |
 | `aglink-Setup.exe` | 전체 묶음 — 텔레그램 호스트, 채팅, 데스크톱 앱 포함 | 관리자 | `Program Files\aglink` |
 
@@ -42,8 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setu
    새로고침만 하면 새 코드가 적용된다.
 3. Claude Code 에 MCP 서버 `aglink-web` 등록(사용자 범위, stdio — 데몬이 꺼져 있으면
    알아서 띄운다). `claude` 가 없으면 등록 명령을 안내만 한다.
-4. VS Code 가 있으면 `aglink-vscode` 확장 설치.
-5. 데몬을 지금 시작하고 로그온 때마다 시작(`HKCU\...\Run` → `start-web-daemon.vbs`,
+4. 데몬을 지금 시작하고 로그온 때마다 시작(`HKCU\...\Run` → `start-web-daemon.vbs`,
    콘솔 창이 번쩍이지 않게 wscript 로).
 6. 마지막 화면에서 사용 안내(`guide.html`)를 연다. **크롬 확장만은 직접** 불러와야
    한다 — 크롬은 스토어 밖 확장을 스스로 설치하지 않는다.
@@ -65,7 +64,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-product-setu
 aglink-web-Setup.exe /S                               조용히 설치
 aglink-web-Setup.exe /S /D=C:\Tools\aglink-web        설치 위치 지정 (/D 는 맨 끝, 따옴표 없이)
 /NOCLAUDE      Claude Code 에 등록하지 않음
-/NOVSCODE      VS Code 확장을 설치하지 않음 (web)
 /NOAUTOSTART   자동 시작·지금 시작 안 함 (web)
 uninstall.exe /S                                      조용히 제거
 ```
@@ -85,7 +83,7 @@ MCP 등록에 환경변수로 함께 넣는 설정(`claude mcp add … -e KEY=VA
   못한다. 그래서 브리지가 호출마다 이 값들을 데몬에 실어 보낸다(`web/settings.go`) —
   등록을 바꾸면 데몬을 재시작하지 않아도 다음 호출부터 적용된다.
 
-`/NOCLAUDE /NOVSCODE /NOAUTOSTART` 로 임시 폴더에 설치했다가 지우면, 개발 PC 의 설정을
+`/NOCLAUDE /NOAUTOSTART` 로 임시 폴더에 설치했다가 지우면, 개발 PC 의 설정을
 건드리지 않고 설치 프로그램 자체를 시험할 수 있다.
 
 ## 파일

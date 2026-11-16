@@ -7,7 +7,6 @@
 ;
 ; Command-line switches every product accepts (also usable with /S):
 ;   /NOCLAUDE     do not register the MCP server with Claude Code
-;   /NOVSCODE     do not install the VS Code extension (aglink-web only)
 ;   /NOAUTOSTART  do not start at logon or start now (aglink-web only)
 ;
 ; Settings written into the Claude Code MCP registration as environment
@@ -26,7 +25,6 @@
 !include "LogicLib.nsh"
 
 Var OptNoClaude
-Var OptNoVSCode
 Var OptNoAutostart
 Var OptStepDelay
 Var OptCdpPorts
@@ -42,11 +40,6 @@ Var McpEnvArgs
     ${GetOptions} $R0 "/NOCLAUDE" $R1
     ${IfNot} ${Errors}
         StrCpy $OptNoClaude "1"
-    ${EndIf}
-    ClearErrors
-    ${GetOptions} $R0 "/NOVSCODE" $R1
-    ${IfNot} ${Errors}
-        StrCpy $OptNoVSCode "1"
     ${EndIf}
     ClearErrors
     ${GetOptions} $R0 "/NOAUTOSTART" $R1

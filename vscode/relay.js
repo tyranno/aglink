@@ -41,7 +41,9 @@ function destination(req, readPort) {
       return { port: 48220, auth: tok ? "Bearer " + tok : "" };
     }
     case "voice": // the Stop hook: this extension's voice on 48231, the desktop app on 48230
-      return { port: String(req.path).startsWith("/vscode/") ? 48230 : 48231, auth: "" };
+      if (String(req.path).startsWith("/vscode/")) return { port: 48230, auth: "" };
+      // the voice extension demands this token whenever it is set on the PC
+      return { port: 48231, auth: (process.env.AGLINK_VOICE_TOKEN || "").trim() ? "Bearer " + process.env.AGLINK_VOICE_TOKEN.trim() : "" };
     default:
       throw new Error(`unknown relay target: ${req.target}`);
   }
@@ -76,7 +78,7 @@ function relay(req, readPort) {
 // ensureBridge installs the bundled aglink-bridge on the remote server the
 // first time this PC opens a window there (or when the bundled one is newer),
 // so connecting a new server needs nothing done by hand.
-async function ensureBridge(vscode, extensionPath, log) {
+async function ensureBridge(vscode, extensionPath, log, state) {
   if (!vscode.env.remoteName) return;
   const bundled = path.join(extensionPath, "aglink-bridge.vsix");
   if (!fs.existsSync(bundled)) return;
@@ -86,6 +88,11 @@ async function ensureBridge(vscode, extensionPath, log) {
   } catch (e) {}
   const have = vscode.extensions.getExtension(BRIDGE_ID);
   if (have && (!want || have.packageJSON.version === want)) return;
+  // A UI-side extension host often cannot see an extension living on the
+  // remote one, so getExtension is no proof of absence: remember what was
+  // installed per server instead of reinstalling and reloading every time.
+  const key = `aglink.bridge.${vscode.env.remoteName}`;
+  if (state && want && state.get(key) === want) return;
   log(`installing aglink-bridge ${want} on ${vscode.env.remoteName} (had ${have ? have.packageJSON.version : "none"})`);
   try {
     await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(bundled));
@@ -93,6 +100,7 @@ async function ensureBridge(vscode, extensionPath, log) {
     log(`aglink-bridge install failed: ${e.message}`);
     return;
   }
+  if (state && want) await state.update(key, want);
   const pick = await vscode.window.showInformationMessage(
     "aglink: 이 서버에 연결 통로(aglink-bridge)를 설치했습니다. 창을 다시 불러오면 적용됩니다.",
     "다시 불러오기"

@@ -49,7 +49,60 @@ function destination(req, readPort) {
   }
 }
 
-function relay(req, readPort) {
+// webDaemonExe finds this PC's aglink-web: the aglink product install, the
+// standalone aglink-web setup, or AGLINK_WEB_EXE.
+function webDaemonExe() {
+  const local = process.env.LOCALAPPDATA || "";
+  const cands = [
+    process.env.AGLINK_WEB_EXE,
+    path.join(process.env.ProgramFiles || "C:\\Program Files", "aglink", "aglink-web.exe"),
+    local && path.join(local, "Programs", "aglink-web", "aglink-web.exe"),
+  ];
+  return cands.find((p) => p && fs.existsSync(p)) || "";
+}
+
+function webHealthy(port) {
+  return new Promise((resolve) => {
+    const r = http.get({ host: "127.0.0.1", port, path: "/health", timeout: 500 }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    r.on("error", () => resolve(false));
+    r.on("timeout", () => r.destroy());
+  });
+}
+
+// startWebDaemon brings up this PC's aglink-web daemon when a Remote-SSH
+// window asks for it. Locally an aglink-web MCP spawns the daemon on first
+// use, but a PC that only serves remote windows may never have run one since
+// boot. Concurrent requests share one attempt.
+let starting = null;
+function startWebDaemon(readPort) {
+  if (starting) return starting;
+  starting = (async () => {
+    const exe = webDaemonExe();
+    if (!exe) return false;
+    const { spawn } = require("child_process");
+    spawn(exe, ["serve"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (await webHealthy(readPort())) return true;
+    }
+    return false;
+  })().finally(() => {
+    starting = null;
+  });
+  return starting;
+}
+
+async function relay(req, readPort) {
+  let res = await relayOnce(req, readPort);
+  if (res.refused && req.target === "web" && (await startWebDaemon(readPort))) res = await relayOnce(req, readPort);
+  delete res.refused;
+  return res;
+}
+
+function relayOnce(req, readPort) {
   const dst = destination(req, readPort);
   const body = Buffer.from(req.body || "", "base64");
   const headers = { "Content-Length": body.length };
@@ -67,9 +120,9 @@ function relay(req, readPort) {
         );
       }
     );
-    const fail = (msg) =>
-      resolve({ status: 502, contentType: "application/json", body: Buffer.from(JSON.stringify({ error: `aglink relay: ${msg}` })).toString("base64") });
-    r.on("error", (e) => fail(`${req.target} (127.0.0.1:${dst.port}) is not reachable on this PC: ${e.message}`));
+    const fail = (msg, refused) =>
+      resolve({ status: 502, contentType: "application/json", body: Buffer.from(JSON.stringify({ error: `aglink relay: ${msg}` })).toString("base64"), refused });
+    r.on("error", (e) => fail(`${req.target} (127.0.0.1:${dst.port}) is not reachable on this PC: ${e.message}`, e.code === "ECONNREFUSED"));
     r.on("timeout", () => r.destroy(new Error("timed out")));
     r.end(body);
   });

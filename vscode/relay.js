@@ -75,6 +75,25 @@ function relay(req, readPort) {
   });
 }
 
+// remoteBridgeVersion reports the aglink-bridge running on the remote extension
+// host, or "" when none shows up. The bridge activates on "*" but may still be
+// starting, so wait a little for its command. 0.1.0 answers without a version.
+async function remoteBridgeVersion(vscode, tries = 15) {
+  for (let i = 0; i < tries; i++) {
+    const cmds = await vscode.commands.getCommands(true);
+    if (cmds.includes("aglink.bridge.ports")) {
+      try {
+        const r = await vscode.commands.executeCommand("aglink.bridge.ports");
+        return (r && r.version) || "0.1.0";
+      } catch (e) {
+        return "0.1.0";
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return "";
+}
+
 // ensureBridge installs the bundled aglink-bridge on the remote server the
 // first time this PC opens a window there (or when the bundled one is newer),
 // so connecting a new server needs nothing done by hand.
@@ -88,12 +107,14 @@ async function ensureBridge(vscode, extensionPath, log, state) {
   } catch (e) {}
   const have = vscode.extensions.getExtension(BRIDGE_ID);
   if (have && (!want || have.packageJSON.version === want)) return;
-  // A UI-side extension host often cannot see an extension living on the
-  // remote one, so getExtension is no proof of absence: remember what was
-  // installed per server instead of reinstalling and reloading every time.
+  // A UI-side extension host cannot see an extension living on the remote
+  // one, so getExtension is no proof of absence. Commands do cross hosts: ask
+  // the running bridge itself, and only fall back to what was remembered.
+  const running = await remoteBridgeVersion(vscode);
+  if (running && (!want || running === want)) return;
   const key = `aglink.bridge.${vscode.env.remoteName}`;
-  if (state && want && state.get(key) === want) return;
-  log(`installing aglink-bridge ${want} on ${vscode.env.remoteName} (had ${have ? have.packageJSON.version : "none"})`);
+  if (!running && state && want && state.get(key) === want) return;
+  log(`installing aglink-bridge ${want} on ${vscode.env.remoteName} (had ${running || (have ? have.packageJSON.version : "none")})`);
   try {
     await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(bundled));
   } catch (e) {

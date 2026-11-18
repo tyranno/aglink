@@ -299,6 +299,7 @@ func (v *VoiceService) ServiceShutdown() error {
 	ovMu.Unlock()
 	stopSpeakerServer()
 	stopTurnServer()
+	stopVadServer()
 	stopWhisperServer()
 	return nil
 }

@@ -27,7 +27,7 @@ func TestTurnWithoutModels(t *testing.T) {
 		_ = os.MkdirAll(filepath.Dir(f), 0o700)
 		_ = os.WriteFile(f, nil, 0o600)
 	}
-	if vadInstalled(dir) || smartTurnInstalled(dir) {
+	if smartTurnInstalled(dir) {
 		t.Fatal("installed without models")
 	}
 }

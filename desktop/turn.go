@@ -1,17 +1,16 @@
 package main
 
-// Hearing speech and the end of a turn. The mic's level alone takes a fan, the
-// TV's music or a door for speech, and a fixed pause either cuts the user off
-// at "음…" or keeps them waiting after a finished sentence. turn_server.py runs
-// two small ONNX models on the CPU in OpenVoice's Python environment, apart
-// from speaker_server.py so its GPU scoring never holds up the mic:
-//   - Silero VAD: speech probability per 32 ms, fed as the mic records
-//     (~1 ms a call), so non-speech sound neither starts a clip nor keeps one open;
+// The end of a turn. A fixed pause either cuts the user off at "음…" or keeps
+// them waiting after a finished sentence. turn_server.py runs Smart Turn v3 on
+// the CPU in OpenVoice's Python environment, apart from speaker_server.py so its
+// GPU scoring never holds up the mic:
 //   - Smart Turn v3: from the sound of the turn so far (intonation, pace, a
 //     trailing "음"), whether the user has finished (~0.1 s a call).
 //
-// Anything missing or failing just means the level and the fixed pauses
-// decide, as before.
+// Silero VAD (hearing speech vs. noise) moved to a dedicated supertonic-server
+// --vad process (vadserver.go): it needs no Python, and runs apart from both the
+// TTS and Smart-Turn servers so it never waits behind them. Anything missing or
+// failing just means the level and the fixed pauses decide, as before.
 
 import (
 	"encoding/json"
@@ -36,16 +35,9 @@ var (
 // shorter than ttsTimeout, as the mic is waiting on it.
 const turnTimeout = 3 * time.Second
 
-var (
-	errNoTurnModel  = errors.New("not installed")
-	errTurnStarting = errors.New("starting")
-)
+var errNoTurnModel = errors.New("not installed")
 
 func turnModel(dir, name string) string { return filepath.Join(dir, "turn", name) }
-
-func vadInstalled(dir string) bool {
-	return turnServerInstalled(dir) && fileExists(turnModel(dir, "silero_vad.onnx"))
-}
 
 func smartTurnInstalled(dir string) bool {
 	return turnServerInstalled(dir) && fileExists(turnModel(dir, "smart-turn-v3.2-cpu.onnx"))
@@ -58,7 +50,7 @@ func turnServerInstalled(dir string) bool {
 // warmTurn starts the server in the background (~1 s).
 func warmTurn() {
 	dir := openVoiceDir()
-	if !(vadInstalled(dir) || smartTurnInstalled(dir)) || turnWarming.Swap(true) {
+	if !smartTurnInstalled(dir) || turnWarming.Swap(true) {
 		return
 	}
 	go func() {
@@ -118,30 +110,6 @@ func turnRequest(req map[string]any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("turn server: %s", resp.Error)
 	}
 	return raw, nil
-}
-
-// VadProbs gives Silero's speech probability for each 32 ms of pcm (base64
-// 16 kHz mono 16-bit PCM) heard on the mic stream id; reset starts the stream
-// afresh. The error "starting" means no answer this time; "not installed"
-// means there will be none.
-func (v *VoiceService) VadProbs(id, pcm string, reset bool) ([]float64, error) {
-	if !vadInstalled(openVoiceDir()) {
-		return nil, errNoTurnModel
-	}
-	raw, err := turnRequest(map[string]any{"op": "vad", "id": id, "pcm": pcm, "reset": reset})
-	if err != nil {
-		return nil, err
-	}
-	if raw == nil {
-		return nil, errTurnStarting
-	}
-	var resp struct {
-		Probs []float64 `json:"probs"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Probs, nil
 }
 
 // TurnEnd says how likely the user has finished their turn, from its audio so

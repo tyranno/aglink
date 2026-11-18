@@ -18,10 +18,22 @@ namespace Supertonic
     {
         static int Main(string[] args)
         {
-            string root = args.Length > 0 ? args[0] : AppContext.BaseDirectory;
+            // args: the data root (first non-flag), and optionally --vad to run as
+            // the mic's Silero VAD instead of the TTS voice. VAD runs as its own
+            // process so it never waits behind a TTS synthesis (and vice versa).
+            string root = AppContext.BaseDirectory;
+            bool vadMode = false;
+            foreach (var a in args)
+            {
+                if (a == "--vad") vadMode = true;
+                else if (!a.StartsWith("--")) root = a;
+            }
+
             var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
             Console.SetOut(Console.Error);
             var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
+
+            if (vadMode) return RunVad(root, stdin, stdout);
 
             TextToSpeech tts;
             try
@@ -65,6 +77,47 @@ namespace Supertonic
                     Array.Copy(wav, trimmed, len);
                     Helper.WriteWavFile(outPath, trimmed, tts.SampleRate);
                     stdout.WriteLine(JsonSerializer.Serialize(new { ok = true, seconds = duration[0] }));
+                }
+                catch (Exception e)
+                {
+                    stdout.WriteLine(JsonSerializer.Serialize(new { ok = false, error = e.Message }));
+                }
+            }
+            return 0;
+        }
+
+        // RunVad serves the mic's Silero VAD: one JSON line in, one out.
+        //   in:  {"op":"vad","id":"conv-1","pcm":"<base64 16 kHz mono s16>","reset":false}
+        //   out: {"ok":true,"probs":[0.01,0.93,...]}  (one per 512-sample window)
+        static int RunVad(string root, StreamReader stdin, StreamWriter stdout)
+        {
+            Vad vad;
+            try
+            {
+                vad = new Vad(Path.Combine(root, "silero_vad.onnx"));
+            }
+            catch (Exception e)
+            {
+                stdout.WriteLine(JsonSerializer.Serialize(new { ok = false, error = "load: " + e.Message }));
+                return 1;
+            }
+            stdout.WriteLine(JsonSerializer.Serialize(new { ok = true, ready = true }));
+
+            string? line;
+            while ((line = stdin.ReadLine()) != null)
+            {
+                if (line.Trim().Length == 0) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var req = doc.RootElement;
+                    string id = req.TryGetProperty("id", out var idv) ? idv.GetString() ?? "" : "";
+                    bool reset = req.TryGetProperty("reset", out var rv) && rv.GetBoolean();
+                    byte[] pcm = req.TryGetProperty("pcm", out var pv)
+                        ? Convert.FromBase64String(pv.GetString() ?? "")
+                        : Array.Empty<byte>();
+                    var probs = vad.Probs(id, pcm, reset);
+                    stdout.WriteLine(JsonSerializer.Serialize(new { ok = true, probs }));
                 }
                 catch (Exception e)
                 {

@@ -81,6 +81,7 @@
 
   let view = $state("chat");
   let settingsTab = $state("settings");
+  let voiceLoaded = $state(false); // VoicePanel is mounted once then kept (hidden) to avoid re-mount lag
   // 알려진 탭 값만 복원한다 — 저장된 값이 낯설면 "chat"으로 떨어뜨려야, 렌더링
   // 분기의 마지막 else(MCP)가 알 수 없는 값을 떠안는 일이 없다.
   // 탭은 아이콘만 보이고 이름은 툴팁으로 — 글자로 두면 탭이 늘 때 두 줄로 접힌다.
@@ -230,7 +231,10 @@
 
   async function loadSettingsTab(tab) {
     settingsTab = tab;
-    if (tab === "voice") return;
+    if (tab === "voice") {
+      voiceLoaded = true;
+      return;
+    }
     if (tab === "settings") {
       await Promise.all([loadSettingsSchema(), loadRawConfig()]);
       return;
@@ -1097,7 +1101,7 @@
                 </div>
               </section>
             {:else if settingsTab === "voice"}
-              <VoicePanel />
+              <!-- VoicePanel is kept mounted below (avoids re-mount lag on tab switch) -->
             {:else}
               <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">
@@ -1198,6 +1202,9 @@
                   </div>
                 </div>
               </section>
+            {/if}
+            {#if voiceLoaded}
+              <div class:hidden={settingsTab !== "voice"}><VoicePanel /></div>
             {/if}
           </div>
         </div>

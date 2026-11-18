@@ -50,14 +50,34 @@
   let whisperMsg = $state("");
   let micCleanup = $state("off");
   let busy = $state(false);
+  let previewing = $state(false);
+
+  // 미리 듣기: synthesis takes a couple of seconds, so show "준비 중…" and
+  // block re-clicks (queued synths were what made it feel stuck).
+  async function doPreview() {
+    if (previewing) return;
+    previewing = true;
+    try {
+      await previewVoice();
+    } finally {
+      previewing = false;
+    }
+  }
 
   onMount(async () => {
-    speaker = await speakerStatus();
-    clone = await cloneVoiceStatus();
-    stt = await sttModelStatus();
-    const w = await whisperServerStatus();
+    // Fetch all settings in parallel — serial awaits made opening the panel janky.
+    const [sp, cl, st, w, mc] = await Promise.all([
+      speakerStatus(),
+      cloneVoiceStatus(),
+      sttModelStatus(),
+      whisperServerStatus(),
+      micCleanupStatus(),
+    ]);
+    speaker = sp;
+    clone = cl;
+    stt = st;
     whisperUrl = w.url || "";
-    micCleanup = (await micCleanupStatus()).level || "off";
+    micCleanup = mc.level || "off";
     refreshMemos().catch(() => {});
   });
 
@@ -181,7 +201,7 @@
             {/each}
             {#if clone.on || voice.ttsVoice === CLONE_VOICE}<option value={CLONE_VOICE}>녹음한 목소리</option>{/if}
           </select>
-          <button class={button} onclick={previewVoice}>미리 듣기</button>
+          <button class={button} disabled={previewing} onclick={doPreview}>{previewing ? "준비 중…" : "미리 듣기"}</button>
         </div>
       </div>
     </div>

@@ -24,6 +24,8 @@
     setSTTModel,
     whisperServerStatus,
     setWhisperServer,
+    micCleanupStatus,
+    setMicCleanup,
     cloneVoice,
     cloneVoiceStatus,
     clearCloneVoice,
@@ -46,6 +48,7 @@
   let stt = $state({ pref: "auto", koAvailable: false });
   let whisperUrl = $state("");
   let whisperMsg = $state("");
+  let micCleanup = $state("off");
   let busy = $state(false);
 
   onMount(async () => {
@@ -54,6 +57,7 @@
     stt = await sttModelStatus();
     const w = await whisperServerStatus();
     whisperUrl = w.url || "";
+    micCleanup = (await micCleanupStatus()).level || "off";
     refreshMemos().catch(() => {});
   });
 
@@ -63,6 +67,17 @@
     try {
       await setSTTModel(model);
       stt = { ...stt, pref: model };
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function chooseMicCleanup(level) {
+    if (level === micCleanup) return;
+    busy = true;
+    try {
+      await setMicCleanup(level);
+      micCleanup = level;
     } finally {
       busy = false;
     }
@@ -464,6 +479,18 @@
       {#if whisperMsg}
         <div class="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{whisperMsg}</div>
       {/if}
+    </div>
+
+    <div class={card}>
+      <div class={label}>마이크 소리 정리</div>
+      <div class={desc}>
+        잔향 심한 방·원거리 마이크·주변 소음일 때, whisper로 보내기 전에 소프트웨어로 정리해요. 재생음 제거(AEC)는 하지 않아요. 바꾸면 다음 말부터 적용돼요.
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button class={button} disabled={busy} aria-pressed={micCleanup === "off"} onclick={() => chooseMicCleanup("off")}>{micCleanup === "off" ? "✓ " : ""}끄기</button>
+        <button class={button} disabled={busy} aria-pressed={micCleanup === "light"} onclick={() => chooseMicCleanup("light")}>{micCleanup === "light" ? "✓ " : ""}기본</button>
+        <button class={button} disabled={busy} aria-pressed={micCleanup === "strong"} onclick={() => chooseMicCleanup("strong")}>{micCleanup === "strong" ? "✓ " : ""}강력 (RNNoise)</button>
+      </div>
     </div>
 
     {#if stt.koAvailable}

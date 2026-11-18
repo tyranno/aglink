@@ -97,6 +97,44 @@ func saveSTTModelPref(model string) error {
 	return os.WriteFile(p, b, 0o644)
 }
 
+// micCleanupPref: how much to tidy the mic clip before whisper — "off"
+// (default), "light" (high-pass + spectral-subtraction NS + AGC) or "strong"
+// (RNNoise too). Persisted in mic-cleanup.json; applied per clip in Transcribe.
+func micCleanupPrefPath() (string, error) {
+	dir, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "mic-cleanup.json"), nil
+}
+
+func loadMicCleanupPref() string {
+	p, err := micCleanupPrefPath()
+	if err != nil {
+		return "off"
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "off"
+	}
+	var v struct {
+		Level string `json:"level"`
+	}
+	if json.Unmarshal(b, &v) == nil && (v.Level == "light" || v.Level == "strong") {
+		return v.Level
+	}
+	return "off"
+}
+
+func saveMicCleanupPref(level string) error {
+	p, err := micCleanupPrefPath()
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(map[string]string{"level": level})
+	return os.WriteFile(p, b, 0o644)
+}
+
 // whisperServerPref: where recognition runs — "" = this PC, else a whisper.cpp
 // server URL (http://host:port). Persisted in whisper-server.json; the settings
 // UI sets it (SetWhisperServer). When nothing is saved, AGLINK_WHISPER_URL is
@@ -271,6 +309,21 @@ func (v *VoiceService) SetSTTModel(model string) error {
 	stopWhisperServer()
 	warmWhisperServer()
 	return nil
+}
+
+// MicCleanupInfo reports the mic-cleanup level as JSON: {"level":"off"|"light"|"strong"}.
+func (v *VoiceService) MicCleanupInfo() (string, error) {
+	b, _ := json.Marshal(map[string]any{"level": loadMicCleanupPref()})
+	return string(b), nil
+}
+
+// SetMicCleanup sets how much to tidy the mic clip before whisper. Applied on
+// the next clip (no restart needed).
+func (v *VoiceService) SetMicCleanup(level string) error {
+	if level != "off" && level != "light" && level != "strong" {
+		return fmt.Errorf("알 수 없는 선택: %s", level)
+	}
+	return saveMicCleanupPref(level)
 }
 
 // WhisperServerInfo reports where recognition runs as JSON:
@@ -472,6 +525,7 @@ func (v *VoiceService) Transcribe(wavBase64 string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("오디오 디코딩 실패: %w", err)
 	}
+	wav = applyMicCleanup(wav, loadMicCleanupPref())
 
 	v.runMu.Lock()
 	defer v.runMu.Unlock()

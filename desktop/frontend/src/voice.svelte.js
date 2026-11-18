@@ -337,6 +337,21 @@ export async function setSTTModel(model) {
   vlog(`stt model → ${model}`);
 }
 
+// micCleanupStatus: {"level":"off"|"light"|"strong"} — how much the mic clip is
+// tidied before whisper. setMicCleanup changes it (applied on the next clip).
+export async function micCleanupStatus() {
+  try {
+    return JSON.parse(await VoiceService.MicCleanupInfo());
+  } catch {
+    return { level: "off" };
+  }
+}
+
+export async function setMicCleanup(level) {
+  await VoiceService.SetMicCleanup(level);
+  vlog(`mic cleanup → ${level}`);
+}
+
 // whisperServerStatus: {"url":"<server or empty>","set":bool}. Empty url = this
 // PC (local); a URL = recognise on that whisper server. setWhisperServer saves
 // the choice and restarts recognition so it applies at once.

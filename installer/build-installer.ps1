@@ -38,6 +38,11 @@ function Build-GoHelper($relDir, $outName, $ldflags = "") {
 $env:GOWORK = "off"
 # The desktop binary embeds frontend\dist; rebuild it so UI changes are not
 # shipped stale (plain go build never touches it).
+# Bindings are gitignored; stale ones make new Go methods silently missing in the UI.
+Push-Location (Join-Path $root "desktop")
+& wails3 generate bindings -clean=true 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "wails3 generate bindings failed" }
+Pop-Location
 Push-Location (Join-Path $root "desktop\frontend")
 if (-not (Test-Path "node_modules")) { & cmd /c "npm install --no-audit --no-fund 2>&1"; if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm install failed" } }
 & cmd /c "npm run build 2>&1" | Out-Null
@@ -64,6 +69,7 @@ try {
 
 # AI setup guide + the Chrome extension aglink-web needs (minus its tests).
 Copy-Item (Join-Path $here "AI-SETUP.md") $stage -Force
+Copy-Item (Join-Path $root "desktop\rnnoise.dll") $stage -Force # RNNoise for the "strong" mic cleanup
 $ext = Join-Path $stage "chrome-extension"
 if (Test-Path $ext) { Remove-Item $ext -Recurse -Force }
 New-Item -ItemType Directory -Path $ext | Out-Null

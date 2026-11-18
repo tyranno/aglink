@@ -155,6 +155,11 @@ func startWhisperServer() (*whisperServer, error) {
 // remoteWhisperURL: AGLINK_WHISPER_URL points at a whisper.cpp server on another
 // machine (see whisper-server-linux/), used instead of starting one here.
 func remoteWhisperURL() string {
+	// The settings UI's choice (whisper-server.json) wins — a saved empty string
+	// means "this PC". Only when nothing is saved do we fall back to the env var.
+	if url, ok := loadWhisperServerPref(); ok {
+		return url
+	}
 	return strings.TrimRight(strings.TrimSpace(os.Getenv("AGLINK_WHISPER_URL")), "/")
 }
 

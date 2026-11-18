@@ -337,6 +337,22 @@ export async function setSTTModel(model) {
   vlog(`stt model → ${model}`);
 }
 
+// whisperServerStatus: {"url":"<server or empty>","set":bool}. Empty url = this
+// PC (local); a URL = recognise on that whisper server. setWhisperServer saves
+// the choice and restarts recognition so it applies at once.
+export async function whisperServerStatus() {
+  try {
+    return JSON.parse(await VoiceService.WhisperServerInfo());
+  } catch {
+    return { url: "", set: false };
+  }
+}
+
+export async function setWhisperServer(url) {
+  await VoiceService.SetWhisperServer(url);
+  vlog(`whisper server → ${url || "(local)"}`);
+}
+
 // How loudly the user talks into this mic, learned from clips that are surely
 // them. People across the room or the TV reach the mic much quieter; a clip
 // well under the user's level must sound clearly like them to be sent. This

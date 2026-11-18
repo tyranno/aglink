@@ -97,6 +97,49 @@ func saveSTTModelPref(model string) error {
 	return os.WriteFile(p, b, 0o644)
 }
 
+// whisperServerPref: where recognition runs — "" = this PC, else a whisper.cpp
+// server URL (http://host:port). Persisted in whisper-server.json; the settings
+// UI sets it (SetWhisperServer). When nothing is saved, AGLINK_WHISPER_URL is
+// used instead (see remoteWhisperURL).
+func whisperServerPrefPath() (string, error) {
+	dir, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "whisper-server.json"), nil
+}
+
+// loadWhisperServerPref returns the saved server URL and whether one is saved.
+// A saved empty string means "this PC" and still returns set=true, so the UI
+// choice wins over any AGLINK_WHISPER_URL. Read fresh each call (not hot).
+func loadWhisperServerPref() (string, bool) {
+	p, err := whisperServerPrefPath()
+	if err != nil {
+		return "", false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", false
+	}
+	var v struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(b, &v) != nil {
+		return "", false
+	}
+	return strings.TrimRight(strings.TrimSpace(v.URL), "/"), true
+}
+
+func saveWhisperServerPref(url string) error {
+	url = strings.TrimRight(strings.TrimSpace(url), "/")
+	p, err := whisperServerPrefPath()
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(map[string]string{"url": url})
+	return os.WriteFile(p, b, 0o644)
+}
+
 // whisperHallucinations are what whisper emits for silence or noise — mostly
 // YouTube outro lines from its training data. A clip that transcribes to only
 // these (possibly repeated, as "-감사합니다. -감사합니다.") is treated as no
@@ -223,6 +266,33 @@ func (v *VoiceService) SetSTTModel(model string) error {
 		return fmt.Errorf("알 수 없는 모델 선택: %s", model)
 	}
 	if err := saveSTTModelPref(model); err != nil {
+		return err
+	}
+	stopWhisperServer()
+	warmWhisperServer()
+	return nil
+}
+
+// WhisperServerInfo reports where recognition runs as JSON:
+// {"url":"<server or empty>","set":bool}. Empty url = this PC (local); when
+// nothing is saved yet it shows the AGLINK_WHISPER_URL fallback.
+func (v *VoiceService) WhisperServerInfo() (string, error) {
+	url, set := loadWhisperServerPref()
+	if !set {
+		url = strings.TrimRight(strings.TrimSpace(os.Getenv("AGLINK_WHISPER_URL")), "/")
+	}
+	b, _ := json.Marshal(map[string]any{"url": url, "set": set})
+	return string(b), nil
+}
+
+// SetWhisperServer sets where recognition runs ("" = this PC, else
+// http(s)://host:port) and restarts the resident whisper so it applies at once.
+func (v *VoiceService) SetWhisperServer(url string) error {
+	url = strings.TrimSpace(url)
+	if url != "" && !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("서버 주소는 http:// 또는 https:// 로 시작해야 해요")
+	}
+	if err := saveWhisperServerPref(url); err != nil {
 		return err
 	}
 	stopWhisperServer()

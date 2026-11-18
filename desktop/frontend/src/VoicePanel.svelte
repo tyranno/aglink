@@ -22,6 +22,8 @@
     clearSpeaker,
     sttModelStatus,
     setSTTModel,
+    whisperServerStatus,
+    setWhisperServer,
     cloneVoice,
     cloneVoiceStatus,
     clearCloneVoice,
@@ -42,12 +44,16 @@
   let speaker = $state({});
   let clone = $state({});
   let stt = $state({ pref: "auto", koAvailable: false });
+  let whisperUrl = $state("");
+  let whisperMsg = $state("");
   let busy = $state(false);
 
   onMount(async () => {
     speaker = await speakerStatus();
     clone = await cloneVoiceStatus();
     stt = await sttModelStatus();
+    const w = await whisperServerStatus();
+    whisperUrl = w.url || "";
     refreshMemos().catch(() => {});
   });
 
@@ -57,6 +63,21 @@
     try {
       await setSTTModel(model);
       stt = { ...stt, pref: model };
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function applyWhisperServer() {
+    busy = true;
+    whisperMsg = "";
+    try {
+      const url = whisperUrl.trim();
+      await setWhisperServer(url);
+      whisperUrl = url;
+      whisperMsg = url ? `이 서버에서 인식해요: ${url}` : "이 PC에서 인식해요.";
+    } catch (e) {
+      whisperMsg = "적용하지 못했어요: " + (e?.message || e);
     } finally {
       busy = false;
     }
@@ -422,6 +443,26 @@
           <span class="w-10 text-right text-sm tabular-nums">{voice.speakerMin.toFixed(2)}</span>
           <button class={button} onclick={() => setVoiceSettings({ speakerMin: VOICE_DEFAULTS.speakerMin })}>기본값</button>
         </div>
+      {/if}
+    </div>
+
+    <div class={card}>
+      <div class={label}>음성 인식 위치</div>
+      <div class={desc}>
+        받아쓰기를 이 PC에서 할지, 다른 서버(GPU)에서 할지예요. 비워 두면 이 PC에서 인식해요. 서버 주소를 넣으면 그 서버의 whisper 로 인식해 더 빠르고 정확할 수 있어요 (예: http://192.168.11.25:8178). 바꾸면 몇 초 안에 적용돼요.
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input
+          class="min-w-0 flex-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1 text-xs text-slate-900 dark:text-slate-100"
+          placeholder="비워 두면 이 PC (로컬)"
+          bind:value={whisperUrl}
+          disabled={busy}
+          onkeydown={(e) => { if (e.key === "Enter") applyWhisperServer(); }}
+        />
+        <button class={button} disabled={busy} onclick={applyWhisperServer}>적용</button>
+      </div>
+      {#if whisperMsg}
+        <div class="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{whisperMsg}</div>
       {/if}
     </div>
 

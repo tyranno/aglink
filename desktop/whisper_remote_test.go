@@ -38,8 +38,32 @@ func TestConnectRemoteWhisper(t *testing.T) {
 }
 
 func TestRemoteWhisperURL(t *testing.T) {
+	t.Setenv("AGLINK_HOME", t.TempDir()) // no whisper-server.json pref here → env is used
 	t.Setenv("AGLINK_WHISPER_URL", " http://host:8178/ ")
 	if got := remoteWhisperURL(); got != "http://host:8178" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestWhisperServerPrefWins(t *testing.T) {
+	t.Setenv("AGLINK_HOME", t.TempDir())
+	t.Setenv("AGLINK_WHISPER_URL", "http://env:8178")
+	// Nothing saved yet: env is used.
+	if got := remoteWhisperURL(); got != "http://env:8178" {
+		t.Fatalf("before save: got %q", got)
+	}
+	// A saved URL wins over the env.
+	if err := saveWhisperServerPref(" http://pref:8178/ "); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteWhisperURL(); got != "http://pref:8178" {
+		t.Fatalf("after save url: got %q", got)
+	}
+	// A saved empty string means "this PC" and still wins over the env.
+	if err := saveWhisperServerPref(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteWhisperURL(); got != "" {
+		t.Fatalf("after save empty: got %q", got)
 	}
 }

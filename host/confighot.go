@@ -156,11 +156,14 @@ func SetLiveConfigApplier(a *ConfigApplier) { liveConfigApplier.Store(a) }
 
 // applyLiveConfig hot-applies the config file that was just written, so the
 // running process (and the very next get_settings read) sees it immediately
-// instead of up to a debounce later.
-func applyLiveConfig() {
+// instead of up to a debounce later. The returned error is the apply failure —
+// the file is already saved by then — so writers report "saved but not
+// applied" instead of swallowing it (see configSaveReply).
+func applyLiveConfig() error {
 	if a := liveConfigApplier.Load(); a != nil {
-		_ = a.Apply()
+		return a.Apply()
 	}
+	return nil
 }
 
 // WatchConfig watches the config file's directory and hot-reloads on change via

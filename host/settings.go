@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -62,14 +61,32 @@ func persistConfig(cfgPath string, newCfg *Config) json.RawMessage {
 	if _, verr := unmarshalConfigYAML(raw); verr != nil {
 		return settingsFail(verr.Error())
 	}
-	if werr := os.WriteFile(cfgPath, raw, 0o600); werr != nil {
+	// Temp file + rename: an interrupted write leaves the old config intact
+	// instead of a truncated one.
+	if werr := writeFileAtomic(cfgPath, raw); werr != nil {
 		return settingsFail("기록 실패: " + werr.Error())
 	}
 	// Hot-apply now rather than leaving it to the watcher's debounce: the UI
 	// refetches the settings as soon as this reply lands, and a stale read there
 	// re-renders the form with the pre-save values (see ConfigApplier).
-	applyLiveConfig()
-	d, _ := json.Marshal(map[string]any{"ok": true})
+	return configSaveReply(applyLiveConfig())
+}
+
+// configSaveReply is the reply for a config write that reached disk. The three
+// outcomes a settings UI distinguishes:
+//
+//	{"ok":false,"error":…}                               — not saved (settingsFail)
+//	{"ok":true,"applied":true}                           — saved and applied
+//	{"ok":true,"applied":false,"applyError":…}           — saved, live apply failed
+//
+// ok stays true in the last case because the file *was* replaced; the running
+// process keeps the previous config until the error is fixed or it restarts.
+func configSaveReply(applyErr error) json.RawMessage {
+	out := map[string]any{"ok": true, "applied": applyErr == nil}
+	if applyErr != nil {
+		out["applyError"] = applyErr.Error()
+	}
+	d, _ := json.Marshal(out)
 	return d
 }
 

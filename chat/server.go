@@ -334,32 +334,62 @@ func (s *browserServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// handleWebconvRename renames a web conversation and WAITS for teleclaude to
-// confirm the write landed, so the browser can refresh its list only after the
-// new title is durable. The old path was a fire-and-forget ws.send with no ack,
-// which let a fast page reload re-fetch /api/conversations before the rename
-// finished and show the stale title. Uses s.control.request (blocks for the
-// reply / times out) rather than s.control.send.
-func (s *browserServer) handleWebconvRename(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut || !s.authOK(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+// The web-conversation management verbs (rename / set work folder / delete)
+// WAIT for teleclaude to confirm the write landed, so the browser updates its
+// list only after the change is durable — and keeps the old state, showing the
+// error, when it failed. The old path was a fire-and-forget ws.send with no
+// ack plus a blind 400 ms refresh, which let the screen and the store disagree
+// when the save was slow or failed. Each uses s.control.request (blocks for
+// the reply / times out) rather than s.control.send. The reply body is
+// teleclaude's {"ok":bool,"error":string} passed through verbatim; a control
+// API failure or timeout is a 502.
+type webconvBody struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Path  string `json:"path"`
+}
+
+// buildWebconvControlIn maps an /api/webconv/<verb> request onto the control
+// message teleclaude handles. ok is false for an unknown verb or a missing id.
+func buildWebconvControlIn(verb string, body webconvBody) (controlIn, bool) {
+	if body.ID == "" {
+		return controlIn{}, false
 	}
-	var body struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
+	switch verb {
+	case "rename":
+		return controlIn{Type: "web_rename", ID: body.ID, Title: body.Title, Origin: "web"}, true
+	case "setdir":
+		return controlIn{Type: "web_setdir", ID: body.ID, Path: body.Path, Origin: "web"}, true
+	case "delete":
+		return controlIn{Type: "web_delete", ID: body.ID, Origin: "web"}, true
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
+	return controlIn{}, false
+}
+
+func (s *browserServer) webconvHandler(verb, method string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method || !s.authOK(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body webconvBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		m, ok := buildWebconvControlIn(verb, body)
+		if !ok {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		data, err := s.control.request(m)
+		if err != nil {
+			http.Error(w, "control API error", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write(data)
 	}
-	data, err := s.control.request(controlIn{Type: "web_rename", ID: body.ID, Title: body.Title, Origin: "web"})
-	if err != nil {
-		http.Error(w, "control API error", http.StatusBadGateway)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, _ = w.Write(data)
 }
 
 func (s *browserServer) handleChannelBackend(w http.ResponseWriter, r *http.Request) {
@@ -546,16 +576,7 @@ func (s *browserServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "control API error", http.StatusBadGateway)
 			return
 		}
-		var m struct {
-			OK    bool   `json:"ok"`
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(data, &m)
-		if m.OK {
-			w.WriteHeader(http.StatusNoContent)
-		} else {
-			http.Error(w, m.Error, http.StatusBadRequest)
-		}
+		writeConfigSaveReply(w, data)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -563,7 +584,7 @@ func (s *browserServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 // handleSettings proxies the structured settings schema/update to teleclaude via
 // the control API (get_settings / set_settings). GET returns the schema JSON;
-// PUT sends a JSON updates map and maps the {ok,error} reply to 204/400.
+// PUT sends a JSON updates map and maps the reply via writeConfigSaveReply.
 func (s *browserServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.authOK(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -586,19 +607,48 @@ func (s *browserServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "control API error", http.StatusBadGateway)
 			return
 		}
-		var m struct {
-			OK    bool   `json:"ok"`
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(data, &m)
-		if m.OK {
-			w.WriteHeader(http.StatusNoContent)
-		} else {
-			http.Error(w, m.Error, http.StatusBadRequest)
-		}
+		writeConfigSaveReply(w, data)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// writeConfigSaveReply maps a host set_config / set_settings reply onto the
+// HTTP response the web settings page reads:
+//
+//	204                    — saved and applied
+//	200 + text/plain msg   — saved, but the live apply failed (msg says so)
+//	400 + error text       — not saved
+//
+// The 200 body is a complete user-facing sentence, so a page that only special-
+// cases 204 still shows the apply error rather than a false "applied".
+func writeConfigSaveReply(w http.ResponseWriter, data []byte) {
+	var m struct {
+		OK         bool   `json:"ok"`
+		Error      string `json:"error"`
+		Applied    *bool  `json:"applied"`
+		ApplyError string `json:"applyError"`
+	}
+	_ = json.Unmarshal(data, &m)
+	switch {
+	case !m.OK:
+		http.Error(w, m.Error, http.StatusBadRequest)
+	case m.Applied != nil && !*m.Applied:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Aglink-Apply-Error", "1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(configApplyFailedMsg(m.ApplyError)))
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// configApplyFailedMsg is the "saved but not applied" sentence shown to users.
+func configApplyFailedMsg(applyErr string) string {
+	if applyErr == "" {
+		applyErr = "알 수 없는 오류"
+	}
+	return "파일에는 저장됐지만 적용하지 못했습니다: " + applyErr + " (이전 설정으로 동작 중 — 고친 뒤 다시 저장하거나 재시작하세요)"
 }
 
 // handleMCPServers proxies the user-defined MCP server registry to teleclaude
@@ -740,7 +790,9 @@ func (s *browserServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/workers", s.handleWorkers)
 	mux.HandleFunc("/api/history", s.handleHistory)
-	mux.HandleFunc("/api/webconv/rename", s.handleWebconvRename)
+	mux.HandleFunc("/api/webconv/rename", s.webconvHandler("rename", http.MethodPut))
+	mux.HandleFunc("/api/webconv/setdir", s.webconvHandler("setdir", http.MethodPut))
+	mux.HandleFunc("/api/webconv/delete", s.webconvHandler("delete", http.MethodPost))
 	mux.HandleFunc("/api/channel/backend", s.handleChannelBackend)
 	mux.HandleFunc("/api/playbooks", s.handlePlaybooks)
 	mux.HandleFunc("/api/playbooks/group", s.handlePlaybookGroup)

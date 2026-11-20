@@ -2920,22 +2920,23 @@ func (b *Bot) webNew(reply replySender, chatID int64, title string) {
 
 // webSetDir sets the working directory for a web conversation, validating the
 // path exists and is a directory first (never persist a non-existent WorkDir).
-func (b *Bot) webSetDir(reply replySender, chatID int64, id, path string) {
+func (b *Bot) webSetDir(reply replySender, chatID int64, id, path string) error {
 	c, ok := b.store.GetWebConv(id)
 	if !ok {
 		_ = reply.Send(chatID, "웹 대화를 찾을 수 없습니다.")
-		return
+		return fmt.Errorf("웹 대화를 찾을 수 없습니다")
 	}
 	if err := validateDir(path); err != nil {
 		_ = reply.Send(chatID, "⚠️ "+err.Error())
-		return
+		return err
 	}
 	c.WorkDir = path
 	if err := b.store.UpdateWebConv(c); err != nil {
 		_ = reply.Send(chatID, "⚠️ 설정 실패: "+err.Error())
-		return
+		return fmt.Errorf("설정 실패: %w", err)
 	}
 	_ = reply.Send(chatID, "📁 작업 폴더 설정: "+path)
+	return nil
 }
 
 // webRename renames a web conversation.
@@ -2961,10 +2962,13 @@ func (b *Bot) webRename(reply replySender, chatID int64, id, title string) error
 
 // webDelete removes a top-level web conversation. store.DeleteWebConv already
 // clears the active pointer when it referenced the deleted conversation.
-func (b *Bot) webDelete(reply replySender, chatID int64, id string) {
+//
+// Like webRename it returns the outcome so the control API can acknowledge it:
+// the browser only drops the row (and its unread badge) once this says ok.
+func (b *Bot) webDelete(reply replySender, chatID int64, id string) error {
 	if _, ok := b.store.GetWebConv(id); !ok {
 		_ = reply.Send(chatID, "웹 대화를 찾을 수 없습니다.")
-		return
+		return fmt.Errorf("웹 대화를 찾을 수 없습니다")
 	}
 	// Stop any in-flight turn on this lane before removing the record. A worker
 	// still streaming would otherwise emit a trailing frame after the store entry
@@ -2974,9 +2978,10 @@ func (b *Bot) webDelete(reply replySender, chatID int64, id string) {
 	b.cancelKey(laneKeyOf(WebTarget(id)))
 	if err := b.store.DeleteWebConv(id); err != nil {
 		_ = reply.Send(chatID, "⚠️ 삭제 실패: "+err.Error())
-		return
+		return fmt.Errorf("삭제 실패: %w", err)
 	}
 	_ = reply.Send(chatID, "🗑️ 대화가 삭제되었습니다.")
+	return nil
 }
 
 func (b *Bot) setChannelBackend(tgt Target, backend string) error {

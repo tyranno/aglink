@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"os"
@@ -474,18 +475,29 @@ func readMaskedConfig(cfgPath string, cfg *Config) ([]byte, error) {
 
 // writeValidatedConfig restores masked secrets in body, validates it, and — only
 // if valid — writes it to cfgPath (the fixed path; never client-supplied). A
-// non-nil error means nothing was written. Used by the control-API set_config
-// relay.
-func writeValidatedConfig(cfgPath string, cfg *Config, body []byte) error {
+// non-nil err means nothing was written (the file is replaced atomically, so a
+// failed write leaves the old one intact); applyErr is a live-apply failure
+// after a successful write. Used by the control-API set_config relay via
+// setConfigReply.
+func writeValidatedConfig(cfgPath string, cfg *Config, body []byte) (applyErr, err error) {
 	restored := restoreConfigSecrets(body, cfg)
 	if _, verr := unmarshalConfigYAML(restored); verr != nil {
-		return verr
+		return nil, verr
 	}
-	if err := os.WriteFile(cfgPath, restored, 0o600); err != nil {
-		return err
+	if err := writeFileAtomic(cfgPath, restored); err != nil {
+		return nil, err
 	}
 	// Same as the structured form: apply immediately so the editor's reload (and
 	// the running process) sees the edit without waiting on the watcher.
-	applyLiveConfig()
-	return nil
+	return applyLiveConfig(), nil
+}
+
+// setConfigReply runs writeValidatedConfig and builds the set_config control
+// reply in the same three-outcome shape as set_settings (see configSaveReply).
+func setConfigReply(cfgPath string, cfg *Config, body []byte) json.RawMessage {
+	applyErr, err := writeValidatedConfig(cfgPath, cfg, body)
+	if err != nil {
+		return settingsFail(err.Error())
+	}
+	return configSaveReply(applyErr)
 }

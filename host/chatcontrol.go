@@ -272,7 +272,11 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 	case "web_new":
 		go s.bot.webNew(s.bot.ReplyTo(AsWebTarget(tgt)), chatID, m.Title)
 	case "web_setdir":
-		go s.bot.webSetDir(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID, m.Path)
+		// Synchronous + acknowledged, like web_rename: the browser keeps the old
+		// folder on screen until this reply says ok, and shows the error (bad or
+		// missing path, save failure) otherwise. One os.Stat + one file save.
+		err := s.bot.webSetDir(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID, m.Path)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: mutateResult(err)})
 	case "web_rename":
 		// Synchronous + acknowledged: a rename must be durable before the client
 		// refreshes, or a fast page reload re-fetches /api/conversations while the
@@ -290,7 +294,11 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		}
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "web_delete":
-		go s.bot.webDelete(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID)
+		// Synchronous + acknowledged: the browser removes the row and its unread
+		// badge only after this reply says ok, so a slow or failed save can't
+		// leave the screen and the store disagreeing.
+		err := s.bot.webDelete(s.bot.ReplyTo(WebTarget(m.ID)), chatID, m.ID)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: mutateResult(err)})
 	case "set_channel_backend":
 		out := map[string]any{"ok": true}
 		if err := s.bot.setChannelBackend(tgt, m.Backend); err != nil {
@@ -321,13 +329,7 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		data, _ := json.Marshal(out)
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "set_config":
-		out := map[string]any{"ok": true}
-		if err := writeValidatedConfig(s.cfgPath, s.bot.cfg(), []byte(m.Body)); err != nil {
-			out["ok"] = false
-			out["error"] = err.Error()
-		}
-		data, _ := json.Marshal(out)
-		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: setConfigReply(s.cfgPath, s.bot.cfg(), []byte(m.Body))})
 	case "get_settings":
 		var manager *Manager
 		if s.bot != nil {

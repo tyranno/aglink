@@ -72,7 +72,7 @@ func TestReadMaskedAndWriteValidatedConfig(t *testing.T) {
 	}
 
 	// writeValidatedConfig rejects invalid YAML and leaves the file untouched.
-	if err := writeValidatedConfig(cfgPath, cfg, []byte("::: not yaml :::")); err == nil {
+	if _, err := writeValidatedConfig(cfgPath, cfg, []byte("::: not yaml :::")); err == nil {
 		t.Errorf("invalid YAML should return an error")
 	}
 	after, _ := os.ReadFile(cfgPath)
@@ -81,7 +81,7 @@ func TestReadMaskedAndWriteValidatedConfig(t *testing.T) {
 	}
 
 	// A valid edit (masked secret preserved) writes and round-trips.
-	if err := writeValidatedConfig(cfgPath, cfg, masked); err != nil {
+	if _, err := writeValidatedConfig(cfgPath, cfg, masked); err != nil {
 		t.Errorf("valid config should write, got %v", err)
 	}
 	back, _ := os.ReadFile(cfgPath)

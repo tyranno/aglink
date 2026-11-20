@@ -193,7 +193,7 @@ func normalizeMigratedConfig(dir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cfgPath, out, 0o600)
+	return writeFileAtomic(cfgPath, out)
 }
 
 // defaultConfigPath returns the standard config.txt location.
@@ -234,7 +234,7 @@ func LoadOrMigrate(dir string) (*Config, string, error) {
 		if merr != nil {
 			return nil, txtPath, merr
 		}
-		if werr := os.WriteFile(yamlPath, out, 0o600); werr != nil {
+		if werr := writeFileAtomic(yamlPath, out); werr != nil {
 			return nil, txtPath, werr
 		}
 		if rerr := os.Rename(txtPath, txtPath+".bak"); rerr != nil {

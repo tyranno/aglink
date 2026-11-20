@@ -109,9 +109,11 @@
   let settingsValues = $state({});
   let settingsOriginal = $state({});
   let settingsMsg = $state("");
+  let settingsMsgWarn = $state(false); // settingsMsg is a failure / "saved but not applied"
   let activeSettingsGroup = $state("");
   let configText = $state("");
   let configMsg = $state("");
+  let configMsgWarn = $state(false);
   let openMenuId = $state("");
   let showArchived = $state(false);
 
@@ -196,6 +198,7 @@
 
   async function loadSettingsSchema() {
     settingsMsg = "";
+    settingsMsgWarn = false;
     try {
       const data = parseJSON(await ControlService.GetSettings(), { sections: [] });
       settingsSchema = Array.isArray(data.sections) ? data.sections : [];
@@ -215,6 +218,7 @@
 
   async function loadRawConfig() {
     configMsg = "";
+    configMsgWarn = false;
     try {
       const data = parseJSON(await ControlService.GetConfig(), { config: "", error: "" });
       if (data.error) {
@@ -302,38 +306,64 @@
       if (String(value) !== String(settingsOriginal[key])) updates[key] = value;
     }
     if (Object.keys(updates).length === 0) {
+      settingsMsgWarn = false;
       settingsMsg = "변경된 항목이 없습니다.";
       return;
     }
     settingsMsg = "저장 중...";
+    settingsMsgWarn = false;
     try {
       const reply = parseJSON(
         await ControlService.SetSettings(JSON.stringify(updates)),
         { ok: false, error: "unknown error" },
       );
-      if (reply.ok) {
-        settingsMsg = "저장했습니다. 필요한 경우 서비스 재시작이 필요할 수 있습니다.";
+      if (reply.ok && reply.applied === false) {
+        // The file was replaced but the live apply failed: the running config is
+        // still the old one, so don't refetch (that would re-render the old
+        // values over the user's edits) — say exactly what happened instead.
+        settingsMsgWarn = true;
+        settingsMsg = applyFailedMsg(reply.applyError);
+      } else if (reply.ok) {
         // aglink applies a saved config before replying (host ConfigApplier), so
-        // both refetches read the new values — no debounce to wait out.
+        // both refetches read the new values — no debounce to wait out. Set the
+        // message after them: loadSettingsSchema clears it.
         await Promise.all([loadSettingsSchema(), loadVersionInfo()]);
+        settingsMsg = "저장하고 적용했습니다. 주소·기동 항목은 재시작해야 반영됩니다.";
       } else {
-        settingsMsg = `저장 실패: ${reply.error || "알 수 없는 오류"}`;
+        settingsMsgWarn = true;
+        settingsMsg = `저장 안 됨: ${reply.error || "알 수 없는 오류"}`;
       }
     } catch (error) {
-      settingsMsg = `저장 실패: ${error}`;
+      settingsMsgWarn = true;
+      settingsMsg = `저장 안 됨: ${error}`;
     }
+  }
+
+  // "Saved but not applied" (host configSaveReply: ok + applied:false).
+  function applyFailedMsg(applyError) {
+    return `파일에는 저장됐지만 적용하지 못했습니다: ${applyError || "알 수 없는 오류"} (이전 설정으로 동작 중 — 고친 뒤 다시 저장하거나 재시작하세요)`;
   }
 
   async function saveRawConfig() {
     configMsg = "저장 중...";
+    configMsgWarn = false;
     try {
       const reply = parseJSON(
         await ControlService.SetConfig(configText),
         { ok: false, error: "unknown error" },
       );
-      configMsg = reply.ok ? "raw config를 저장했습니다." : `저장 실패: ${reply.error || "알 수 없는 오류"}`;
+      if (reply.ok && reply.applied === false) {
+        configMsgWarn = true;
+        configMsg = applyFailedMsg(reply.applyError);
+      } else if (reply.ok) {
+        configMsg = "raw config를 저장하고 적용했습니다.";
+      } else {
+        configMsgWarn = true;
+        configMsg = `저장 안 됨: ${reply.error || "알 수 없는 오류"}`;
+      }
     } catch (error) {
-      configMsg = `저장 실패: ${error}`;
+      configMsgWarn = true;
+      configMsg = `저장 안 됨: ${error}`;
     }
   }
 
@@ -1075,7 +1105,7 @@
                     설정 저장
                   </button>
                   {#if settingsMsg}
-                    <span class="text-xs text-slate-500 dark:text-slate-400">{settingsMsg}</span>
+                    <span class="text-xs {settingsMsgWarn ? 'font-medium text-amber-700 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400'}" role={settingsMsgWarn ? "alert" : undefined}>{settingsMsg}</span>
                   {/if}
                 </div>
               </section>
@@ -1096,7 +1126,7 @@
                     raw 저장
                   </button>
                   {#if configMsg}
-                    <span class="text-xs text-slate-500 dark:text-slate-400">{configMsg}</span>
+                    <span class="text-xs {configMsgWarn ? 'font-medium text-amber-700 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400'}" role={configMsgWarn ? "alert" : undefined}>{configMsg}</span>
                   {/if}
                 </div>
               </section>

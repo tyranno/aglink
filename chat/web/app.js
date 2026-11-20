@@ -470,6 +470,54 @@
     }, false);
   }
 
+  // An app-styled message box (replaces window.alert). Resolves once dismissed.
+  function showNotice(title, message) {
+    return openDialog(title, (body, foot, finish) => {
+      const m = document.createElement("div");
+      m.className = "dialog-message";
+      m.textContent = message;
+      body.appendChild(m);
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.textContent = "확인";
+      ok.addEventListener("click", () => finish(undefined));
+      foot.append(ok);
+    }, undefined);
+  }
+
+  // Web-conversation management (rename / setdir / delete) is acknowledged:
+  // aglink-chat relays the request to teleclaude and answers with its
+  // {ok, error} once the store write has landed (or failed). Callers update the
+  // screen only on { ok: true }; anything else — an error reply, an HTTP error,
+  // a network failure or no answer within WEBCONV_TIMEOUT_MS — resolves
+  // { ok: false, error } and the screen is left as it was. The server gives up
+  // on teleclaude after 10 s, so the client timeout sits just past that.
+  const WEBCONV_TIMEOUT_MS = 12000;
+  async function webconvRequest(verb, method, body) {
+    const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = ctrl ? window.setTimeout(() => ctrl.abort(), WEBCONV_TIMEOUT_MS) : null;
+    try {
+      const resp = await fetch("/api/webconv/" + verb, {
+        method,
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+      if (!resp.ok) {
+        return { ok: false, error: resp.status === 502 ? "서버가 응답하지 않습니다 (" + resp.status + ")" : "요청 실패 (" + resp.status + ")" };
+      }
+      let j = null;
+      try { j = await resp.json(); } catch (e) { /* no body */ }
+      if (!j || j.ok !== true) return { ok: false, error: (j && j.error) || "알 수 없는 오류" };
+      return { ok: true };
+    } catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, error: "응답 시간이 초과되었습니다" };
+      return { ok: false, error: String((e && e.message) || e) };
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
+  }
+
   // A choice menu (replaces the "1/2/3 번호 입력" prompt). options:
   // [{ value, label, danger }]. Resolves the chosen value, or null on cancel.
   function askMenu(title, options) {
@@ -709,27 +757,29 @@
         if (title) {
           // Await the server's acknowledgment before refreshing, so a fast page
           // reload can't race ahead of the store write and show the old title.
-          // Replaces the old fire-and-forget ws.send + blind setTimeout(400).
-          try {
-            const resp = await fetch("/api/webconv/rename", {
-              method: "PUT",
-              headers: { ...authHeaders, "Content-Type": "application/json" },
-              body: JSON.stringify({ id: wc.id, title }),
-            });
-            if (!resp.ok) add("system", "이름 변경 실패: " + resp.status);
-          } catch (e) { add("system", "이름 변경 실패: " + e); }
+          const r = await webconvRequest("rename", "PUT", { id: wc.id, title });
+          if (!r.ok) await showNotice("이름 변경 실패", r.error);
           await loadConversations();
         }
       } else if (action === "workdir") {
         const path = await askText("작업 폴더 변경", "이 대화의 작업 폴더 경로", wc.workDir || "");
-        if (path) { ws.send(JSON.stringify({ type: "web_setdir", id: wc.id, path })); window.setTimeout(loadConversations, 400); }
+        if (path) {
+          // The folder shown in the list only changes once teleclaude has
+          // validated the path and saved it; a bad path keeps the old one.
+          const r = await webconvRequest("setdir", "PUT", { id: wc.id, path });
+          if (!r.ok) { await showNotice("작업 폴더 변경 실패", r.error); return; }
+          await loadConversations();
+        }
       } else if (action === "delete") {
         const ok = await askConfirm("대화 삭제", "이 대화를 삭제할까요? 되돌릴 수 없습니다.", { okLabel: "삭제", danger: true });
         if (ok) {
+          // Nothing on screen changes until the delete is confirmed: on failure
+          // or timeout the row, its open log and its unread badge all stay.
+          const r = await webconvRequest("delete", "POST", { id: wc.id });
+          if (!r.ok) { await showNotice("대화 삭제 실패", r.error); return; }
           if (currentTarget && currentTarget.kind === "web" && currentTarget.id === wc.id) { currentTarget = null; log.replaceChildren(); }
           unread.delete("web:" + wc.id); // no badge for a conversation that's gone
-          ws.send(JSON.stringify({ type: "web_delete", id: wc.id }));
-          window.setTimeout(loadConversations, 400);
+          await loadConversations();
         }
       }
     });
@@ -1565,6 +1615,8 @@
       // aglink hot-applies the save before replying, so the refetch below shows
       // the new values. Set the message after it — loadSettingsForm clears it.
       if (r.status === 204) { await loadSettingsForm(); if (settingsMsg) settingsMsg.textContent = "저장됨 — 핫리로드 적용 (주소·기동 항목은 재시작 필요)"; }
+      // 200 = saved to the file but the live apply failed; keep the edits on screen.
+      else if (r.status === 200) { const t = await r.text(); if (settingsMsg) settingsMsg.textContent = "주의: " + t; }
       else { const t = await r.text(); if (settingsMsg) settingsMsg.textContent = "실패: " + t; }
     } catch (e) { if (settingsMsg) settingsMsg.textContent = "오류: " + e; }
   }
@@ -1585,6 +1637,7 @@
     try {
       const resp = await fetch("/api/config", { method: "PUT", headers: authHeaders, body: configText.value });
       if (resp.status === 204) { if (configMsg) configMsg.textContent = "저장됨 — 핫리로드 적용"; }
+      else if (resp.status === 200) { const t = await resp.text(); if (configMsg) configMsg.textContent = "주의: " + t; }
       else { const t = await resp.text(); if (configMsg) configMsg.textContent = "실패: " + t; }
     } catch (e) { if (configMsg) configMsg.textContent = "오류: " + e; }
   }

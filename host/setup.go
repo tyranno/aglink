@@ -211,7 +211,7 @@ func RunTelegramSetup(cfgPath string) error {
 	if merr != nil {
 		return merr
 	}
-	if werr := os.WriteFile(cfgPath, out, 0o600); werr != nil {
+	if werr := writeFileAtomic(cfgPath, out); werr != nil {
 		return werr
 	}
 	fmt.Printf("\n✅ 텔레그램 연결 완료: 봇 @%s, 허용 ID %d\n", api.Self.UserName, userID)
@@ -495,7 +495,7 @@ func writeConfigFile(path string, o writeConfigOpts) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o600)
+	return writeFileAtomic(path, out)
 }
 
 // prompt prints a label and reads a trimmed line. Returns the read error on EOF.

@@ -323,27 +323,3 @@ func backupMemoryFile(path string, data []byte, now time.Time) error {
 	}
 	return nil
 }
-
-// writeFileAtomic writes data to a temp file beside path and renames it over
-// path, so a reader never sees a half-written file.
-func writeFileAtomic(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
-}

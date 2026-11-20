@@ -49,19 +49,19 @@ function destination(req, readPort) {
   }
 }
 
-// webDaemonExe finds this PC's aglink-web: the aglink product install, the
-// standalone aglink-web setup, or AGLINK_WEB_EXE.
-function webDaemonExe() {
+// daemonExe finds this PC's aglink-web or aglink-screen: the aglink product
+// install, the standalone setup, or AGLINK_WEB_EXE / AGLINK_SCREEN_EXE.
+function daemonExe(target) {
   const local = process.env.LOCALAPPDATA || "";
   const cands = [
-    process.env.AGLINK_WEB_EXE,
-    path.join(process.env.ProgramFiles || "C:\\Program Files", "aglink", "aglink-web.exe"),
-    local && path.join(local, "Programs", "aglink-web", "aglink-web.exe"),
+    process.env[target === "web" ? "AGLINK_WEB_EXE" : "AGLINK_SCREEN_EXE"],
+    path.join(process.env.ProgramFiles || "C:\\Program Files", "aglink", `aglink-${target}.exe`),
+    local && path.join(local, "Programs", `aglink-${target}`, `aglink-${target}.exe`),
   ];
   return cands.find((p) => p && fs.existsSync(p)) || "";
 }
 
-function webHealthy(port) {
+function healthy(port) {
   return new Promise((resolve) => {
     const r = http.get({ host: "127.0.0.1", port, path: "/health", timeout: 500 }, (res) => {
       res.resume();
@@ -72,32 +72,37 @@ function webHealthy(port) {
   });
 }
 
-// startWebDaemon brings up this PC's aglink-web daemon when a Remote-SSH
-// window asks for it. Locally an aglink-web MCP spawns the daemon on first
-// use, but a PC that only serves remote windows may never have run one since
-// boot. Concurrent requests share one attempt.
-let starting = null;
-function startWebDaemon(readPort) {
-  if (starting) return starting;
-  starting = (async () => {
-    const exe = webDaemonExe();
+// startDaemon brings up this PC's aglink-web or aglink-screen server when a
+// Remote-SSH window asks for it. Locally an aglink-web MCP spawns its daemon on
+// first use and nothing ever starts `aglink-screen serve`, so a PC that only
+// serves remote windows may have neither running. The screen server inherits
+// AGLINK_SCREEN_REMOTE_TOKEN (the token destination() sends) and is pinned to
+// loopback, since with a token it would otherwise listen on every interface.
+// Concurrent requests for one target share one attempt.
+const starting = {};
+function startDaemon(target, readPort) {
+  if (starting[target]) return starting[target];
+  starting[target] = (async () => {
+    const exe = daemonExe(target);
     if (!exe) return false;
     const { spawn } = require("child_process");
-    spawn(exe, ["serve"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    const args = target === "screen" ? ["serve", "--addr", "127.0.0.1:48220"] : ["serve"];
+    spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: true }).unref();
     for (let i = 0; i < 50; i++) {
       await new Promise((r) => setTimeout(r, 100));
-      if (await webHealthy(readPort())) return true;
+      if (await healthy(destination({ target }, readPort).port)) return true;
     }
     return false;
   })().finally(() => {
-    starting = null;
+    delete starting[target];
   });
-  return starting;
+  return starting[target];
 }
 
 async function relay(req, readPort) {
   let res = await relayOnce(req, readPort);
-  if (res.refused && req.target === "web" && (await startWebDaemon(readPort))) res = await relayOnce(req, readPort);
+  if (res.refused && (req.target === "web" || req.target === "screen") && (await startDaemon(req.target, readPort)))
+    res = await relayOnce(req, readPort);
   delete res.refused;
   return res;
 }

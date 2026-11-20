@@ -36,6 +36,6 @@ GOOS=linux GOARCH=arm64 go build ./...
 
 ### desktop
 
-`desktop/`은 워크스페이스에서 제외돼 있습니다. 저장소 밖의 로컬 wails/v3 체크아웃
-(`../../wails/v3`)에 의존하고, 프런트엔드를 먼저 빌드해야 하기 때문입니다.
-독립적으로 빌드하세요.
+`desktop/`은 워크스페이스에서 제외돼 있습니다. wails/v3 는 `desktop/go.mod` 에서
+업스트림 커밋(pseudo-version)으로 고정돼 있고, 프런트엔드와 바인딩을 먼저
+생성해야 하기 때문입니다. `GOWORK=off` 로 독립적으로 빌드하세요.

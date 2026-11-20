@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const app = readFileSync("web/app.js", "utf8");
+// Resolve relative to this file, not the cwd, so running from the repo root or
+// chat/ checks the same web/app.js.
+const app = readFileSync(fileURLToPath(new URL("./web/app.js", import.meta.url)), "utf8");
 
 function assert(condition, message) {
   if (!condition) {

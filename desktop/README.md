@@ -3,9 +3,11 @@
 Wails v3 desktop client for aglink. Talks to the host over the control API on
 `127.0.0.1:27270`.
 
-This module is **excluded from `go.work`** (see the comment there): it depends on a
-local `wails/v3` checkout outside this repo, so it is always built standalone with
-`GOWORK=off`.
+This module is **excluded from `go.work`** (see the comment there) and is always
+built standalone with `GOWORK=off`. `wails/v3` is pinned in `go.mod` to an upstream
+commit (pseudo-version). Use a `wails3` CLI of the same version, e.g.
+`go run github.com/wailsapp/wails/v3/cmd/wails3@<version from go.mod> ...`
+(`installer/build-installer.ps1` does this for binding generation).
 
 ## Build
 

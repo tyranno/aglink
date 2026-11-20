@@ -1,7 +1,7 @@
 go 1.25.5
 
-// desktop/ is excluded: it depends on a local wails/v3 checkout outside this repo
-// and is built standalone (see desktop/README).
+// desktop/ is excluded: it embeds a generated frontend/dist and pulls in the
+// wails/v3 dependency tree, so it is built standalone (see desktop/README).
 use (
 	./chat
 	./host

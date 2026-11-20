@@ -40,7 +40,12 @@ $env:GOWORK = "off"
 # shipped stale (plain go build never touches it).
 # Bindings are gitignored; stale ones make new Go methods silently missing in the UI.
 Push-Location (Join-Path $root "desktop")
-& wails3 generate bindings -clean=true 2>&1 | Out-Null
+# Run the wails3 CLI at exactly the version desktop\go.mod pins, not whatever
+# wails3 happens to be on PATH, so the bindings match the library.
+$wailsReq = Select-String -Path "go.mod" -Pattern '^\s*github.com/wailsapp/wails/v3\s+(\S+)' | Select-Object -First 1
+if (-not $wailsReq) { Pop-Location; throw "wails/v3 requirement not found in desktop\go.mod" }
+$wailsVer = $wailsReq.Matches[0].Groups[1].Value
+& go run "github.com/wailsapp/wails/v3/cmd/wails3@$wailsVer" generate bindings -clean=true 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "wails3 generate bindings failed" }
 Pop-Location
 Push-Location (Join-Path $root "desktop\frontend")

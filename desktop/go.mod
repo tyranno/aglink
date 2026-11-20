@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/coder/websocket v1.8.14
-	github.com/wailsapp/wails/v3 v3.0.0-dev
+	github.com/wailsapp/wails/v3 v3.0.0-alpha2.117.0.20260716003211-107e42c088b8
 	golang.org/x/sys v0.43.0
 )
 
@@ -16,5 +16,3 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 )
-
-replace github.com/wailsapp/wails/v3 => ../../wails/v3

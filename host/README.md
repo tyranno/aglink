@@ -45,42 +45,52 @@ $env:GOARCH="amd64"; .\scripts\deploy-linux.sh user@192.168.1.100
 
 **대상 머신에서 서비스 설치:**
 ```bash
-# 바이너리를 ~/aglink 로 복사한 후:
+# 바이너리를 ~/bin/aglink 로 복사한 후 (~/aglink 는 작업 홈이라 쓰면 안 됨):
 bash scripts/install-linux-service.sh
 
-# 또는 수동으로 설정 파일 먼저 작성:
-cp config.example.txt ~/.aglink/config.txt
-nano ~/.aglink/config.txt   # 토큰·user ID 편집
+# 또는 설정 마법사 대신 ~/.aglink/config.yaml 을 직접 작성한 뒤 (아래 "설정" 참고):
 bash scripts/install-linux-service.sh
 ```
 
 **Linux에서 직접 빌드:**
 ```bash
 git clone https://github.com/tyranno/aglink
-cd aglink
-go build -o aglink .
+cd aglink/host
+GOFLAGS=-mod=readonly go build -o aglink .
 ./aglink run                # 설정 마법사
 ```
 
 ---
 
-## 설정 (`~/.aglink/config.txt`)
+## 설정 (`~/.aglink/config.yaml`)
 
-```ini
+설정 파일은 데이터 디렉터리의 `config.yaml` 입니다 (Linux/macOS `~/.aglink/config.yaml`,
+Windows `%USERPROFILE%\.aglink\config.yaml`). 보통은 처음 실행 시 설정 마법사가 만들어 주고,
+웹 설정 화면에서 바꾼 값도 이 파일에 저장됩니다.
+
+```yaml
 # 필수
-TELEGRAM_BOT_TOKEN=123456789:AAH...
-ALLOWED_USER_IDS=123456789
+telegram:
+  bot_token: "123456789:AAH..."
+  allowed_user_ids: [123456789]
 
-# 모델 (기본값)
-MANAGER_MODEL=claude-haiku-4-5-20251001
-WORKER_MODEL=claude-sonnet-4-6
+# 모델 (manager 기본값: haiku, worker 는 비우면 claude 기본값)
+models:
+  manager: haiku
+  worker: sonnet
 
 # 선택
-TIMEOUT_MINUTES=10
-# CLAUDE_PATH=/usr/bin/claude
+runtime:
+  timeout_minutes: 10
+# claude:
+#   path: /usr/bin/claude
 ```
 
-전체 항목은 [`config.example.txt`](config.example.txt) 참조.
+> **구버전 형식:** 예전 `key=value` 형식의 `config.txt`([`config.example.txt`](config.example.txt))도
+> 읽기는 합니다. `config.yaml` 이 없고 `config.txt` 만 있으면 기동 시 자동으로 `config.yaml` 로
+> 변환하고 원본은 `config.txt.bak` 로 남깁니다. 새로 설정할 때는 `config.yaml` 을 쓰세요.
+> 구 `~/.teleclaude` 데이터는 `~/.aglink` 가 **없을 때만** 이전되므로, 업그레이드라면
+> `~/.aglink` 를 미리 만들지 마세요.
 
 처음 실행 시 설정 마법사가 자동으로 안내합니다 (`aglink run`):
 1. **봇 만들기 + 토큰** — [@BotFather](https://t.me/BotFather) 5단계 안내 + 즉시 검증
@@ -92,13 +102,21 @@ TIMEOUT_MINUTES=10
 ## 브라우저 채팅 UI (선택, 기본 꺼짐)
 
 텔레그램 없이(또는 텔레그램과 병행해) 브라우저에서도 같은 대화 상태로 채팅할 수 있습니다.
-별도 저장소인 [`aglink-chat`](https://github.com/tyranno/aglink-chat)이 실제 웹 서버 역할을
-하고, aglink는 로컬 전용 control API로만 붙습니다.
+웹 서버는 이 저장소의 [`chat/`](../chat) 모듈(`aglink-chat`)이고, aglink는 로컬 전용
+control API로만 붙습니다.
 
 ```
-88.MyProject/
-├── aglink/        ← 이 저장소
-└── aglink-chat/   ← 형제 디렉터리로 clone + go build
+aglink/
+├── host/   ← aglink 본체 (이 디렉터리)
+└── chat/   ← aglink-chat 웹 서버
+```
+
+`chat/` 을 빌드해 `aglink-chat` 바이너리를 aglink 바이너리와 **같은 폴더**에 두거나
+(설치 프로그램이 그렇게 배치합니다), PATH 에 두거나, `aglink_chat.binary_path` 로 경로를
+지정합니다:
+
+```bash
+cd chat && GOFLAGS=-mod=readonly go build -o ../host/aglink-chat .   # Windows: aglink-chat.exe
 ```
 
 `~/.aglink/config.yaml`에 추가 후 재시작:
@@ -108,6 +126,7 @@ chat_control:
   enabled: true
 aglink_chat:
   enabled: true
+  # binary_path: /path/to/aglink-chat   # 비우면 aglink 옆 → PATH 순으로 탐색
 ```
 
 재시작 로그에 뜨는 `http://127.0.0.1:27271/?token=...` 주소를 브라우저로 열면 됩니다

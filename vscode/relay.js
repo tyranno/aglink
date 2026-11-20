@@ -196,6 +196,18 @@ function relayOnce(req, readPort) {
   });
 }
 
+// atLeast reports whether version a >= b (dotted numbers).
+function atLeast(a, b) {
+  const pa = String(a).split(".").map(Number);
+  const pb = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+
 // remoteBridgeVersion reports the aglink-bridge running on the remote extension
 // host, or "" when none shows up. The bridge activates on "*" but may still be
 // starting, so wait a little for its command. 0.1.0 answers without a version.
@@ -227,12 +239,14 @@ async function ensureBridge(vscode, extensionPath, log, state) {
     want = JSON.parse(fs.readFileSync(path.join(extensionPath, "bridge-version.json"), "utf8")).version;
   } catch (e) {}
   const have = vscode.extensions.getExtension(BRIDGE_ID);
-  if (have && (!want || have.packageJSON.version === want)) return;
+  if (have && (!want || atLeast(have.packageJSON.version, want))) return;
   // A UI-side extension host cannot see an extension living on the remote
   // one, so getExtension is no proof of absence. Commands do cross hosts: ask
   // the running bridge itself, and only fall back to what was remembered.
   const running = await remoteBridgeVersion(vscode);
-  if (running && (!want || running === want)) return;
+  // Never downgrade: another PC with an older aglink-vscode shares this server's
+  // extensions, and replacing its newer bridge would flip it back and forth.
+  if (running && (!want || atLeast(running, want))) return;
   const key = `aglink.bridge.${vscode.env.remoteName}`;
   if (!running && state && want && state.get(key) === want) return;
   log(`installing aglink-bridge ${want} on ${vscode.env.remoteName} (had ${running || (have ? have.packageJSON.version : "none")})`);
@@ -250,4 +264,4 @@ async function ensureBridge(vscode, extensionPath, log, state) {
   if (pick) await vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
-module.exports = { relay, destination, ensureBridge, startDaemon, healthy };
+module.exports = { relay, destination, ensureBridge, startDaemon, healthy, atLeast };

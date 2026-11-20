@@ -143,3 +143,11 @@ test("401 from the PC server explains the token mismatch and keeps the server", 
   assert.strictEqual(body(res).detail, '{"error":"nope"}');
   assert.strictEqual(d.spawned.length, 0);
 });
+
+test("bridge versions compare numerically, so a newer bridge is never downgraded", () => {
+  const { atLeast } = require("../relay");
+  assert.ok(atLeast("0.2.0", "0.1.0"));
+  assert.ok(atLeast("0.10.0", "0.9.1"));
+  assert.ok(atLeast("0.2.0", "0.2.0"));
+  assert.ok(!atLeast("0.1.0", "0.2.0"));
+});

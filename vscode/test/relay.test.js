@@ -17,6 +17,7 @@ function fakeDeps({ exe = "C:\\aglink\\aglink-screen.exe", upAfter = 2, child, r
     polls: 0,
     relayCalls: 0,
     daemonExe: () => exe,
+    screenToken: () => "relay-tok",
     spawn: (e, args, opts) => {
       d.spawned.push({ exe: e, args, opts });
       if (child) return child(e, args, opts);
@@ -31,14 +32,58 @@ function fakeDeps({ exe = "C:\\aglink\\aglink-screen.exe", upAfter = 2, child, r
   return d;
 }
 
-test("screen daemon is started on loopback, detached, inheriting the environment", async () => {
+test("screen daemon is started on loopback, detached, token required, with the relay's token", async () => {
+  process.env.AGLINK_RELAY_TEST_MARK = "kept";
   const d = fakeDeps();
   assert.deepStrictEqual(await startDaemon("screen", readPort, d), { ok: true });
   assert.strictEqual(d.spawned.length, 1);
   const s = d.spawned[0];
-  assert.deepStrictEqual(s.args, ["serve", "--addr", "127.0.0.1:48220"]);
+  assert.deepStrictEqual(s.args, ["serve", "--addr", "127.0.0.1:48220", "--require-token"]);
   assert.strictEqual(s.opts.detached, true);
-  assert.strictEqual(s.opts.env, undefined, "env must be inherited (AGLINK_SCREEN_REMOTE_TOKEN)");
+  assert.strictEqual(s.opts.env.AGLINK_SCREEN_REMOTE_TOKEN, "relay-tok");
+  assert.strictEqual(s.opts.env.AGLINK_RELAY_TEST_MARK, "kept", "the rest of the environment is inherited");
+  delete process.env.AGLINK_RELAY_TEST_MARK;
+});
+
+test("web readiness follows the port file as the daemon rewrites it", async () => {
+  let port = 48221; // a stale port file
+  const d = fakeDeps({ exe: "C:\aglink\aglink-web.exe" });
+  const checked = [];
+  d.healthy = async (p) => {
+    checked.push(p);
+    if (checked.length === 2) port = 48219; // the daemon bound and rewrote the file
+    return p === 48219;
+  };
+  const r = await startDaemon("web", () => port, d);
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(checked.slice(0, 2), [48221, 48221]);
+  assert.strictEqual(checked[checked.length - 1], 48219);
+  assert.strictEqual(d.spawned[0].opts.env, undefined, "web inherits the environment as is");
+});
+
+test("screenToken prefers VS Code's AGLINK_SCREEN_REMOTE_TOKEN, else keeps one relay token on disk", () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { screenToken } = require("../relay");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "aglink-relay-"));
+  const saved = { home: process.env.AGLINK_HOME, tok: process.env.AGLINK_SCREEN_REMOTE_TOKEN };
+  try {
+    process.env.AGLINK_HOME = home;
+    delete process.env.AGLINK_SCREEN_REMOTE_TOKEN;
+    const a = screenToken();
+    assert.match(a, /^[0-9a-f]{48}$/);
+    assert.strictEqual(screenToken(), a, "the same token every time");
+    assert.strictEqual(fs.readFileSync(path.join(home, "aglink-screen-relay.token"), "utf8"), a);
+    process.env.AGLINK_SCREEN_REMOTE_TOKEN = " pc-token ";
+    assert.strictEqual(screenToken(), "pc-token");
+  } finally {
+    if (saved.home === undefined) delete process.env.AGLINK_HOME;
+    else process.env.AGLINK_HOME = saved.home;
+    if (saved.tok === undefined) delete process.env.AGLINK_SCREEN_REMOTE_TOKEN;
+    else process.env.AGLINK_SCREEN_REMOTE_TOKEN = saved.tok;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("web daemon gets plain serve", async () => {

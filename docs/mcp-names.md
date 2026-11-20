@@ -81,6 +81,19 @@ claude mcp add --scope user -e SSH_CONNECTION="127.0.0.1 0 127.0.0.1 22" aglink-
   VS Code 환경의 `AGLINK_SCREEN_REMOTE_TOKEN`)을 붙인다. 원격 토큰은 원격이 PC 의
   48220 에 **직접** 붙는 경우(같은 망, `SSH_CONNECTION` 이 실제 PC IP)에만 필요하다.
 
+#### 브리지를 올릴 때의 순서
+
+브리지 0.2 부터는 `AGLINK_BRIDGE_TOKEN` 없는 요청을 401 로 막는다. 서버의 확장과
+`~/bin` 은 그 계정으로 붙는 **모든 PC 가 같이 쓰므로**, 순서를 지키지 않으면 창이
+끊기거나 구버전 PC 가 브리지를 되돌린다.
+
+1. **서버의 MCP 바이너리**(`~/bin/aglink-web`, `~/bin/aglink-screen`)를 먼저 새것으로.
+   새 바이너리는 브리지 0.1(토큰 없음)에서도 동작한다.
+2. **그 서버에 붙는 모든 PC 의 aglink-vscode** 를 새것으로. 다운그레이드 방지는
+   aglink-vscode 0.4.4 부터라, 구버전 PC 는 자기 번들(브리지 0.1)을 다시 깐다.
+3. 그다음 각 원격 창을 **다시 불러오기** — 브리지 설치 안내가 뜨면 한 번 더.
+   떠 있던 Claude Code 세션도 새로 열어야 새 포트·토큰을 물려받는다.
+
 ## 이름을 바꿀 때
 
 MCP 이름을 바꾸면 도구 이름이 바뀐다. 권한 허용 목록(`~/.claude/settings.json`

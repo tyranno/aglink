@@ -256,7 +256,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-screen-task.
   위험이 크다. `AGLINK_SCREEN_REMOTE_TOKEN`을 설정하면
   `Authorization: Bearer <토큰>`을 요구하고, 없으면 기동할 때 경고만 찍고 연다
   (loopback 전용이라 여기 닿는다는 건 이미 이 머신 또는 그 터널에 접근권이
-  있다는 뜻이다).
+  있다는 뜻이다). 토큰이 있어도 loopback 요청은 기본적으로 면제된다.
+  `serve --require-token` 이면 loopback 도 토큰을 내야 한다 — aglink-vscode 의
+  relay 가 Remote-SSH 창 때문에 띄우는 서버는 이렇게 뜬다(토큰은 VS Code 의
+  `AGLINK_SCREEN_REMOTE_TOKEN`, 없으면 `~/.aglink/aglink-screen-relay.token`).
 
 ## 빌드
 

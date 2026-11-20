@@ -62,8 +62,9 @@ Section "Install"
     ; aglink-screen / aglink-web servers started from this folder (by the host, or
     ; on demand by aglink-vscode's relay for Remote-SSH windows) hold their exe
     ; open, so the File step below could not replace them. Only copies running
-    ; from $INSTDIR are stopped: a developer build elsewhere is left alone.
-    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Process -Name 'aglink-screen','aglink-web' -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force"`
+    ; from $INSTDIR itself are stopped (the exe's folder compared exactly, so a
+    ; sibling like aglink-dev is not matched): a build elsewhere is left alone.
+    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath('$INSTDIR').TrimEnd('\'); Get-Process -Name 'aglink-screen','aglink-web' -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and ([IO.Path]::GetDirectoryName($$_.Path).TrimEnd('\') -ieq $$d) } | Stop-Process -Force"`
     Sleep 1200
 
     ; --- Files (all binaries flattened into one dir; aglink resolves helpers as siblings) ---

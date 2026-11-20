@@ -66,7 +66,7 @@ func postMCP(t *testing.T, srvURL string, req map[string]any) map[string]any {
 // rather than a stand-in.
 func serveTestMCP(t *testing.T, token string, watch *idleWatch) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(newRemoteMux(token, watch))
+	srv := httptest.NewServer(newRemoteMux(token, false, watch))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -121,7 +121,7 @@ func TestRemoteMCPListsEveryScreenTool(t *testing.T) {
 // than no gate at all. Loopback peers are exempt (already on this machine), so
 // RemoteAddr is set directly to exercise the network path without real sockets.
 func TestRemoteMCPTokenGate(t *testing.T) {
-	mux := newRemoteMux("s3cret", nil)
+	mux := newRemoteMux("s3cret", false, nil)
 
 	call := func(remoteAddr, bearer string) int {
 		req := httptest.NewRequest(http.MethodPost, "/mcp",
@@ -145,6 +145,18 @@ func TestRemoteMCPTokenGate(t *testing.T) {
 	// Loopback is exempt even with a token set.
 	if code := call("127.0.0.1:40000", ""); code == http.StatusUnauthorized {
 		t.Fatalf("loopback peer should be exempt, got 401")
+	}
+
+	// --require-token: loopback must carry the token too.
+	mux = newRemoteMux("s3cret", true, nil)
+	if code := call("127.0.0.1:40000", ""); code != http.StatusUnauthorized {
+		t.Fatalf("require-token, loopback without token: got %d, want 401", code)
+	}
+	if code := call("127.0.0.1:40000", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("require-token, loopback wrong token: got %d, want 401", code)
+	}
+	if code := call("127.0.0.1:40000", "s3cret"); code == http.StatusUnauthorized {
+		t.Fatalf("require-token, loopback with token: got 401")
 	}
 }
 

@@ -29,17 +29,40 @@ function webToken() {
   }
 }
 
+// screenToken is the token the relay sends to this PC's aglink-screen server:
+// the PC's own AGLINK_SCREEN_REMOTE_TOKEN when VS Code has one, else a
+// relay-only token kept in ~/.aglink/aglink-screen-relay.token (made on first
+// use). A server the relay starts gets the same token and --require-token, so
+// it answers nothing on this PC that does not carry it — loopback included.
+function screenToken() {
+  const env = (process.env.AGLINK_SCREEN_REMOTE_TOKEN || "").trim();
+  if (env) return env;
+  const f = path.join(aglinkDir(), "aglink-screen-relay.token");
+  try {
+    const t = fs.readFileSync(f, "utf8").trim();
+    if (t) return t;
+  } catch (e) {}
+  const t = require("crypto").randomBytes(24).toString("hex");
+  try {
+    fs.mkdirSync(aglinkDir(), { recursive: true });
+    fs.writeFileSync(f, t, { mode: 0o600, flag: "wx" }); // a concurrent writer wins: read theirs
+  } catch (e) {
+    try {
+      return fs.readFileSync(f, "utf8").trim() || t;
+    } catch (e2) {}
+  }
+  return t;
+}
+
 // destination maps a relay request to a loopback port and the headers to add.
-function destination(req, readPort) {
+function destination(req, readPort, tokenFor = screenToken) {
   switch (req.target) {
     case "web": {
       const tok = webToken();
       return { port: readPort(), auth: tok ? "Bearer " + tok : "" };
     }
-    case "screen": {
-      const tok = (process.env.AGLINK_SCREEN_REMOTE_TOKEN || "").trim();
-      return { port: 48220, auth: tok ? "Bearer " + tok : "" };
-    }
+    case "screen":
+      return { port: 48220, auth: "Bearer " + tokenFor() };
     case "voice": // the Stop hook: this extension's voice on 48231, the desktop app on 48230
       if (String(req.path).startsWith("/vscode/")) return { port: 48230, auth: "" };
       // the voice extension demands this token whenever it is set on the PC
@@ -81,6 +104,7 @@ const deps = {
   spawn: (exe, args, opts) => require("child_process").spawn(exe, args, opts),
   daemonExe,
   healthy,
+  screenToken,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   relayOnce: (req, readPort) => relayOnce(req, readPort),
 };
@@ -88,9 +112,11 @@ const deps = {
 // startDaemon brings up this PC's aglink-web or aglink-screen server when a
 // Remote-SSH window asks for it. Locally an aglink-web MCP spawns its daemon on
 // first use and nothing ever starts `aglink-screen serve`, so a PC that only
-// serves remote windows may have neither running. The screen server inherits
-// AGLINK_SCREEN_REMOTE_TOKEN (the token destination() sends) and is pinned to
-// loopback, since with a token it would otherwise listen on every interface.
+// serves remote windows may have neither running. The screen server gets the
+// token destination() sends (screenToken) with --require-token, and is pinned
+// to loopback, since with a token it would otherwise listen on every interface.
+// aglink-web may move to another port as it starts (its port file), so its
+// readiness is checked on the port read afresh each time.
 // Concurrent requests for one target share one attempt. Resolves to
 // { ok: true } or { ok: false, reason } — never throws, and a child that fails
 // to spawn or exits at once is reported instead of waited out.
@@ -105,12 +131,16 @@ function startDaemon(target, readPort, d = deps) {
         ok: false,
         reason: `${name}.exe not found (looked in AGLINK_${target.toUpperCase()}_EXE, Program Files\\aglink, %LOCALAPPDATA%\\Programs\\${name})`,
       };
-    const port = destination({ target }, readPort).port;
-    const args = target === "screen" ? ["serve", "--addr", `127.0.0.1:${port}`] : ["serve"];
+    const portNow = () => (target === "web" ? readPort() : 48220);
+    const port = portNow();
+    const screen = target === "screen";
+    const args = screen ? ["serve", "--addr", `127.0.0.1:${port}`, "--require-token"] : ["serve"];
+    const opts = { detached: true, stdio: "ignore", windowsHide: true };
+    if (screen) opts.env = { ...process.env, AGLINK_SCREEN_REMOTE_TOKEN: d.screenToken() };
     let died = "";
     let child;
     try {
-      child = d.spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: true });
+      child = d.spawn(exe, args, opts);
     } catch (e) {
       return { ok: false, reason: `could not start ${exe}: ${e.message}` };
     }
@@ -124,10 +154,10 @@ function startDaemon(target, readPort, d = deps) {
     if (child.unref) child.unref();
     for (let i = 0; i < 50; i++) {
       await d.sleep(100);
-      if (await d.healthy(port)) return { ok: true };
+      if (await d.healthy(portNow())) return { ok: true };
       if (died) return { ok: false, reason: died };
     }
-    return { ok: false, reason: `${name} started but 127.0.0.1:${port}/health did not answer "ok" within 5s` };
+    return { ok: false, reason: `${name} started but 127.0.0.1:${portNow()}/health did not answer "ok" within 5s` };
   })().finally(() => {
     delete starting[target];
   });
@@ -145,7 +175,7 @@ function errorResult(msg, extra) {
 const TOKEN_HINT = {
   web: "the token in ~/.aglink/aglink-web.token is not the one the running aglink-web serve was started with — restart aglink-web serve",
   screen:
-    "AGLINK_SCREEN_REMOTE_TOKEN in VS Code's environment is not the one the running aglink-screen serve was started with — restart that server, or restart VS Code after changing the token",
+    "the running aglink-screen serve was started with another token (AGLINK_SCREEN_REMOTE_TOKEN, or ~/.aglink/aglink-screen-relay.token when VS Code has none) — restart that server, or restart VS Code after changing the token",
 };
 
 async function relay(req, readPort, d = deps) {
@@ -264,4 +294,4 @@ async function ensureBridge(vscode, extensionPath, log, state) {
   if (pick) await vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
-module.exports = { relay, destination, ensureBridge, startDaemon, healthy, atLeast };
+module.exports = { relay, destination, ensureBridge, startDaemon, healthy, atLeast, screenToken };

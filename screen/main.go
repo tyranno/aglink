@@ -15,7 +15,7 @@ import (
 //	aglink-screen           — MCP stdio server (default; teleclaude points its
 //	                          worker's --mcp-config at this binary)
 //	aglink-screen mcp       — same, explicit
-//	aglink-screen serve [--addr host:port] — same tools over MCP streamable HTTP
+//	aglink-screen serve [--addr host:port] [--require-token] — same tools over MCP streamable HTTP
 //	                          at /mcp, for sessions that cannot spawn a process
 //	                          here (remote VS Code over an SSH reverse tunnel)
 //	aglink-screen cmd <sub> [args...] [--presets <path>] — fast-path, no LLM;
@@ -33,13 +33,13 @@ func main() {
 			log.Fatal(err)
 		}
 	case "serve":
-		if err := RunScreenRemote(parseAddr(args[1:])); err != nil {
+		if err := RunScreenRemote(parseAddr(args[1:]), hasFlag(args[1:], "--require-token")); err != nil {
 			log.Fatal(err)
 		}
 	case "cmd":
 		runCmd(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: aglink-screen [mcp | serve [--addr host:port] | cmd <subcommand> [args...] [--presets <path>]]")
+		fmt.Fprintln(os.Stderr, "usage: aglink-screen [mcp | serve [--addr host:port] [--require-token] | cmd <subcommand> [args...] [--presets <path>]]")
 		os.Exit(2)
 	}
 }
@@ -54,6 +54,16 @@ func parseAddr(args []string) string {
 		}
 	}
 	return ""
+}
+
+// hasFlag reports whether flag is among the serve args.
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // cmdResult is the JSON shape printed to stdout by `aglink-screen cmd`.

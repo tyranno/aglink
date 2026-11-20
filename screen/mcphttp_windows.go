@@ -98,9 +98,16 @@ func (w *idleWatch) fire() {
 // authorized reports whether the request may drive the screen. With no token
 // configured every request passes — the listener is loopback-only, so reaching
 // it already means shell access to this machine (or its SSH tunnel).
-func authorized(r *http.Request, token string) bool {
+// requireToken (serve --require-token, how aglink-vscode's relay starts it)
+// takes the loopback exemption away too: the relay sends the token, so
+// nothing else on this PC drives the screen through that server without it.
+func authorized(r *http.Request, token string, requireToken bool) bool {
 	if token == "" {
 		return true
+	}
+	if requireToken {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(got)), []byte(token)) == 1
 	}
 	// Loopback peers are already on this machine — anything local can reach the
 	// port regardless — so they pass without a token; only network peers (the
@@ -125,9 +132,9 @@ func screenRemoteIsLoopback(remoteAddr string) bool {
 }
 
 // remoteHandler wraps the MCP handler with the token gate and the idle poke.
-func remoteHandler(inner http.Handler, token string, watch *idleWatch) http.Handler {
+func remoteHandler(inner http.Handler, token string, requireToken bool, watch *idleWatch) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(r, token) {
+		if !authorized(r, token, requireToken) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="aglink-screen"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -146,13 +153,13 @@ func remoteHandler(inner http.Handler, token string, watch *idleWatch) http.Hand
 // Stateless, like aglink-web's /mcp: a dropped tunnel strands no server-side
 // session, so the remote client reconnects and keeps working instead of hanging
 // on a session id this process no longer has.
-func newRemoteMux(token string, watch *idleWatch) http.Handler {
+func newRemoteMux(token string, requireToken bool, watch *idleWatch) http.Handler {
 	mcpHTTP := server.NewStreamableHTTPServer(
 		newScreenMCPServer(),
 		server.WithStateLess(true),
 	)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", remoteHandler(mcpHTTP, token, watch))
+	mux.Handle("/mcp", remoteHandler(mcpHTTP, token, requireToken, watch))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -160,8 +167,11 @@ func newRemoteMux(token string, watch *idleWatch) http.Handler {
 }
 
 // RunScreenRemote serves the screen tools over MCP streamable HTTP at /mcp.
-func RunScreenRemote(addr string) error {
+func RunScreenRemote(addr string, requireToken bool) error {
 	token := remoteToken()
+	if requireToken && token == "" {
+		return fmt.Errorf("--require-token needs AGLINK_SCREEN_REMOTE_TOKEN set")
+	}
 	if strings.TrimSpace(addr) == "" {
 		// With a token set, serve the network interfaces (0.0.0.0) so a remote
 		// worker on another PC can reach this PC's screen server directly,
@@ -173,7 +183,7 @@ func RunScreenRemote(addr string) error {
 			addr = defaultRemoteAddr
 		}
 	}
-	mux := newRemoteMux(token, newIdleWatch(resolveRemoteIdle()))
+	mux := newRemoteMux(token, requireToken, newIdleWatch(resolveRemoteIdle()))
 
 	fmt.Fprintf(os.Stderr, "aglink-screen: serving MCP at http://%s/mcp\n", addr)
 	if token == "" {

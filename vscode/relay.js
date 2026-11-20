@@ -61,16 +61,29 @@ function daemonExe(target) {
   return cands.find((p) => p && fs.existsSync(p)) || "";
 }
 
+// healthy reports whether an aglink server answers on port: /health must say
+// "ok", so some other program that happens to hold the port does not pass.
 function healthy(port) {
   return new Promise((resolve) => {
     const r = http.get({ host: "127.0.0.1", port, path: "/health", timeout: 500 }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => (body += c));
+      res.on("end", () => resolve(res.statusCode === 200 && body.trim() === "ok"));
     });
     r.on("error", () => resolve(false));
     r.on("timeout", () => r.destroy());
   });
 }
+
+// deps are the side effects relay() and startDaemon() use, swappable in tests.
+const deps = {
+  spawn: (exe, args, opts) => require("child_process").spawn(exe, args, opts),
+  daemonExe,
+  healthy,
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  relayOnce: (req, readPort) => relayOnce(req, readPort),
+};
 
 // startDaemon brings up this PC's aglink-web or aglink-screen server when a
 // Remote-SSH window asks for it. Locally an aglink-web MCP spawns its daemon on
@@ -78,33 +91,83 @@ function healthy(port) {
 // serves remote windows may have neither running. The screen server inherits
 // AGLINK_SCREEN_REMOTE_TOKEN (the token destination() sends) and is pinned to
 // loopback, since with a token it would otherwise listen on every interface.
-// Concurrent requests for one target share one attempt.
+// Concurrent requests for one target share one attempt. Resolves to
+// { ok: true } or { ok: false, reason } — never throws, and a child that fails
+// to spawn or exits at once is reported instead of waited out.
 const starting = {};
-function startDaemon(target, readPort) {
+function startDaemon(target, readPort, d = deps) {
   if (starting[target]) return starting[target];
   starting[target] = (async () => {
-    const exe = daemonExe(target);
-    if (!exe) return false;
-    const { spawn } = require("child_process");
-    const args = target === "screen" ? ["serve", "--addr", "127.0.0.1:48220"] : ["serve"];
-    spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: true }).unref();
-    for (let i = 0; i < 50; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-      if (await healthy(destination({ target }, readPort).port)) return true;
+    const exe = d.daemonExe(target);
+    const name = `aglink-${target}`;
+    if (!exe)
+      return {
+        ok: false,
+        reason: `${name}.exe not found (looked in AGLINK_${target.toUpperCase()}_EXE, Program Files\\aglink, %LOCALAPPDATA%\\Programs\\${name})`,
+      };
+    const port = destination({ target }, readPort).port;
+    const args = target === "screen" ? ["serve", "--addr", `127.0.0.1:${port}`] : ["serve"];
+    let died = "";
+    let child;
+    try {
+      child = d.spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: true });
+    } catch (e) {
+      return { ok: false, reason: `could not start ${exe}: ${e.message}` };
     }
-    return false;
+    child.on("error", (e) => (died = died || `could not start ${exe}: ${e.message}`));
+    child.on("exit", (code, signal) => {
+      died =
+        died ||
+        `${name} ${args.join(" ")} exited right away (${code !== null && code !== undefined ? `code ${code}` : signal})` +
+          ` — is 127.0.0.1:${port} held by another program?`;
+    });
+    if (child.unref) child.unref();
+    for (let i = 0; i < 50; i++) {
+      await d.sleep(100);
+      if (await d.healthy(port)) return { ok: true };
+      if (died) return { ok: false, reason: died };
+    }
+    return { ok: false, reason: `${name} started but 127.0.0.1:${port}/health did not answer "ok" within 5s` };
   })().finally(() => {
     delete starting[target];
   });
   return starting[target];
 }
 
-async function relay(req, readPort) {
-  let res = await relayOnce(req, readPort);
-  if (res.refused && (req.target === "web" || req.target === "screen") && (await startDaemon(req.target, readPort)))
-    res = await relayOnce(req, readPort);
-  delete res.refused;
-  return res;
+function errorResult(msg, extra) {
+  return {
+    status: 502,
+    contentType: "application/json",
+    body: Buffer.from(JSON.stringify({ error: `aglink relay: ${msg}`, ...extra })).toString("base64"),
+  };
+}
+
+const TOKEN_HINT = {
+  web: "the token in ~/.aglink/aglink-web.token is not the one the running aglink-web serve was started with — restart aglink-web serve",
+  screen:
+    "AGLINK_SCREEN_REMOTE_TOKEN in VS Code's environment is not the one the running aglink-screen serve was started with — restart that server, or restart VS Code after changing the token",
+};
+
+async function relay(req, readPort, d = deps) {
+  const managed = req.target === "web" || req.target === "screen";
+  let res = await d.relayOnce(req, readPort);
+  if (res.refused && managed) {
+    const st = await startDaemon(req.target, readPort, d);
+    res = st.ok
+      ? await d.relayOnce(req, readPort)
+      : errorResult(`${req.target} is not running on this PC and could not be started: ${st.reason}`);
+  }
+  if (res.status === 401 && managed) {
+    // The PC's server refused the token this relay added. Say which one; the
+    // running server is left alone, it may belong to someone else.
+    let detail = "";
+    try {
+      detail = Buffer.from(res.body || "", "base64").toString("utf8");
+    } catch (e) {}
+    res = { ...errorResult(`this PC's aglink-${req.target} refused the relay's token (401): ${TOKEN_HINT[req.target]}`, { detail }), status: 401 };
+  }
+  const { refused, ...out } = res; // eslint-disable-line no-unused-vars
+  return out;
 }
 
 function relayOnce(req, readPort) {
@@ -187,4 +250,4 @@ async function ensureBridge(vscode, extensionPath, log, state) {
   if (pick) await vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
-module.exports = { relay, destination, ensureBridge };
+module.exports = { relay, destination, ensureBridge, startDaemon, healthy };

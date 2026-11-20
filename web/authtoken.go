@@ -96,8 +96,14 @@ func requireToken(h http.Handler) http.Handler {
 	})
 }
 
-// addTokenHeader is what local callers use to pass the token along.
+// addTokenHeader is what local callers use to pass the token along. Under the
+// VS Code bridge it is the bridge's per-window token instead: the bridge checks
+// that one, and the relay on the PC adds the PC's own token.
 func addTokenHeader(req *http.Request) {
+	if t := bridgeToken(); t != "" {
+		req.Header.Set("Authorization", "Bearer "+t)
+		return
+	}
 	if t := accessToken(); t != "" {
 		req.Header.Set("Authorization", "Bearer "+t)
 	}

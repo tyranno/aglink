@@ -10,15 +10,31 @@
 //
 // The ports reach Claude Code through the environment: process.env for the
 // Claude Code extension (spawned later from this same extension host) and the
-// terminal environment collection for `claude` run in a terminal. On the server
-// ~/.claude.json reads them as ${AGLINK_WEB_PORT:-48219} and so on, and the
-// Stop hook reads AGLINK_VOICE_PORT.
+// terminal environment collection for `claude` run in a terminal. The aglink-web
+// / aglink-screen MCP clients and the voice Stop hook read AGLINK_*_PORT from
+// the environment they inherit; ~/.claude.json does not name the ports.
+//
+// Every listener is loopback, but the server may be shared, so loopback is not
+// proof of who is calling: each window also makes a random AGLINK_BRIDGE_TOKEN,
+// exported next to the ports, and a request without it is refused before it
+// reaches the PC. The clients send it as "Authorization: Bearer <token>".
 "use strict";
 
+const crypto = require("crypto");
 const http = require("http");
 
 const TARGETS = { web: "AGLINK_WEB_PORT", screen: "AGLINK_SCREEN_PORT", voice: "AGLINK_VOICE_PORT" };
+const TOKEN_ENV = "AGLINK_BRIDGE_TOKEN";
 const MAX_BODY = 64 << 20;
+
+// authorized reports whether req carries this window's bridge token.
+function authorized(req, token) {
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers["authorization"] || "");
+  if (!m) return false;
+  const got = Buffer.from(m[1].trim());
+  const want = Buffer.from(token);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
 
 let servers = [];
 
@@ -31,6 +47,7 @@ const HOOK_SCRIPT = `// ${HOOK_MARK}: hands Claude Code's finished turn to the a
 // a Remote-SSH VS Code window AGLINK_VOICE_PORT is that window's bridge, which
 // carries the turn to the PC the window is shown on.
 const bridge = Number(process.env.AGLINK_VOICE_PORT) || 0;
+const auth = bridge && process.env.AGLINK_BRIDGE_TOKEN ? { Authorization: "Bearer " + process.env.AGLINK_BRIDGE_TOKEN } : {};
 const targets = bridge ? [[bridge, "/stop"], [bridge, "/vscode/stop"]] : [[48231, "/stop"], [48230, "/vscode/stop"]];
 let d = "";
 let left = targets.length;
@@ -40,7 +57,7 @@ process.stdin.on("data", (c) => (d += c)).on("end", () => {
   try { const h = JSON.parse(d); h.entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT || ""; d = JSON.stringify(h); } catch {}
   for (const [port, path] of targets) {
     const r = require("http").request(
-      { host: "127.0.0.1", port, path, method: "POST", headers: { "Content-Type": "application/json" }, timeout: 1500 },
+      { host: "127.0.0.1", port, path, method: "POST", headers: { "Content-Type": "application/json", ...auth }, timeout: 1500 },
       (res) => { res.resume(); res.on("end", () => --left || done()); }
     );
     r.on("error", () => --left || done());
@@ -89,9 +106,19 @@ function ensureStopHook(log) {
   log(`voice Stop hook added to ${sp}`);
 }
 
-function serve(vscode, target, log) {
+function serve(vscode, target, token, log) {
   return new Promise((resolve, reject) => {
     const srv = http.createServer((req, res) => {
+      if (!authorized(req, token)) {
+        req.resume();
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: `aglink-bridge: ${TOKEN_ENV} missing or wrong — the caller must run under this VS Code window (Claude Code started from it) and be aglink-web / aglink-screen 0.2+`,
+          })
+        );
+        return;
+      }
       const chunks = [];
       let size = 0;
       req.on("data", (c) => {
@@ -127,10 +154,13 @@ async function activate(context) {
   const out = vscode.window.createOutputChannel("aglink bridge");
   const log = (s) => out.appendLine(`[${new Date().toISOString()}] ${s}`);
   const env = context.environmentVariableCollection;
-  env.persistent = false; // ports are per window and die with it
+  env.persistent = false; // ports and token are per window and die with it
+  const token = crypto.randomBytes(24).toString("hex");
+  process.env[TOKEN_ENV] = token;
+  env.replace(TOKEN_ENV, token);
   for (const [target, name] of Object.entries(TARGETS)) {
     try {
-      const srv = await serve(vscode, target, log);
+      const srv = await serve(vscode, target, token, log);
       servers.push(srv);
       const port = String(srv.address().port);
       process.env[name] = port;
@@ -147,9 +177,11 @@ async function activate(context) {
   }
   context.subscriptions.push(
     out,
-    vscode.commands.registerCommand("aglink.bridge.ports", () =>
-      Object.fromEntries(Object.entries(TARGETS).map(([t, n]) => [t, Number(process.env[n]) || 0]))
-    ),
+    // relay.js reads `version` to decide whether this bridge needs replacing.
+    vscode.commands.registerCommand("aglink.bridge.ports", () => ({
+      ...Object.fromEntries(Object.entries(TARGETS).map(([t, n]) => [t, Number(process.env[n]) || 0])),
+      version: context.extension && context.extension.packageJSON ? context.extension.packageJSON.version : "",
+    })),
     { dispose: deactivate }
   );
 }
@@ -159,4 +191,4 @@ function deactivate() {
   servers = [];
 }
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, authorized, serve };

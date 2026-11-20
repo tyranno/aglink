@@ -24,8 +24,13 @@ func daemonHostFrom(sshConnection string) string {
 }
 
 // daemonHost reads the live SSH_CONNECTION of this process (inherited from the
-// Claude worker that spawned this stdio bridge).
+// Claude worker that spawned this stdio bridge). Under the VS Code bridge the
+// daemon is always this server's loopback, whatever SSH_CONNECTION says (a
+// terminal in the window carries the real client IP).
 func daemonHost() string {
+	if bridgeToken() != "" {
+		return "127.0.0.1"
+	}
 	return daemonHostFrom(os.Getenv("SSH_CONNECTION"))
 }
 

@@ -53,6 +53,34 @@ claude mcp add --transport http --scope user aglink-screen-remote http://127.0.0
 claude mcp add --transport http --scope user aglink-web           http://127.0.0.1:48221/mcp
 ```
 
+### VS Code Remote-SSH 브리지 경로 (창마다 자기 PC)
+
+터널 대신 VS Code 창을 통로로 쓰면, 같은 서버에 여러 PC 가 붙어 있어도 각 창의
+Claude 가 **그 창을 띄운 PC** 를 움직인다. aglink-vscode 가 원격에 aglink-bridge
+를 깔고, 브리지는 창마다 루프백 임의 포트와 비밀값을 만들어 환경변수로 넘긴다:
+
+| 환경변수 | 누가 만드나 | 쓰는 쪽 |
+|---|---|---|
+| `AGLINK_WEB_PORT` / `AGLINK_SCREEN_PORT` / `AGLINK_VOICE_PORT` | 브리지 (창마다) | aglink-web·aglink-screen MCP, 음성 Stop 훅 |
+| `AGLINK_BRIDGE_TOKEN` | 브리지 (창마다 무작위) | 같은 것들이 `Authorization: Bearer` 로 보냄. 없으면 브리지가 401 |
+
+원격 등록은 stdio 로 하고, 클라이언트 IP 를 루프백으로 고정한다:
+
+```sh
+claude mcp add --scope user -e SSH_CONNECTION="127.0.0.1 0 127.0.0.1 22" aglink-web-remote    -- ~/bin/aglink-web mcp
+claude mcp add --scope user -e SSH_CONNECTION="127.0.0.1 0 127.0.0.1 22" aglink-screen-remote -- ~/bin/aglink-screen mcp
+```
+
+- 포트는 등록에 적지 않는다 — Claude Code 가 창에서 물려받은 환경에서 읽는다.
+- `SSH_CONNECTION` 이 루프백이거나 `AGLINK_BRIDGE_TOKEN` 이 있으면 **포트가 꼭
+  있어야 한다.** 없으면 48219/48220 이나 포트 파일로 넘어가지 않고 오류로 끝난다
+  (그 포트는 다른 PC 의 역터널일 수 있다). 터널을 쓰려면 등록에
+  `-e AGLINK_WEB_PORT=48219` 처럼 포트를 직접 적는다.
+- **원격 등록에 `AGLINK_SCREEN_REMOTE_TOKEN` 을 넣지 않는다.** 브리지 경로에서는
+  쓰이지 않는다 — PC 쪽 relay 가 PC 자신의 토큰(`~/.aglink/aglink-web.token`,
+  VS Code 환경의 `AGLINK_SCREEN_REMOTE_TOKEN`)을 붙인다. 원격 토큰은 원격이 PC 의
+  48220 에 **직접** 붙는 경우(같은 망, `SSH_CONNECTION` 이 실제 PC IP)에만 필요하다.
+
 ## 이름을 바꿀 때
 
 MCP 이름을 바꾸면 도구 이름이 바뀐다. 권한 허용 목록(`~/.claude/settings.json`

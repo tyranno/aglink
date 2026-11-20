@@ -1,0 +1,145 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert");
+const { EventEmitter } = require("events");
+const { relay, startDaemon } = require("../relay");
+
+const readPort = () => 48219;
+const body = (res) => JSON.parse(Buffer.from(res.body, "base64").toString("utf8"));
+const ok200 = { status: 200, contentType: "application/json", body: Buffer.from("{}").toString("base64") };
+const refused = { status: 502, contentType: "application/json", body: Buffer.from('{"error":"x"}').toString("base64"), refused: true };
+
+// fakeDeps: a child that never exits; healthy after `upAfter` polls.
+function fakeDeps({ exe = "C:\\aglink\\aglink-screen.exe", upAfter = 2, child, relayResults = [] } = {}) {
+  const d = {
+    spawned: [],
+    polls: 0,
+    relayCalls: 0,
+    daemonExe: () => exe,
+    spawn: (e, args, opts) => {
+      d.spawned.push({ exe: e, args, opts });
+      if (child) return child(e, args, opts);
+      const c = new EventEmitter();
+      c.unref = () => {};
+      return c;
+    },
+    healthy: async () => ++d.polls >= upAfter,
+    sleep: async () => {},
+    relayOnce: async () => relayResults[Math.min(d.relayCalls++, relayResults.length - 1)],
+  };
+  return d;
+}
+
+test("screen daemon is started on loopback, detached, inheriting the environment", async () => {
+  const d = fakeDeps();
+  assert.deepStrictEqual(await startDaemon("screen", readPort, d), { ok: true });
+  assert.strictEqual(d.spawned.length, 1);
+  const s = d.spawned[0];
+  assert.deepStrictEqual(s.args, ["serve", "--addr", "127.0.0.1:48220"]);
+  assert.strictEqual(s.opts.detached, true);
+  assert.strictEqual(s.opts.env, undefined, "env must be inherited (AGLINK_SCREEN_REMOTE_TOKEN)");
+});
+
+test("web daemon gets plain serve", async () => {
+  const d = fakeDeps({ exe: "C:\\aglink\\aglink-web.exe" });
+  await startDaemon("web", readPort, d);
+  assert.deepStrictEqual(d.spawned[0].args, ["serve"]);
+});
+
+test("concurrent requests share one start", async () => {
+  const d = fakeDeps({ upAfter: 3 });
+  const [a, b] = await Promise.all([startDaemon("screen", readPort, d), startDaemon("screen", readPort, d)]);
+  assert.ok(a.ok && b.ok);
+  assert.strictEqual(d.spawned.length, 1);
+});
+
+test("missing exe is reported, not thrown", async () => {
+  const r = await startDaemon("screen", readPort, fakeDeps({ exe: "" }));
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /aglink-screen\.exe not found/);
+  assert.match(r.reason, /Programs\\aglink-screen/);
+});
+
+test("spawn error event does not throw and is reported", async () => {
+  const d = fakeDeps({
+    upAfter: Infinity,
+    child: () => {
+      const c = new EventEmitter();
+      c.unref = () => {};
+      setImmediate(() => c.emit("error", new Error("EACCES")));
+      return c;
+    },
+  });
+  d.sleep = () => new Promise((r) => setImmediate(r));
+  const r = await startDaemon("screen", readPort, d);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /could not start .*EACCES/);
+});
+
+test("synchronous spawn throw is reported", async () => {
+  const d = fakeDeps({
+    child: () => {
+      throw new Error("bad exe format");
+    },
+  });
+  const r = await startDaemon("screen", readPort, d);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /bad exe format/);
+});
+
+test("early exit names the port", async () => {
+  const d = fakeDeps({
+    upAfter: Infinity,
+    child: () => {
+      const c = new EventEmitter();
+      c.unref = () => {};
+      setImmediate(() => c.emit("exit", 1, null));
+      return c;
+    },
+  });
+  d.sleep = () => new Promise((r) => setImmediate(r));
+  const r = await startDaemon("screen", readPort, d);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /exited right away \(code 1\).*127\.0\.0\.1:48220/);
+});
+
+test("relay starts the daemon on refusal and retries exactly once", async () => {
+  const d = fakeDeps({ relayResults: [refused, ok200] });
+  const res = await relay({ target: "screen", path: "/mcp" }, readPort, d);
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.refused, undefined);
+  assert.strictEqual(d.relayCalls, 2);
+  assert.strictEqual(d.spawned.length, 1);
+});
+
+test("relay does not loop when the retry is refused again", async () => {
+  const d = fakeDeps({ relayResults: [refused, refused, ok200] });
+  const res = await relay({ target: "screen", path: "/mcp" }, readPort, d);
+  assert.strictEqual(res.status, 502);
+  assert.strictEqual(d.relayCalls, 2);
+});
+
+test("relay reports a failed start instead of retrying", async () => {
+  const d = fakeDeps({ exe: "", relayResults: [refused, ok200] });
+  const res = await relay({ target: "screen", path: "/mcp" }, readPort, d);
+  assert.strictEqual(res.status, 502);
+  assert.strictEqual(d.relayCalls, 1);
+  assert.match(body(res).error, /could not be started: aglink-screen\.exe not found/);
+});
+
+test("voice is never auto-started", async () => {
+  const d = fakeDeps({ relayResults: [refused] });
+  const res = await relay({ target: "voice", path: "/stop" }, readPort, d);
+  assert.strictEqual(res.status, 502);
+  assert.strictEqual(d.spawned.length, 0);
+});
+
+test("401 from the PC server explains the token mismatch and keeps the server", async () => {
+  const d = fakeDeps({ relayResults: [{ status: 401, contentType: "application/json", body: Buffer.from('{"error":"nope"}').toString("base64") }] });
+  const res = await relay({ target: "web", path: "/call" }, readPort, d);
+  assert.strictEqual(res.status, 401);
+  assert.match(body(res).error, /aglink-web\.token/);
+  assert.strictEqual(body(res).detail, '{"error":"nope"}');
+  assert.strictEqual(d.spawned.length, 0);
+});

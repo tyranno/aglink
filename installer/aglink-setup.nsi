@@ -67,7 +67,10 @@ Section "Install"
     ; The folder goes in through the environment, not the script text, so a
     ; path with a quote in it (C:\Users\O'Brien\...) cannot break the command.
     System::Call 'Kernel32::SetEnvironmentVariable(t "AGLINK_SETUP_DIR", t "$INSTDIR")i'
-    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath($$env:AGLINK_SETUP_DIR).TrimEnd('\'); Get-Process -Name 'aglink-screen','aglink-web' -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and ([IO.Path]::GetDirectoryName($$_.Path).TrimEnd('\') -ieq $$d) } | Stop-Process -Force"`
+    ; Looked up through CIM: this installer is 32-bit, so its powershell is too,
+    ; and a 32-bit Get-Process cannot read a 64-bit process's path (it came back
+    ; empty, nothing matched, and the File step below left both exes old).
+    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath($$env:AGLINK_SETUP_DIR).TrimEnd('\'); Get-CimInstance Win32_Process | Where-Object { ($$_.Name -eq 'aglink-screen.exe' -or $$_.Name -eq 'aglink-web.exe') -and $$_.ExecutablePath -and ([IO.Path]::GetDirectoryName($$_.ExecutablePath).TrimEnd('\') -ieq $$d) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`
     Sleep 1200
 
     ; --- Files (all binaries flattened into one dir; aglink resolves helpers as siblings) ---

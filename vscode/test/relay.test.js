@@ -18,6 +18,7 @@ function fakeDeps({ exe = "C:\\aglink\\aglink-screen.exe", upAfter = 2, child, r
     relayCalls: 0,
     daemonExe: () => exe,
     screenToken: () => "relay-tok",
+    screenFeatures: () => ["require-token"],
     spawn: (e, args, opts) => {
       d.spawned.push({ exe: e, args, opts });
       if (child) return child(e, args, opts);
@@ -195,4 +196,78 @@ test("bridge versions compare numerically, so a newer bridge is never downgraded
   assert.ok(atLeast("0.10.0", "0.9.1"));
   assert.ok(atLeast("0.2.0", "0.2.0"));
   assert.ok(!atLeast("0.1.0", "0.2.0"));
+});
+
+test("an aglink-screen.exe that cannot require a token is not started", async () => {
+  for (const feats of [null, [], ["something-else"]]) {
+    const d = fakeDeps();
+    d.screenFeatures = () => feats;
+    const r = await startDaemon("screen", readPort, d);
+    assert.strictEqual(r.ok, false);
+    assert.match(r.reason, /too old to require a token.*update aglink/);
+    assert.strictEqual(d.spawned.length, 0);
+  }
+});
+
+test("a screen token that cannot be kept stops the start with its cause", async () => {
+  const d = fakeDeps();
+  d.screenToken = () => {
+    throw new Error("cannot keep the relay's screen token in X: EACCES");
+  };
+  const r = await startDaemon("screen", readPort, d);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /EACCES/);
+  assert.strictEqual(d.spawned.length, 0);
+});
+
+test("relay turns a thrown destination error into a 502", async () => {
+  const d = fakeDeps();
+  d.relayOnce = async () => {
+    throw new Error("cannot keep the relay's screen token in X: EROFS");
+  };
+  const res = await relay({ target: "screen", path: "/mcp" }, readPort, d);
+  assert.strictEqual(res.status, 502);
+  assert.match(body(res).error, /EROFS/);
+});
+
+function withHome(fn) {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "aglink-relay-"));
+  const saved = { home: process.env.AGLINK_HOME, tok: process.env.AGLINK_SCREEN_REMOTE_TOKEN };
+  process.env.AGLINK_HOME = home;
+  delete process.env.AGLINK_SCREEN_REMOTE_TOKEN;
+  try {
+    return fn(home, path.join(home, "aglink-screen-relay.token"), fs);
+  } finally {
+    if (saved.home === undefined) delete process.env.AGLINK_HOME;
+    else process.env.AGLINK_HOME = saved.home;
+    if (saved.tok !== undefined) process.env.AGLINK_SCREEN_REMOTE_TOKEN = saved.tok;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test("an empty or broken token file is replaced once, and every call then agrees", () => {
+  const { screenToken } = require("../relay");
+  for (const junk of ["", "   \n", "short"]) {
+    withHome((home, f, fs) => {
+      fs.writeFileSync(f, junk);
+      const a = screenToken();
+      assert.match(a, /^[0-9a-f]{48}$/);
+      assert.strictEqual(screenToken(), a);
+      assert.strictEqual(screenToken(), a);
+      assert.strictEqual(fs.readFileSync(f, "utf8"), a);
+      assert.deepStrictEqual(fs.readdirSync(home).filter((n) => n.endsWith(".tmp")), [], "no temporary file left");
+    });
+  }
+});
+
+test("a token that cannot be written is an error, not a fresh value per call", () => {
+  const { screenToken } = require("../relay");
+  withHome((home, f, fs) => {
+    fs.mkdirSync(f); // the token path is a folder: it can be neither read nor written
+    assert.throws(() => screenToken(), /aglink-screen-relay\.token/);
+    assert.throws(() => screenToken(), /aglink-screen-relay\.token/);
+  });
 });

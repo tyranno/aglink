@@ -38,8 +38,16 @@ func main() {
 		}
 	case "cmd":
 		runCmd(args[1:])
+	case "features":
+		// What this build supports, one per line, for callers that must not
+		// rely on a flag an older aglink-screen would silently ignore
+		// (aglink-vscode's relay checks for require-token before it starts
+		// `serve --require-token`). An older build prints usage and exits 2.
+		for _, f := range screenFeatures {
+			fmt.Println(f)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: aglink-screen [mcp | serve [--addr host:port] [--require-token] | cmd <subcommand> [args...] [--presets <path>]]")
+		fmt.Fprintln(os.Stderr, "usage: aglink-screen [mcp | serve [--addr host:port] [--require-token] | features | cmd <subcommand> [args...] [--presets <path>]]")
 		os.Exit(2)
 	}
 }
@@ -55,6 +63,9 @@ func parseAddr(args []string) string {
 	}
 	return ""
 }
+
+// screenFeatures is what `aglink-screen features` lists.
+var screenFeatures = []string{"require-token"}
 
 // hasFlag reports whether flag is among the serve args.
 func hasFlag(args []string, flag string) bool {

@@ -64,7 +64,10 @@ Section "Install"
     ; open, so the File step below could not replace them. Only copies running
     ; from $INSTDIR itself are stopped (the exe's folder compared exactly, so a
     ; sibling like aglink-dev is not matched): a build elsewhere is left alone.
-    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath('$INSTDIR').TrimEnd('\'); Get-Process -Name 'aglink-screen','aglink-web' -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and ([IO.Path]::GetDirectoryName($$_.Path).TrimEnd('\') -ieq $$d) } | Stop-Process -Force"`
+    ; The folder goes in through the environment, not the script text, so a
+    ; path with a quote in it (C:\Users\O'Brien\...) cannot break the command.
+    System::Call 'Kernel32::SetEnvironmentVariable(t "AGLINK_SETUP_DIR", t "$INSTDIR")i'
+    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath($$env:AGLINK_SETUP_DIR).TrimEnd('\'); Get-Process -Name 'aglink-screen','aglink-web' -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and ([IO.Path]::GetDirectoryName($$_.Path).TrimEnd('\') -ieq $$d) } | Stop-Process -Force"`
     Sleep 1200
 
     ; --- Files (all binaries flattened into one dir; aglink resolves helpers as siblings) ---

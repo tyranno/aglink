@@ -259,7 +259,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-screen-task.
   있다는 뜻이다). 토큰이 있어도 loopback 요청은 기본적으로 면제된다.
   `serve --require-token` 이면 loopback 도 토큰을 내야 한다 — aglink-vscode 의
   relay 가 Remote-SSH 창 때문에 띄우는 서버는 이렇게 뜬다(토큰은 VS Code 의
-  `AGLINK_SCREEN_REMOTE_TOKEN`, 없으면 `~/.aglink/aglink-screen-relay.token`).
+  `AGLINK_SCREEN_REMOTE_TOKEN`, 없으면 `~/.aglink/aglink-screen-relay.token`). relay 는 띄우기 전에
+  `aglink-screen features` 에 `require-token` 이 있는지 보고, 없는 구버전은 이 플래그를
+  무시한 채 토큰 없이 열리므로 아예 띄우지 않는다(업데이트하라는 오류).
 
 ## 빌드
 

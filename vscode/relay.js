@@ -34,24 +34,58 @@ function webToken() {
 // relay-only token kept in ~/.aglink/aglink-screen-relay.token (made on first
 // use). A server the relay starts gets the same token and --require-token, so
 // it answers nothing on this PC that does not carry it — loopback included.
+//
+// Every window's extension host may get here at once, so the file only ever
+// appears whole: a token is written to a temporary file and then hard-linked
+// into place (creating it only if absent) or, over an empty or broken one,
+// renamed onto it; what is on disk afterwards is what is returned, so every
+// caller agrees. Throws, with the cause, when the token cannot be kept.
+const TOKEN_RE = /^[0-9A-Za-z._~+/=-]{16,}$/;
 function screenToken() {
   const env = (process.env.AGLINK_SCREEN_REMOTE_TOKEN || "").trim();
   if (env) return env;
-  const f = path.join(aglinkDir(), "aglink-screen-relay.token");
-  try {
-    const t = fs.readFileSync(f, "utf8").trim();
-    if (t) return t;
-  } catch (e) {}
-  const t = require("crypto").randomBytes(24).toString("hex");
-  try {
-    fs.mkdirSync(aglinkDir(), { recursive: true });
-    fs.writeFileSync(f, t, { mode: 0o600, flag: "wx" }); // a concurrent writer wins: read theirs
-  } catch (e) {
+  const dir = aglinkDir();
+  const f = path.join(dir, "aglink-screen-relay.token");
+  const read = () => {
     try {
-      return fs.readFileSync(f, "utf8").trim() || t;
-    } catch (e2) {}
+      const t = fs.readFileSync(f, "utf8").trim();
+      return TOKEN_RE.test(t) ? t : "";
+    } catch (e) {
+      if (e.code === "ENOENT") return "";
+      throw new Error(`cannot read ${f}: ${e.message}`);
+    }
+  };
+  let t = read();
+  if (t) return t;
+  const tmp = `${f}.${process.pid}.${require("crypto").randomBytes(4).toString("hex")}.tmp`;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(tmp, require("crypto").randomBytes(24).toString("hex"), { mode: 0o600 });
+    try {
+      fs.linkSync(tmp, f); // only if absent: the first window's token wins
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      if (!read()) fs.renameSync(tmp, f); // there, but empty or broken: replace it whole
+    }
+  } catch (e) {
+    throw new Error(`cannot keep the relay's screen token in ${f}: ${e.message}`);
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch (e) {}
   }
+  t = read();
+  if (!t) throw new Error(`cannot keep the relay's screen token in ${f}: it reads back empty`);
   return t;
+}
+
+// screenFeatures lists what an aglink-screen.exe supports (`features`), or
+// null for a build too old to have the command — one that would ignore
+// --require-token and serve loopback without a token.
+function screenFeatures(exe) {
+  const r = require("child_process").spawnSync(exe, ["features"], { encoding: "utf8", timeout: 5000, windowsHide: true });
+  if (r.error || r.status !== 0) return null;
+  return String(r.stdout || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
 // destination maps a relay request to a loopback port and the headers to add.
@@ -105,6 +139,7 @@ const deps = {
   daemonExe,
   healthy,
   screenToken,
+  screenFeatures,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   relayOnce: (req, readPort) => relayOnce(req, readPort),
 };
@@ -136,7 +171,21 @@ function startDaemon(target, readPort, d = deps) {
     const screen = target === "screen";
     const args = screen ? ["serve", "--addr", `127.0.0.1:${port}`, "--require-token"] : ["serve"];
     const opts = { detached: true, stdio: "ignore", windowsHide: true };
-    if (screen) opts.env = { ...process.env, AGLINK_SCREEN_REMOTE_TOKEN: d.screenToken() };
+    if (screen) {
+      // An older build would ignore --require-token and come up fine, serving
+      // loopback without a token; it is not started at all.
+      const feats = d.screenFeatures(exe);
+      if (!feats || !feats.includes("require-token"))
+        return {
+          ok: false,
+          reason: `${exe} is too old to require a token on loopback, so it was not started — update aglink on this PC (aglink-Setup.exe) or the standalone aglink-screen setup`,
+        };
+      try {
+        opts.env = { ...process.env, AGLINK_SCREEN_REMOTE_TOKEN: d.screenToken() };
+      } catch (e) {
+        return { ok: false, reason: e.message };
+      }
+    }
     let died = "";
     let child;
     try {
@@ -180,11 +229,16 @@ const TOKEN_HINT = {
 
 async function relay(req, readPort, d = deps) {
   const managed = req.target === "web" || req.target === "screen";
-  let res = await d.relayOnce(req, readPort);
+  let res;
+  try {
+    res = await d.relayOnce(req, readPort);
+  } catch (e) {
+    return errorResult(e.message); // e.g. the screen token could not be kept
+  }
   if (res.refused && managed) {
     const st = await startDaemon(req.target, readPort, d);
     res = st.ok
-      ? await d.relayOnce(req, readPort)
+      ? await d.relayOnce(req, readPort).catch((e) => errorResult(e.message))
       : errorResult(`${req.target} is not running on this PC and could not be started: ${st.reason}`);
   }
   if (res.status === 401 && managed) {
@@ -294,4 +348,4 @@ async function ensureBridge(vscode, extensionPath, log, state) {
   if (pick) await vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
-module.exports = { relay, destination, ensureBridge, startDaemon, healthy, atLeast, screenToken };
+module.exports = { relay, destination, ensureBridge, startDaemon, healthy, atLeast, screenToken, screenFeatures };

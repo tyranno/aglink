@@ -35,12 +35,71 @@ function webToken() {
 // use). A server the relay starts gets the same token and --require-token, so
 // it answers nothing on this PC that does not carry it — loopback included.
 //
-// Every window's extension host may get here at once, so the file only ever
-// appears whole: a token is written to a temporary file and then hard-linked
-// into place (creating it only if absent) or, over an empty or broken one,
-// renamed onto it; what is on disk afterwards is what is returned, so every
-// caller agrees. Throws, with the cause, when the token cannot be kept.
+// Every window's extension host may get here at once. Making or repairing
+// the file happens under a lock shared by all of them (a lock folder, which
+// only one can create), and the file is checked again once the lock is held,
+// so a token another window has just written is taken, never overwritten.
+// The token is written to a temporary file and renamed into place, so the
+// file only ever appears whole to a reader outside the lock. Throws, with the
+// cause, when the token cannot be kept.
 const TOKEN_RE = /^[0-9A-Za-z._~+/=-]{16,}$/;
+const LOCK_WAIT_MS = 5000;
+const LOCK_STALE_MS = 15000; // a lock this old was left by a crashed window
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Windows refuses for a moment to rename over a file another process has
+// open, or to create a folder another process is removing: EPERM / EACCES /
+// EBUSY there mean "try again shortly", not "not allowed".
+const TRANSIENT = new Set(["EPERM", "EACCES", "EBUSY"]);
+function retrying(fn, ms = 2000) {
+  const until = Date.now() + ms;
+  for (;;) {
+    try {
+      return fn();
+    } catch (e) {
+      if (!TRANSIENT.has(e.code) || Date.now() > until) throw e;
+      sleepSync(10 + Math.floor(Math.random() * 20));
+    }
+  }
+}
+
+// withLock runs fn holding the lock folder lock, taking over one left stale.
+function withLock(lock, fn) {
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      fs.mkdirSync(lock);
+      break;
+    } catch (e) {
+      if (TRANSIENT.has(e.code) && Date.now() <= until) {
+        sleepSync(20); // the folder is being removed by the window that held it
+        continue;
+      }
+      if (e.code !== "EEXIST") throw e;
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
+          fs.rmdirSync(lock);
+          continue;
+        }
+      } catch (e2) {
+        continue; // released meanwhile
+      }
+      if (Date.now() > until) throw new Error(`another window holds ${lock}`);
+      sleepSync(20);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      retrying(() => fs.rmdirSync(lock));
+    } catch (e) {}
+  }
+}
+
 function screenToken() {
   const env = (process.env.AGLINK_SCREEN_REMOTE_TOKEN || "").trim();
   if (env) return env;
@@ -48,7 +107,7 @@ function screenToken() {
   const f = path.join(dir, "aglink-screen-relay.token");
   const read = () => {
     try {
-      const t = fs.readFileSync(f, "utf8").trim();
+      const t = retrying(() => fs.readFileSync(f, "utf8")).trim();
       return TOKEN_RE.test(t) ? t : "";
     } catch (e) {
       if (e.code === "ENOENT") return "";
@@ -57,24 +116,25 @@ function screenToken() {
   };
   let t = read();
   if (t) return t;
-  const tmp = `${f}.${process.pid}.${require("crypto").randomBytes(4).toString("hex")}.tmp`;
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(tmp, require("crypto").randomBytes(24).toString("hex"), { mode: 0o600 });
-    try {
-      fs.linkSync(tmp, f); // only if absent: the first window's token wins
-    } catch (e) {
-      if (e.code !== "EEXIST") throw e;
-      if (!read()) fs.renameSync(tmp, f); // there, but empty or broken: replace it whole
-    }
+    t = withLock(`${f}.lock`, () => {
+      const now = read(); // another window may have written it while we waited
+      if (now) return now;
+      const tmp = `${f}.${process.pid}.${require("crypto").randomBytes(4).toString("hex")}.tmp`;
+      try {
+        fs.writeFileSync(tmp, require("crypto").randomBytes(24).toString("hex"), { mode: 0o600 });
+        retrying(() => fs.renameSync(tmp, f)); // a window outside the lock may be reading it
+      } finally {
+        try {
+          fs.unlinkSync(tmp);
+        } catch (e) {}
+      }
+      return read();
+    });
   } catch (e) {
     throw new Error(`cannot keep the relay's screen token in ${f}: ${e.message}`);
-  } finally {
-    try {
-      fs.unlinkSync(tmp);
-    } catch (e) {}
   }
-  t = read();
   if (!t) throw new Error(`cannot keep the relay's screen token in ${f}: it reads back empty`);
   return t;
 }

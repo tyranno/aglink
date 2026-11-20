@@ -271,3 +271,54 @@ test("a token that cannot be written is an error, not a fresh value per call", (
     assert.throws(() => screenToken(), /aglink-screen-relay\.token/);
   });
 });
+
+test("windows repairing the token at the same moment all end up with the one on disk", async () => {
+  const { spawn } = require("child_process");
+  const path = require("path");
+  const relayPath = path.join(__dirname, "..", "relay.js");
+  const worker = `
+    const until = Number(process.argv[1]);
+    while (Date.now() < until) {} // start together
+    process.stdout.write(require(${JSON.stringify(relayPath)}).screenToken());
+  `;
+  const run = (home, until) =>
+    new Promise((resolve, reject) => {
+      const env = { ...process.env, AGLINK_HOME: home };
+      delete env.AGLINK_SCREEN_REMOTE_TOKEN;
+      const c = spawn(process.execPath, ["-e", worker, String(until)], { env });
+      let out = "";
+      let err = "";
+      c.stdout.on("data", (d) => (out += d));
+      c.stderr.on("data", (d) => (err += d));
+      c.on("exit", (code) => (code === 0 ? resolve(out) : reject(new Error(err))));
+    });
+  const fs = require("fs");
+  const os = require("os");
+  for (let round = 0; round < 5; round++) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "aglink-race-"));
+    const f = path.join(home, "aglink-screen-relay.token");
+    try {
+      if (round % 2 === 0) fs.writeFileSync(f, ""); // an empty file to repair; odd rounds: none yet
+      const until = Date.now() + 700;
+      const got = await Promise.all(Array.from({ length: 6 }, () => run(home, until)));
+      const disk = fs.readFileSync(f, "utf8");
+      assert.match(disk, /^[0-9a-f]{48}$/);
+      assert.deepStrictEqual(got, Array(6).fill(disk), `round ${round}: every window returns the token on disk`);
+      assert.ok(!fs.existsSync(`${f}.lock`), "the lock is released");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a lock left by a crashed window is taken over", () => {
+  const { screenToken } = require("../relay");
+  withHome((home, f, fs) => {
+    fs.mkdirSync(`${f}.lock`);
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(`${f}.lock`, old, old);
+    const t = screenToken();
+    assert.match(t, /^[0-9a-f]{48}$/);
+    assert.ok(!fs.existsSync(`${f}.lock`));
+  });
+});

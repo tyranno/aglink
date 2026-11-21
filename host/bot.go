@@ -934,6 +934,8 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleApprovalCommand(reply, chatID, fields, true)
 	case "!no", "!deny":
 		b.handleApprovalCommand(reply, chatID, fields, false)
+	case "!approvals":
+		b.handleApprovalsCommand(reply, chatID, fields)
 	case "!sessions":
 		b.handleSessions(reply, chatID, laneKeyOf(tgt))
 	case "!attach":
@@ -2871,6 +2873,14 @@ func helpText() string {
 !flow <이름> [text|elements]  흐름 실행 — run_steps 에 save_as 로 저장한 연속 동작
                              (text/elements 를 붙이면 끝난 화면 상태도 함께 보여 줍니다)
 
+도구 실행 승인 (설정의 '실행 전 승인받을 도구'):
+!ok [번호] [session|target]  승인 — session: 이 대화에서 계속 허용, target: 이 대상만 항상 허용
+!always [번호]               이 도구는 앞으로 묻지 않음
+!no [번호]                   거부
+!approvals [개수]             최근 승인 기록 (~/.aglink/approvals.log)
+!approvals allow             묻지 않고 실행되는 항목 목록
+!approvals revoke <번호|항목>  대상 허용 취소 (session 이면 이 대화 허용 전부 취소)
+
 원격 Claude 세션에 붙기 (VS Code 등에서 돌고 있는 세션과 직접 대화):
 !sessions                    붙을 수 있는 세션 목록 (이름을 몰라도 번호로 고릅니다)
 !attach <번호|이름>           그 세션에 붙기 — 이후 평문은 전부 그 세션으로 갑니다
@@ -2980,6 +2990,7 @@ func (b *Bot) webDelete(reply replySender, chatID int64, id string) error {
 		_ = reply.Send(chatID, "⚠️ 삭제 실패: "+err.Error())
 		return fmt.Errorf("삭제 실패: %w", err)
 	}
+	clearApprovalSessions(id) // its "이 대화에서 허용" grants end with it
 	_ = reply.Send(chatID, "🗑️ 대화가 삭제되었습니다.")
 	return nil
 }

@@ -100,7 +100,7 @@ func TestApprovalApprovedAndDenied(t *testing.T) {
 func TestApprovalTimesOut(t *testing.T) {
 	fakeUI(t)
 	b := &Bot{cfgh: NewConfigHolder(&Config{AllowedUserIDs: []int64{1}, ApprovalTools: []string{"eval"}})}
-	ok, reason := b.askApproval("aglink-screen", "launch_app", "launch_app\n{}", 150*time.Millisecond)
+	ok, reason := b.askApproval(approvalInput{Source: "aglink-screen", Tool: "launch_app", Summary: "launch_app\n{}"}, 150*time.Millisecond)
 	if ok || !strings.Contains(reason, "승인되지 않아") {
 		t.Fatalf("timeout: %v %q", ok, reason)
 	}
@@ -108,15 +108,15 @@ func TestApprovalTimesOut(t *testing.T) {
 
 func TestApprovalWithNoChannelIsRefused(t *testing.T) {
 	b := &Bot{cfgh: NewConfigHolder(&Config{ApprovalTools: []string{"eval"}})} // no Telegram, no UI connected
-	if ok, reason := b.askApproval("aglink-web", "eval", "", time.Second); ok || !strings.Contains(reason, "채널이 없어") {
+	if ok, reason := b.askApproval(approvalInput{Source: "aglink-web", Tool: "eval"}, time.Second); ok || !strings.Contains(reason, "채널이 없어") {
 		t.Fatalf("got %v %q", ok, reason)
 	}
 }
 
 func TestResolveApprovalNeedsAnIDWhenSeveralWait(t *testing.T) {
 	approvals.Lock()
-	approvals.pending["aaa"] = &approvalRequest{ID: "aaa", Tool: "eval", done: make(chan bool, 1)}
-	approvals.pending["bbb"] = &approvalRequest{ID: "bbb", Tool: "launch_app", done: make(chan bool, 1)}
+	approvals.pending["aaa"] = &approvalRequest{ID: "aaa", Tool: "eval", done: make(chan approvalAnswer, 1)}
+	approvals.pending["bbb"] = &approvalRequest{ID: "bbb", Tool: "launch_app", done: make(chan approvalAnswer, 1)}
 	approvals.Unlock()
 	defer func() {
 		approvals.Lock()

@@ -74,3 +74,36 @@ func TestCallWaitsForApproval(t *testing.T) {
 		t.Fatalf("asked %d times, want 3", n)
 	}
 }
+
+// The host gets the call's conversation and target with the request, for its
+// "이 대화에서 허용" / "이 대상만 항상 허용" scopes.
+func TestApprovalRequestCarriesSessionAndTarget(t *testing.T) {
+	got := make(chan map[string]string, 1)
+	approver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		got <- m
+		_ = json.NewEncoder(w).Encode(map[string]any{"approved": false, "reason": "no"})
+	}))
+	defer approver.Close()
+	d := newDaemon("")
+	srv := httptest.NewServer(d.handler())
+	defer srv.Close()
+	body, _ := json.Marshal(callRequest{Method: "vscode_terminal_run", Params: map[string]any{"command": "git status"}, Session: "owner:chat:1/conv:ab",
+		Env: map[string]string{"AGLINK_APPROVAL_URL": approver.URL, "AGLINK_APPROVAL_TOOLS": "vscode_terminal_run"}})
+	resp, err := http.Post(srv.URL+"/call", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	m := <-got
+	if m["session"] != "chat:1/conv:ab" || m["target"] != "git status" || m["tool"] != "vscode_terminal_run" {
+		t.Fatalf("approval request: %v", m)
+	}
+	if tg := approvalTarget([]string{"eval", "upload_file"}, "run_steps", map[string]any{"url": "https://x"}); tg != "" {
+		t.Fatalf("batch target: %q", tg)
+	}
+	if tg := approvalTarget([]string{"navigate"}, "navigate", map[string]any{"url": "https://example.com/a"}); tg != "https://example.com/a" {
+		t.Fatalf("url target: %q", tg)
+	}
+}

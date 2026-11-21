@@ -45,3 +45,16 @@ func TestScreenGateOffWithoutURL(t *testing.T) {
 		t.Fatalf("got %q %v", url, set)
 	}
 }
+
+func TestScreenApprovalTarget(t *testing.T) {
+	args := map[string]any{"name": " notepad "}
+	if got := screenApprovalTarget("launch_app", args, []string{"launch_app"}); got != "notepad" {
+		t.Fatalf("launch_app: %q", got)
+	}
+	if got := screenApprovalTarget("run_sequence", args, []string{"launch_app"}); got != "" {
+		t.Fatalf("batch: %q", got)
+	}
+	if got := screenApprovalTarget("type", map[string]any{"text": "x"}, []string{"type"}); got != "" {
+		t.Fatalf("no target tool: %q", got)
+	}
+}

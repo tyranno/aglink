@@ -394,9 +394,13 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 			ID     string `json:"id"`
 			OK     bool   `json:"ok"`
 			Always bool   `json:"always"`
+			Scope  string `json:"scope"` // once | session | target | always (approval.go)
 		}
 		_ = json.Unmarshal(m.Payload, &p)
-		if req, msg := resolveApprovalAlways(p.ID, p.OK, p.Always); req == nil {
+		if p.Scope == "" && p.Always {
+			p.Scope = scopeAlways
+		}
+		if req, msg := resolveApprovalScope(p.ID, p.OK, p.Scope, "desktop"); req == nil {
 			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: settingsFail(msg)})
 		} else {
 			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: authReply(true, "")})

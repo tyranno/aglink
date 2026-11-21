@@ -734,6 +734,16 @@ func (c *ControlService) ApprovalAllowAlways(id string) (string, error) {
 	return string(data), err
 }
 
+// ApprovalAnswerScope approves a pending tool approval with a scope — "once",
+// "session" (this tool for the rest of that conversation), "target" (this tool
+// on this target, always) or "always" (this tool, always) — or, with ok false,
+// refuses it. See host/approval.go.
+func (c *ControlService) ApprovalAnswerScope(id string, ok bool, scope string) (string, error) {
+	p, _ := json.Marshal(map[string]any{"id": id, "ok": ok, "scope": scope})
+	data, err := c.request(controlIn{Type: "approval_answer", Payload: p})
+	return string(data), err
+}
+
 // ClaudeAuthCancel stops a running issue/verify.
 func (c *ControlService) ClaudeAuthCancel() (string, error) {
 	data, err := c.request(controlIn{Type: "claude_auth_cancel"})

@@ -136,6 +136,8 @@ type yamlConfig struct {
 	Approvals struct {
 		Tools      []string `yaml:"tools,omitempty"`
 		TimeoutSec int      `yaml:"timeout_sec,omitempty"`
+		// Allow: "tool:target" entries that skip the prompt (approval.go).
+		Allow []string `yaml:"allow,omitempty"`
 	} `yaml:"approvals,omitempty"`
 }
 
@@ -268,6 +270,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.SSHHosts = y.SSH.Hosts
 	c.ApprovalTools = y.Approvals.Tools
 	c.ApprovalTimeoutSec = y.Approvals.TimeoutSec
+	c.ApprovalAllow = y.Approvals.Allow
 	return c
 }
 
@@ -349,6 +352,7 @@ func configToYAML(c *Config) *yamlConfig {
 	y.SSH.Hosts = c.SSHHosts
 	y.Approvals.Tools = c.ApprovalTools
 	y.Approvals.TimeoutSec = c.ApprovalTimeoutSec
+	y.Approvals.Allow = c.ApprovalAllow
 	return y
 }
 

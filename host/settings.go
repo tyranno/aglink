@@ -334,6 +334,7 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "goono_control.enabled", Label: "구노(goono) 문서 연동 허용", Desc: "봇이 구노 MCP로 문서를 검색·업로드하게 합니다. 실행파일 경로는 설정 파일(goono_control.binary_path)에서 지정합니다.", Type: "bool", Value: cfg.GoonoControl},
 			{Key: "approvals.tools", Label: "실행 전 승인받을 도구", Desc: "여기 적은 웹·화면 제어 도구는 실행 전에 채팅으로 '🔐 승인 요청'을 보내고, !ok 번호 / !no 번호 로 답할 때까지 기다립니다. 쉼표로 구분. 예: eval, vscode_terminal_run, vscode_command, upload_file, launch_app. 비우면 승인 없이 실행합니다.", Type: "string", Value: strings.Join(cfg.ApprovalTools, ", ")},
 			{Key: "approvals.timeout_sec", Label: "승인 대기 시간(초)", Desc: "이 시간 안에 답이 없으면 거부합니다. 0 이면 120초.", Type: "int", Value: cfg.ApprovalTimeoutSec},
+			{Key: "approvals.allow", Label: "대상별 항상 허용", Desc: "승인받을 도구라도 여기 적은 '도구:대상'은 묻지 않고 실행합니다. 승인 창의 '이 대상만 항상 허용'이 여기에 추가합니다. 쉼표로 구분, 지우면 다시 묻습니다. 예: launch_app:notepad, vscode_terminal_run:git status, vscode_command:workbench.action.reloadwindow. 채팅에서는 !approvals allow / !approvals revoke 번호.", Type: "string", Value: strings.Join(cfg.ApprovalAllow, ", ")},
 		}},
 		// NOTE: user-defined MCP servers are NOT here. They're a variable-length
 		// list, which this scalar form can't express, so they have their own
@@ -437,6 +438,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.GoonoControl = asBool(v)
 		case "approvals.tools":
 			cfg.ApprovalTools = splitToolList(asString(v))
+		case "approvals.allow":
+			cfg.ApprovalAllow = splitAllowList(asString(v))
 		case "approvals.timeout_sec":
 			cfg.ApprovalTimeoutSec = asInt(v)
 		case "web_chat.enabled":

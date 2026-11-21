@@ -80,15 +80,40 @@ func gatedHits(method string, params map[string]any, env map[string]string) []st
 // enforces the real timeout.
 var approvalClient = &http.Client{Timeout: 15 * time.Minute}
 
+// approvalTarget is the raw target of a direct call to one gated tool — the
+// command line for vscode_terminal_run, the command id for vscode_command, a
+// URL argument otherwise — which the host normalizes for its "이 대상만 항상
+// 허용" scope. A batch has none.
+func approvalTarget(hits []string, method string, params map[string]any) string {
+	if len(hits) != 1 || hits[0] != method {
+		return ""
+	}
+	switch method {
+	case "vscode_terminal_run", "vscode_command":
+		return str(params, "command")
+	}
+	return str(params, "url")
+}
+
+// approvalSession is the conversation a call came from, as the host names it
+// (AGLINK_OWNER_LABEL): the bridge's session key without its "owner:" prefix.
+// A bridge with no owner label sends its per-process key, which still keeps
+// one Claude session's "이 대화에서 허용" apart from another's.
+func approvalSession(session string) string {
+	return strings.TrimPrefix(session, "owner:")
+}
+
 // askApproval asks the host and reports whether the call may proceed.
-func askApproval(url, source string, hits []string, method string, params map[string]any) (bool, string) {
+// session is the calling bridge's session key (callRequest.Session).
+func askApproval(url, source string, hits []string, method string, params map[string]any, session string) (bool, string) {
 	args, _ := json.Marshal(params)
 	summary := method
 	if len(hits) > 1 || hits[0] != method {
 		summary += " (uses: " + strings.Join(hits, ", ") + ")"
 	}
 	summary += "\n" + oneLine(string(args), 500)
-	body, _ := json.Marshal(map[string]string{"source": source, "tool": strings.Join(hits, ","), "summary": summary})
+	body, _ := json.Marshal(map[string]string{"source": source, "tool": strings.Join(hits, ","), "summary": summary,
+		"target": approvalTarget(hits, method, params), "session": approvalSession(session)})
 	resp, err := approvalClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return false, fmt.Sprintf("could not reach the aglink host to ask for approval (%v)", err)

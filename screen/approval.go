@@ -77,6 +77,23 @@ func screenGatedHits(name string, args map[string]any, set map[string]bool) []st
 	return hits
 }
 
+// screenApprovalTarget is the raw target of a direct call to one gated tool —
+// the app name for launch_app — which the host normalizes and keys its
+// "이 대상만 항상 허용" on. A batch (run_sequence/flow_run) has none. The
+// session sent alongside is the conversation label the host gives each worker
+// (AGLINK_OWNER_LABEL), so "이 대화에서 허용" knows which conversation asked.
+func screenApprovalTarget(name string, args map[string]any, hits []string) string {
+	if len(hits) != 1 || hits[0] != name {
+		return ""
+	}
+	switch name {
+	case "launch_app":
+		s, _ := args["name"].(string)
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
 func screenApprovalMiddleware(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		url, set := screenGatedSet()
@@ -97,6 +114,8 @@ func screenApprovalMiddleware(next server.ToolHandlerFunc) server.ToolHandlerFun
 			"source":  "aglink-screen",
 			"tool":    strings.Join(hits, ","),
 			"summary": req.Params.Name + "\n" + s,
+			"target":  screenApprovalTarget(req.Params.Name, args, hits),
+			"session": strings.TrimSpace(os.Getenv("AGLINK_OWNER_LABEL")),
 		})
 		resp, err := approvalClient.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {

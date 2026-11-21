@@ -487,10 +487,21 @@ aglink 워커는 동작마다 승인을 묻지 않는다. 그래서 웹페이지
 approvals:
   tools: [eval, vscode_terminal_run, vscode_command, upload_file, launch_app]
   timeout_sec: 120      # 0 이면 120초. 답이 없으면 거부
+  allow:                # '이 대상만 항상 허용' 으로 쌓이는 도구:대상 — 묻지 않고 실행
+    - launch_app:notepad
+    - vscode_terminal_run:git status
 ```
 
-- 묻는 곳: 데스크톱 앱(버튼 창 — [승인]/[거부]), 텔레그램(`!ok 번호` / `!no 번호`,
+- 묻는 곳: 데스크톱 앱(버튼 창), 텔레그램(버튼 또는 `!ok 번호` / `!no 번호`,
   하나뿐이면 번호 생략). 어디서 먼저 답하든 나머지 창은 닫힌다.
+- 승인 범위: **이번만** / **이 대화에서**(그 대화 동안 이 도구는 묻지 않음 — 메모리,
+  대화 삭제·12시간 미사용·재시작 때 사라짐) / **이 대상만 항상**(`approvals.allow` 에
+  저장 — 앱 이름, 명령의 앞 단어(`git status`; `&&`·`|` 등이 섞인 명령은 대상 없음),
+  VS Code 명령 id, URL 의 사이트) / **항상**(`approvals.tools` 에서 뺌).
+  명령: `!ok 번호 session|target`, `!always 번호`.
+- 기록: 요청마다 `~/.aglink/approvals.log` 에 JSON 한 줄(자동 허용 포함, 1MB 넘으면
+  `.1` 로 돌림). `!approvals [개수]` 최근 기록, `!approvals allow` 허용 목록,
+  `!approvals revoke <번호|항목|session>` 취소.
 - 호스트가 워커의 MCP 설정에 `AGLINK_APPROVAL_URL`·`AGLINK_APPROVAL_TOOLS` 를 넣고,
   aglink-web·aglink-screen 이 도구 실행 전에 호스트의 `/approve`(127.0.0.1:27269)에 묻는다.
 - `run_steps`·`run_flow` 는 단계 안에 대상 도구가 있으면 **배치 전체를 한 번** 묻는다.

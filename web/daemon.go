@@ -558,7 +558,7 @@ func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {
 	// Risky tools wait for the user's OK first (approvalgate.go), judged by
 	// this request's own settings.
 	if hits := gatedHits(body.Method, body.Params, body.Env); len(hits) > 0 {
-		if ok, reason := askApproval(body.Env["AGLINK_APPROVAL_URL"], "aglink-web", hits, body.Method, body.Params); !ok {
+		if ok, reason := askApproval(body.Env["AGLINK_APPROVAL_URL"], "aglink-web", hits, body.Method, body.Params, body.Session); !ok {
 			writeJSON(w, CallResult{Error: "not approved — " + reason + ". Do not retry this action unless the user asks for it."})
 			return
 		}

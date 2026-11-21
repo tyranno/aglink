@@ -135,6 +135,10 @@ type Config struct {
 	// no approvals. ApprovalTimeoutSec: how long to wait before refusing.
 	ApprovalTools      []string
 	ApprovalTimeoutSec int
+	// ApprovalAllow are "tool:target" entries that run without asking even
+	// though the tool is in ApprovalTools ("launch_app:notepad",
+	// "vscode_terminal_run:git status") — the "이 대상만 항상 허용" answer.
+	ApprovalAllow []string
 }
 
 // ConversationTurn represents one exchange in a conversation.

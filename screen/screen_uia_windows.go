@@ -78,6 +78,8 @@ const (
 	elemGetCurrentName         = 23 // -> *BSTR
 	elemGetCurrentIsEnabled    = 28 // -> *BOOL(int32)
 	elemGetCurrentAutomationId = 29 // -> *BSTR
+	elemGetCurrentIsPassword   = 35 // -> *BOOL(int32)
+	elemGetCurrentBoundingRect = 43 // -> *RECT
 )
 
 // ---- IUIAutomationElementArray vtable slot indices ----
@@ -307,6 +309,34 @@ func foregroundElement(uia *ole.IUnknown) (*ole.IUnknown, error) {
 	return root, nil
 }
 
+// uiaRoot returns the element searches start from: the given top-level window
+// when hwnd != 0 (background use — the window need not be foreground), else the
+// foreground window as before. Caller must release the result.
+func uiaRoot(uia *ole.IUnknown, hwnd uintptr) (*ole.IUnknown, error) {
+	if hwnd == 0 {
+		return foregroundElement(uia)
+	}
+	var elem *ole.IUnknown
+	hr := vcall(uia, uiaElementFromHandle, hwnd, uintptr(unsafe.Pointer(&elem)))
+	if failed(hr) || elem == nil {
+		return nil, fmt.Errorf("UIA: ElementFromHandle(0x%x) failed (hr=0x%x)", hwnd, uint32(hr))
+	}
+	return elem, nil
+}
+
+// elemCenter returns the centre of el's bounding rectangle, false when it has
+// none (offscreen, or a minimized window's placeholder coordinates).
+func elemCenter(el *ole.IUnknown) (int, int, bool) {
+	var rc rect
+	if hr := vcall(el, elemGetCurrentBoundingRect, uintptr(unsafe.Pointer(&rc))); failed(hr) {
+		return 0, 0, false
+	}
+	if rc.Right <= rc.Left || rc.Bottom <= rc.Top || rc.Left <= -32000 {
+		return 0, 0, false
+	}
+	return int(rc.Left+rc.Right) / 2, int(rc.Top+rc.Bottom) / 2, true
+}
+
 // packPoint packs a POINT{LONG x; LONG y} into the single 64-bit register it
 // is passed in by value on amd64: x in the low 32 bits, y in the high 32.
 // Extracted so the packing — the one non-obvious bit, and the one that must
@@ -424,10 +454,15 @@ var uiaSnapshotRetryDelay = 250 * time.Millisecond
 // continuation note (offset=N) when the tree was not exhausted. Elements within
 // one page are sorted by control type then name.
 func uiaSnapshot(offset, maxElems, maxChars int) (string, error) {
+	return uiaSnapshotIn(0, offset, maxElems, maxChars)
+}
+
+// uiaSnapshotIn is uiaSnapshot rooted at window hwnd (0 = foreground window).
+func uiaSnapshotIn(hwnd uintptr, offset, maxElems, maxChars int) (string, error) {
 	maxElems = clampLimit(maxElems, defaultSnapshotMaxElements, ceilingSnapshotMaxElements)
 	maxChars = clampLimit(maxChars, defaultSnapshotMaxChars, ceilingSnapshotMaxChars)
 	return uiaDo(func(uia *ole.IUnknown) (string, error) {
-		root, err := foregroundElement(uia)
+		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
@@ -567,7 +602,7 @@ func uiaSnapshot(offset, maxElems, maxChars int) (string, error) {
 		})
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "UIA elements of foreground window (%d shown; scanned %d–%d of %d):\n", len(nodes), start, next, total)
+		fmt.Fprintf(&b, "UIA elements of %s (%d shown; scanned %d–%d of %d):\n", uiaTargetLabel(hwnd), len(nodes), start, next, total)
 		for _, s := range nodes {
 			b.WriteString(s.line)
 			b.WriteString("\n")
@@ -875,11 +910,19 @@ func elemText(el *ole.IUnknown, maxLen int) (string, bool) {
 // uiaInvoke finds an element by Name (or AutomationId) and activates it via the
 // most appropriate pattern (Invoke → SelectionItem → Toggle → ExpandCollapse).
 func uiaInvoke(name string) error {
-	if err := beginSyntheticInput(); err != nil {
+	return uiaInvokeIn(0, name)
+}
+
+// uiaInvokeIn is uiaInvoke rooted at window hwnd. With hwnd != 0 it runs in the
+// background: lease only (no user-idle wait, no focus change), and the agent
+// cursor marks the element afterwards.
+func uiaInvokeIn(hwnd uintptr, name string) error {
+	if err := beginUIAOp(hwnd); err != nil {
 		return err
 	}
+	cx, cy, marked := 0, 0, false
 	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
-		root, err := foregroundElement(uia)
+		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
@@ -893,7 +936,21 @@ func uiaInvoke(name string) error {
 			return "", fmt.Errorf("no element named %q (try snapshot)", name)
 		}
 		defer release(el)
+		if hwnd != 0 {
+			cx, cy, marked = elemCenter(el)
+		}
+		return "", activateElement(el, name)
+	})
+	if err == nil && marked {
+		showAgentCursor(cx, cy)
+	}
+	return err
+}
 
+// activateElement drives el through the first pattern it supports
+// (Invoke → SelectionItem → Toggle → ExpandCollapse). Runs on the STA thread.
+func activateElement(el *ole.IUnknown, name string) error {
+	_, err := func() (string, error) {
 		if p := getPattern(el, uiaInvokePatternId); p != nil {
 			defer release(p)
 			if hr := vcall(p, invokePatternInvoke); failed(hr) {
@@ -923,7 +980,7 @@ func uiaInvoke(name string) error {
 			return "", nil
 		}
 		return "", fmt.Errorf("element %q supports no invokable pattern", name)
-	})
+	}()
 	return err
 }
 
@@ -932,11 +989,18 @@ func uiaInvoke(name string) error {
 // uiaSetValue finds an element by Name (or AutomationId) and sets its text via
 // the Value pattern.
 func uiaSetValue(name, text string) error {
-	if err := beginSyntheticInput(); err != nil {
+	return uiaSetValueIn(0, name, text)
+}
+
+// uiaSetValueIn is uiaSetValue rooted at window hwnd (background when != 0,
+// see uiaInvokeIn).
+func uiaSetValueIn(hwnd uintptr, name, text string) error {
+	if err := beginUIAOp(hwnd); err != nil {
 		return err
 	}
+	cx, cy, marked := 0, 0, false
 	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
-		root, err := foregroundElement(uia)
+		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
@@ -950,6 +1014,9 @@ func uiaSetValue(name, text string) error {
 			return "", fmt.Errorf("no element named %q (try snapshot)", name)
 		}
 		defer release(el)
+		if hwnd != 0 {
+			cx, cy, marked = elemCenter(el)
+		}
 
 		p := getPattern(el, uiaValuePatternId)
 		if p == nil {
@@ -968,6 +1035,9 @@ func uiaSetValue(name, text string) error {
 		}
 		return "", nil
 	})
+	if err == nil && marked {
+		showAgentCursor(cx, cy)
+	}
 	return err
 }
 
@@ -985,9 +1055,14 @@ func uiaSetValue(name, text string) error {
 // Text-pattern fallback only maxFieldValueChars+1 units are fetched; totalKnown
 // reports false when that fetch was cut, so the note can say "N자 이상".
 func uiaGetValue(name string) (value string, totalKnown bool, err error) {
+	return uiaGetValueIn(0, name)
+}
+
+// uiaGetValueIn is uiaGetValue rooted at window hwnd (0 = foreground).
+func uiaGetValueIn(hwnd uintptr, name string) (value string, totalKnown bool, err error) {
 	totalKnown = true
 	value, err = uiaDo(func(uia *ole.IUnknown) (string, error) {
-		root, err := foregroundElement(uia)
+		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
@@ -1040,8 +1115,13 @@ const textFetchCeiling = 1_000_000
 // continuation note when the text was cut — see runeWindow. Returns "" when the
 // element holds no text. A pure read — no synthetic input.
 func uiaGetText(name string, offset, maxChars int) (string, error) {
+	return uiaGetTextIn(0, name, offset, maxChars)
+}
+
+// uiaGetTextIn is uiaGetText rooted at window hwnd (0 = foreground).
+func uiaGetTextIn(hwnd uintptr, name string, offset, maxChars int) (string, error) {
 	return uiaDo(func(uia *ole.IUnknown) (string, error) {
-		root, err := foregroundElement(uia)
+		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
@@ -1071,7 +1151,7 @@ func uiaGetText(name string, offset, maxChars int) (string, error) {
 		}
 		if !ok {
 			if strings.TrimSpace(name) == "" {
-				return "", fmt.Errorf("the foreground window exposes no Text pattern at its root; name a specific element from snapshot, or use capture_window as a last resort")
+				return "", fmt.Errorf("the %s exposes no Text pattern at its root; name a specific element from snapshot, or use capture_window as a last resort", uiaTargetLabel(hwnd))
 			}
 			return "", fmt.Errorf("element %q supports neither the Text nor Value pattern", name)
 		}
@@ -1094,9 +1174,9 @@ var uiaWaitForControlPollEvery = 250 * time.Millisecond
 // real uiaDo/findByName-based check) so uiaWaitForControl's polling loop is
 // unit-testable without a real UIA/COM worker thread — mirrors the
 // findTopWindowProbe pattern already used for waitForWindow's tests.
-var uiaControlExistsProbe = func(name string) (bool, error) {
+var uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) {
 	found, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
-		root, err := foregroundElement(uia)
+		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
@@ -1122,15 +1202,32 @@ var uiaControlExistsProbe = func(name string) (bool, error) {
 // loop for dialogs/controls that render a moment after the action that
 // triggers them (e.g. a "Save" dialog, a panel that appears after a click).
 func uiaWaitForControl(name string, timeoutMs int) (string, error) {
+	return uiaWaitForControlIn("", name, timeoutMs)
+}
+
+// uiaWaitForControlIn is uiaWaitForControl searching the window matching
+// `window` (title substring/hwnd; "" = foreground). The window is re-resolved on
+// every poll, so it may itself appear during the wait.
+func uiaWaitForControlIn(window, name string, timeoutMs int) (string, error) {
 	if timeoutMs <= 0 {
 		timeoutMs = 8000
 	}
+	window = strings.TrimSpace(window)
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	for {
-		if ok, _ := uiaControlExistsProbe(name); ok {
-			return fmt.Sprintf("ok: found %q", name), nil
+		hwnd, ok := uintptr(0), true
+		if window != "" {
+			hwnd, ok = findTopWindowProbe(window)
+		}
+		if ok {
+			if found, _ := uiaControlExistsProbe(hwnd, name); found {
+				return fmt.Sprintf("ok: found %q", name), nil
+			}
 		}
 		if time.Now().After(deadline) {
+			if !ok {
+				return "", fmt.Errorf("timed out after %dms: no window matching %q", timeoutMs, window)
+			}
 			return "", fmt.Errorf("timed out after %dms waiting for an element named %q (try snapshot)", timeoutMs, name)
 		}
 		time.Sleep(uiaWaitForControlPollEvery)

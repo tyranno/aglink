@@ -33,6 +33,8 @@ type seqStep struct {
 	HoldMs    int    `json:"hold_ms,omitempty"`
 	Ms        int    `json:"ms,omitempty"`      // wait: how long
 	WaitMs    int    `json:"wait_ms,omitempty"` // any step: pause after it (screen transitions, animations)
+	// Background is click_control's opt-out (nil = default true).
+	Background *bool `json:"background,omitempty"`
 }
 
 // maxSeqWait caps any single pause so a typo (60000 for 600) cannot stall a
@@ -150,19 +152,30 @@ func runOneStep(st seqStep) (string, error) {
 		}
 		return fmt.Sprintf("pressed %q", st.Combo), nil
 	case "invoke":
-		if err := uiaInvoke(st.Name); err != nil {
+		hwnd, err := resolveTargetWindow(st.Window)
+		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("invoked %q", st.Name), nil
+		if err := uiaInvokeIn(hwnd, st.Name); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("invoked %q%s", st.Name, backgroundSuffix(hwnd)), nil
 	case "set_value":
-		if err := uiaSetValue(st.Name, st.Text); err != nil {
+		hwnd, err := resolveTargetWindow(st.Window)
+		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("set %q = %q", st.Name, st.Text), nil
+		if err := uiaSetValueIn(hwnd, st.Name, st.Text); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("set %q = %q%s", st.Name, st.Text, backgroundSuffix(hwnd)), nil
 	case "click_control":
-		return clickControl(st.Window, st.Text, st.Nth)
+		return clickControl(st.Window, st.Text, st.Nth, st.Background == nil || *st.Background)
 	case "wait_for_control":
-		return uiaWaitForControl(st.Name, st.TimeoutMs)
+		return uiaWaitForControlIn(st.Window, st.Name, st.TimeoutMs)
+	case "note":
+		// A placeholder left by record_workflow (e.g. a skipped password); no-op.
+		return "note: " + st.Text, nil
 	case "wait_for_window":
 		return waitForWindow(st.Window, st.TimeoutMs)
 	case "scroll":
@@ -183,6 +196,6 @@ func runOneStep(st seqStep) (string, error) {
 		}
 		return fmt.Sprintf("%s-dragged (%d,%d) -> (%d,%d)", button, st.X, st.Y, st.X2, st.Y2), nil
 	default:
-		return "", fmt.Errorf("unknown action %q (supported: click, double_click, triple_click, type, key, invoke, set_value, click_control, wait_for_control, wait_for_window, scroll, drag, wait)", st.Action)
+		return "", fmt.Errorf("unknown action %q (supported: click, double_click, triple_click, type, key, invoke, set_value, click_control, wait_for_control, wait_for_window, scroll, drag, wait, note)", st.Action)
 	}
 }

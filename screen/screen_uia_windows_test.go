@@ -21,7 +21,7 @@ func TestUiaWaitForControlFindsItAfterPolling(t *testing.T) {
 	uiaWaitForControlPollEvery = 10 * time.Millisecond
 
 	calls := 0
-	uiaControlExistsProbe = func(name string) (bool, error) {
+	uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) {
 		calls++
 		return calls >= 3, nil
 	}
@@ -53,7 +53,7 @@ func TestUiaWaitForControlTimesOut(t *testing.T) {
 		uiaWaitForControlPollEvery = origPoll
 	})
 	uiaWaitForControlPollEvery = 10 * time.Millisecond
-	uiaControlExistsProbe = func(name string) (bool, error) { return false, nil }
+	uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) { return false, nil }
 
 	start := time.Now()
 	_, err := uiaWaitForControl("NeverAppears", 100)

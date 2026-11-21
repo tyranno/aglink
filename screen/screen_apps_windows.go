@@ -379,6 +379,7 @@ type rect struct{ Left, Top, Right, Bottom int32 }
 // child windows even when UIA exposes nothing — so EnumChildWindows yields exact
 // coordinates and labels without any vision/coordinate guessing.
 type control struct {
+	HWND                     uintptr
 	Class                    string
 	Text                     string
 	Left, Top, Right, Bottom int32
@@ -418,6 +419,7 @@ func enumControls(top uintptr, includeHidden bool) []control {
 		}
 		rc := windowRect(hwnd)
 		out = append(out, control{
+			HWND:    hwnd,
 			Class:   getClassName(hwnd),
 			Text:    getWindowText(hwnd),
 			Left:    rc.Left,
@@ -552,38 +554,65 @@ func confirmDialogs(appTitle string, accept []string, maxN int) ([]string, error
 }
 
 // clickControl finds the nth (0-based) VISIBLE control in window whose label
-// contains text (case-insensitive) and left-clicks its center. The window is
-// brought to the foreground first so the click lands on it.
-func clickControl(window, text string, nth int) (string, error) {
+// contains text (case-insensitive) and clicks it. With background=true a
+// button/checkbox/radio gets BM_CLICK (or another control a UIA invoke)
+// without focusing the window or moving the cursor; otherwise, or when that is
+// not possible, the window is brought to the foreground and its center is
+// left-clicked. The result says which path was used.
+func clickControl(window, text string, nth int, background bool) (string, error) {
 	top, ok := findTopWindow(window)
 	if !ok {
 		return "", fmt.Errorf("no window matching %q", window)
-	}
-	if err := bringToFront(top); err != nil {
-		return "", fmt.Errorf("focus %q: %w", window, err)
 	}
 	needle := strings.ToLower(strings.TrimSpace(text))
 	if needle == "" {
 		return "", fmt.Errorf("empty control text")
 	}
+	fallback := ""
+	if background {
+		if c, n, idx, found := matchControl(enumControls(top, false), needle, nth); found {
+			detail, handled, reason, err := backgroundClickControl(top, c)
+			if err != nil {
+				return "", err
+			}
+			if handled {
+				return fmt.Sprintf("%s [%d match(es); nth=%d]", detail, n, idx), nil
+			}
+			fallback = " (background path not used: " + reason + ")"
+		} else {
+			fallback = " (background path not used: control not visible before focusing)"
+		}
+	}
+	if err := bringToFront(top); err != nil {
+		return "", fmt.Errorf("focus %q: %w", window, err)
+	}
+	c, n, idx, found := matchControl(enumControls(top, false), needle, nth)
+	if !found {
+		return "", fmt.Errorf("no visible control with text containing %q in %q", text, window)
+	}
+	if err := mouseClick(c.CenterX(), c.CenterY(), "left"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("clicked %s %q at (%d,%d) via focus+mouse click [%d match(es); nth=%d]%s%s",
+		c.Class, c.Text, c.CenterX(), c.CenterY(), n, idx, fallback, uipiWarning(top, "click")), nil
+}
+
+// matchControl returns the nth (0-based; out of range = 0) control whose label
+// contains needle (already lower-cased), the match count and the index used.
+func matchControl(ctrls []control, needle string, nth int) (control, int, int, bool) {
 	var matches []control
-	for _, c := range enumControls(top, false) {
+	for _, c := range ctrls {
 		if strings.Contains(strings.ToLower(c.Text), needle) {
 			matches = append(matches, c)
 		}
 	}
 	if len(matches) == 0 {
-		return "", fmt.Errorf("no visible control with text containing %q in %q", text, window)
+		return control{}, 0, 0, false
 	}
 	if nth < 0 || nth >= len(matches) {
 		nth = 0
 	}
-	c := matches[nth]
-	if err := mouseClick(c.CenterX(), c.CenterY(), "left"); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("clicked %s %q at (%d,%d) [%d match(es); nth=%d]%s",
-		c.Class, c.Text, c.CenterX(), c.CenterY(), len(matches), nth, uipiWarning(top, "click")), nil
+	return matches[nth], len(matches), nth, true
 }
 
 // forceForeground brings target to the foreground, working around the Windows

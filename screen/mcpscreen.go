@@ -57,6 +57,9 @@ func resolveScreenshotLongEdge() int {
 	return defaultScreenshotLongEdge
 }
 
+// windowParamDesc documents the optional `window` argument of the UIA tools.
+const windowParamDesc = "Optional target window (title substring or hwnd, as in focus_window). When given, the UIA search is rooted at that window instead of the foreground one and the window is NOT brought to front — background use while the user keeps working elsewhere."
+
 // controlCompleteMiddleware wraps every tool handler so that a tool call which
 // actually drove the screen is followed by the green "control complete" notice.
 // It snapshots syntheticInputCount around the handler: control ops funnel through
@@ -252,9 +255,10 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot-polling loop.
 	s.AddTool(
 		mcp.NewTool("wait_for_control",
-			mcp.WithDescription("Block until an element (by Name or AutomationId from snapshot) appears in the foreground window's UIA tree; times out after 'timeout_ms' (default 8000). Checks tree existence, not visual visibility, so a re-shown WinUI/XAML flyout may return immediately."),
+			mcp.WithDescription("Block until an element (by Name or AutomationId from snapshot) appears in the foreground window's UIA tree (or in 'window' when given); times out after 'timeout_ms' (default 8000). Checks tree existence, not visual visibility, so a re-shown WinUI/XAML flyout may return immediately."),
 			mcp.WithString("name", mcp.Description("The element Name or AutomationId to wait for."), mcp.Required()),
 			mcp.WithNumber("timeout_ms", mcp.Description("Max time to wait in milliseconds (default 8000).")),
+			mcp.WithString("window", mcp.Description(windowParamDesc)),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
@@ -262,7 +266,7 @@ func newScreenMCPServer() *server.MCPServer {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
 			timeoutMs := req.GetInt("timeout_ms", 8000)
-			result, err := uiaWaitForControl(name, timeoutMs)
+			result, err := uiaWaitForControlIn(req.GetString("window", ""), name, timeoutMs)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("wait_for_control failed", err), nil
 			}
@@ -943,10 +947,11 @@ func newScreenMCPServer() *server.MCPServer {
 	// click_control — click a child control by its label (exact coords, no vision).
 	s.AddTool(
 		mcp.NewTool("click_control",
-			mcp.WithDescription("Find a visible Win32 child control by its label text (case-insensitive substring) in the given window and left-click its center. The window is focused first. If multiple controls share the label, use 'nth' (0-based) to pick which one — list them first with win_controls. Preferred over click(x,y) for native apps."),
+			mcp.WithDescription("Find a visible Win32 child control by its label text (case-insensitive substring) in the given window and click it. By default it works in the BACKGROUND: a button/checkbox/radio gets BM_CLICK (other controls a UI Automation invoke) without focusing the window or moving the user's mouse; only when that is not possible is the window focused and its center left-clicked. The result says which path was used — after a background click the window is NOT focused, so focus_window before typing into it. If multiple controls share the label, use 'nth' (0-based) to pick which one — list them first with win_controls. Preferred over click(x,y) for native apps."),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
 			mcp.WithString("text", mcp.Description("Control label to match (e.g. '로컬장치 검색', 'File')."), mcp.Required()),
 			mcp.WithNumber("nth", mcp.Description("0-based index when several controls share the label (default 0).")),
+			mcp.WithBoolean("background", mcp.Description("Try the no-focus path first (default true). false = always focus the window and click with the real mouse.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			window, err := req.RequireString("window")
@@ -958,7 +963,7 @@ func newScreenMCPServer() *server.MCPServer {
 				return mcp.NewToolResultError("missing required argument 'text'"), nil
 			}
 			nth := req.GetInt("nth", 0)
-			desc, err := clickControl(window, text, nth)
+			desc, err := clickControl(window, text, nth, req.GetBool("background", true))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("click_control failed", err), nil
 			}
@@ -1001,7 +1006,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot — read the foreground window's UIA element tree as text.
 	s.AddTool(
 		mcp.NewTool("snapshot",
-			mcp.WithDescription(fmt.Sprintf("Read the foreground window's UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page.", defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
+			mcp.WithDescription(fmt.Sprintf("Read the foreground window's (or, with 'window', any window's — no focus change) UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page.", defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
 			mcp.WithNumber("max_elements",
 				mcp.Description(fmt.Sprintf("Max elements to show (default %d, max %d).", defaultSnapshotMaxElements, ceilingSnapshotMaxElements)),
 			),
@@ -1011,11 +1016,16 @@ func newScreenMCPServer() *server.MCPServer {
 			mcp.WithNumber("offset",
 				mcp.Description("Element index to start from — pass the offset=N from a previous truncated reply to continue. Default 0."),
 			),
+			mcp.WithString("window", mcp.Description(windowParamDesc)),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("snapshot failed", err), nil
+			}
 			// 'max' is the pre-paging name of max_elements; still honored.
 			maxElems := req.GetInt("max_elements", req.GetInt("max", 0))
-			text, err := uiaSnapshot(req.GetInt("offset", 0), maxElems, req.GetInt("max_chars", 0))
+			text, err := uiaSnapshotIn(hwnd, req.GetInt("offset", 0), maxElems, req.GetInt("max_chars", 0))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("snapshot failed", err), nil
 			}
@@ -1053,28 +1063,33 @@ func newScreenMCPServer() *server.MCPServer {
 	// invoke — activate an element found by name (or automation id).
 	s.AddTool(
 		mcp.NewTool("invoke",
-			mcp.WithDescription("Find an element by its Name (or AutomationId) in the foreground window and activate it (button/menu item/tree item/checkbox). Use a name reported by snapshot. Preferred over click(x,y)."),
+			mcp.WithDescription("Find an element by its Name (or AutomationId) in the foreground window — or in 'window', in the background without focusing it — and activate it (button/menu item/tree item/checkbox). Use a name reported by snapshot. Preferred over click(x,y)."),
 			mcp.WithString("name",
 				mcp.Description("The element Name or AutomationId to invoke."),
 				mcp.Required(),
 			),
+			mcp.WithString("window", mcp.Description(windowParamDesc)),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
-			if err := uiaInvoke(name); err != nil {
+			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
+			if err != nil {
 				return mcp.NewToolResultErrorFromErr("invoke failed", err), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("ok: invoked %q", name)), nil
+			if err := uiaInvokeIn(hwnd, name); err != nil {
+				return mcp.NewToolResultErrorFromErr("invoke failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: invoked %q%s", name, backgroundSuffix(hwnd))), nil
 		},
 	)
 
 	// set_value — set the text of an editable element found by name.
 	s.AddTool(
 		mcp.NewTool("set_value",
-			mcp.WithDescription("Find an editable element by its Name (or AutomationId) in the foreground window and set its text via the UIA Value pattern. Preferred over click+type for known input fields."),
+			mcp.WithDescription("Find an editable element by its Name (or AutomationId) in the foreground window — or in 'window', in the background without focusing it — and set its text via the UIA Value pattern. Preferred over click+type for known input fields."),
 			mcp.WithString("name",
 				mcp.Description("The element Name or AutomationId of the input field."),
 				mcp.Required(),
@@ -1083,6 +1098,7 @@ func newScreenMCPServer() *server.MCPServer {
 				mcp.Description("The text to set."),
 				mcp.Required(),
 			),
+			mcp.WithString("window", mcp.Description(windowParamDesc)),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
@@ -1093,10 +1109,14 @@ func newScreenMCPServer() *server.MCPServer {
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'text'"), nil
 			}
-			if err := uiaSetValue(name, text); err != nil {
+			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
+			if err != nil {
 				return mcp.NewToolResultErrorFromErr("set_value failed", err), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("ok: set %q = %q", name, text)), nil
+			if err := uiaSetValueIn(hwnd, name, text); err != nil {
+				return mcp.NewToolResultErrorFromErr("set_value failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: set %q = %q%s", name, text, backgroundSuffix(hwnd))), nil
 		},
 	)
 
@@ -1107,18 +1127,23 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot's truncated label.
 	s.AddTool(
 		mcp.NewTool("get_value",
-			mcp.WithDescription(fmt.Sprintf("Find an editable element by its Name (or AutomationId) in the foreground window and read its CURRENT text via the UIA Value pattern. The read-side counterpart to set_value — use this to confirm what a field actually holds now (e.g. after autocomplete rewrote it, or a calculated field updated) instead of guessing from snapshot's truncated label. Returns at most %d chars; for longer content use get_text (offset/max_chars).", maxFieldValueChars)),
+			mcp.WithDescription(fmt.Sprintf("Find an editable element by its Name (or AutomationId) in the foreground window (or 'window', no focus change) and read its CURRENT text via the UIA Value pattern. The read-side counterpart to set_value — use this to confirm what a field actually holds now (e.g. after autocomplete rewrote it, or a calculated field updated) instead of guessing from snapshot's truncated label. Returns at most %d chars; for longer content use get_text (offset/max_chars).", maxFieldValueChars)),
 			mcp.WithString("name",
 				mcp.Description("The element Name or AutomationId of the input field."),
 				mcp.Required(),
 			),
+			mcp.WithString("window", mcp.Description(windowParamDesc)),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
-			value, totalKnown, err := uiaGetValue(name)
+			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
+			}
+			value, totalKnown, err := uiaGetValueIn(hwnd, name)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
 			}
@@ -1137,7 +1162,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// is re-sent on every later round-trip of the turn.
 	s.AddTool(
 		mcp.NewTool("get_text",
-			mcp.WithDescription(fmt.Sprintf("Read a window/control's TEXT content by handle (UIA Text pattern, Value fallback) — use this to READ a document, editor, log pane, article, or read-only text area instead of a screenshot. Give 'name' (element Name/AutomationId from snapshot) to read one element; omit it to read the foreground window's document text. Returns at most max_chars (default %d) characters starting at 'offset'; when cut, the reply ends with a note '…[잘림: 전체 N자 중 a–b 표시. 이어 읽으려면 offset=b …]' — pass that offset to read the next part. A NEGATIVE offset reads from the END (tail): offset=-3000 = the last 3000 chars (newest log lines). Prefer this and snapshot over capture_window for reading text; capture only for genuinely visual content.", defaultTextMaxChars)),
+			mcp.WithDescription(fmt.Sprintf("Read a window/control's TEXT content by handle (UIA Text pattern, Value fallback) — use this to READ a document, editor, log pane, article, or read-only text area instead of a screenshot. Give 'name' (element Name/AutomationId from snapshot) to read one element; omit it to read the foreground window's document text ('window' reads another window instead, without focusing it). Returns at most max_chars (default %d) characters starting at 'offset'; when cut, the reply ends with a note '…[잘림: 전체 N자 중 a–b 표시. 이어 읽으려면 offset=b …]' — pass that offset to read the next part. A NEGATIVE offset reads from the END (tail): offset=-3000 = the last 3000 chars (newest log lines). Prefer this and snapshot over capture_window for reading text; capture only for genuinely visual content.", defaultTextMaxChars)),
 			mcp.WithString("name",
 				mcp.Description("Optional element Name/AutomationId to read. Omit to read the foreground window's own text content."),
 			),
@@ -1147,12 +1172,17 @@ func newScreenMCPServer() *server.MCPServer {
 			mcp.WithNumber("max_chars",
 				mcp.Description(fmt.Sprintf("Max characters to return (default %d, max %d). Raise only when you truly need a bigger chunk.", defaultTextMaxChars, ceilingTextMaxChars)),
 			),
+			mcp.WithString("window", mcp.Description(windowParamDesc)),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name := req.GetString("name", "")
 			offset := req.GetInt("offset", 0)
 			maxChars := clampLimit(req.GetInt("max_chars", 0), defaultTextMaxChars, ceilingTextMaxChars)
-			text, err := uiaGetText(name, offset, maxChars)
+			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("get_text failed", err), nil
+			}
+			text, err := uiaGetTextIn(hwnd, name, offset, maxChars)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_text failed", err), nil
 			}
@@ -1177,7 +1207,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// or may not appear) belong outside the batch, split at that point.
 	s.AddTool(
 		mcp.NewTool("run_sequence",
-			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name}, set_value{name,text}, click_control{window,text,nth?}, wait_for_control{name,timeout_ms?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}, wait{ms}. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
+			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,timeout_ms?,window?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}, wait{ms}, note{text} (no-op placeholder). Giving "window" to invoke/set_value/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
 			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200,"wait_ms":300},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
 			mcp.WithNumber("step_delay_ms", mcp.Description("Pause between every two steps, in ms (default from AGLINK_SCREEN_STEP_DELAY_MS, else 0).")),
 		),

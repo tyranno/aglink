@@ -16,6 +16,7 @@
   import CloneScript from "./CloneScript.svelte";
   import MarkdownPreview from "./MarkdownPreview.svelte";
   import AttentionToast from "./AttentionToast.svelte";
+  import QuickSwitcher from "./QuickSwitcher.svelte";
   import {
     chat,
     MAX_PANES,
@@ -197,6 +198,15 @@
 
   function conversationLabel(conv) {
     return conv?.title || conv?.id || "이름 없는 대화";
+  }
+
+  // Sidebar filter: while it has text the grouped tree is replaced by one flat
+  // list of matching conversations (title, #id or work folder; archived too).
+  let convFilter = $state("");
+  function filteredWebConvs() {
+    const q = convFilter.trim().toLowerCase();
+    return chat.webConvs.filter((conv) =>
+      `${conversationLabel(conv)} #${conv.id} ${conv.workDir || ""}`.toLowerCase().includes(q));
   }
 
   // Cycles system → light → dark → system on click; the icon always reflects
@@ -859,7 +869,30 @@
               </button>
             </div>
 
+            <div class="shrink-0 border-b border-slate-200 dark:border-slate-700 px-3 py-2">
+              <div class="flex items-center gap-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100 dark:focus-within:ring-blue-900/30">
+                <svg class="h-3.5 w-3.5 shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input
+                  class="min-w-0 flex-1 bg-transparent py-1.5 text-[13px] text-slate-800 dark:text-slate-200 outline-none placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                  placeholder="대화 찾기 (Ctrl+K)"
+                  value={convFilter}
+                  oninput={(event) => (convFilter = event.currentTarget.value)}
+                  onkeydown={(event) => {
+                    if (event.key === "Escape") convFilter = "";
+                    else if (event.key === "Enter" && !event.isComposing) {
+                      const first = filteredWebConvs()[0];
+                      if (first) selectTargetFromSidebar({ kind: "web", id: first.id });
+                    }
+                  }}
+                />
+                {#if convFilter}
+                  <button type="button" class="shrink-0 text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" onclick={() => (convFilter = "")} aria-label="찾기 지우기">✕</button>
+                {/if}
+              </div>
+            </div>
+
             <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+              {#if !convFilter.trim()}
               <div class="mb-4">
                 <div class="mb-2 px-1 text-[11px] font-bold tracking-[0.04em] text-slate-500 dark:text-slate-400">텔레그램 채널</div>
                 <div class="border-l-2 border-slate-200 dark:border-slate-700 pl-2">
@@ -876,7 +909,7 @@
                         onclick={() => selectTargetFromSidebar({ kind: "telegram" })}
                         title={chat.telegram.title || "텔레그램"}
                       >
-                        <span class="inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-sky-500"></span>
+                        <span class={`inline-flex h-2.5 w-2.5 shrink-0 rounded-full ${chat.working.has("telegram") ? "animate-pulse bg-blue-500" : "bg-sky-500"}`} title={chat.working.has("telegram") ? "작업 중" : ""}></span>
                         <span class="min-w-0 flex-1 truncate text-sm font-semibold">
                           {chat.telegram.title || "텔레그램"}
                         </span>
@@ -908,6 +941,7 @@
                   {/if}
                 </div>
               </div>
+              {/if}
 
               <div>
                 {#snippet webConvRow(conv)}
@@ -923,6 +957,9 @@
                         ondragend={handleConversationDragEnd}
                         onclick={() => selectTargetFromSidebar({ kind: "web", id: conv.id })}
                       >
+                        {#if chat.working.has(`web:${conv.id}`)}
+                          <span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-blue-500" title="작업 중"></span>
+                        {/if}
                         <span class="min-w-0 flex-1 truncate text-sm font-semibold">{conversationLabel(conv)}</span>
                         <span class="shrink-0 font-mono text-[11px] text-slate-400 dark:text-slate-500">#{conv.id}</span>
                         <span class="shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:text-slate-300">{backendLabel(conv.backend)}</span>
@@ -997,7 +1034,7 @@
                   ondrop={(event) => handleGroupDrop(event, UNGROUPED_DROP_ZONE)}
                   title="대화를 여기로 드래그하면 그룹에서 빠집니다"
                 >
-                  <div class="flex-1 text-[11px] font-bold tracking-[0.04em] text-slate-500 dark:text-slate-400">로컬 채널</div>
+                  <div class="flex-1 text-[11px] font-bold tracking-[0.04em] text-slate-500 dark:text-slate-400">{#if convFilter.trim()}찾은 대화 ({filteredWebConvs().length}){:else}<span>로컬 채널</span>{/if}</div>
                   <button
                     class="grid h-5 w-5 shrink-0 place-items-center rounded text-[13px] font-bold leading-none text-slate-400 dark:text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600 hover:text-slate-700"
                     onclick={newWebGroup}
@@ -1008,6 +1045,13 @@
                   </button>
                 </div>
                 <div class="space-y-1 border-l-2 border-slate-200 dark:border-slate-700 pl-2">
+                  {#if convFilter.trim()}
+                    {#each filteredWebConvs() as conv (conv.id)}
+                      {@render webConvRow(conv)}
+                    {:else}
+                      <div class="px-2 py-3 text-sm text-slate-400 dark:text-slate-500">맞는 대화가 없습니다.</div>
+                    {/each}
+                  {:else}
                   {#if chat.webConvs.length === 0}
                     <div class="rounded-md border border-dashed border-slate-300 dark:border-slate-600 bg-white/70 dark:bg-slate-900/70 px-3 py-4 text-sm text-slate-500 dark:text-slate-400">
                       아직 로컬 대화가 없습니다. "새 대화"로 시작하세요.
@@ -1047,6 +1091,7 @@
                       </div>
                     {/if}
                   {/if}
+                  {/if}
                 </div>
               </div>
             </div>
@@ -1077,7 +1122,10 @@
 
         <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
           {#if chat.statusNote}
-            <div class="shrink-0 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-4 py-2 text-xs text-amber-800 dark:text-amber-300">{chat.statusNote}</div>
+            <div class="flex shrink-0 items-center gap-2 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-4 py-2 text-xs text-amber-800 dark:text-amber-300">
+              <span class="min-w-0 flex-1 break-words">{chat.statusNote}</span>
+              <button type="button" class="shrink-0 rounded px-1 text-amber-600 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/40" onclick={() => (chat.statusNote = "")} aria-label="안내 닫기" title="닫기">✕</button>
+            </div>
           {/if}
 
           <div class="flex min-h-0 flex-1 overflow-hidden">
@@ -1459,3 +1507,4 @@
   onClose={closePreview}
 />
 <AttentionToast />
+<QuickSwitcher />

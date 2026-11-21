@@ -459,17 +459,42 @@ func (c *ControlService) WebNew(title string) error {
 
 // WebSetDir sets a web conversation's working directory.
 func (c *ControlService) WebSetDir(id, path string) error {
-	return c.send(controlIn{Type: "web_setdir", ID: id, Path: path, Origin: "web"})
+	return c.mutate(controlIn{Type: "web_setdir", ID: id, Path: path, Origin: "web"})
 }
 
 // WebRename renames a web conversation.
 func (c *ControlService) WebRename(id, title string) error {
-	return c.send(controlIn{Type: "web_rename", ID: id, Title: title, Origin: "web"})
+	return c.mutate(controlIn{Type: "web_rename", ID: id, Title: title, Origin: "web"})
 }
 
 // WebDelete deletes a web conversation.
 func (c *ControlService) WebDelete(id string) error {
-	return c.send(controlIn{Type: "web_delete", ID: id, Origin: "web"})
+	return c.mutate(controlIn{Type: "web_delete", ID: id, Origin: "web"})
+}
+
+// mutate sends an acknowledged change (setdir/rename/delete) and waits for
+// the host's {"ok":…,"error":…} reply, so the caller refreshes only after the
+// change is durable and a refused change (bad folder, unknown id) comes back
+// as an error instead of silently doing nothing.
+func (c *ControlService) mutate(m controlIn) error {
+	data, err := c.request(m)
+	if err != nil {
+		return err
+	}
+	var res struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return fmt.Errorf("%s: bad reply: %w", m.Type, err)
+	}
+	if !res.OK {
+		if res.Error == "" {
+			return fmt.Errorf("%s failed", m.Type)
+		}
+		return errors.New(res.Error)
+	}
+	return nil
 }
 
 // SetChannelBackend sets a per-channel backend override. backend may be

@@ -38,7 +38,7 @@ export const chat = $state({
   layout: { type: "leaf", paneId: "pane-0" },
   focusedPaneId: "pane-0",
   messagesByKey: new Map(),
-  drafts: new Map(),
+  drafts: loadDraftsFromStorage(), // unsent composer text per conversation, kept across restarts
   sentHistoryByKey: new Map(),
   historyIndexByKey: new Map(),
   working: new Map(),
@@ -62,6 +62,8 @@ export const chat = $state({
   progressPopupPaneId: null,
   backendMenuPaneId: null,
   workDirMenuPaneId: null,
+  toast: "", // short-lived notice (showToast), e.g. "글자 크기 108%"
+  fontScale: 1, // message text size (stepFontScale), loaded from localStorage below
 });
 
 export const UNGROUPED_DROP_ZONE = "none";
@@ -370,7 +372,7 @@ function loadLayoutFromStorage() {
       id: p.id,
       target: p.target ? serializeLayoutTarget(p.target) : null,
       attachments: [],
-      composerText: "",
+      composerText: p.target ? chat.drafts.get(targetKey(serializeLayoutTarget(p.target))) || "" : "",
       commandMenuHidden: false,
       highlightedCommandIndex: 0,
     }));
@@ -982,16 +984,42 @@ export async function resizePaneComposer(paneId) {
   el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
 }
 
+// Unsent text survives an app restart: drafts are mirrored to localStorage
+// (debounced — setDraft runs on every keystroke).
+function loadDraftsFromStorage() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("aglink-desktop:drafts") || "{}");
+    return new Map(Object.entries(saved).filter(([, v]) => typeof v === "string" && v));
+  } catch {
+    return new Map();
+  }
+}
+
+let draftsTimer = 0;
+function persistDrafts() {
+  clearTimeout(draftsTimer);
+  draftsTimer = setTimeout(() => {
+    try {
+      const kept = [...chat.drafts].filter(([, v]) => v && v.length <= 20000);
+      localStorage.setItem("aglink-desktop:drafts", JSON.stringify(Object.fromEntries(kept)));
+    } catch {
+      // Storage full/unavailable: drafts just stay in memory for this run.
+    }
+  }, 400);
+}
+
 export function setDraft(key, value) {
   const next = new Map(chat.drafts);
   next.set(key, value);
   chat.drafts = next;
+  persistDrafts();
 }
 
 export function clearDraft(key) {
   const next = new Map(chat.drafts);
   next.delete(key);
   chat.drafts = next;
+  persistDrafts();
 }
 
 export function rememberSentHistory(key, text) {
@@ -1453,6 +1481,54 @@ export async function editIntoComposer(paneId, text) {
   el?.setSelectionRange(el.value.length, el.value.length);
 }
 
+// Adds the selected text to the composer as a Markdown quote ("> …") under
+// whatever is already typed, then leaves the caret on a fresh line after it.
+export async function quoteIntoComposer(paneId, text) {
+  const quoted = String(text || "").trim().split(/\r?\n/).map((line) => `> ${line}`).join("\n");
+  if (!quoted) return;
+  const current = (pane(paneId)?.composerText || "").replace(/\s+$/, "");
+  await editIntoComposer(paneId, `${current ? `${current}\n\n` : ""}${quoted}\n\n`);
+}
+
+// Formats a conversation as Markdown ("## 나 · 오후 3:59" headings per
+// message) for the header's 대화 내보내기 button.
+export function conversationMarkdown(target) {
+  const meta = paneConversationMeta(target);
+  const lines = [`# ${meta?.title || "대화"}`, ""];
+  for (const m of messagesForPane(target)) {
+    if (m.role === "narration" || (!m.text && !m.image)) continue;
+    const who = m.role === "user" ? "나" : m.role === "system" ? "시스템" : "AI";
+    const when = m.at ? ` · ${new Date(m.at).toLocaleString("ko-KR")}` : "";
+    lines.push(`## ${who}${when}`, "", m.text || "", m.image ? "\n(이미지)" : "", "");
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+// Message text size, shared by every pane (Ctrl+= / Ctrl+- / Ctrl+0).
+const FONT_SCALE_KEY = "aglink-desktop:font-scale";
+const FONT_SCALES = [0.85, 0.92, 1, 1.08, 1.16, 1.25, 1.4];
+chat.fontScale = (() => {
+  const saved = Number(localStorage.getItem(FONT_SCALE_KEY));
+  return FONT_SCALES.includes(saved) ? saved : 1;
+})();
+
+// step is +1 / -1 (one size larger/smaller) or 0 (back to normal).
+export function stepFontScale(step) {
+  const i = FONT_SCALES.indexOf(chat.fontScale);
+  const next = step === 0 ? 1 : FONT_SCALES[Math.min(FONT_SCALES.length - 1, Math.max(0, (i < 0 ? 2 : i) + step))];
+  chat.fontScale = next;
+  localStorage.setItem(FONT_SCALE_KEY, String(next));
+  showToast(`글자 크기 ${Math.round(next * 100)}%`);
+}
+
+// showToast flashes a one-line notice at the bottom of the window for ~1.6s.
+let toastTimer = 0;
+export function showToast(text) {
+  chat.toast = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (chat.toast = ""), 1600);
+}
+
 // Sends an earlier message again as-is; a draft already in the composer is kept.
 export async function resendFromPane(paneId, text) {
   const p = pane(paneId);
@@ -1751,6 +1827,9 @@ export function handleFrame(frame) {
   if (frame.type === "done") {
     stopWorking(key);
     turnDoneListener?.(key);
+    // Working in another app: blink the taskbar button until aglink is
+    // brought forward (no-op when the window already has focus).
+    void ControlService.FlashIfUnfocused?.().catch(() => {});
   }
   if (frame.type === "status") {
     // In-place progress: updates the working indicator, never a message.

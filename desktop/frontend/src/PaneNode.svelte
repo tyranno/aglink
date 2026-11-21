@@ -45,6 +45,9 @@
     setTargetWorkDir,
     editIntoComposer,
     resendFromPane,
+    quoteIntoComposer,
+    conversationMarkdown,
+    showToast,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
   import { voice, sendNow, skipReading, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
@@ -59,6 +62,79 @@
     const el = event.currentTarget;
     atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
     recordPaneLogScroll(node.paneId, el);
+    quoteSel = null;
+  }
+
+  // "새 메시지 N" on the jump-to-latest button: how many messages arrived
+  // since the log was last at its bottom (reset when the pane switches chats).
+  let seenCount = $state(0);
+  let seenKey = "";
+  $effect(() => {
+    if (node.type !== "leaf") return;
+    const target = pane(node.paneId)?.target;
+    const key = target ? `${target.kind}:${target.id || ""}` : "";
+    const n = messagesForPane(target).length;
+    if (atBottom || key !== seenKey) {
+      seenKey = key;
+      seenCount = n;
+    }
+  });
+
+  // Select text in the log → a floating "인용" button adds it to the composer
+  // as a quote, so a follow-up can point at the exact part of an answer.
+  let quoteSel = $state(null); // { text, x, y } relative to the log wrapper
+
+  function handleLogMouseUp(event) {
+    const wrap = event.currentTarget;
+    setTimeout(() => {
+      const sel = window.getSelection();
+      const text = sel && sel.rangeCount > 0 ? sel.toString().trim() : "";
+      if (!text) { quoteSel = null; return; }
+      const range = sel.getRangeAt(0);
+      if (!wrap.contains(range.commonAncestorContainer)) { quoteSel = null; return; }
+      const r = range.getBoundingClientRect();
+      const w = wrap.getBoundingClientRect();
+      quoteSel = {
+        text,
+        x: Math.min(Math.max(r.left - w.left + r.width / 2, 48), w.width - 48),
+        y: r.top - w.top > 40 ? r.top - w.top - 34 : r.bottom - w.top + 6,
+      };
+    }, 0);
+  }
+
+  function useQuote(paneId) {
+    if (!quoteSel) return;
+    const text = quoteSel.text;
+    quoteSel = null;
+    window.getSelection()?.removeAllRanges();
+    void quoteIntoComposer(paneId, text);
+  }
+
+  // How long the answer took: from the user message that started the turn to
+  // the turn's last reply bubble (shown once per turn, under that bubble).
+  function replyDuration(messages, index) {
+    const m = messages[index];
+    if (m?.role !== "assistant" || !m.at) return "";
+    for (let j = index + 1; j < messages.length; j++) {
+      const next = messages[j];
+      if (next.role === "narration") continue;
+      if (next.role === "assistant") return "";
+      break;
+    }
+    for (let j = index - 1; j >= 0; j--) {
+      if (messages[j].role !== "user") continue;
+      const ms = m.at - (messages[j].at || 0);
+      if (!messages[j].at || ms < 1000 || ms > 6 * 3600 * 1000) return "";
+      const sec = Math.round(ms / 1000);
+      return sec < 60 ? `${sec}초` : `${Math.floor(sec / 60)}분 ${sec % 60}초`;
+    }
+    return "";
+  }
+
+  function exportConversation(target) {
+    navigator.clipboard?.writeText(conversationMarkdown(target))
+      .then(() => showToast("대화 전체를 마크다운으로 복사했습니다"))
+      .catch(() => showToast("복사하지 못했습니다"));
   }
 
   // User bubbles stay verbatim (typed text shown as typed); assistant/system
@@ -399,6 +475,14 @@
   <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points={up ? "18 15 12 9 6 15" : "6 9 12 15 18 9"}/></svg>
 {/snippet}
 
+{#snippet iconExport()}
+  <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+{/snippet}
+
+{#snippet iconQuote()}
+  <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.2 6C4.9 6 3 7.9 3 10.2c0 2.1 1.5 3.8 3.5 4.1-.3 1.5-1.2 2.6-2.6 3.2l.7 1.5C8.3 18 10.5 15.4 10.5 11V9.7C10.5 7.7 9.1 6 7.2 6zm10 0C14.9 6 13 7.9 13 10.2c0 2.1 1.5 3.8 3.5 4.1-.3 1.5-1.2 2.6-2.6 3.2l.7 1.5c3.7-1 5.9-3.6 5.9-8V9.7C20.5 7.7 19.1 6 17.2 6z"/></svg>
+{/snippet}
+
 {#snippet iconCheck()}
   <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
 {/snippet}
@@ -441,6 +525,7 @@
       onclick={() => focusPane(p.id)}
       data-file-drop-target
       data-pane-id={p.id}
+      style={`--msg-scale:${chat.fontScale}`}
       ondragover={(event) => handlePaneDragOver(event, p.id)}
       ondragleave={() => handlePaneDragLeave(p.id)}
       ondrop={(event) => handlePaneDrop(event, p.id)}
@@ -549,6 +634,16 @@
         {:else}
           <div class="min-w-0 flex-1 text-sm text-slate-500 dark:text-slate-400">대화를 선택하세요.</div>
         {/if}
+        {#if p.target && messagesForPane(p.target).length > 0}
+          <button
+            type="button"
+            draggable="false"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-500 dark:text-slate-400 transition-colors hover:bg-slate-100 dark:hover:bg-slate-700"
+            onclick={(event) => { event.stopPropagation(); exportConversation(p.target); }}
+            title="대화 전체를 마크다운으로 복사"
+            aria-label="대화 내보내기"
+          >{@render iconExport()}</button>
+        {/if}
         {#if p.target}
           <button
             type="button"
@@ -601,7 +696,19 @@
         </div>
       {/if}
 
-      <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden" onmouseup={handleLogMouseUp}>
+        {#if quoteSel}
+          <button
+            type="button"
+            class="absolute z-30 flex -translate-x-1/2 items-center gap-1 rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white shadow-lg transition hover:bg-blue-600 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-blue-300"
+            style={`left:${quoteSel.x}px; top:${quoteSel.y}px`}
+            onmousedown={(event) => event.preventDefault()}
+            onmouseup={(event) => event.stopPropagation()}
+            onclick={(event) => { event.stopPropagation(); useQuote(p.id); }}
+            title="선택한 부분을 인용해서 입력창에 넣습니다"
+          >{@render iconQuote()} 인용해서 묻기</button>
+        {/if}
         <div use:registerPaneLog={p.id} onscroll={handleLogScroll} class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
           <div class="flex min-h-full w-full flex-col gap-1">
             {#if messagesForPane(p.target).length === 0}
@@ -653,9 +760,9 @@
                   {#if message.text}
                     <div class={folded ? "msg-folded" : ""}>
                       {#if message.role === "user"}
-                        <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{#if message.voice}{@render voiceBadge()}{/if}{message.text}</div>
+                        <div class="msg-text whitespace-pre-wrap break-words">{#if message.voice}{@render voiceBadge()}{/if}{message.text}</div>
                       {:else}
-                        <div class="markdown-body text-[13px] leading-4" use:renderMarkdownInto={message.text}></div>
+                        <div class="msg-text markdown-body" use:renderMarkdownInto={message.text}></div>
                       {/if}
                     </div>
                     {#if long}
@@ -680,6 +787,9 @@
                   <div class={`mt-0.5 flex h-4 items-center gap-1 px-1 text-[10px] text-slate-400 dark:text-slate-500 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
                     {#if message.at}
                       <span class="tabular-nums" title={new Date(message.at).toLocaleString("ko-KR")}>{messageTime(message.at)}</span>
+                    {/if}
+                    {#if replyDuration(messagesForPane(p.target), mIndex)}
+                      <span class="tabular-nums" title="질문부터 이 답변까지 걸린 시간">· {replyDuration(messagesForPane(p.target), mIndex)}</span>
                     {/if}
                     {#if message.role === "user" && message.ack}
                       <span class="text-blue-500/80 dark:text-blue-400/70" title="aglink 가 메시지를 받아 작업을 시작했습니다">✓ 확인함</span>
@@ -722,13 +832,14 @@
           </div>
         </div>
         {#if !atBottom && messagesForPane(p.target).length > 0}
+          {@const newCount = Math.max(0, messagesForPane(p.target).length - seenCount)}
           <button
-            class="absolute bottom-3 right-4 grid h-8 w-8 place-items-center rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm text-slate-600 dark:text-slate-400 shadow-md hover:bg-slate-50 dark:hover:bg-slate-700"
+            class={`absolute bottom-3 right-4 flex h-8 items-center justify-center gap-1 rounded-full border shadow-md transition-colors ${newCount > 0 ? "border-blue-500 bg-blue-600 px-3 text-xs font-semibold text-white hover:bg-blue-700" : "w-8 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700"}`}
             onclick={() => scrollPaneLogToBottom(p.id)}
             title="마지막 메시지로 이동"
             aria-label="마지막 메시지로 이동"
           >
-            ↓
+            {@render iconChevron(false)}{#if newCount > 0}<span>새 메시지 {newCount}</span>{/if}
           </button>
         {/if}
       </div>
@@ -996,6 +1107,12 @@
 {/if}
 
 <style>
+  /* Message body text: 13px × the user's text size (Ctrl+= / Ctrl+-), with a
+     roomier line height than the old 16px so long answers are easier to read. */
+  :global(.msg-text) {
+    font-size: calc(13px * var(--msg-scale, 1));
+    line-height: 1.55;
+  }
   :global(.markdown-body) {
     white-space: normal;
     overflow-x: auto;
@@ -1020,16 +1137,16 @@
     font-weight: 600;
   }
   :global(.markdown-body h1) {
-    font-size: 15px;
+    font-size: 1.16em;
   }
   :global(.markdown-body h2) {
-    font-size: 14px;
+    font-size: 1.08em;
   }
   :global(.markdown-body h3),
   :global(.markdown-body h4),
   :global(.markdown-body h5),
   :global(.markdown-body h6) {
-    font-size: 13px;
+    font-size: 1em;
   }
   :global(.markdown-body ul),
   :global(.markdown-body ol) {
@@ -1053,7 +1170,7 @@
   :global(.markdown-body table) {
     margin: 0 0 6px;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: 0.92em;
     line-height: 1.4;
   }
   :global(.markdown-body th),
@@ -1078,7 +1195,7 @@
     border-radius: 4px;
     background: #f1f5f9;
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-    font-size: 12px;
+    font-size: 0.92em;
   }
   :global(.markdown-body pre) {
     margin: 0;

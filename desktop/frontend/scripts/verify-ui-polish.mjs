@@ -56,7 +56,7 @@ assert(chatLog.includes("flex-1") && chatLog.includes("overflow-y-auto"), "chat 
 assert(!chatLog.includes("max-w-5xl"), "chat message area must expand with the desktop window");
 assert(!chatLog.includes("78ch"), "message bubbles must not keep the old narrow fixed reading width");
 assert(chatLog.includes("px-3 py-1.5"), "message bubbles must use tighter vertical padding");
-assert(chatLog.includes("text-[13px] leading-4"), "message text must use compact desktop font sizing");
+assert(chatLog.includes("msg-text") && pane.includes("calc(13px * var(--msg-scale, 1))"), "message text must use the 13px base scaled by the user text size (Ctrl+= / Ctrl+-)");
 assert(chatLog.includes("mt-2"), "message image spacing must stay compact");
 assert(!composer.includes("max-w-5xl"), "composer and attachment rows must expand with the chat area");
 assert(composer.includes("attachments") && composer.includes("attachment.previewURL") && composer.includes("<img"), "attachment thumbnails must render inline in the composer");
@@ -207,7 +207,7 @@ assert(app.includes("void loadVersionInfo();\n        }, 500);"), "saving settin
 // user bubbles stay verbatim.
 assert(pane.includes('import { renderMarkdown } from "./markdown.js"'), "PaneNode must use the shared markdown renderer for message bubbles");
 assert(pane.includes("function renderMarkdownInto(") && pane.includes("use:renderMarkdownInto={message.text}"), "non-user message bubbles must be rendered through the markdown action");
-assert(pane.match(/\{#if message\.role === "user"\}[\s\S]{0,200}whitespace-pre-wrap break-words text-\[13px\] leading-4[\s\S]{0,200}\{:else\}[\s\S]{0,200}markdown-body/), "user messages must stay plain text while other roles get markdown");
+assert(pane.match(/\{#if message\.role === "user"\}[\s\S]{0,200}msg-text whitespace-pre-wrap break-words[\s\S]{0,200}\{:else\}[\s\S]{0,200}markdown-body/), "user messages must stay plain text while other roles get markdown");
 assert(pane.includes(":global(.markdown-body pre)") && pane.includes(":global(.markdown-body code)"), "markdown code blocks/inline code must have their own styling, not fall back to plain paragraph text");
 assert(pane.includes(":global(.markdown-body table)") && pane.includes(":global(.markdown-body th)") && pane.includes(":global(.markdown-body td)"), "markdown tables must have readable table/cell styling");
 

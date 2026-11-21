@@ -88,6 +88,7 @@ func main() {
 
 	loadWindowState()
 	win := app.Window.NewWithOptions(mainWindowOptions())
+	attentionWindow.Store(win)
 	// Persist the window size / position / maximised state so the window comes
 	// back as it was left. Save on resize, move and close (close covers the case
 	// where the last change was a maximise/restore).

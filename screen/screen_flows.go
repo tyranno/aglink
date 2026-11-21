@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,48 @@ func normalizeFlowSteps(steps string) (json.RawMessage, int, error) {
 		return nil, 0, err
 	}
 	return b, len(arr), nil
+}
+
+// stableFlowWindows rewrites every step's hex-handle "window" ("0x1234") to a
+// title that will still match after the app restarts: the part after the last
+// " - " ("제목 없음 - 메모장" → "메모장"), or the whole title. A handle dies with
+// its window, so a flow saved with one fails on the next run. Handles whose
+// window is gone (empty title) are left as they are. Returns the steps (the
+// input unchanged when nothing was rewritten) and "0x.. → title" notes.
+func stableFlowWindows(steps string, titleOf func(uintptr) string) (string, []string) {
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(steps), &arr); err != nil {
+		return steps, nil
+	}
+	var notes []string
+	for _, st := range arr {
+		w, _ := st["window"].(string)
+		w = strings.TrimSpace(w)
+		if !strings.HasPrefix(strings.ToLower(w), "0x") {
+			continue
+		}
+		h, err := strconv.ParseUint(w[2:], 16, 64)
+		if err != nil {
+			continue
+		}
+		title := strings.TrimSpace(titleOf(uintptr(h)))
+		if i := strings.LastIndex(title, " - "); i >= 0 && strings.TrimSpace(title[i+3:]) != "" {
+			title = strings.TrimSpace(title[i+3:])
+		}
+		if title == "" {
+			continue
+		}
+		st["window"] = title
+		notes = append(notes, fmt.Sprintf("%s → %q", w, title))
+	}
+	if len(notes) == 0 {
+		return steps, nil
+	}
+	b, err := json.Marshal(arr)
+	if err != nil {
+		return steps, nil
+	}
+	return string(b), notes
 }
 
 // FlowStore is a mutex-protected, JSON-file-backed map of named flows.

@@ -1277,8 +1277,10 @@ func newScreenMCPServer() *server.MCPServer {
 			res := runSequenceTool("run_sequence", stepsJSON, stepDelay(req))
 			if saveAs != "" && !res.IsError {
 				note := fmt.Sprintf("\nsaved as flow %q — replay with flow_run", saveAs)
-				if _, err := flows.Set(saveAs, stepsJSON); err != nil {
+				if _, kept, err := saveFlowStable(flows, saveAs, stepsJSON); err != nil {
 					note = fmt.Sprintf("\nNOT saved as flow %q: %v", saveAs, err)
+				} else {
+					note += kept
 				}
 				appendText(res, note)
 			}
@@ -1323,10 +1325,10 @@ func newScreenMCPServer() *server.MCPServer {
 				fmt.Fprintf(&sb, "%d. %s\n", i+1, describeStep(st))
 			}
 			if saveAs != "" {
-				if _, err := flows.Set(saveAs, string(b)); err != nil {
+				if _, kept, err := saveFlowStable(flows, saveAs, string(b)); err != nil {
 					fmt.Fprintf(&sb, "NOT saved as flow %q: %v\n", saveAs, err)
 				} else {
-					fmt.Fprintf(&sb, "saved as flow %q — replay with flow_run\n", saveAs)
+					fmt.Fprintf(&sb, "saved as flow %q — replay with flow_run%s\n", saveAs, kept)
 				}
 			}
 			sb.WriteString("steps:\n")
@@ -1351,11 +1353,11 @@ func newScreenMCPServer() *server.MCPServer {
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'steps'"), nil
 			}
-			n, err := flows.Set(name, steps)
+			n, kept, err := saveFlowStable(flows, name, steps)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("flow_save failed", err), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("ok: saved flow %q (%d step(s))", strings.TrimSpace(name), n)), nil
+			return mcp.NewToolResultText(fmt.Sprintf("ok: saved flow %q (%d step(s))%s", strings.TrimSpace(name), n, kept)), nil
 		},
 	)
 	s.AddTool(
@@ -1394,4 +1396,18 @@ func newScreenMCPServer() *server.MCPServer {
 	)
 
 	return s
+}
+
+// saveFlowStable stores a flow with its window handles turned into titles
+// (stableFlowWindows), so it still runs once the app is restarted. kept is a
+// note for the reply listing what was rewritten ("" when nothing was).
+func saveFlowStable(flows *FlowStore, name, steps string) (n int, kept string, err error) {
+	steps, notes := stableFlowWindows(steps, getWindowText)
+	if n, err = flows.Set(name, steps); err != nil {
+		return 0, "", err
+	}
+	if len(notes) > 0 {
+		kept = "\nwindow handles saved as titles so the flow survives a restart: " + strings.Join(notes, ", ")
+	}
+	return n, kept, nil
 }

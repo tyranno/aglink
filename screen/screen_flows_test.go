@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,5 +111,28 @@ func TestFlowStoreSetRollsBackOnWriteFailure(t *testing.T) {
 	}
 	if len(s.List()) != 0 {
 		t.Error("flow should be rolled back after a failed save")
+	}
+}
+
+func TestStableFlowWindows(t *testing.T) {
+	titles := map[uintptr]string{0x709fc: "제목 없음 - 메모장", 0x10: "ttunnel", 0x20: ""}
+	titleOf := func(h uintptr) string { return titles[h] }
+	in := `[{"action":"invoke","name":"AddButton","window":"0x709fc"},{"action":"click_control","window":"0x10","text":"OK"},{"action":"invoke","name":"X","window":"0x20"},{"action":"set_value","name":"Y","text":"z","window":"메모장"},{"action":"type","text":"hi"}]`
+	out, notes := stableFlowWindows(in, titleOf)
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(out), &arr); err != nil {
+		t.Fatal(err)
+	}
+	want := []any{"메모장", "ttunnel", "0x20", "메모장", nil}
+	for i, w := range want {
+		if arr[i]["window"] != w {
+			t.Errorf("step %d window = %v, want %v", i, arr[i]["window"], w)
+		}
+	}
+	if len(notes) != 2 {
+		t.Errorf("notes = %v, want 2", notes)
+	}
+	if same, n := stableFlowWindows(`[{"action":"type","text":"a"}]`, titleOf); same != `[{"action":"type","text":"a"}]` || n != nil {
+		t.Errorf("no-handle steps changed: %s %v", same, n)
 	}
 }

@@ -57,6 +57,40 @@ func resolveScreenshotLongEdge() int {
 	return defaultScreenshotLongEdge
 }
 
+// stepDelay is the between-steps pause for run_sequence/flow_run: the
+// step_delay_ms argument, else AGLINK_SCREEN_STEP_DELAY_MS.
+func stepDelay(req mcp.CallToolRequest) time.Duration {
+	if ms := req.GetFloat("step_delay_ms", -1); ms >= 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return seqDelayFromEnv()
+}
+
+// runSequenceTool runs steps and renders the run_sequence reply; label names
+// the run in an early-stop error.
+func runSequenceTool(label, stepsJSON string, delay time.Duration) *mcp.CallToolResult {
+	results, rerr := runSequence(stepsJSON, delay)
+	// Compact (not indented) JSON: this is machine-read step output, so the
+	// pretty-print newlines/spaces were pure token overhead every call.
+	b, _ := json.Marshal(results)
+	if rerr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("%s stopped early: %v\n%s", label, rerr, string(b)))
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("ok: %d step(s) completed\n%s", len(results), string(b)))
+}
+
+// appendText adds a line to a text tool result.
+func appendText(res *mcp.CallToolResult, s string) {
+	for i, c := range res.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			tc.Text += s
+			res.Content[i] = tc
+			return
+		}
+	}
+	res.Content = append(res.Content, mcp.NewTextContent(s))
+}
+
 // windowParamDesc documents the optional `window` argument of the UIA tools.
 const windowParamDesc = "Optional target window (title substring or hwnd, as in focus_window). When given, the UIA search is rooted at that window instead of the foreground one and the window is NOT brought to front — background use while the user keeps working elsewhere."
 
@@ -1195,6 +1229,17 @@ func newScreenMCPServer() *server.MCPServer {
 
 	// ---- batch execution ----
 
+	// Saved flows: same tolerance as presets — an unresolvable path or corrupt
+	// file disables/empties the store instead of taking the server down.
+	flowsPath, err := defaultFlowsPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "aglink-screen: warning: could not resolve flows path: %v (flows disabled)\n", err)
+	}
+	flows := NewFlowStore(flowsPath)
+	if err := flows.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "aglink-screen: warning: could not load flows from %s: %v (starting empty)\n", flowsPath, err)
+	}
+
 	// run_sequence — execute several actions in one call instead of one
 	// round-trip per step. The bulk of a screen-control turn's wall-clock time
 	// is the reasoning between tool calls, not the calls themselves, so this
@@ -1210,24 +1255,86 @@ func newScreenMCPServer() *server.MCPServer {
 			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,timeout_ms?,window?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}, wait{ms}, note{text} (no-op placeholder). Giving "window" to invoke/set_value/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
 			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200,"wait_ms":300},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
 			mcp.WithNumber("step_delay_ms", mcp.Description("Pause between every two steps, in ms (default from AGLINK_SCREEN_STEP_DELAY_MS, else 0).")),
+			mcp.WithString("save_as", mcp.Description("Optional flow name: once every step succeeded, store these steps under it for flow_run (letters, digits, - _ .).")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			stepsJSON, err := req.RequireString("steps")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'steps'"), nil
 			}
-			delay := seqDelayFromEnv()
-			if ms := req.GetFloat("step_delay_ms", -1); ms >= 0 {
-				delay = time.Duration(ms) * time.Millisecond
+			saveAs := strings.TrimSpace(req.GetString("save_as", ""))
+			if saveAs != "" {
+				if err := validateFlowName(saveAs); err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
 			}
-			results, rerr := runSequence(stepsJSON, delay)
-			// Compact (not indented) JSON: this is machine-read step output, so the
-			// pretty-print newlines/spaces were pure token overhead every call.
-			b, _ := json.Marshal(results)
-			if rerr != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("run_sequence stopped early: %v\n%s", rerr, string(b))), nil
+			res := runSequenceTool("run_sequence", stepsJSON, stepDelay(req))
+			if saveAs != "" && !res.IsError {
+				note := fmt.Sprintf("\nsaved as flow %q — replay with flow_run", saveAs)
+				if _, err := flows.Set(saveAs, stepsJSON); err != nil {
+					note = fmt.Sprintf("\nNOT saved as flow %q: %v", saveAs, err)
+				}
+				appendText(res, note)
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("ok: %d step(s) completed\n%s", len(results), string(b))), nil
+			return res, nil
+		},
+	)
+
+	// flow_save / flow_list / flow_run — named, replayable run_sequence steps.
+	s.AddTool(
+		mcp.NewTool("flow_save",
+			mcp.WithDescription("Save a run_sequence steps array (e.g. the one record_workflow returned) under a name, to replay later with flow_run. Overwrites a flow of the same name."),
+			mcp.WithString("name", mcp.Description("Flow name: letters, digits, - _ . (max 64)."), mcp.Required()),
+			mcp.WithString("steps", mcp.Description("JSON array of run_sequence step objects."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			steps, err := req.RequireString("steps")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'steps'"), nil
+			}
+			n, err := flows.Set(name, steps)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("flow_save failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: saved flow %q (%d step(s))", strings.TrimSpace(name), n)), nil
+		},
+	)
+	s.AddTool(
+		mcp.NewTool("flow_list",
+			mcp.WithDescription("List saved screen flows as 'name | N steps | saved-at' lines."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			list := flows.List()
+			if len(list) == 0 {
+				return mcp.NewToolResultText("(no flows saved)"), nil
+			}
+			var b strings.Builder
+			for _, f := range list {
+				fmt.Fprintf(&b, "%s | %d steps | %s\n", f.Name, f.StepCount(), f.Saved)
+			}
+			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
+		},
+	)
+	s.AddTool(
+		mcp.NewTool("flow_run",
+			mcp.WithDescription("Replay a saved flow by name — same as run_sequence with its steps: stops at the first failed step and reports how far it got."),
+			mcp.WithString("name", mcp.Description("Flow name (see flow_list)."), mcp.Required()),
+			mcp.WithNumber("step_delay_ms", mcp.Description("Pause between every two steps, in ms (default from AGLINK_SCREEN_STEP_DELAY_MS, else 0).")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			f, err := flows.Get(name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return runSequenceTool("flow "+f.Name, string(f.Steps), stepDelay(req)), nil
 		},
 	)
 

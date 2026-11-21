@@ -930,7 +930,7 @@ func (b *Bot) handleCommand(chatID int64, text, origin string, tgt Target) {
 		b.handleSSH(reply, chatID, fields)
 	case "!flow":
 		b.handleFlow(reply, chatID, fields)
-	case "!ok", "!approve":
+	case "!ok", "!approve", "!always":
 		b.handleApprovalCommand(reply, chatID, fields, true)
 	case "!no", "!deny":
 		b.handleApprovalCommand(reply, chatID, fields, false)

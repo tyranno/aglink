@@ -1,7 +1,8 @@
 <script>
   // 승인 요청 창. 설정의 "실행 전 승인받을 도구"에 넣은 웹·화면 제어 도구를
   // AI 가 쓰려 하면, 호스트가 control:approval 을 보내고 답을 기다린다
-  // (host/approval.go). [승인]/[거부] 가 그 답이고, 텔레그램 등 다른 곳에서
+  // (host/approval.go). [승인]/[항상 허용]/[거부] 가 그 답이고 — 항상 허용은
+  // 그 도구를 승인 목록에서 빼서 다음부터 묻지 않는다 — 텔레그램 등 다른 곳에서
   // 먼저 답하거나 시간이 지나면 control:approval_done 으로 창이 닫힌다.
   import { Events } from "@wailsio/runtime";
   import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
@@ -32,13 +33,14 @@
   const current = $derived(queue[0] || null);
   const left = $derived(current ? Math.max(0, Math.round((current.at + current.timeoutSec * 1000 - now) / 1000)) : 0);
 
-  async function answer(ok) {
+  async function answer(ok, always = false) {
     if (!current) return;
     busy = true;
     error = "";
     const id = current.id;
     try {
-      const r = JSON.parse((await ControlService.ApprovalAnswer(id, ok)) || "{}");
+      const raw = always ? await ControlService.ApprovalAllowAlways(id) : await ControlService.ApprovalAnswer(id, ok);
+      const r = JSON.parse(raw || "{}");
       if (r && r.ok === false) error = r.error || "처리하지 못했습니다.";
     } catch (e) {
       error = "aglink 와 연결이 끊겨 답하지 못했습니다.";
@@ -63,6 +65,7 @@
       {#if error}<div class="mb-2 text-xs text-red-600 dark:text-red-400">{error}</div>{/if}
       <div class="flex items-center gap-2">
         <button class="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50" disabled={busy} onclick={() => answer(true)}>승인</button>
+        <button class="rounded-md border border-blue-300 dark:border-blue-700 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-semibold text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-700 disabled:opacity-50" disabled={busy} title="이 도구는 다음부터 묻지 않고 실행합니다 (설정의 '실행 전 승인받을 도구'에서 빠짐)" onclick={() => answer(true, true)}>항상 허용</button>
         <button class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50" disabled={busy} onclick={() => answer(false)}>거부</button>
         <span class="ml-auto text-xs text-slate-500">{left}초 뒤 자동 거부</span>
       </div>

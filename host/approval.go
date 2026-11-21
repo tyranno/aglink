@@ -71,6 +71,7 @@ type approvalRequest struct {
 	Summary string
 	Created time.Time
 	done    chan bool
+	always  bool // approved with "항상 허용": stop asking for these tools
 }
 
 var approvals = struct {
@@ -153,7 +154,15 @@ func (b *Bot) handleApproveHTTP(w http.ResponseWriter, r *http.Request) {
 	if cfg.ApprovalTimeoutSec > 0 {
 		timeout = time.Duration(cfg.ApprovalTimeoutSec) * time.Second
 	}
-	approved, reason := b.askApproval(in.Source, in.Tool, in.Summary, timeout)
+	var approved bool
+	var reason string
+	if !stillGated(cfg, in.Tool) {
+		// The worker's MCP server got its tool list at start; the user has
+		// since allowed these tools ("항상 허용" or the settings), so let it run.
+		approved, reason = true, "설정에서 승인 없이 허용된 도구입니다"
+	} else {
+		approved, reason = b.askApproval(in.Source, in.Tool, in.Summary, timeout)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"approved": approved, "reason": reason})
 }
@@ -170,8 +179,8 @@ func (b *Bot) askApproval(source, tool, summary string, timeout time.Duration) (
 		approvals.Unlock()
 	}()
 
-	msg := fmt.Sprintf("🔐 승인 요청 #%s — %s · %s\n%s\n\n버튼을 누르거나 !ok %s / !no %s\n(%d초 안에 답이 없으면 거부합니다)",
-		req.ID, source, tool, truncate(req.Summary, 600), req.ID, req.ID, int(timeout.Seconds()))
+	msg := fmt.Sprintf("🔐 승인 요청 #%s — %s · %s\n%s\n\n버튼을 누르거나 !ok %s / !always %s / !no %s\n(%d초 안에 답이 없으면 거부합니다)",
+		req.ID, source, tool, truncate(req.Summary, 600), req.ID, req.ID, req.ID, int(timeout.Seconds()))
 	sent := 0
 	var asked []tgbotapi.Message
 	if b.api != nil { // Telegram: the chat message itself is the prompt, with buttons to answer it
@@ -207,6 +216,13 @@ func (b *Bot) askApproval(source, tool, summary string, timeout time.Duration) (
 		log.Printf("[approval] #%s %v", req.ID, map[bool]string{true: "approved", false: "denied"}[ok])
 		if ok {
 			verdict = "✅ 승인됨"
+			if req.always {
+				verdict = "♾️ 항상 허용됨 (다음부터 묻지 않음)"
+				if err := allowToolsAlways(b.cfg(), req.Tool); err != nil {
+					log.Printf("[approval] #%s always-allow save: %v", req.ID, err)
+					verdict = "✅ 승인됨 (항상 허용 저장 실패: " + err.Error() + ")"
+				}
+			}
 			return true, "사용자가 승인했습니다"
 		}
 		verdict = "🚫 거부됨"
@@ -222,6 +238,7 @@ func (b *Bot) askApproval(source, tool, summary string, timeout time.Duration) (
 func approvalKeyboard(id string) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("✅ 승인", "ap:ok:"+id),
+		tgbotapi.NewInlineKeyboardButtonData("♾️ 항상 허용", "ap:al:"+id),
 		tgbotapi.NewInlineKeyboardButtonData("🚫 거부", "ap:no:"+id),
 	))
 }
@@ -232,10 +249,12 @@ func (b *Bot) handleCallback(cq *tgbotapi.CallbackQuery) {
 	toast := ""
 	if rest, ok := strings.CutPrefix(cq.Data, "ap:"); ok {
 		answer, id, _ := strings.Cut(rest, ":")
-		req, msg := resolveApproval(id, answer == "ok")
+		req, msg := resolveApprovalAlways(id, answer == "ok" || answer == "al", answer == "al")
 		switch {
 		case req == nil:
 			toast = msg
+		case answer == "al":
+			toast = "♾️ 항상 허용했습니다"
 		case answer == "ok":
 			toast = "✅ 승인했습니다"
 		default:
@@ -250,6 +269,12 @@ func (b *Bot) handleCallback(cq *tgbotapi.CallbackQuery) {
 // resolveApproval answers a pending request. With id "" it picks the only
 // pending one, so a quick "!ok" works when there is just one.
 func resolveApproval(id string, ok bool) (*approvalRequest, string) {
+	return resolveApprovalAlways(id, ok, false)
+}
+
+// resolveApprovalAlways is resolveApproval that, with always, also stops
+// asking for the request's tools once askApproval sees the answer.
+func resolveApprovalAlways(id string, ok, always bool) (*approvalRequest, string) {
 	approvals.Lock()
 	defer approvals.Unlock()
 	if id == "" {
@@ -275,25 +300,86 @@ func resolveApproval(id string, ok bool) (*approvalRequest, string) {
 	}
 	select {
 	case req.done <- ok:
+		req.always = ok && always
 	default:
 	}
 	return req, ""
 }
 
-// handleApprovalCommand is !ok / !no [id].
+// handleApprovalCommand is !ok / !no [id], and !always [id] (approve and stop
+// asking for that tool).
 func (b *Bot) handleApprovalCommand(reply replySender, chatID int64, fields []string, ok bool) {
 	id := ""
 	if len(fields) > 1 {
 		id = fields[1]
 	}
-	req, msg := resolveApproval(id, ok)
+	always := ok && len(fields) > 0 && strings.EqualFold(fields[0], "!always")
+	req, msg := resolveApprovalAlways(id, ok, always)
 	if req == nil {
 		_ = reply.Send(chatID, msg)
 		return
 	}
 	verb := "✅ 승인"
-	if !ok {
+	if always {
+		verb = "♾️ 항상 허용"
+	} else if !ok {
 		verb = "🚫 거부"
 	}
 	_ = reply.Send(chatID, fmt.Sprintf("%s: #%s %s · %s", verb, req.ID, req.Source, req.Tool))
+}
+
+// approvalConfigPath is config.yaml, where "항상 허용" saves approvals.tools.
+var approvalConfigPath string
+
+// stillGated reports whether any of tools ("launch_app", or "a,b" for a
+// run_sequence) is still in approvals.tools.
+func stillGated(cfg *Config, tools string) bool {
+	if cfg == nil {
+		return true
+	}
+	gated := map[string]bool{}
+	for _, t := range cfg.ApprovalTools {
+		gated[t] = true
+	}
+	for _, t := range splitToolList(tools) {
+		if gated[t] {
+			return true
+		}
+	}
+	return false
+}
+
+// allowToolsAlways takes tools out of approvals.tools and saves config.yaml,
+// so the next call runs without asking — in this worker and every later one.
+func allowToolsAlways(cfg *Config, tools string) error {
+	if cfg == nil || approvalConfigPath == "" {
+		return fmt.Errorf("설정 파일 경로를 모릅니다")
+	}
+	drop := map[string]bool{}
+	for _, t := range splitToolList(tools) {
+		drop[t] = true
+	}
+	var keep []string
+	for _, t := range cfg.ApprovalTools {
+		if !drop[t] {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) == len(cfg.ApprovalTools) {
+		return nil
+	}
+	newCfg := *cfg
+	newCfg.ApprovalTools = keep
+	var r struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(persistConfig(approvalConfigPath, &newCfg), &r); err != nil {
+		return err
+	}
+	if !r.OK {
+		return fmt.Errorf("%s", r.Error)
+	}
+	log.Printf("[approval] always allow %s — approvals.tools now %v", tools, keep)
+	return nil
 }

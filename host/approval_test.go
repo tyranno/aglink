@@ -59,7 +59,7 @@ func postApprove(t *testing.T, url string) chan map[string]any {
 
 func TestApprovalApprovedAndDenied(t *testing.T) {
 	ui := fakeUI(t)
-	b := &Bot{cfgh: NewConfigHolder(&Config{AllowedUserIDs: []int64{1}, ApprovalTimeoutSec: 30})}
+	b := &Bot{cfgh: NewConfigHolder(&Config{AllowedUserIDs: []int64{1}, ApprovalTimeoutSec: 30, ApprovalTools: []string{"eval"}})}
 	srv := httptest.NewServer(http.HandlerFunc(b.handleApproveHTTP))
 	defer srv.Close()
 
@@ -99,7 +99,7 @@ func TestApprovalApprovedAndDenied(t *testing.T) {
 
 func TestApprovalTimesOut(t *testing.T) {
 	fakeUI(t)
-	b := &Bot{cfgh: NewConfigHolder(&Config{AllowedUserIDs: []int64{1}})}
+	b := &Bot{cfgh: NewConfigHolder(&Config{AllowedUserIDs: []int64{1}, ApprovalTools: []string{"eval"}})}
 	ok, reason := b.askApproval("aglink-screen", "launch_app", "launch_app\n{}", 150*time.Millisecond)
 	if ok || !strings.Contains(reason, "승인되지 않아") {
 		t.Fatalf("timeout: %v %q", ok, reason)
@@ -107,7 +107,7 @@ func TestApprovalTimesOut(t *testing.T) {
 }
 
 func TestApprovalWithNoChannelIsRefused(t *testing.T) {
-	b := &Bot{cfgh: NewConfigHolder(&Config{})} // no Telegram, no UI connected
+	b := &Bot{cfgh: NewConfigHolder(&Config{ApprovalTools: []string{"eval"}})} // no Telegram, no UI connected
 	if ok, reason := b.askApproval("aglink-web", "eval", "", time.Second); ok || !strings.Contains(reason, "채널이 없어") {
 		t.Fatalf("got %v %q", ok, reason)
 	}
@@ -143,5 +143,55 @@ func TestApprovalEnvReachesTheWorkerMCPConfig(t *testing.T) {
 	}
 	if got := splitToolList(" eval, vscode_terminal_run;eval\nlaunch_app "); strings.Join(got, ",") != "eval,vscode_terminal_run,launch_app" {
 		t.Fatalf("splitToolList: %v", got)
+	}
+}
+
+// "항상 허용" approves this call, drops the tool from approvals.tools in
+// config.yaml, and a later call for it (from a worker still holding the old
+// tool list) runs without asking.
+func TestApprovalAllowAlways(t *testing.T) {
+	ui := fakeUI(t)
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	old := approvalConfigPath
+	approvalConfigPath = path
+	t.Cleanup(func() { approvalConfigPath = old })
+	cfg := &Config{TelegramBotToken: "1:test", AllowedUserIDs: []int64{1}, ApprovalTimeoutSec: 30, ApprovalTools: []string{"eval", "launch_app"}}
+	b := &Bot{cfgh: NewConfigHolder(cfg)}
+	srv := httptest.NewServer(http.HandlerFunc(b.handleApproveHTTP))
+	defer srv.Close()
+
+	ans := postApprove(t, srv.URL)
+	ev := nextApproval(t, ui)
+	if req, msg := resolveApprovalAlways(ev["id"].(string), true, true); req == nil {
+		t.Fatal(msg)
+	}
+	if a := <-ans; a["approved"] != true {
+		t.Fatalf("approved: %v", a)
+	}
+	saved, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.ApprovalTools) != 1 || saved.ApprovalTools[0] != "launch_app" {
+		t.Fatalf("approvals.tools after always = %v, want [launch_app]", saved.ApprovalTools)
+	}
+
+	// The live config now has eval allowed: no prompt, approved at once.
+	b.cfgh = NewConfigHolder(saved)
+	select {
+	case a := <-postApprove(t, srv.URL):
+		if a["approved"] != true {
+			t.Fatalf("second call: %v", a)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("allowed tool still waited for approval")
+	}
+}
+
+func TestStillGated(t *testing.T) {
+	cfg := &Config{ApprovalTools: []string{"eval"}}
+	if !stillGated(cfg, "eval") || !stillGated(cfg, "click,eval") || stillGated(cfg, "launch_app") || stillGated(&Config{}, "eval") {
+		t.Fatal("stillGated")
 	}
 }

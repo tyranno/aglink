@@ -368,6 +368,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	}
 
 	bot := NewBot(api, holder, store, manager, sched, userStore)
+	approvalConfigPath = cfgPath // "항상 허용" writes approvals.tools here
 	bot.playbooks = playbooks
 
 	// Wire scheduler send/dispatch after bot is created

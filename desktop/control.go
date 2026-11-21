@@ -726,6 +726,14 @@ func (c *ControlService) ApprovalAnswer(id string, ok bool) (string, error) {
 	return string(data), err
 }
 
+// ApprovalAllowAlways approves a pending tool approval and takes its tools out
+// of approvals.tools, so they run without asking from then on.
+func (c *ControlService) ApprovalAllowAlways(id string) (string, error) {
+	p, _ := json.Marshal(map[string]any{"id": id, "ok": true, "always": true})
+	data, err := c.request(controlIn{Type: "approval_answer", Payload: p})
+	return string(data), err
+}
+
 // ClaudeAuthCancel stops a running issue/verify.
 func (c *ControlService) ClaudeAuthCancel() (string, error) {
 	data, err := c.request(controlIn{Type: "claude_auth_cancel"})

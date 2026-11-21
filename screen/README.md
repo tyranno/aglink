@@ -14,6 +14,7 @@ teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 �
   - `snapshot`: `offset`(요소 인덱스) · `max_elements`(기본 150, 최대 1000; 구 이름 `max`도 허용) · `max_chars`(기본 10000, 최대 50000) · 요소별 내용 미리보기 120자
   - `win_controls`: `offset` · `max`(기본 200) · 라벨 80자
   - `get_value`: 2000자 (넘으면 `get_text` offset으로 이어 읽으라고 안내)
+- **백그라운드 조작(포커스 안 뺏음)** — `snapshot`/`invoke`/`set_value`/`get_value`/`get_text`/`wait_for_control`에 `window`(창 제목 일부 또는 hwnd)를 주면 그 창을 앞으로 가져오지 않고 UIA로 조작한다. 사용자 입력 대기 없이 제어권(리스)만 잡고, 조작한 지점에 보라색 원(에이전트 커서)이 잠깐 뜬다(`AGLINK_SCREEN_AGENT_CURSOR=0`으로 끔). `click_control`은 기본이 백그라운드 — 버튼/체크박스/라디오는 `BM_CLICK`, 그 밖은 UIA invoke, 안 되면 예전처럼 포커스+실제 클릭(`background:false`로 강제). 결과에 쓴 경로가 나온다
 - **Win32 자식창 폴백** — `win_controls`/`click_control`, UIA가 비어도 정확한 좌표 확보
 - **GDI 캡처** — `screenshot`/`capture_window`/`capture_region`, 비전 다운스케일을 피해 정확한 좌표 매핑
 - **입력** — `click`/`double_click`/`triple_click`/`drag`/`move`/`type`/`key`(hold_ms 지원)/`scroll` (+ modifier 조합), `get_cursor_position`으로 현재 좌표 확인
@@ -45,6 +46,20 @@ run_sequence  step_delay_ms=150  steps=
 - 단계 사이 기본 대기: `step_delay_ms`, 없으면 `AGLINK_SCREEN_STEP_DELAY_MS`
   (설치 프로그램 `/STEPDELAY=` 가 MCP 등록에 넣는다). 한 번의 대기는 60초로 제한.
 - Electron/Wails 창과 웹 페이지는 aglink-web 의 `run_steps` 가 좌표 대신 선택자로 한다.
+- `invoke`/`set_value`/`wait_for_control` 단계에 `window` 를 주면 백그라운드로, `click_control` 은
+  `background:false` 로 예전 경로. `note{text}` 는 아무것도 안 하는 표시용 단계.
+
+## 녹화와 플로우 — `record_workflow` · `flow_*`
+
+- `record_workflow(max_seconds=120, stop_key="f9", save_as?)` — 사용자가 직접 하는 조작을 녹화해
+  `run_sequence` steps(JSON)와 요약을 돌려준다. 녹화 중에는 빨간 알림이 뜨고, 정지 키(기본 F9 —
+  키 자체는 앱에도 전달된다)나 시간 제한으로 끝난다. 클릭은 가능하면 이름 기반
+  (`click_control`/`invoke{window,name}`), 아니면 좌표 `click`; 연속 타이핑은 `type` 하나로,
+  단축키·특수키는 `key`, 창 전환은 `wait_for_window`. **비밀번호 칸 입력은 기록하지 않고**
+  `note` 단계로 표시한다. IME(한글) 조합 입력도 잡히지 않아 `note` 로 남는다 — 재생 전에 고칠 것.
+- `run_sequence save_as=이름` — 모든 단계가 성공하면 그 steps 를 저장. `flow_save(name, steps)`,
+  `flow_list`, `flow_run(name)`. 데이터 디렉터리의 `screen-flows.json`(presets.json 옆, 원자적 쓰기).
+  이름은 문자·숫자·`- _ .` 64자까지. 승인 게이트는 `flow_run` 이 재생하는 단계까지 본다.
 
 ## 보안 경고 통과
 

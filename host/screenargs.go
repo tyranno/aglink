@@ -40,7 +40,10 @@ func screenSystemPrompt() string {
 		"8. list_windows에서 [other-desktop]로 표시된 창은 다른 가상 데스크톱에 있다. focus_window/capture_window/click_control로 " +
 		"조작하면 그 데스크톱으로 자동 전환된다(안 그러면 캡처·클릭이 엉뚱한 데스크톱을 대상으로 함). 작업이 끝나면 return_desktop을 " +
 		"호출해 사용자가 있던 원래 데스크톱으로 되돌려라.\n" +
-		"9. 화면 조작 도구가 'SCREEN_BUSY:'로 시작하는 에러를 반환하면 다른 대화가 지금 화면을 제어 중이라는 뜻이다. " +
+		"9. 사용자가 다른 창에서 일하는 중이면 포커스를 뺏지 마라: snapshot/invoke/set_value/get_value/get_text/wait_for_control에 window(창 제목)를 주면 그 창을 앞으로 가져오지 않고 백그라운드로 조작한다. " +
+		"click_control은 기본이 백그라운드(BM_CLICK/UIA)이고 결과에 어떤 경로였는지 나온다 — 그 뒤 type/key를 하려면 먼저 focus_window. " +
+		"사용자가 직접 한 번 보여주겠다고 하면 record_workflow(F9로 종료)로 녹화해 steps를 받고, 반복할 일은 run_sequence save_as/flow_save로 저장해 flow_run으로 재생하라(flow_list).\n" +
+		"10. 화면 조작 도구가 'SCREEN_BUSY:'로 시작하는 에러를 반환하면 다른 대화가 지금 화면을 제어 중이라는 뜻이다. " +
 		"충돌하지 말고 몇 초 뒤 같은 동작을 다시 시도하라. 계속 SCREEN_BUSY면 사용자에게 '다른 대화가 화면을 사용 중이라 대기 중'이라고 " +
 		"알려라. 미리 확인하려면 control_status(읽기 전용)로 현재 제어권 상태를 볼 수 있다.\n" +
 		"Always prefer snapshot/invoke, then win_controls/click_control, then screenshot+click as the last resort."
@@ -58,7 +61,8 @@ func screenSystemPromptBrief() string {
 		"You can control this Windows desktop via the `screen` MCP tools (launch_app/focus_window, snapshot→invoke/set_value, get_text, win_controls→click_control, capture_*).\n" +
 		"우선순위: snapshot/invoke(UIA) → win_controls/click_control(정확한 좌표) → 캡처+click(최후). 내용 읽기는 캡처 말고 get_text/get_value. " +
 		"캡처는 이후 모든 턴에 재과금되니 꼭 필요할 때만 capture_region/capture_window로 좁게. " +
-		"'SCREEN_BUSY:' 에러는 다른 대화가 화면 사용 중 — 몇 초 뒤 재시도. 다른 가상 데스크톱으로 넘어갔다면 끝나고 return_desktop."
+		"'SCREEN_BUSY:' 에러는 다른 대화가 화면 사용 중 — 몇 초 뒤 재시도. 다른 가상 데스크톱으로 넘어갔다면 끝나고 return_desktop. " +
+		"UIA 도구에 window를 주면 포커스 없이 백그라운드 조작; 녹화는 record_workflow, 저장·재생은 flow_save/flow_run."
 }
 
 // screenIntentKeywords mark a request that plausibly needs the screen tools, so

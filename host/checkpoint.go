@@ -125,6 +125,7 @@ type shadowRepo struct {
 func (r shadowRepo) git(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	full := append([]string{
 		"--git-dir=" + r.gitDir, "--work-tree=" + r.workDir,
+		"--literal-pathspecs",
 		"-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
 		"-c", "core.quotepath=false", "-c", "core.longpaths=true",
 		"-c", "user.name=aglink", "-c", "user.email=aglink@localhost",
@@ -180,13 +181,26 @@ func openShadowRepo(ctx context.Context, workDir string) (shadowRepo, error) {
 // snapshot records the folder's current state and returns its commit. When
 // nothing changed since the last snapshot the previous commit is returned
 // instead of piling up empty commits.
-func (r shadowRepo) snapshot(ctx context.Context, msg string) (string, error) {
-	if _, err := r.git(ctx, nil, "add", "-A", "--ignore-errors", "."); err != nil {
+//
+// strict is for the backup taken right before a restore: there a file git
+// could not read (locked, no permission) would be missing from the backup and
+// the restore could not be undone for it, so the whole snapshot fails. The
+// per-turn checkpoints are lenient instead — one locked database or
+// root-owned file must not switch checkpoints off for the whole folder — and
+// keep everything git could read.
+func (r shadowRepo) snapshot(ctx context.Context, msg string, strict bool) (string, error) {
+	if strict {
+		if _, err := r.git(ctx, nil, "add", "-A", "."); err != nil {
+			return "", err
+		}
+	} else if _, err := r.git(ctx, nil, "add", "-A", "--ignore-errors", "."); err != nil {
 		// --ignore-errors still exits non-zero on unreadable files; the index
-		// holds everything else, so carry on unless nothing was staged at all.
+		// holds everything else, so carry on (write-tree fails by itself when
+		// the index could not be updated at all, e.g. a stale index.lock).
 		if ctx.Err() != nil {
 			return "", err
 		}
+		logCheckpoint("snapshot %s: some files skipped: %v", r.workDir, err)
 	}
 	treeOut, err := r.git(ctx, nil, "write-tree")
 	if err != nil {
@@ -238,7 +252,7 @@ func Checkpoint(workDir, home, msg string) string {
 		logCheckpoint("open %s: %v", workDir, err)
 		return ""
 	}
-	sha, err := r.snapshot(ctx, msg)
+	sha, err := r.snapshot(ctx, msg, false)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			checkpointMu.Lock()
@@ -396,7 +410,7 @@ func CheckpointRestore(workDir, to string) (undo string, changed int, err error)
 	if _, err := r.git(ctx, nil, "cat-file", "-e", to+"^{commit}"); err != nil {
 		return "", 0, errors.New("체크포인트를 찾을 수 없습니다")
 	}
-	cur, err := r.snapshot(ctx, "before restore to "+to)
+	cur, err := r.snapshot(ctx, "before restore to "+to, true)
 	if err != nil {
 		return "", 0, fmt.Errorf("현재 상태 저장 실패: %w", err)
 	}
@@ -421,22 +435,27 @@ func CheckpointRestore(workDir, to string) (undo string, changed int, err error)
 	}
 	for _, p := range remove {
 		full := filepath.Join(r.workDir, filepath.FromSlash(p))
-		if rel, err := filepath.Rel(r.workDir, full); err != nil || strings.HasPrefix(rel, "..") {
-			continue
+		if rel, err := filepath.Rel(r.workDir, full); err != nil || rel == "." || !filepath.IsLocal(rel) {
+			return cur, changed, fmt.Errorf("복원할 수 없는 파일 경로: %q", p)
 		}
-		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
-			logCheckpoint("restore remove %s: %v", full, err)
+		if err := os.Remove(full); err == nil {
+			changed++
+		} else if !os.IsNotExist(err) {
+			return cur, changed, fmt.Errorf("파일 삭제 실패: %w", err)
 		}
 	}
 	if len(checkout) > 0 {
 		spec := []byte(strings.Join(checkout, "\x00") + "\x00")
 		if _, err := r.git(ctx, spec, "checkout", to, "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
-			return cur, len(remove), fmt.Errorf("파일 복원 실패: %w", err)
+			return cur, changed, fmt.Errorf("파일 복원 실패: %w", err)
 		}
+		changed += len(checkout)
 	}
 	// Bring the shadow index/HEAD in line with the restored tree.
-	_, _ = r.snapshot(ctx, "restored to "+to)
-	return cur, len(remove) + len(checkout), nil
+	if _, err := r.snapshot(ctx, "restored to "+to, false); err != nil {
+		return cur, changed, fmt.Errorf("복원 후 체크포인트 기록 실패: %w", err)
+	}
+	return cur, changed, nil
 }
 
 func logCheckpoint(format string, args ...any) {

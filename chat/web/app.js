@@ -1681,26 +1681,47 @@
   let mcpServers = [];
   let mcpReserved = [];
   let mcpBusy = false;
+  // mcpLoaded: mcpServers is the host's list as last read. Every change saves
+  // the whole list built from mcpServers, so after a failed read nothing may be
+  // saved — an empty stand-in list would wipe every registered server.
+  let mcpLoaded = false;
+  const MCP_LOAD_FAILED = "MCP 서버 목록을 불러오지 못했습니다. 새로고침한 뒤 다시 시도해 주세요.";
 
+  // Returns whether the list was read. A failed read keeps the previous list
+  // on screen (marked stale) instead of showing an empty one.
   async function loadMCPServers() {
-    if (!mcpListEl) return;
+    if (!mcpListEl) return false;
+    let ok = false;
     try {
       const r = await fetch("/api/mcp-servers", { headers: authHeaders });
-      const data = r.ok ? await r.json() : {};
-      mcpServers = Array.isArray(data.servers) ? data.servers : [];
-      mcpReserved = Array.isArray(data.reserved) ? data.reserved : [];
-      if (mcpMsgEl) mcpMsgEl.textContent = "";
-    } catch (e) {
-      mcpServers = [];
-      if (mcpMsgEl) mcpMsgEl.textContent = "MCP 서버 목록을 불러오지 못했습니다.";
-    }
+      const data = r.ok ? await r.json() : null;
+      if (data && Array.isArray(data.servers)) {
+        mcpServers = data.servers;
+        mcpReserved = Array.isArray(data.reserved) ? data.reserved : [];
+        ok = true;
+      }
+    } catch (e) {}
+    mcpLoaded = ok;
+    if (mcpMsgEl) mcpMsgEl.textContent = ok ? "" : MCP_LOAD_FAILED;
     renderMCPList();
+    return ok;
+  }
+
+  // mcpReady says whether a change may be saved now, and why not.
+  function mcpReady() {
+    if (mcpBusy) return false;
+    if (!mcpLoaded) {
+      if (mcpMsgEl) mcpMsgEl.textContent = MCP_LOAD_FAILED;
+      return false;
+    }
+    return true;
   }
 
   function renderMCPList() {
     if (!mcpListEl) return;
     mcpListEl.replaceChildren();
     if (mcpServers.length === 0) {
+      if (!mcpLoaded) return; // the message line says the read failed
       const empty = document.createElement("div");
       empty.className = "mcp-empty";
       empty.textContent = "등록된 사용자 정의 MCP 서버가 없습니다. ＋로 추가하세요.";
@@ -1758,10 +1779,15 @@
   }
 
   // Common path for every mutation: save the whole new list, then reload from
-  // the host regardless of outcome — a rejected save must not leave the screen
-  // showing an unsaved state as if it were real.
+  // the host — a rejected save must not leave the screen showing an unsaved
+  // state as if it were real. The one exception is "saved but not applied":
+  // the host then still reports the old running list, but config.yaml holds
+  // the new one, so that is what is shown (with the warning) and what the next
+  // change builds on — reloading would show the old list and the next save
+  // would silently drop this change from the file.
   async function mcpPersist(newList) {
-    let ok = true, err = "";
+    let message = "";
+    let notApplied = false;
     try {
       const r = await fetch("/api/mcp-servers", {
         method: "PUT",
@@ -1769,22 +1795,32 @@
         body: JSON.stringify({ servers: newList }),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok || data.ok === false) { ok = false; err = data.error || "저장에 실패했습니다."; }
+      if (!r.ok || data.ok !== true) {
+        message = data.error || "저장 결과를 확인하지 못했습니다.";
+      } else if (data.applied === false) {
+        notApplied = true;
+        message = `파일에는 저장됐지만 적용하지 못했습니다: ${data.applyError || "알 수 없는 오류"} (이전 설정으로 동작 중 — 고친 뒤 다시 저장하거나 재시작하세요)`;
+      }
     } catch (e) {
-      ok = false;
-      err = "연결이 끊겨 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+      message = "연결이 끊겨 저장 결과를 확인하지 못했습니다.";
     }
-    await loadMCPServers();
-    return { ok, err };
+    if (notApplied) {
+      mcpServers = newList;
+      mcpLoaded = true;
+      renderMCPList();
+    } else if (!(await loadMCPServers())) {
+      // Keep both facts: what the save said, and that the list is now stale.
+      message = message ? `${message} ${MCP_LOAD_FAILED}` : `저장 요청은 끝났지만 ${MCP_LOAD_FAILED}`;
+    }
+    if (message && mcpMsgEl) mcpMsgEl.textContent = message;
   }
 
   async function mcpToggle(i) {
-    if (mcpBusy) return;
+    if (!mcpReady()) return;
     mcpBusy = true;
     const next = mcpServers.map((s, idx) => (idx === i ? { ...s, enabled: !s.enabled } : s));
-    const { ok, err } = await mcpPersist(next);
+    await mcpPersist(next);
     mcpBusy = false;
-    if (!ok && mcpMsgEl) mcpMsgEl.textContent = err;
   }
 
   async function mcpDelete(i) {
@@ -1794,12 +1830,15 @@
       `"${s.name}" MCP 서버를 목록에서 삭제할까요? 이 작업은 되돌릴 수 없습니다.`,
       { danger: true, okLabel: "삭제하기" },
     );
-    if (!confirmed || mcpBusy) return;
+    if (!confirmed || !mcpReady()) return;
+    if (mcpServers[i] !== s) {
+      if (mcpMsgEl) mcpMsgEl.textContent = "목록이 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.";
+      return;
+    }
     mcpBusy = true;
     const next = mcpServers.filter((_, idx) => idx !== i);
-    const { ok, err } = await mcpPersist(next);
+    await mcpPersist(next);
     mcpBusy = false;
-    if (!ok && mcpMsgEl) mcpMsgEl.textContent = err;
   }
 
   function mcpField(parent, label, value, placeholder) {
@@ -1888,21 +1927,26 @@
   }
 
   async function openMCPEditor(i) {
+    if (!mcpReady()) return;
     const existing = i >= 0 ? mcpServers[i] : null;
     const entry = await openMCPEditorDialog(existing);
-    if (!entry) return;
-    // The list may have shrunk while the dialog was open (another client
-    // deleted an entry, or config.yaml was edited directly) — refuse rather
+    if (!entry || !mcpReady()) return;
+    // The list may have changed while the dialog was open (a toggle or delete
+    // here, another client, or config.yaml edited directly) — refuse rather
     // than silently overwrite the wrong row or lose the edit.
-    if (i >= 0 && i >= mcpServers.length) {
+    if (i >= 0 && mcpServers[i] !== existing) {
       if (mcpMsgEl) mcpMsgEl.textContent = "목록이 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.";
       return;
     }
-    const next = i >= 0
-      ? mcpServers.map((s, idx) => (idx === i ? entry : s))
-      : [...mcpServers, entry];
-    const { ok, err } = await mcpPersist(next);
-    if (!ok && mcpMsgEl) mcpMsgEl.textContent = err;
+    mcpBusy = true;
+    try {
+      const next = i >= 0
+        ? mcpServers.map((s, idx) => (idx === i ? entry : s))
+        : [...mcpServers, entry];
+      await mcpPersist(next);
+    } finally {
+      mcpBusy = false;
+    }
   }
 
   if (mcpAddBtn) mcpAddBtn.addEventListener("click", () => openMCPEditor(-1));

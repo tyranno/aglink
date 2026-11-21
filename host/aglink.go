@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // resolveAglinkBinary locates an aglink-* helper executable (aglink-chat,
@@ -15,7 +16,7 @@ import (
 //     web_control.binary_path, aglink_chat.binary_path) when it exists;
 //  2. next to aglink's own executable — the expected deployment layout,
 //     and where !update deploys rebuilt plugins;
-//  3. the sibling source repo (../aglink-<name>/) for a dev checkout;
+//  3. the in-repo chat module, then the legacy sibling source repo;
 //  4. PATH, so a system-installed helper works with no config at all.
 //
 // Returns "" when none exists; callers then skip the feature rather than
@@ -28,20 +29,25 @@ func resolveAglinkBinary(name, configuredPath, selfExe string) string {
 	exe := name + exeSuffix
 
 	if configuredPath != "" {
-		if _, err := os.Stat(configuredPath); err == nil {
+		if info, err := os.Stat(configuredPath); err == nil && info.Mode().IsRegular() {
 			return configuredPath
 		}
-		log.Printf("[aglink] %s: configured binary_path %q not found — falling back to sibling/PATH lookup", name, configuredPath)
+		log.Printf("[aglink] %s: configured binary_path %q is not an existing file — falling back to sibling/PATH lookup", name, configuredPath)
 	}
 
 	if selfExe != "" {
 		dir := filepath.Dir(selfExe)
-		candidates := []string{
-			filepath.Join(dir, exe),
-			filepath.Join(filepath.Dir(dir), name, exe),
+		candidates := []string{filepath.Join(dir, exe)}
+		if name == "aglink-chat" {
+			root := dir
+			if strings.EqualFold(filepath.Base(dir), "host") {
+				root = filepath.Dir(dir)
+			}
+			candidates = append(candidates, filepath.Join(root, "chat", exe))
 		}
+		candidates = append(candidates, filepath.Join(filepath.Dir(dir), name, exe))
 		for _, p := range candidates {
-			if _, err := os.Stat(p); err == nil {
+			if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
 				return p
 			}
 		}

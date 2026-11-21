@@ -21,6 +21,7 @@ var (
 	procGetWindowThreadPID  = user32.NewProc("GetWindowThreadProcessId")
 	procGetAncestor         = user32.NewProc("GetAncestor")
 	procKeybdEvent          = user32.NewProc("keybd_event")
+	procClipboardSeq        = user32.NewProc("GetClipboardSequenceNumber")
 )
 
 const (
@@ -78,6 +79,12 @@ func foregroundRoot() uintptr {
 	return r
 }
 
+// clipboardSeq changes whenever anything is put on the clipboard.
+func clipboardSeq() uintptr {
+	n, _, _ := procClipboardSeq.Call()
+	return n
+}
+
 func key(vk byte, up bool) {
 	var f uintptr
 	if up {
@@ -90,7 +97,13 @@ func key(vk byte, up bool) {
 // it — the extension has already put the words on the clipboard and the focus
 // in Claude Code's input box. Keys go to whatever window is in front, so they
 // are only pressed once it is sure to be VS Code.
+//
+// The clipboard's sequence number is taken first and checked before each key:
+// if the user copies something while the window is being brought forward,
+// Ctrl+V would paste their copy instead of the words, and Enter would send
+// it. Same steps as aglink-voice's engine/Paste.cs.
 func pasteAndSend(pid int, title string) error {
+	seq := clipboardSeq()
 	h := findVSCodeWindow(pid, title)
 	if h == 0 {
 		return errNoVSCodeWindow
@@ -112,6 +125,14 @@ func pasteAndSend(pid int, title string) error {
 		}
 		time.Sleep(150 * time.Millisecond) // the window takes the keyboard focus back
 	}
+	// Once more right before the keys: in the wait above another window may
+	// have come to the front, and Ctrl+V there would paste the words into it.
+	if foregroundRoot() != h {
+		return errors.New("다른 창이 앞에 있어 붙여넣지 않았어요. 할 말은 클립보드에 넣어 두었어요")
+	}
+	if clipboardSeq() != seq {
+		return errors.New("클립보드가 바뀌어 붙여넣지 않았어요. 다시 말씀해 주세요")
+	}
 	key(vkControl, false)
 	key(vkV, false)
 	key(vkV, true)
@@ -119,6 +140,9 @@ func pasteAndSend(pid int, title string) error {
 	time.Sleep(120 * time.Millisecond)
 	if foregroundRoot() != h {
 		return errors.New("VS Code 창이 바뀌어 보내지 못했어요. 입력칸을 확인해 주세요")
+	}
+	if clipboardSeq() != seq {
+		return errors.New("클립보드가 바뀌어 보내지 않았어요. 입력칸을 확인해 주세요")
 	}
 	key(vkReturn, false)
 	key(vkReturn, true)

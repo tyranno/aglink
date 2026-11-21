@@ -115,6 +115,25 @@ func TestResolveAglinkChatBinary_MissingConfiguredPathFallsThrough(t *testing.T)
 	}
 }
 
+func TestResolveAglinkChatBinary_InRepoModule(t *testing.T) {
+	root := t.TempDir()
+	chatDir := filepath.Join(root, "chat")
+	if err := os.Mkdir(chatDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chatBin := filepath.Join(chatDir, "aglink-chat"+exeSuffix)
+	if err := os.WriteFile(chatBin, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, hostDir := range []string{root, filepath.Join(root, "host")} {
+		selfExe := filepath.Join(hostDir, "aglink"+exeSuffix)
+		cfg := &Config{AglinkChatBinaryPath: chatDir} // a directory is not executable
+		if got := resolveAglinkChatBinary(cfg, selfExe); got != chatBin {
+			t.Errorf("host at %q: got %q, want %q", hostDir, got, chatBin)
+		}
+	}
+}
+
 // The respawn delay must climb while a child keeps dying and drop back the
 // moment one stays up, so a permanent failure stops hammering while a one-off
 // crash recovers at once.

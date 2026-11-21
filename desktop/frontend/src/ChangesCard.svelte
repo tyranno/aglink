@@ -101,7 +101,7 @@
       </button>
       <span class="flex-1"></span>
       {#if undo}
-        <span class="text-amber-600 dark:text-amber-400">되돌렸음</span>
+        <span class="text-amber-600 dark:text-amber-400">{error ? "복원 상태 확인 필요" : "되돌렸음"}</span>
         <button type="button" disabled={busy} class="rounded px-1.5 py-0.5 font-semibold text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-950/40" onclick={() => restore(undo, "되돌리기를 취소했습니다")}>되돌리기 취소</button>
       {:else}
         <button type="button" class="rounded px-1.5 py-0.5 text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-800" onclick={() => showDiff("")}>변경 내용</button>

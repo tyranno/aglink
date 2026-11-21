@@ -97,6 +97,69 @@ func TestCheckpointSkipsHome(t *testing.T) {
 	}
 }
 
+// A file git cannot read while backing up would be missing from the backup
+// (it keeps its old index entry), so the restore must stop before touching
+// anything — otherwise its unsaved changes are overwritten with no way back.
+func TestCheckpointRestoreStopsWhenBackupCannotBeStaged(t *testing.T) {
+	t.Setenv(dataDirEnv, t.TempDir())
+	work := t.TempDir()
+	file := filepath.Join(work, "file.txt")
+	other := filepath.Join(work, "other.txt")
+	for p, s := range map[string]string{file: "before", other: "o1"} {
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := Checkpoint(work, "", "before")
+	if before == "" {
+		t.Fatal("no snapshot")
+	}
+	for p, s := range map[string]string{file: "unsaved changes", other: "o2"} {
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock := makeUnreadable(t, file)
+	_, _, err := CheckpointRestore(work, before)
+	unlock()
+	if err == nil {
+		t.Fatal("restore succeeded without a complete backup")
+	}
+	if got, err := os.ReadFile(file); err != nil || string(got) != "unsaved changes" {
+		t.Fatalf("file after refused restore = %q, err = %v", got, err)
+	}
+	if got, _ := os.ReadFile(other); string(got) != "o2" {
+		t.Fatalf("other file touched by a refused restore: %q", got)
+	}
+}
+
+// One unreadable file must not switch the per-turn checkpoints off for the
+// whole folder: the rest is still recorded.
+func TestCheckpointSkipsUnreadableFile(t *testing.T) {
+	t.Setenv(dataDirEnv, t.TempDir())
+	work := t.TempDir()
+	locked := filepath.Join(work, "locked.db")
+	ok := filepath.Join(work, "ok.txt")
+	for p, s := range map[string]string{locked: "db", ok: "v1"} {
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock := makeUnreadable(t, locked)
+	defer unlock()
+	first := Checkpoint(work, "", "first")
+	if first == "" {
+		t.Fatal("no checkpoint while one file is unreadable")
+	}
+	if err := os.WriteFile(ok, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := Checkpoint(work, "", "second")
+	if second == "" || second == first {
+		t.Fatalf("change to a readable file not recorded: %q → %q", first, second)
+	}
+}
+
 func TestListProjectFiles(t *testing.T) {
 	work := t.TempDir()
 	for _, p := range []string{"src/main.go", "src/util/helper.go", "README.md", "node_modules/a/index.js"} {

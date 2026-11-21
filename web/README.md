@@ -105,6 +105,13 @@ The extension auto-connects (native messaging if registered, else
 when the worker wakes (a 30s keepalive alarm revives it if it sleeps). Calls
 that arrive meanwhile wait for it (`AGLINK_WEB_RECONNECT_WAIT_MS`).
 
+Tabs that `navigate` opens for an agent session go into a Chrome tab group
+titled with that session (`agent <id>`, one color each); the user's own tabs
+are never moved. A session is one MCP bridge process, or the aglink
+conversation (`AGLINK_OWNER_LABEL`) when the aglink host started it. Each
+session also has its own "last navigated tab" for tabId-less calls; the `cmd`
+fast-path and `/mcp` have no session and share one, as before.
+
 ### 3. Wire teleclaude
 
 Point the worker's `--mcp-config` at the built binary (default `mcp`

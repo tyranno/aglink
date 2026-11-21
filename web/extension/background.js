@@ -413,6 +413,9 @@ async function navigate(params) {
       tab = win.tabs && win.tabs[0];
       if (!tab) throw e;
     }
+    // Only a tab this call opened is grouped — never one the caller named,
+    // which may be the user's own.
+    if (params.group) await addToSessionGroup(tab.id, String(params.group), String(params.groupTitle || ""));
   }
   await waitForComplete(tab.id);
   const updated = await chrome.tabs.get(tab.id);
@@ -422,6 +425,48 @@ async function navigate(params) {
   // opaque "showing error page". Say so here, with the way past it.
   const warn = await certWarning(updated.id);
   return warn ? `${ok}\n${warn}` : ok;
+}
+
+// Tab groups: each agent session (the daemon passes its key as params.group)
+// gets one Chrome tab group, created on its first navigate, titled with the
+// session's short label, one color per session. group key → group id lives in
+// storage.session so a worker restart keeps adding to the same group.
+const GROUP_COLORS = ["blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange", "grey"];
+
+function groupColor(key) {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return GROUP_COLORS[h % GROUP_COLORS.length];
+}
+
+// Serializes group bookkeeping, so two navigates of one session racing do not
+// each create a group.
+let groupChain = Promise.resolve();
+
+function addToSessionGroup(tabId, key, title) {
+  const run = groupChain.then(() => groupTab(tabId, key, title));
+  groupChain = run.catch(() => {});
+  return run.catch(() => {}); // grouping is cosmetic; never fail the navigate
+}
+
+async function groupTab(tabId, key, title) {
+  if (!chrome.tabGroups || typeof chrome.tabs.group !== "function") return;
+  const store = chrome.storage.session;
+  const groups = (store && (await store.get("tabGroups")).tabGroups) || {};
+  let gid = groups[key];
+  if (gid !== undefined) {
+    try {
+      await chrome.tabGroups.get(gid);
+      await chrome.tabs.group({ groupId: gid, tabIds: [tabId] });
+      return;
+    } catch (e) {
+      // the group was closed (or is in a window this tab cannot join): start a new one
+    }
+  }
+  gid = await chrome.tabs.group({ tabIds: [tabId] });
+  await chrome.tabGroups.update(gid, { title: title || "agent", color: groupColor(key), collapsed: false });
+  groups[key] = gid;
+  if (store) await store.set({ tabGroups: groups });
 }
 
 async function getPageText(params) {

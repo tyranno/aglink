@@ -1292,3 +1292,33 @@ test("reconnect backoff is capped at 5s and arms a single timer", async () => {
   assert.strictEqual(vm.runInContext("reconnectTimer", sb), timer, "an armed retry is not doubled up");
   assert.strictEqual(vm.runInContext("backoffMs", sb), 5000);
 });
+
+test("navigate files its new tab under the session's group, created once", async () => {
+  const calls = { group: [], update: [] };
+  let nextTab = 40;
+  const chrome = signedInChrome(null, {
+    tabs: {
+      create: async () => ({ id: ++nextTab }),
+      get: async (id) => ({ id, status: "complete", title: "t", url: "u" }),
+      group: async (o) => { calls.group.push(o); return o.groupId || 900; },
+      update: async (id) => ({ id }),
+    },
+    tabGroups: {
+      get: async (id) => ({ id }),
+      update: async (id, p) => { calls.update.push(p); return {}; },
+    },
+    scripting: { executeScript: async () => [{ result: 1 }] },
+  });
+  const sb = loadBackground(chrome);
+  await sb.navigate({ url: "https://a/", group: "s1", groupTitle: "agent 1" });
+  await sb.navigate({ url: "https://b/", group: "s1", groupTitle: "agent 1" });
+  assert.strictEqual(calls.update.length, 1, "one group per session");
+  assert.strictEqual(calls.update[0].title, "agent 1");
+  assert.strictEqual(JSON.stringify(calls.group[1]), JSON.stringify({ groupId: 900, tabIds: [42] }));
+
+  // A named tab is the caller's (maybe the user's): never grouped.
+  await sb.navigate({ url: "https://c/", tabId: 7, group: "s1", groupTitle: "agent 1" });
+  // No session, no group.
+  await sb.navigate({ url: "https://d/" });
+  assert.strictEqual(calls.group.length, 2);
+});

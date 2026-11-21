@@ -19,6 +19,25 @@ func TestScreenGatedHits(t *testing.T) {
 	}
 }
 
+// flow_run replays stored steps; a gated action inside must still be caught.
+func TestScreenGatedHitsFlowRun(t *testing.T) {
+	orig := gatedFlowSteps
+	t.Cleanup(func() { gatedFlowSteps = orig })
+	gatedFlowSteps = func(name string) string {
+		if name == "login" {
+			return `[{"action":"click_control","window":"A","text":"OK"},{"action":"type","text":"x"}]`
+		}
+		return ""
+	}
+	set := map[string]bool{"type": true}
+	if h := screenGatedHits("flow_run", map[string]any{"name": " login "}, set); strings.Join(h, ",") != "type" {
+		t.Fatalf("flow_run: %v", h)
+	}
+	if h := screenGatedHits("flow_run", map[string]any{"name": "other"}, set); h != nil {
+		t.Fatalf("unknown flow: %v", h)
+	}
+}
+
 func TestScreenGateOffWithoutURL(t *testing.T) {
 	t.Setenv("AGLINK_APPROVAL_URL", "")
 	t.Setenv("AGLINK_APPROVAL_TOOLS", "launch_app")

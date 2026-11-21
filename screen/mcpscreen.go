@@ -1239,6 +1239,12 @@ func newScreenMCPServer() *server.MCPServer {
 	if err := flows.Load(); err != nil {
 		fmt.Fprintf(os.Stderr, "aglink-screen: warning: could not load flows from %s: %v (starting empty)\n", flowsPath, err)
 	}
+	gatedFlowSteps = func(name string) string {
+		if f, err := flows.Get(name); err == nil {
+			return string(f.Steps)
+		}
+		return ""
+	}
 
 	// run_sequence — execute several actions in one call instead of one
 	// round-trip per step. The bulk of a screen-control turn's wall-clock time

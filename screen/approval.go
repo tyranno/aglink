@@ -39,6 +39,11 @@ func screenGatedSet() (string, map[string]bool) {
 	return url, set
 }
 
+// gatedFlowSteps returns a saved flow's steps JSON so flow_run is gated by the
+// actions it replays, like run_sequence. Set where the flow store is created;
+// an unknown flow yields "".
+var gatedFlowSteps = func(name string) string { return "" }
+
 // screenGatedHits is the gated tools/actions a call would use.
 func screenGatedHits(name string, args map[string]any, set map[string]bool) []string {
 	seen := map[string]bool{}
@@ -50,15 +55,21 @@ func screenGatedHits(name string, args map[string]any, set map[string]bool) []st
 		}
 	}
 	add(name)
-	if name == "run_sequence" {
-		if s, ok := args["steps"].(string); ok {
-			var steps []struct {
-				Action string `json:"action"`
-			}
-			if json.Unmarshal([]byte(s), &steps) == nil {
-				for _, st := range steps {
-					add(st.Action)
-				}
+	var stepsJSON string
+	switch name {
+	case "run_sequence":
+		stepsJSON, _ = args["steps"].(string)
+	case "flow_run":
+		n, _ := args["name"].(string)
+		stepsJSON = gatedFlowSteps(strings.TrimSpace(n))
+	}
+	if stepsJSON != "" {
+		var steps []struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal([]byte(stepsJSON), &steps) == nil {
+			for _, st := range steps {
+				add(st.Action)
 			}
 		}
 	}

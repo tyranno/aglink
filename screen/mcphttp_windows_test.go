@@ -108,7 +108,7 @@ func TestRemoteMCPListsEveryScreenTool(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"list_windows", "screenshot", "click", "capture_window", "return_desktop"} {
+	for _, want := range []string{"list_windows", "screenshot", "click", "capture_window", "return_desktop", "record_workflow", "flow_run"} {
 		if !got[want] {
 			t.Errorf("tool %q missing over HTTP (have %d tools)", want, len(tools))
 		}

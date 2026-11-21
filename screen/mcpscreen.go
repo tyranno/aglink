@@ -1286,6 +1286,55 @@ func newScreenMCPServer() *server.MCPServer {
 		},
 	)
 
+	// record_workflow — watch the user do a task once and return it as
+	// run_sequence steps (a starting point for a flow, not a pixel-perfect macro).
+	s.AddTool(
+		mcp.NewTool("record_workflow",
+			mcp.WithDescription("Record what the USER does with their own mouse/keyboard and return it as run_sequence steps, so a task shown once can be replayed (flow_save / save_as, then flow_run). Blocks until the user presses stop_key (default F9; the key still reaches the focused app), or max_seconds pass. Shows a red 'recording' notice meanwhile. Each left click is resolved to a name-based step where possible (click_control for Win32 buttons, invoke{window,name} for named UIA elements) and falls back to click{x,y}; typed text becomes type steps, shortcuts/special keys key steps, a switch to another window wait_for_window. Keystrokes into password fields are NOT recorded — a note step marks the gap — and IME (e.g. Hangul) composition is not captured either. Review the steps before replaying; add wait_ms where the app needs time."),
+			mcp.WithNumber("max_seconds", mcp.Description(fmt.Sprintf("Stop after this many seconds (default %d, max %d).", recordMaxSecondsDefault, recordMaxSecondsCap))),
+			mcp.WithString("stop_key", mcp.Description("Single key that ends the recording (default f9).")),
+			mcp.WithString("save_as", mcp.Description("Optional flow name to save the recorded steps under.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			stopVK, stopName, err := parseStopKey(req.GetString("stop_key", "f9"))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			saveAs := strings.TrimSpace(req.GetString("save_as", ""))
+			if saveAs != "" {
+				if err := validateFlowName(saveAs); err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+			}
+			rec, err := recordWorkflow(ctx, clampRecordSeconds(req.GetInt("max_seconds", 0)), stopVK, stopName)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("record_workflow failed", err), nil
+			}
+			if len(rec.Steps) == 0 {
+				return mcp.NewToolResultText(fmt.Sprintf("ok: nothing recorded in %.0fs (stopped by %s)", rec.Duration.Seconds(), rec.Stopped)), nil
+			}
+			b, _ := json.Marshal(rec.Steps)
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "ok: recorded %d step(s) in %.0fs (stopped by %s)\n", len(rec.Steps), rec.Duration.Seconds(), rec.Stopped)
+			if rec.Dropped > 0 {
+				fmt.Fprintf(&sb, "warning: %d input event(s) were dropped — check the steps\n", rec.Dropped)
+			}
+			for i, st := range rec.Steps {
+				fmt.Fprintf(&sb, "%d. %s\n", i+1, describeStep(st))
+			}
+			if saveAs != "" {
+				if _, err := flows.Set(saveAs, string(b)); err != nil {
+					fmt.Fprintf(&sb, "NOT saved as flow %q: %v\n", saveAs, err)
+				} else {
+					fmt.Fprintf(&sb, "saved as flow %q — replay with flow_run\n", saveAs)
+				}
+			}
+			sb.WriteString("steps:\n")
+			sb.Write(b)
+			return mcp.NewToolResultText(sb.String()), nil
+		},
+	)
+
 	// flow_save / flow_list / flow_run — named, replayable run_sequence steps.
 	s.AddTool(
 		mcp.NewTool("flow_save",

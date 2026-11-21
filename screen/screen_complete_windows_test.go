@@ -89,16 +89,18 @@ func TestCompleteTextFitsBox(t *testing.T) {
 		defer procSelectObjectN.Call(hdc, old)
 	}
 
-	u := windows.StringToUTF16(completeText)
-	var sz struct{ CX, CY int32 }
-	procGetTextExtentPoint32N.Call(hdc,
-		uintptr(unsafe.Pointer(&u[0])), uintptr(len(u)-1),
-		uintptr(unsafe.Pointer(&sz)))
+	for _, text := range []string{completeText, recordingNoticeText("pagedown")} {
+		u := windows.StringToUTF16(text)
+		var sz struct{ CX, CY int32 }
+		procGetTextExtentPoint32N.Call(hdc,
+			uintptr(unsafe.Pointer(&u[0])), uintptr(len(u)-1),
+			uintptr(unsafe.Pointer(&sz)))
 
-	const avail = noticeW - 40 - 16
-	t.Logf("completeText %q measured %dpx wide; text area is %dpx", completeText, sz.CX, avail)
-	if int(sz.CX) > avail {
-		t.Errorf("completeText is %dpx wide, exceeds the %dpx text area — it will clip; shorten the wording or widen noticeW", sz.CX, avail)
+		const avail = noticeW - 40 - 16
+		t.Logf("%q measured %dpx wide; text area is %dpx", text, sz.CX, avail)
+		if int(sz.CX) > avail {
+			t.Errorf("%q is %dpx wide, exceeds the %dpx text area — it will clip; shorten the wording or widen noticeW", text, sz.CX, avail)
+		}
 	}
 }
 

@@ -151,6 +151,7 @@ func lowLevelMouseProc(nCode, wParam uintptr, lParam unsafe.Pointer) uintptr {
 		h := (*msllHookStruct)(lParam)
 		if h.DwExtraInfo != syntheticInputTag {
 			lastRealUserInputNano.Store(time.Now().UnixNano())
+			recordMouseFromHook(wParam, h)
 		}
 	}
 	r, _, _ := procCallNextHookEx.Call(0, nCode, wParam, uintptr(lParam))
@@ -164,6 +165,7 @@ func lowLevelKeyboardProc(nCode, wParam uintptr, lParam unsafe.Pointer) uintptr 
 		h := (*kbdllHookStruct)(lParam)
 		if h.DwExtraInfo != syntheticInputTag {
 			lastRealUserInputNano.Store(time.Now().UnixNano())
+			recordKeyFromHook(wParam, h)
 		}
 	}
 	r, _, _ := procCallNextHookEx.Call(0, nCode, wParam, uintptr(lParam))

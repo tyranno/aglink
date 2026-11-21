@@ -422,6 +422,12 @@ func showControlComplete() {
 	// duration outlasts the ~1s lead) so the ack appears immediately rather than
 	// being dropped by the one-overlay guard. Semantically right too: once control
 	// is done, the stale "시작합니다" warning should yield to "완료".
+	preemptNotice()
+	showNoticeOverlay(&completeStyle, completeDurationMS())
+}
+
+// preemptNotice asks a showing overlay to close and waits (bounded) for it.
+func preemptNotice() {
 	if noticeShowing.Load() {
 		noticeCloseRequested.Store(true)
 		deadline := time.Now().Add(noticeCloseWaitMax)
@@ -429,7 +435,25 @@ func showControlComplete() {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
-	showNoticeOverlay(&completeStyle, completeDurationMS())
+}
+
+// showRecordingNotice shows the red "recording" toast for up to totalMS (it is
+// closed early by hideRecordingNotice). Shown even with notices disabled: the
+// user must always be able to tell their input is being recorded.
+func showRecordingNotice(text string, totalMS int) {
+	if !registerNoticeClass() {
+		return
+	}
+	recordStyle.text = text
+	preemptNotice()
+	showNoticeOverlay(&recordStyle, totalMS)
+}
+
+// hideRecordingNotice closes the recording toast if it is the one showing.
+func hideRecordingNotice() {
+	if noticeShowing.Load() && activeStyle == &recordStyle {
+		noticeCloseRequested.Store(true)
+	}
 }
 
 // noticeAlpha returns the layered-window alpha for a fade in → hold → fade out
@@ -533,6 +557,7 @@ const (
 	noticeBgColor     = 0x00F2F1EF // #EFF1F2 bright off-white
 	noticeAccentColor = 0x001C90E8 // #E8901C amber accent (start: border + status dot)
 	noticeGreenColor  = 0x005B9E2E // #2E9E5B green accent (completion: border + status dot)
+	noticeRedColor    = 0x003C3CD8 // #D83C3C red accent (recording: border + status dot)
 	noticeTextColor   = 0x00262220 // #202226 dark slate text
 )
 
@@ -584,6 +609,8 @@ var (
 	noticeAccentPen   uintptr // amber (start)
 	noticeGreenBrush  uintptr // green (completion)
 	noticeGreenPen    uintptr // green (completion)
+	noticeRedBrush    uintptr // red (recording)
+	noticeRedPen      uintptr // red (recording)
 
 	// Per-showing state (only one overlay at a time, guarded by noticeShowing).
 	noticeStartNano int64
@@ -602,6 +629,7 @@ type noticeStyle struct {
 var (
 	startStyle    noticeStyle
 	completeStyle noticeStyle
+	recordStyle   noticeStyle // text set per recording by showRecordingNotice
 	activeStyle   = &startStyle
 
 	// pendingNoticeTotalMS is the total on-screen time for the next overlay; a
@@ -620,6 +648,8 @@ func registerNoticeClass() bool {
 		noticeAccentPen, _, _ = procCreatePenN.Call(psSolid, 2, uintptr(noticeAccentColor))
 		noticeGreenBrush, _, _ = procCreateSolidBrushN.Call(uintptr(noticeGreenColor))
 		noticeGreenPen, _, _ = procCreatePenN.Call(psSolid, 2, uintptr(noticeGreenColor))
+		noticeRedBrush, _, _ = procCreateSolidBrushN.Call(uintptr(noticeRedColor))
+		noticeRedPen, _, _ = procCreatePenN.Call(psSolid, 2, uintptr(noticeRedColor))
 		// Malgun Gothic renders Latin + Hangul; -16 ≈ 12pt @96dpi, bold.
 		face := windows.StringToUTF16Ptr("Malgun Gothic")
 		noticeFont, _, _ = procCreateFontWN.Call(
@@ -644,6 +674,7 @@ func registerNoticeClass() bool {
 		// showing amber without any further wiring.
 		startStyle = noticeStyle{text: noticeText, accentPen: noticeAccentPen, accentBrush: noticeAccentBrush}
 		completeStyle = noticeStyle{text: completeText, accentPen: noticeGreenPen, accentBrush: noticeGreenBrush}
+		recordStyle = noticeStyle{accentPen: noticeRedPen, accentBrush: noticeRedBrush}
 	})
 	return noticeClassOK
 }

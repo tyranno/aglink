@@ -186,6 +186,10 @@ func vscodeTimeout(params map[string]any) time.Duration {
 	return d + 5*time.Second
 }
 
+// vscodeDefaultTimeoutSec is sent as timeoutSec when the caller gives none, for
+// tools whose default wait in the window is longer than the daemon's own.
+var vscodeDefaultTimeoutSec = map[string]int{"vscode_task_run": 60}
+
 // callVSCode runs one vscode_* tool in the named window. The extension gets
 // the method without its "vscode_" prefix — "read", "terminal_run" — since the
 // namespace only matters on the MCP side.
@@ -198,6 +202,15 @@ func (d *Daemon) callVSCode(method string, params map[string]any, profile string
 	d.mu.Unlock()
 	if err != nil {
 		return CallResult{Error: err.Error()}
+	}
+	if def := vscodeDefaultTimeoutSec[method]; def > 0 && intp(params, "timeoutSec", 0) <= 0 {
+		p := map[string]any{"timeoutSec": def}
+		for k, v := range params {
+			if k != "timeoutSec" {
+				p[k] = v
+			}
+		}
+		params = p
 	}
 	return d.roundTrip(ec, strings.TrimPrefix(method, "vscode_"), params, vscodeTimeout(params), "VS Code window")
 }

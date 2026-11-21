@@ -232,9 +232,38 @@ func TestVSCodeTimeoutFollowsTheCommand(t *testing.T) {
 }
 
 func TestInstructionsMentionVSCode(t *testing.T) {
-	for _, want := range []string{"vscode:", "vscode_terminal_run", "aglink-vscode"} {
+	for _, want := range []string{"vscode:", "vscode_terminal_run", "aglink-vscode", "vscode_edit", "vscode_definition"} {
 		if !strings.Contains(serverInstructions, want) {
 			t.Errorf("server instructions miss %q", want)
+		}
+	}
+}
+
+func TestVSCodeDevLoopToolsReachTheWindow(t *testing.T) {
+	d, srv := vscodeDaemon(t)
+	c := dialFakeVSCode(t, srv, "backend", "host1", "/p", "s1")
+	defer c.Close()
+	got := make(chan Request, 4)
+	go recordingVSCode(c, got)
+	waitFor(t, func() bool { return vscodeCount(d) == 1 })
+
+	for _, name := range []string{"vscode_edit", "vscode_save", "vscode_format", "vscode_symbols", "vscode_definition",
+		"vscode_references", "vscode_hover", "vscode_tasks", "vscode_task_run", "vscode_debug", "vscode_git", "vscode_tests"} {
+		if _, ok := lookupCommand(name); !ok {
+			t.Errorf("%s is not in the commands table", name)
+			continue
+		}
+		res := d.call(name, map[string]any{"path": "a.go"}, "vscode:backend")
+		bare := strings.TrimPrefix(name, "vscode_")
+		if !res.OK || res.Text != "answer:"+bare {
+			t.Fatalf("%s round trip: %+v", name, res)
+		}
+		req := <-got
+		if req.Method != bare || req.Params["path"] != "a.go" {
+			t.Fatalf("%s: the extension must get the bare method and the params: %+v", name, req)
+		}
+		if name == "vscode_task_run" && req.Params["timeoutSec"] != float64(60) {
+			t.Errorf("task_run without timeoutSec must carry its 60s default, got %v", req.Params["timeoutSec"])
 		}
 	}
 }

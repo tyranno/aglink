@@ -358,9 +358,10 @@ var commands = []command{
 	},
 	{
 		name: "vscode_problems",
-		desc: "List the errors and warnings a VS Code window (" + vscodeProfileHint + ") currently shows in its Problems panel, as 'severity path:line:col message [source]'. Optionally for one file.",
+		desc: "List the errors and warnings a VS Code window (" + vscodeProfileHint + ") currently shows in its Problems panel: a count line ('3 problems: 2 error, 1 warning'), then 'severity path:line:col message [source]' per problem. Optionally for one file, or errors only.",
 		args: []argSpec{
 			{name: "path", typ: argString, desc: "Only this file (absolute or workspace-relative). Omit for all."},
+			{name: "severity", typ: argString, desc: "'error' for errors only, 'warning' for errors and warnings. Omit for all."},
 		},
 	},
 	{
@@ -392,6 +393,108 @@ var commands = []command{
 			{name: "args", typ: argString, desc: "Arguments as a JSON array, e.g. '[\"build\"]'. Omit for none."},
 		},
 	},
+	{
+		name: "vscode_edit",
+		desc: "Edit a file in a VS Code window (" + vscodeProfileHint + ") through the editor, so open editors and the language server see the change — in a Remote-SSH window the file is on the remote. Either replace old_text (must match exactly once, or pass occurrence) with new_text, or replace lines start_line..end_line with new_text. An empty new_text deletes. Saves afterwards unless save=\"false\". Returns the changed lines as -/+.",
+		args: []argSpec{
+			{name: "path", typ: argString, required: true, desc: "File path — absolute, or relative to the window's first workspace folder."},
+			{name: "old_text", typ: argString, desc: "Exact text to replace, whitespace included. Give enough context to make it unique."},
+			{name: "new_text", typ: argString, desc: "Replacement text. Omit or empty to delete."},
+			{name: "occurrence", typ: argInt, desc: "Which match of old_text to replace (1-based) when it occurs more than once."},
+			{name: "start_line", typ: argInt, desc: "Instead of old_text: first line to replace (1-based)."},
+			{name: "end_line", typ: argInt, desc: "Last line to replace (inclusive). Default start_line."},
+			{name: "save", typ: argString, desc: "\"false\" to leave the change unsaved. Default saves."},
+		},
+	},
+	{
+		name: "vscode_save",
+		desc: "Save a file in a VS Code window (" + vscodeProfileHint + "), or every file with unsaved changes when 'path' is omitted.",
+		args: []argSpec{
+			{name: "path", typ: argString, desc: "File to save. Omit to save all."},
+		},
+	},
+	{
+		name: "vscode_format",
+		desc: "Format a file with a VS Code window's formatter for its language (" + vscodeProfileHint + "), then save it unless save=\"false\".",
+		args: []argSpec{
+			{name: "path", typ: argString, desc: "File to format. Omit for the active editor."},
+			{name: "save", typ: argString, desc: "\"false\" to leave it unsaved. Default saves."},
+		},
+	},
+	{
+		name: "vscode_symbols",
+		desc: "Find symbols through a VS Code window's language servers (" + vscodeProfileHint + "): with 'query', search the whole workspace ('kind name (container) path:line'); with 'path', outline that file (nested 'kind name :line', which 'query' then filters).",
+		args: []argSpec{
+			{name: "query", typ: argString, desc: "Symbol name or part of it."},
+			{name: "path", typ: argString, desc: "Outline this file instead of searching the workspace."},
+		},
+	},
+	{
+		name: "vscode_definition",
+		desc: "Go to definition through a VS Code window's language server (" + vscodeProfileHint + "): 'path:line:col  line text' for each definition. Give path + line and either column or a symbol name on that line; omit all for the active editor's cursor.",
+		args: vscodePositionArgs,
+	},
+	{
+		name: "vscode_references",
+		desc: "Find all references to the symbol at a position, through a VS Code window's language server (" + vscodeProfileHint + "): a count, then 'path:line:col  line text' each (up to 200). Position as in vscode_definition.",
+		args: vscodePositionArgs,
+	},
+	{
+		name: "vscode_hover",
+		desc: "The hover text at a position in a VS Code window (" + vscodeProfileHint + ") — usually the type or signature and its doc comment. Position as in vscode_definition.",
+		args: vscodePositionArgs,
+	},
+	{
+		name: "vscode_tasks",
+		desc: "List the tasks a VS Code window can run (" + vscodeProfileHint + "), from tasks.json and task providers (npm, go, …): 'name [source] (group)'.",
+	},
+	{
+		name: "vscode_task_run",
+		desc: "Run a task in a VS Code window (" + vscodeProfileHint + ") and wait for it to finish, returning its exit code. The task's output is NOT readable through the VS Code API: afterwards check vscode_problems for what its problem matcher found, or use vscode_terminal_run for a command whose output you need.",
+		args: []argSpec{
+			{name: "name", typ: argString, required: true, desc: "Task name, or 'source: name' when two sources share a name (see vscode_tasks)."},
+			{name: "timeoutSec", typ: argInt, desc: "How long to wait for it to finish (default 60, max 600)."},
+		},
+	},
+	{
+		name: "vscode_debug",
+		desc: "Drive the debugger of a VS Code window (" + vscodeProfileHint + "). action: 'start' (a launch.json configuration by 'name', or the selected one), 'stop', 'status' (session, and the top frames when paused), 'breakpoints' (list), 'breakpoint_add' / 'breakpoint_remove' (path + line; remove without line clears the file).",
+		args: []argSpec{
+			{name: "action", typ: argString, required: true, desc: "start | stop | status | breakpoints | breakpoint_add | breakpoint_remove"},
+			{name: "name", typ: argString, desc: "start: launch configuration name. Omit for the one selected in the Run view."},
+			{name: "path", typ: argString, desc: "Breakpoint file."},
+			{name: "line", typ: argInt, desc: "Breakpoint line (1-based)."},
+			{name: "condition", typ: argString, desc: "breakpoint_add: break only when this expression is true."},
+		},
+	},
+	{
+		name: "vscode_git",
+		desc: "Read git state through a VS Code window's Git extension (" + vscodeProfileHint + "). Read-only. action: 'status' (branch, ahead/behind, staged/unstaged/untracked files), 'diff' (unified diff; 'path' for one file against HEAD; staged=\"true\" for the index), 'log' (recent commits). Local windows only — in a Remote-SSH window run git with vscode_terminal_run.",
+		args: []argSpec{
+			{name: "action", typ: argString, desc: "status (default) | diff | log"},
+			{name: "path", typ: argString, desc: "diff: only this file. Also picks the repository when the window has several."},
+			{name: "staged", typ: argString, desc: "diff: \"true\" for staged changes."},
+			{name: "max", typ: argInt, desc: "log: how many commits (default 10, max 100)."},
+		},
+	},
+	{
+		name: "vscode_tests",
+		desc: "Run tests through a VS Code window's Test Explorer (" + vscodeProfileHint + "). action: 'all', 'failed' (re-run failures), 'last' (re-run the last run), 'file' / 'cursor' (the file, or the test at path+line), 'cancel'. Waits up to timeoutSec (default 20) for the run. Pass/fail details are not readable through the API: failures with a location appear in vscode_problems; for full output run the test command with vscode_terminal_run.",
+		args: []argSpec{
+			{name: "action", typ: argString, desc: "all (default) | failed | last | file | cursor | cancel"},
+			{name: "path", typ: argString, desc: "file/cursor: open this file first."},
+			{name: "line", typ: argInt, desc: "cursor: the test's line (1-based)."},
+			{name: "timeoutSec", typ: argInt, desc: "How long to wait for the run (default 20, max 600)."},
+		},
+	},
+}
+
+// vscodePositionArgs locate a symbol for vscode_definition, _references and _hover.
+var vscodePositionArgs = []argSpec{
+	{name: "path", typ: argString, desc: "File path — absolute, or relative to the window's first workspace folder. Omit (with line) for the active editor's cursor."},
+	{name: "line", typ: argInt, desc: "Line (1-based)."},
+	{name: "column", typ: argInt, desc: "Column (1-based)."},
+	{name: "symbol", typ: argString, desc: "Instead of column: the identifier on that line to look up."},
 }
 
 // vscodeProfileHint is repeated in every vscode_* description so a model sees

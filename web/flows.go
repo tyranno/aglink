@@ -100,7 +100,7 @@ func loadFlow(name string) (*savedFlow, error) {
 
 // runFlow replays a saved flow. The caller's profile wins over the recorded
 // one, so a flow recorded on one window can be pointed at another.
-func (d *Daemon) runFlow(params map[string]any, profile string) CallResult {
+func (d *Daemon) runFlow(sess callSession, params map[string]any, profile string) CallResult {
 	name := strings.TrimSpace(str(params, "name"))
 	if name == "" {
 		return CallResult{Error: "run_flow requires 'name'"}
@@ -118,7 +118,7 @@ func (d *Daemon) runFlow(params map[string]any, profile string) CallResult {
 	if profile == "" {
 		profile = f.Profile
 	}
-	res := d.runSteps(p, profile)
+	res := d.runSteps(sess, p, profile)
 	prefix := "flow " + name + ": "
 	if res.OK {
 		res.Text = prefix + res.Text

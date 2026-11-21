@@ -38,7 +38,8 @@ func callDaemon(method string, params map[string]any, profile string) CallResult
 			profile = findProjectAccount(cwd)
 		}
 	}
-	body, _ := json.Marshal(callRequest{Method: method, Params: params, Profile: profile, Env: bridgeEnv()})
+	body, _ := json.Marshal(callRequest{Method: method, Params: params, Profile: profile, Env: bridgeEnv(),
+		Session: bridgeSession.key, SessionLabel: bridgeSession.label})
 	req, err := http.NewRequest(http.MethodPost, daemonBaseURL(port)+"/call", bytes.NewReader(body))
 	if err != nil {
 		return CallResult{Error: err.Error()}

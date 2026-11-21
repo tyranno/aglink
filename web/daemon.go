@@ -68,19 +68,27 @@ type extConn struct {
 	// that resolved it a moment earlier fails at once instead of parking on a
 	// connection nothing will ever answer from.
 	gone bool
-
-	// navTab is the id of the tab the last navigate opened on this connection, or
-	// 0. navigate now opens its tab in the BACKGROUND (active:false) so it does
-	// not steal the user's view; to keep "navigate then act" working without an
-	// explicit tabId, a later tabId-less page call is aimed at this tab instead of
-	// Chrome's active tab. Guarded by d.mu. Cleared when that tab turns out to be
-	// gone. See navTargetMethods.
-	navTab int
 }
+
+// navKey names whose nav tab it is: a Chrome account and the MCP client session
+// ("" for a caller that sends none, e.g. the cmd fast-path).
+//
+// The nav tab is the id of the tab the last navigate opened. navigate opens its
+// tab in the BACKGROUND (active:false) so it does not steal the user's view; to
+// keep "navigate then act" working without an explicit tabId, a later tabId-less
+// page call is aimed at this tab instead of Chrome's active tab. Kept on the
+// Daemon rather than the connection so it survives the extension reconnecting,
+// and per session so two agents on one profile do not steer each other's
+// calls. See navTargetMethods.
+type navKey struct{ account, session string }
+
+// callSession identifies the MCP client conversation a call comes from. key is
+// stable for the conversation; label is a short human name for its tab group.
+type callSession struct{ key, label string }
 
 // navTargetMethods are the Chrome page tools that act on a single tab and
 // default to the active one. For these, a call that omits tabId is redirected to
-// the connection's navTab (the last backgrounded navigate) when one is known, so
+// the session's nav tab (the last backgrounded navigate) when one is known, so
 // the agent keeps working the tab it opened without bringing it to the front.
 // Connection-level tools (list_tabs, get_console_logs, …) and tools where a
 // silent redirect would surprise (close_tab, activate_tab) are deliberately out.
@@ -120,6 +128,12 @@ type Daemon struct {
 	// registers, waking every call parked in waitConn.
 	connected chan struct{}
 
+	// navTabs maps (account, session) to its nav tab id; see navKey. Cleared
+	// for an account whose extension reconnects from a different browser run
+	// (boots), since Chrome reuses tab ids after a restart.
+	navTabs map[navKey]int
+	boots   map[string]string
+
 	// reconnectWait is the default bound on that wait; 0 fails at once. Only
 	// the real daemon sets it (runDaemon), so tests keep the immediate error.
 	reconnectWait time.Duration
@@ -145,6 +159,8 @@ func newDaemon(expectedExtID string) *Daemon {
 		exts:          make(map[string]*extConn),
 		pending:       make(map[uint64]chan Reply),
 		connected:     make(chan struct{}),
+		navTabs:       make(map[navKey]int),
+		boots:         make(map[string]string),
 		apps:          appState{conns: make(map[string]*appTarget)},
 		discover:      defaultDiscover,
 		vscodes:       make(map[string]*extConn),
@@ -254,6 +270,18 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 	d.nextSeq++
 	ec.seq = d.nextSeq
 	d.exts[account] = ec
+	// boot names the browser run (the extension keeps it in storage.session).
+	// Same run: the remembered nav tabs are still the agents' tabs. Different
+	// run, or an extension that sends none: forget them, as before.
+	boot := r.URL.Query().Get("boot")
+	if boot == "" || d.boots[account] != boot {
+		for k := range d.navTabs {
+			if k.account == account {
+				delete(d.navTabs, k)
+			}
+		}
+	}
+	d.boots[account] = boot
 	close(d.connected)
 	d.connected = make(chan struct{})
 	n := len(d.exts)
@@ -358,16 +386,24 @@ func (d *Daemon) accountsLocked() []string {
 	return out
 }
 
-// call sends one command to the extension and waits for its reply.
+// call sends one command to the extension and waits for its reply, for a
+// caller with no session (the cmd fast-path, /mcp, tests).
 func (d *Daemon) call(method string, params map[string]any, profile string) CallResult {
+	return d.callAs(callSession{}, method, params, profile)
+}
+
+// callAs is call on behalf of one MCP client session: the nav tab it reads and
+// updates is that session's own, and navigate files its new tab under the
+// session's tab group.
+func (d *Daemon) callAs(sess callSession, method string, params map[string]any, profile string) CallResult {
 	if method == listProfilesMethod {
 		return d.listProfiles()
 	}
 	if method == "run_steps" {
-		return d.runSteps(params, profile)
+		return d.runSteps(sess, params, profile)
 	}
 	if method == "run_flow" {
-		return d.runFlow(params, profile)
+		return d.runFlow(sess, params, profile)
 	}
 	if method == "upload_file" {
 		paths, err := uploadPaths(params["paths"])
@@ -402,8 +438,9 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	if err != nil {
 		return CallResult{Error: err.Error()}
 	}
+	key := navKey{ec.account, sess.key}
 	d.mu.Lock()
-	navTab := ec.navTab
+	navTab := d.navTabs[key]
 	d.mu.Unlock()
 
 	// Aim a tabId-less page call at the last backgrounded navigate's tab.
@@ -412,6 +449,17 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 			params = map[string]any{}
 		}
 		params["tabId"] = navTab
+	}
+	// Tell the extension which session a new tab belongs to, so it can file it
+	// under that session's tab group. Copied: params may be the caller's map.
+	if method == "navigate" && sess.key != "" {
+		p := make(map[string]any, len(params)+2)
+		for k, v := range params {
+			p[k] = v
+		}
+		p["group"] = sess.key
+		p["groupTitle"] = sess.label
+		params = p
 	}
 
 	var res CallResult
@@ -427,22 +475,20 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 		}
 	}
 
-	d.rememberNavTab(ec, method, res)
+	d.rememberNavTab(navKey{ec.account, sess.key}, method, res)
 	return res
 }
 
-// rememberNavTab keeps ec.navTab in step with reality: a successful navigate
-// sets it to the new tab, and any call that reports the remembered tab is gone
-// clears it so the next tabId-less call falls back to Chrome's active tab.
-func (d *Daemon) rememberNavTab(ec *extConn, method string, res CallResult) {
-	if ec == nil {
-		return
-	}
+// rememberNavTab keeps the nav tab for key in step with reality: a successful
+// navigate sets it to the new tab, and any call that reports the remembered tab
+// is gone clears it so the next tabId-less call falls back to Chrome's active
+// tab.
+func (d *Daemon) rememberNavTab(key navKey, method string, res CallResult) {
 	if method == "navigate" && res.OK {
 		if m := navigatedTabRE.FindStringSubmatch(res.Text); m != nil {
 			if id, err := strconv.Atoi(m[1]); err == nil {
 				d.mu.Lock()
-				ec.navTab = id
+				d.navTabs[key] = id
 				d.mu.Unlock()
 			}
 		}
@@ -450,7 +496,7 @@ func (d *Daemon) rememberNavTab(ec *extConn, method string, res CallResult) {
 	}
 	if !res.OK && strings.Contains(res.Error, "No tab with id") {
 		d.mu.Lock()
-		ec.navTab = 0
+		delete(d.navTabs, key)
 		d.mu.Unlock()
 	}
 }
@@ -517,7 +563,7 @@ func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, d.call(body.Method, body.Params, body.Profile))
+	writeJSON(w, d.callAs(callSession{body.Session, body.SessionLabel}, body.Method, body.Params, body.Profile))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

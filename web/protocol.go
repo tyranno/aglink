@@ -49,4 +49,8 @@ type callRequest struct {
 	// Env carries the bridge's AGLINK_WEB_* settings (see settings.go): the MCP
 	// registration sets them on the bridge, and the daemon would never see them.
 	Env map[string]string `json:"env,omitempty"`
+	// Session identifies the MCP client conversation (see bridgeSession): it
+	// owns its own nav tab and tab group. "" behaves as a single shared caller.
+	Session      string `json:"session,omitempty"`
+	SessionLabel string `json:"sessionLabel,omitempty"`
 }

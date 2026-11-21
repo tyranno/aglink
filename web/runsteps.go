@@ -104,7 +104,7 @@ var (
 
 // runSteps executes the batch. params: steps (required), tabId, snapshot
 // ("text" | "elements" | "none"), step_delay_ms, continue_on_error.
-func (d *Daemon) runSteps(params map[string]any, profile string) CallResult {
+func (d *Daemon) runSteps(sess callSession, params map[string]any, profile string) CallResult {
 	steps, err := parseSteps(params["steps"])
 	if err != nil {
 		return CallResult{Error: err.Error()}
@@ -131,7 +131,7 @@ func (d *Daemon) runSteps(params map[string]any, profile string) CallResult {
 				st.Args["tabId"] = tab
 			}
 		}
-		text, serr := d.runOneStep(st, profile)
+		text, serr := d.runOneStep(sess, st, profile)
 		if serr != nil {
 			failed++
 			lines = append(lines, fmt.Sprintf("%d %s ✗ %s", i+1, st.Tool, oneLine(serr.Error(), stepDetailMax)))
@@ -166,7 +166,7 @@ func (d *Daemon) runSteps(params map[string]any, profile string) CallResult {
 		head = fmt.Sprintf("ok: %d/%d steps", len(steps), len(steps))
 	}
 	out := head + "\n" + strings.Join(lines, "\n")
-	if snap := d.stepsSnapshot(snapshot, tab, profile); snap != "" {
+	if snap := d.stepsSnapshot(sess, snapshot, tab, profile); snap != "" {
 		out += "\n" + snap
 	}
 	if stoppedAt >= 0 {
@@ -186,7 +186,7 @@ func (d *Daemon) runSteps(params map[string]any, profile string) CallResult {
 }
 
 // runOneStep runs one step: one of the built-in step kinds, or any tool.
-func (d *Daemon) runOneStep(st runStep, profile string) (string, error) {
+func (d *Daemon) runOneStep(sess callSession, st runStep, profile string) (string, error) {
 	switch st.Tool {
 	case "wait":
 		ms := intp(st.Args, "ms", 0)
@@ -197,9 +197,9 @@ func (d *Daemon) runOneStep(st runStep, profile string) (string, error) {
 		time.Sleep(w)
 		return fmt.Sprintf("waited %dms", w.Milliseconds()), nil
 	case "expect":
-		return d.expectStep(st.Args, profile)
+		return d.expectStep(sess, st.Args, profile)
 	}
-	res := d.call(st.Tool, st.Args, profile)
+	res := d.callAs(sess, st.Tool, st.Args, profile)
 	if !res.OK {
 		return "", fmt.Errorf("%s", res.Error)
 	}
@@ -209,7 +209,7 @@ func (d *Daemon) runOneStep(st runStep, profile string) (string, error) {
 // expectStep waits until a condition holds, failing the batch when it does not
 // within timeout_ms. {selector} or {text} must become visible; with
 // "gone": true it must disappear instead (a spinner, a closing dialog).
-func (d *Daemon) expectStep(args map[string]any, profile string) (string, error) {
+func (d *Daemon) expectStep(sess callSession, args map[string]any, profile string) (string, error) {
 	sel := str(args, "selector")
 	if sel == "" {
 		if t := str(args, "text"); t != "" {
@@ -237,7 +237,7 @@ func (d *Daemon) expectStep(args map[string]any, profile string) (string, error)
 
 	start := time.Now()
 	for {
-		res := d.call("element_exists", q, profile)
+		res := d.callAs(sess, "element_exists", q, profile)
 		if !res.OK {
 			return "", fmt.Errorf("expect %s: %s", sel, res.Error)
 		}
@@ -266,7 +266,7 @@ func (d *Daemon) expectStep(args map[string]any, profile string) (string, error)
 
 // stepsSnapshot shows the page as the batch left it, so the caller sees the
 // outcome without another call.
-func (d *Daemon) stepsSnapshot(kind string, tab int, profile string) string {
+func (d *Daemon) stepsSnapshot(sess callSession, kind string, tab int, profile string) string {
 	q := map[string]any{}
 	if tab != 0 {
 		q["tabId"] = tab
@@ -274,21 +274,21 @@ func (d *Daemon) stepsSnapshot(kind string, tab int, profile string) string {
 	switch kind {
 	case "tree":
 		q["maxLines"] = 150
-		res := d.call("page_snapshot", q, profile)
+		res := d.callAs(sess, "page_snapshot", q, profile)
 		if !res.OK {
 			return "--- snapshot (tree) unavailable: " + oneLine(res.Error, stepDetailMax)
 		}
 		return "--- snapshot (tree) ---\n" + res.Text
 	case "text":
 		q["offset"] = -snapshotTextChars
-		res := d.call("get_page_text", q, profile)
+		res := d.callAs(sess, "get_page_text", q, profile)
 		if !res.OK {
 			return "--- snapshot (text) unavailable: " + oneLine(res.Error, stepDetailMax)
 		}
 		return "--- snapshot (text, last " + strconv.Itoa(snapshotTextChars) + " chars) ---\n" + res.Text
 	case "elements":
 		q["max"] = snapshotElementMax
-		res := d.call("list_elements", q, profile)
+		res := d.callAs(sess, "list_elements", q, profile)
 		if !res.OK {
 			return "--- snapshot (elements) unavailable: " + oneLine(res.Error, stepDetailMax)
 		}

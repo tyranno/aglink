@@ -17,6 +17,7 @@ import (
 // via a search engine) rather than a direct browser action, so it needs its own
 // design pass.
 func RunMCPWeb() error {
+	bridgeSession = newBridgeSession()
 	return server.ServeStdio(newMCPServer(callDaemon))
 }
 

@@ -17,6 +17,7 @@ var webSettingKeys = []string{
 	"AGLINK_WEB_CDP_PORTS",
 	"AGLINK_WEB_INSECURE_HOSTS",
 	"AGLINK_WEB_STEP_DELAY_MS",
+	"AGLINK_WEB_RECONNECT_WAIT_MS",
 	// Approval gate (approvalgate.go): read per request, never from the
 	// shared last-seen copy.
 	"AGLINK_APPROVAL_URL",

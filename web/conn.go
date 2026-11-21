@@ -64,7 +64,7 @@ func (d *Daemon) serveConn(ec *extConn, label string, unregister func()) {
 	// perfectly answerable and must not be collateral damage.
 	for id := range ec.waiting {
 		if ch := d.pending[id]; ch != nil {
-			ch <- Reply{ID: id, Error: label + " connection lost"}
+			ch <- Reply{ID: id, Error: label + " connection lost", lost: true}
 			delete(d.pending, id)
 		}
 	}
@@ -72,13 +72,29 @@ func (d *Daemon) serveConn(ec *extConn, label string, unregister func()) {
 	_ = conn.Close()
 }
 
+// tripOutcome says how far a request got, so a caller can tell one that never
+// reached the peer (safe to send again) from one that was written and then lost
+// with the connection (it may have run).
+type tripOutcome int
+
+const (
+	tripDone          tripOutcome = iota // answered, or timed out while connected
+	tripNotSent                          // the connection was gone before the write
+	tripLostAfterSend                    // written, then the connection dropped
+)
+
 // roundTrip sends one request on ec and waits up to timeout for its reply.
 // noun names the peer in the timeout message ("browser did not respond…").
 func (d *Daemon) roundTrip(ec *extConn, method string, params map[string]any, timeout time.Duration, noun string) CallResult {
+	res, _ := d.roundTripOutcome(ec, method, params, timeout, noun)
+	return res
+}
+
+func (d *Daemon) roundTripOutcome(ec *extConn, method string, params map[string]any, timeout time.Duration, noun string) (CallResult, tripOutcome) {
 	d.mu.Lock()
 	if ec.gone {
 		d.mu.Unlock()
-		return CallResult{Error: noun + " connection lost"}
+		return CallResult{Error: noun + " connection lost"}, tripNotSent
 	}
 	d.nextID++
 	id := d.nextID
@@ -96,13 +112,16 @@ func (d *Daemon) roundTrip(ec *extConn, method string, params map[string]any, ti
 
 	data, err := json.Marshal(Request{ID: id, Method: method, Params: params})
 	if err != nil {
-		return CallResult{Error: fmt.Sprintf("marshal request: %v", err)}
+		return CallResult{Error: fmt.Sprintf("marshal request: %v", err)}, tripDone
 	}
 	ec.writeMu.Lock()
 	err = ec.conn.WriteMessage(websocket.TextMessage, data)
 	ec.writeMu.Unlock()
 	if err != nil {
-		return CallResult{Error: fmt.Sprintf("send to %s: %v", noun, err)}
+		// A failed write leaves no whole frame at the peer. Close so the read
+		// loop unregisters this connection and a reconnect can replace it.
+		_ = ec.conn.Close()
+		return CallResult{Error: fmt.Sprintf("send to %s: %v", noun, err)}, tripNotSent
 	}
 	log.Printf("aglink-web: → %s #%d %s", ec.account, id, method)
 
@@ -110,12 +129,15 @@ func (d *Daemon) roundTrip(ec *extConn, method string, params map[string]any, ti
 	case rep := <-ch:
 		if !rep.OK {
 			log.Printf("aglink-web: ← #%d error: %s", id, rep.Error)
-			return CallResult{Error: rep.Error}
+			if rep.lost {
+				return CallResult{Error: rep.Error}, tripLostAfterSend
+			}
+			return CallResult{Error: rep.Error}, tripDone
 		}
 		log.Printf("aglink-web: ← #%d ok (%d bytes)", id, len(rep.Text))
-		return CallResult{OK: true, Text: rep.Text}
+		return CallResult{OK: true, Text: rep.Text}, tripDone
 	case <-time.After(timeout):
 		log.Printf("aglink-web: ✗ #%d %s timed out", id, method)
-		return CallResult{Error: noun + " did not respond within timeout"}
+		return CallResult{Error: noun + " did not respond within timeout"}, tripDone
 	}
 }

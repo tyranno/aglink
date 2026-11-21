@@ -584,6 +584,7 @@ with every call (`settings.go`); a changed registration applies from the next ca
 | `AGLINK_WEB_PORT` | `48219` | Daemon/bridge port. If you change it, also set the matching port in the extension's options page (see below) — the extension can't read env vars. |
 | `AGLINK_WEB_EXT_ID` | *(unset)* | Pin the accepted extension ID. Unset = accept any `chrome-extension://` origin. |
 | `AGLINK_WEB_STEP_DELAY_MS` | `0` | Default pause between `run_steps` steps. |
+| `AGLINK_WEB_RECONNECT_WAIT_MS` | `20000` | How long a Chrome call waits for the extension to (re)connect before failing with "not connected". A command lost with a dropped connection is sent again only if it never reached the extension, or if it is read-only (`get_page_text`, `list_tabs`, `page_snapshot`, …); `navigate`/`click`/`type` and the like are never resent. Forwarded by the bridge like the keys above. |
 | `AGLINK_WEB_INSECURE_HOSTS` | *(unset)* | Hosts to continue past certificate warnings automatically, in addition to `~/.aglink/aglink-web-insecure-hosts`. See "인증서 경고 넘기기". |
 
 The daemon writes its live port to `~/.teleclaude/aglink-web.port` so the **bridge**

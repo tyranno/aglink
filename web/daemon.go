@@ -21,6 +21,23 @@ import (
 // single browser command before giving up.
 const callTimeout = 30 * time.Second
 
+// defaultReconnectWait is how long a Chrome call waits for the extension to
+// (re)connect before failing; AGLINK_WEB_RECONNECT_WAIT_MS overrides it.
+const defaultReconnectWait = 20 * time.Second
+
+const reconnectWaitEnv = "AGLINK_WEB_RECONNECT_WAIT_MS"
+
+// retryAfterDropMethods are read-only: sent once more after a reconnect when the
+// connection dropped with the request in flight. Anything else (navigate,
+// click, type, eval, …) may already have run, so it is never resent.
+var retryAfterDropMethods = map[string]bool{
+	"list_tabs": true, "get_page_text": true, "page_snapshot": true,
+	"element_exists": true, "get_html": true, "query_all": true,
+	"get_attribute": true, "list_elements": true, "get_value": true,
+	"wait_for_element": true, "dialog_status": true, "screenshot": true,
+	"get_console_logs": true, "get_network_requests": true,
+}
+
 // extConn is one connected Chrome profile. The daemon holds one per signed-in
 // account, so two profiles no longer evict each other.
 type extConn struct {
@@ -99,6 +116,14 @@ type Daemon struct {
 	nextID  uint64
 	pending map[uint64]chan Reply
 
+	// connected is closed and replaced (under mu) each time an extension
+	// registers, waking every call parked in waitConn.
+	connected chan struct{}
+
+	// reconnectWait is the default bound on that wait; 0 fails at once. Only
+	// the real daemon sets it (runDaemon), so tests keep the immediate error.
+	reconnectWait time.Duration
+
 	upgrader websocket.Upgrader
 
 	// Electron/Wails windows reached over CDP (profile app:… / cdp:…). Kept
@@ -119,6 +144,7 @@ func newDaemon(expectedExtID string) *Daemon {
 		expectedExtID: expectedExtID,
 		exts:          make(map[string]*extConn),
 		pending:       make(map[uint64]chan Reply),
+		connected:     make(chan struct{}),
 		apps:          appState{conns: make(map[string]*appTarget)},
 		discover:      defaultDiscover,
 		vscodes:       make(map[string]*extConn),
@@ -228,6 +254,8 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 	d.nextSeq++
 	ec.seq = d.nextSeq
 	d.exts[account] = ec
+	close(d.connected)
+	d.connected = make(chan struct{})
 	n := len(d.exts)
 	d.mu.Unlock()
 	log.Printf("aglink-web: extension registered for %s (%d profile(s) connected)", account, n)
@@ -280,7 +308,7 @@ func (d *Daemon) pingLoop(ec *extConn, done <-chan struct{}) {
 // with no re-election step.
 func (d *Daemon) resolve(name string) (*extConn, error) {
 	if len(d.exts) == 0 {
-		return nil, fmt.Errorf("Chrome extension not connected — open Chrome with the aglink-web extension loaded")
+		return nil, notConnectedError("Chrome extension not connected — open Chrome with the aglink-web extension loaded")
 	}
 
 	name = strings.ToLower(strings.TrimSpace(name))
@@ -312,7 +340,7 @@ func (d *Daemon) resolve(name string) (*extConn, error) {
 	case 1:
 		return d.exts[matched[0]], nil
 	case 0:
-		return nil, fmt.Errorf("profile %q not connected — connected: %s", name, strings.Join(d.accountsLocked(), ", "))
+		return nil, notConnectedError(fmt.Sprintf("profile %q not connected — connected: %s", name, strings.Join(d.accountsLocked(), ", ")))
 	default:
 		// Picking one here would silently drive the wrong browser, which is the
 		// exact failure this whole feature exists to prevent.
@@ -369,16 +397,14 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 		return d.callApp(method, params, profile)
 	}
 
-	d.mu.Lock()
-	ec, err := d.resolve(profile)
-	var navTab int
-	if ec != nil {
-		navTab = ec.navTab
-	}
-	d.mu.Unlock()
+	wait := d.reconnectBudget()
+	ec, err := d.waitConn(func() (*extConn, error) { return d.resolve(profile) }, wait)
 	if err != nil {
 		return CallResult{Error: err.Error()}
 	}
+	d.mu.Lock()
+	navTab := ec.navTab
+	d.mu.Unlock()
 
 	// Aim a tabId-less page call at the last backgrounded navigate's tab.
 	if navTab != 0 && navTargetMethods[method] && intp(params, "tabId", 0) == 0 {
@@ -395,7 +421,7 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 	case "handle_dialog":
 		res = d.handleDialogChrome(ec, params)
 	default:
-		res = d.roundTrip(ec, method, params, callTimeout, "browser")
+		ec, res = d.sendChrome(ec, method, params, wait)
 		if method == "navigate" && res.OK {
 			res = d.autoProceed(ec, params, res)
 		}
@@ -516,6 +542,7 @@ func runDaemon() error {
 		log.Printf("aglink-web: warning: could not write port file: %v", err)
 	}
 	d := newDaemon(expectedExtID())
+	d.reconnectWait = defaultReconnectWait
 	log.Printf("aglink-web daemon listening on %s", addr)
 	return http.Serve(ln, d.handler())
 }

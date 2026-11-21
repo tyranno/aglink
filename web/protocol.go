@@ -22,6 +22,10 @@ type Reply struct {
 	OK    bool   `json:"ok"`
 	Text  string `json:"text,omitempty"`
 	Error string `json:"error,omitempty"`
+
+	// lost marks the reply the daemon fabricates when the connection drops with
+	// this request in flight. Never on the wire.
+	lost bool
 }
 
 // CallResult is the JSON shape of the daemon's HTTP POST /call boundary, which

@@ -347,18 +347,32 @@ function relayOnce(req, readPort) {
   if (req.headers && req.headers.accept) headers.Accept = req.headers.accept;
   if (dst.auth) headers.Authorization = dst.auth;
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+    const fail = (msg, refused) =>
+      finish({ status: 502, contentType: "application/json", body: Buffer.from(JSON.stringify({ error: `aglink relay: ${msg}` })).toString("base64"), refused });
     const r = http.request(
       { host: "127.0.0.1", port: dst.port, path: req.path || "/", method: req.method || "POST", headers, timeout: 600000 },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
         res.on("end", () =>
-          resolve({ status: res.statusCode, contentType: res.headers["content-type"] || "", body: Buffer.concat(chunks).toString("base64") })
+          finish({ status: res.statusCode, contentType: res.headers["content-type"] || "", body: Buffer.concat(chunks).toString("base64") })
         );
+        // The server closing the connection partway through the answer (it
+        // was restarted, say) ends neither "end" nor the request's "error":
+        // without these the call would wait for ever.
+        res.on("error", (e) => fail(`${req.target} (127.0.0.1:${dst.port}) closed the connection mid-answer: ${e.message}`));
+        res.on("close", () => {
+          if (!res.complete) fail(`${req.target} (127.0.0.1:${dst.port}) closed the connection mid-answer`);
+        });
       }
     );
-    const fail = (msg, refused) =>
-      resolve({ status: 502, contentType: "application/json", body: Buffer.from(JSON.stringify({ error: `aglink relay: ${msg}` })).toString("base64"), refused });
     r.on("error", (e) => fail(`${req.target} (127.0.0.1:${dst.port}) is not reachable on this PC: ${e.message}`, e.code === "ECONNREFUSED"));
     r.on("timeout", () => r.destroy(new Error("timed out")));
     r.end(body);

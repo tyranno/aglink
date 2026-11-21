@@ -439,3 +439,23 @@ test("aglink.port differing from the running aglink-web: no second daemon, the m
   assert.strictEqual((await relay({ target: "web" }, () => 48300, d, 48300)).status, 200);
   assert.deepStrictEqual(spawned, ["48300"]);
 });
+
+test("a server closing the connection mid-answer ends the relayed call with a 502, not a hang", async (t) => {
+  const http = require("http");
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": "1000" });
+    res.write('{"partial":');
+    setTimeout(() => req.socket.destroy(), 50);
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  t.after(() => srv.close());
+  const port = srv.address().port;
+  const res = await Promise.race([
+    relay({ target: "web", path: "/x", method: "GET" }, () => port),
+    new Promise((r) => setTimeout(() => r("hung"), 5000)),
+  ]);
+  assert.notStrictEqual(res, "hung");
+  assert.strictEqual(res.status, 502);
+  assert.match(Buffer.from(res.body, "base64").toString(), /closed the connection mid-answer/);
+  assert.ok(!res.refused, "not retried as if nothing were running");
+});

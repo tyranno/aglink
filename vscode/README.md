@@ -8,6 +8,8 @@ window is doing and act in it, as text instead of screenshots.
 - the Problems panel
 - terminal commands and their output — run a command and get the result back
 - any VS Code command, by id
+- edits, language-server lookups (symbols, definition, references, hover),
+  tasks, tests, the debugger and git state — the rest of the dev loop
 
 It works for **Remote-SSH windows**. The extension is a *UI extension*: it runs
 on the Windows machine even when the window is attached to a remote host, so it
@@ -52,6 +54,14 @@ runs in is connected too, and acting on the wrong one is what naming prevents.
 | `vscode_terminal_run` | run a command, wait, return output and exit code |
 | `vscode_terminal_read` | recent commands and output in a terminal — including ones a person typed |
 | `vscode_command` | run any VS Code command by id |
+| `vscode_edit` | replace exact text or a line range through the editor, then save |
+| `vscode_save` / `vscode_format` | save one or all files; format a file and save |
+| `vscode_symbols` | workspace symbol search, or one file's outline |
+| `vscode_definition` / `vscode_references` / `vscode_hover` | language-server lookups at path + line + column or symbol |
+| `vscode_tasks` / `vscode_task_run` | list tasks; run one and wait for its exit code (output is not readable) |
+| `vscode_tests` | run all / failed / last / file / at-cursor tests from the Test Explorer |
+| `vscode_debug` | start, stop, status; list, add and remove breakpoints |
+| `vscode_git` | git status, diff and log — read-only, local windows only |
 
 Paths are absolute or relative to the window's first workspace folder. In a
 Remote-SSH window an absolute path is on the remote.
@@ -75,13 +85,17 @@ extension; this one has none.
 - **Read another extension's panel**, such as the Claude Code chat. VS Code does
   not let one extension see another's webview. For a Claude session, aglink's
   `!sessions` / `!attach` reads its transcript directly.
-- Edit files. Reading, opening and running commands only.
+- **Read task or test output.** VS Code's API gives a task's exit code but not
+  its output, and test results only through the Test Explorer; check
+  `vscode_problems`, or run the command with `vscode_terminal_run`.
+- **Git in a Remote-SSH window.** The Git extension runs on the remote, where
+  this UI extension cannot call it; use `vscode_terminal_run` with `git`.
 
 ## Security
 
-`vscode_terminal_run` and `vscode_command` run with that window's full
-authority — on this machine for a local window, **on the remote** for a
-Remote-SSH window. Anything that can reach the aglink-web daemon can use them,
+`vscode_terminal_run`, `vscode_command`, `vscode_edit` and `vscode_task_run` act
+with that window's full authority — on this machine for a local window, **on
+the remote** for a Remote-SSH window. Anything that can reach the aglink-web daemon can use them,
 including a remote session that reaches it through an SSH reverse tunnel. That
 is the same level of access aglink-screen already grants (the whole keyboard
 and mouse). The daemon only accepts these connections on loopback.

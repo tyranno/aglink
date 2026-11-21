@@ -4,13 +4,15 @@
 // the whole thing runs under `node --test` against a fake.
 "use strict";
 
+const { createDevMethods } = require("./devloop");
+
 const MAX_READ_LINES = 2000;
 const MAX_READ_BYTES = 200 * 1024;
 const MAX_PROBLEMS = 200;
 const MAX_RESULT_CHARS = 512;
 const SEVERITY = ["error", "warning", "info", "hint"];
 
-function createMethods(vscode, terminals) {
+function createMethods(vscode, terminals, opts = {}) {
   // ---- paths --------------------------------------------------------------
 
   function firstFolder() {
@@ -127,6 +129,8 @@ function createMethods(vscode, terminals) {
   }
 
   async function problems(p) {
+    const min = p.severity ? SEVERITY.indexOf(String(p.severity).toLowerCase()) : -1;
+    if (p.severity && (min < 0 || min > 1)) throw new Error("severity must be 'error' or 'warning'");
     let entries;
     if (p.path) {
       const uri = resolveUri(p.path);
@@ -147,10 +151,18 @@ function createMethods(vscode, terminals) {
       }
     }
     if (!rows.length) return "no problems";
+    const counts = SEVERITY.map((name, i) => [rows.filter((r) => (r.sev || 0) === i).length, name]).filter(([n]) => n);
+    let head = `${rows.length} problem${rows.length === 1 ? "" : "s"}: ${counts.map(([n, name]) => `${n} ${name}`).join(", ")}`;
+    if (min >= 0) {
+      const kept = rows.filter((r) => (r.sev || 0) <= min);
+      rows.splice(0, rows.length, ...kept);
+      head += ` — showing ${min === 0 ? "errors" : "errors and warnings"}`;
+      if (!rows.length) return head + ": none";
+    }
     rows.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.sev - b.sev || a.line - b.line || a.col - b.col));
     const shown = rows.slice(0, MAX_PROBLEMS).map((r) => r.text);
     if (rows.length > MAX_PROBLEMS) shown.push(`… ${rows.length - MAX_PROBLEMS} more`);
-    return shown.join("\n");
+    return [head, ...shown].join("\n");
   }
 
   async function command(p) {
@@ -178,6 +190,8 @@ function createMethods(vscode, terminals) {
     return out;
   }
 
+  const dev = createDevMethods(vscode, { resolveUri, displayPath, documentFor, firstFolder, timeoutUnitMs: opts.timeoutUnitMs });
+
   return {
     workspace,
     editors,
@@ -188,6 +202,7 @@ function createMethods(vscode, terminals) {
     terminals: async () => terminals.list(),
     terminal_run: (p) => terminals.run(p),
     terminal_read: async (p) => terminals.read(p),
+    ...dev,
   };
 }
 

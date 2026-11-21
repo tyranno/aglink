@@ -106,7 +106,7 @@ $bridgePkg = Build-Vsix (Join-Path $here 'bridge') @('package.json', 'extension.
 
 $pkg = Get-Content -Raw -Encoding UTF8 (Join-Path $here 'package.json') | ConvertFrom-Json
 $version = $pkg.version
-$files = @('package.json', 'extension.js', 'methods.js', 'terminals.js', 'relay.js', 'README.md', 'aglink-bridge.vsix', 'bridge-version.json')
+$files = @('package.json', 'extension.js', 'methods.js', 'devloop.js', 'terminals.js', 'relay.js', 'README.md', 'aglink-bridge.vsix', 'bridge-version.json')
 $out = Join-Path $here "aglink-vscode-$version.vsix"
 [void](Build-Vsix $here $files 'ui' $out)
 Get-ChildItem $here -Filter 'aglink-vscode-*.vsix' | Where-Object { $_.FullName -ne $out } | Remove-Item -Force

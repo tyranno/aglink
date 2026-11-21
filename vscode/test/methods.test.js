@@ -96,11 +96,16 @@ test("problems lists diagnostics sorted, one line each", async () => {
   });
   const m = createMethods(vscode, noTerminals);
   assert.strictEqual(await m.problems({}), [
+    "3 problems: 1 error, 1 warning, 1 info",
     "error /home/u/backend/a.go:3:5 undefined: foo [compiler]",
     "info /home/u/backend/a.go:1:1 consider gofmt",
     "warning /home/u/backend/b.go:10:1 unused variable x [go]",
   ].join("\n"));
-  assert.strictEqual(await m.problems({ path: "b.go" }), "warning /home/u/backend/b.go:10:1 unused variable x [go]");
+  assert.strictEqual(await m.problems({ path: "b.go" }), "1 problem: 1 warning\nwarning /home/u/backend/b.go:10:1 unused variable x [go]");
+  assert.strictEqual(await m.problems({ severity: "error" }), "3 problems: 1 error, 1 warning, 1 info — showing errors\nerror /home/u/backend/a.go:3:5 undefined: foo [compiler]");
+  assert.match(await m.problems({ severity: "warning" }), /showing errors and warnings\nerror .*\nwarning .*b\.go:10:1/);
+  assert.strictEqual(await m.problems({ path: "b.go", severity: "error" }), "1 problem: 1 warning — showing errors: none");
+  await assert.rejects(m.problems({ severity: "info" }), /severity must be/);
   const empty = makeVSCode({ remote: "host1" });
   assert.strictEqual(await createMethods(empty.vscode, noTerminals).problems({}), "no problems");
 });

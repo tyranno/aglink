@@ -2,7 +2,7 @@
   "name": "aglink-vscode",
   "displayName": "aglink for VS Code",
   "description": "Lets aglink-web read and act in this VS Code window — files, problems, terminal output — so an agent in another window can see what this one is doing without screen capture.",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "publisher": "aglink",
   "private": true,
   "engines": {

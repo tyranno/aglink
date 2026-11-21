@@ -97,18 +97,21 @@
       <span class="flex-1"></span>
       {#if undo}
         <span class="text-amber-600 dark:text-amber-400">되돌렸음</span>
-        <button type="button" disabled={busy} class="rounded px-1.5 py-0.5 font-semibold text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-950/40" onclick={() => restore(undo, "되돌리기를 취소했습니다").then(() => (undo = ""))}>되돌리기 취소</button>
+        <button type="button" disabled={busy} class="rounded px-1.5 py-0.5 font-semibold text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-950/40" onclick={() => restore(undo, "되돌리기를 취소했습니다")}>되돌리기 취소</button>
       {:else}
         <button type="button" class="rounded px-1.5 py-0.5 text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-800" onclick={() => showDiff("")}>변경 내용</button>
         <button type="button" class="rounded px-1.5 py-0.5 text-slate-600 hover:bg-rose-100 hover:text-rose-700 dark:text-slate-300 dark:hover:bg-rose-950/40 dark:hover:text-rose-300" onclick={() => (confirming = !confirming)}>이 답변 전으로</button>
       {/if}
     </div>
 
+    {#if error}
+      <p class="mx-2.5 mb-1.5 text-rose-600 dark:text-rose-400">되돌리지 못했습니다: {error}</p>
+    {/if}
+
     {#if confirming && !undo}
       <div class="mx-2.5 mb-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
         <p>작업 폴더의 파일을 이 답변이 시작되기 전 상태로 되돌립니다. 이 답변 뒤에 바뀐 내용도 함께 되돌아갑니다.</p>
         <p class="mt-0.5 text-[11px] opacity-80">지금 상태는 따로 저장되므로 "되돌리기 취소"로 다시 돌아올 수 있습니다. 대화 내용은 그대로입니다.</p>
-        {#if error}<p class="mt-1 text-rose-600 dark:text-rose-400">되돌리지 못했습니다: {error}</p>{/if}
         <div class="mt-1.5 flex justify-end gap-1.5">
           <button type="button" class="rounded px-2 py-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/40" onclick={() => (confirming = false)}>취소</button>
           <button type="button" disabled={busy} class="rounded bg-rose-600 px-2 py-0.5 font-semibold text-white hover:bg-rose-700 disabled:opacity-50" onclick={() => restore(changes.before, "이 답변 전 상태로 되돌렸습니다")}>{busy ? "되돌리는 중…" : "되돌리기"}</button>

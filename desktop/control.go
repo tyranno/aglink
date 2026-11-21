@@ -201,6 +201,13 @@ func (c *ControlService) send(m controlIn) error {
 
 // request sends with a fresh reqID and waits for the matching reply.
 func (c *ControlService) request(m controlIn) (json.RawMessage, error) {
+	return c.requestWithTimeout(m, 10*time.Second)
+}
+
+// requestWithTimeout is like request but lets slow host-side operations
+// (e.g. checkpoint restore, which can run for up to 2*checkpointSnapTimout)
+// wait longer than the default 10s before the desktop gives up on them.
+func (c *ControlService) requestWithTimeout(m controlIn, timeout time.Duration) (json.RawMessage, error) {
 	id := fmt.Sprintf("r%d", c.seq.Add(1))
 	m.ReqID = id
 	rc := make(chan json.RawMessage, 1)
@@ -218,7 +225,7 @@ func (c *ControlService) request(m controlIn) (json.RawMessage, error) {
 	select {
 	case data := <-rc:
 		return data, nil
-	case <-time.After(10 * time.Second):
+	case <-time.After(timeout):
 		return nil, errors.New("control request timed out")
 	}
 }
@@ -893,14 +900,14 @@ func (c *ControlService) UploadAttachment(path, caption, kind, id string) error 
 // two per-turn snapshots of workDir (host checkpoint.go), for one file when
 // path is set.
 func (c *ControlService) CheckpointDiff(workDir, from, to, path string) (string, error) {
-	data, err := c.request(controlIn{Type: "checkpoint_diff", Path: workDir, From: from, To: to, Text: path})
+	data, err := c.requestWithTimeout(controlIn{Type: "checkpoint_diff", Path: workDir, From: from, To: to, Text: path}, 30*time.Second)
 	return string(data), err
 }
 
 // CheckpointRestore puts workDir back to snapshot `to`. Returns {ok, undo,
 // changed, error}; restoring to `undo` reverses it.
 func (c *ControlService) CheckpointRestore(workDir, to string) (string, error) {
-	data, err := c.request(controlIn{Type: "checkpoint_restore", Path: workDir, To: to})
+	data, err := c.requestWithTimeout(controlIn{Type: "checkpoint_restore", Path: workDir, To: to}, 60*time.Second)
 	return string(data), err
 }
 

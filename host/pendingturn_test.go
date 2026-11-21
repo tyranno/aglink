@@ -13,12 +13,15 @@ func TestRecordCompletedTurn_UpdatesInPlace(t *testing.T) {
 		{Prompt: "q1", Response: "a1"},
 		{Prompt: "q2", Response: ""}, // pending (persisted at run start)
 	}
-	got := recordCompletedTurn(history, 1, "q2", "a2", nil, now)
+	got, idx := recordCompletedTurn(history, 1, "q2", "a2", nil, now)
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2 (updated in place, not appended)", len(got))
 	}
 	if got[1].Prompt != "q2" || got[1].Response != "a2" {
 		t.Errorf("pending turn = %+v, want {q2, a2}", got[1])
+	}
+	if idx != 1 {
+		t.Errorf("idx = %d, want 1 (updated in place)", idx)
 	}
 }
 
@@ -30,22 +33,22 @@ func TestRecordCompletedTurn_AppendsWhenSlotStale(t *testing.T) {
 	base := []ConversationTurn{{Prompt: "q1", Response: "a1"}}
 
 	// pendingIdx out of range → append.
-	got := recordCompletedTurn(base, 5, "q2", "a2", nil, now)
-	if len(got) != 2 || got[1].Prompt != "q2" || got[1].Response != "a2" {
-		t.Errorf("out-of-range pendingIdx should append, got %+v", got)
+	got, idx := recordCompletedTurn(base, 5, "q2", "a2", nil, now)
+	if len(got) != 2 || got[1].Prompt != "q2" || got[1].Response != "a2" || idx != 1 {
+		t.Errorf("out-of-range pendingIdx should append, got %+v idx=%d", got, idx)
 	}
 
 	// pendingIdx points at an already-completed turn (Response != "") → append,
 	// must not overwrite it.
-	got = recordCompletedTurn([]ConversationTurn{{Prompt: "q1", Response: "a1"}}, 0, "q2", "a2", nil, now)
-	if len(got) != 2 || got[0].Response != "a1" {
-		t.Errorf("must not clobber a completed turn, got %+v", got)
+	got, idx = recordCompletedTurn([]ConversationTurn{{Prompt: "q1", Response: "a1"}}, 0, "q2", "a2", nil, now)
+	if len(got) != 2 || got[0].Response != "a1" || idx != 1 {
+		t.Errorf("must not clobber a completed turn, got %+v idx=%d", got, idx)
 	}
 
 	// pendingIdx points at a pending turn with a DIFFERENT prompt → append.
-	got = recordCompletedTurn([]ConversationTurn{{Prompt: "other", Response: ""}}, 0, "q2", "a2", nil, now)
-	if len(got) != 2 {
-		t.Errorf("mismatched pending prompt should append, got %+v", got)
+	got, idx = recordCompletedTurn([]ConversationTurn{{Prompt: "other", Response: ""}}, 0, "q2", "a2", nil, now)
+	if len(got) != 2 || idx != 1 {
+		t.Errorf("mismatched pending prompt should append, got %+v idx=%d", got, idx)
 	}
 }
 

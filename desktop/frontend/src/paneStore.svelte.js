@@ -1921,8 +1921,10 @@ function attachChanges(key, changes) {
 // conversation's working folder (host list_files); picking one inserts the
 // relative path so the AI reads exactly that file.
 const MENTION_RE = /(^|\s)@([^\s@"]*)$/;
-let mentionTimer = null;
-let mentionSeq = 0;
+// Per-pane (the app supports several split panes at once; a shared timer/seq
+// would let typing in one pane cancel another pane's pending fetch).
+const mentionTimers = new Map(); // paneId -> timeout handle
+const mentionSeqs = new Map(); // paneId -> latest request seq
 
 export function updateMentionForPane(paneId) {
   const p = pane(paneId);
@@ -1938,19 +1940,23 @@ export function updateMentionForPane(paneId) {
   const start = caret - m[2].length - 1;
   const query = m[2];
   updatePane(paneId, { mention: { ...(p.mention || { files: [], index: 0 }), start, end: caret, query, hidden: false } });
-  clearTimeout(mentionTimer);
-  const seq = ++mentionSeq;
-  mentionTimer = setTimeout(async () => {
-    try {
-      const data = parseJSON(await ControlService.ListFiles(workDir, query), {});
-      if (seq !== mentionSeq) return;
-      const cur = pane(paneId)?.mention;
-      if (!cur) return;
-      updatePane(paneId, { mention: { ...cur, files: Array.isArray(data.files) ? data.files : [], index: 0 } });
-    } catch {
-      /* host too old or offline: no completion */
-    }
-  }, 120);
+  clearTimeout(mentionTimers.get(paneId));
+  const seq = (mentionSeqs.get(paneId) || 0) + 1;
+  mentionSeqs.set(paneId, seq);
+  mentionTimers.set(
+    paneId,
+    setTimeout(async () => {
+      try {
+        const data = parseJSON(await ControlService.ListFiles(workDir, query), {});
+        if (mentionSeqs.get(paneId) !== seq) return;
+        const cur = pane(paneId)?.mention;
+        if (!cur) return;
+        updatePane(paneId, { mention: { ...cur, files: Array.isArray(data.files) ? data.files : [], index: 0 } });
+      } catch {
+        /* host too old or offline: no completion */
+      }
+    }, 120),
+  );
 }
 
 export function mentionCandidatesForPane(p) {

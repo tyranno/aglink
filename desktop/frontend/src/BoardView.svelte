@@ -51,10 +51,13 @@
   );
 
   function approvalFor(item) {
-    if (item.kind !== "web") return null;
+    // The telegram board card's displayed id is the literal "telegram" (there's
+    // only one), but approval sessions carry the real conversation id (chat.telegram.id).
+    const convId = item.kind === "telegram" ? chat.telegram?.id : item.id;
+    if (!convId) return null;
     for (const q of liveApprovals) {
       const prefix = q.session.replace(/^대화\s*/, "").trim();
-      if (prefix && String(item.id).startsWith(prefix)) return q;
+      if (prefix && String(convId).startsWith(prefix)) return q;
     }
     return null;
   }
@@ -62,7 +65,10 @@
   const unmatchedApprovals = $derived(
     liveApprovals.filter((q) => {
       const prefix = q.session.replace(/^대화\s*/, "").trim();
-      return !prefix || !chat.webConvs.some((c) => String(c.id).startsWith(prefix));
+      if (!prefix) return true;
+      if (chat.webConvs.some((c) => String(c.id).startsWith(prefix))) return false;
+      if (chat.telegram?.id && String(chat.telegram.id).startsWith(prefix)) return false;
+      return true;
     }).length,
   );
 

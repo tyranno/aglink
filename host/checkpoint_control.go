@@ -189,6 +189,9 @@ func ListProjectFiles(workDir, query string, limit int) ([]string, error) {
 		switch {
 		case q == "":
 			s = 100 - strings.Count(lp, "/")*10
+			if s < 0 {
+				s = 0
+			}
 		case strings.HasPrefix(base, q):
 			s = 400
 		case strings.Contains(base, q):

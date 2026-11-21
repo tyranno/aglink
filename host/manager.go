@@ -1305,14 +1305,18 @@ func (m *Manager) validWorkDirOrHome(workDir string) string {
 // turn isn't duplicated. If that slot no longer holds the matching pending turn
 // (e.g. dropped by the history cap or shifted by a concurrent turn), it appends
 // a fresh completed turn instead.
-func recordCompletedTurn(history []ConversationTurn, pendingIdx int, prompt, response string, images []string, now time.Time) []ConversationTurn {
+// The second return value is the index the completed turn landed at, so
+// callers can attach follow-up data (e.g. a checkpoint diff) to the exact
+// turn instead of re-matching on Prompt/Response text, which can collide
+// with an unrelated turn that happens to have identical text.
+func recordCompletedTurn(history []ConversationTurn, pendingIdx int, prompt, response string, images []string, now time.Time) ([]ConversationTurn, int) {
 	completed := ConversationTurn{Timestamp: now, Prompt: prompt, Response: response, Images: images}
 	if pendingIdx >= 0 && pendingIdx < len(history) &&
 		history[pendingIdx].Response == "" && history[pendingIdx].Prompt == prompt {
 		history[pendingIdx] = completed
-		return history
+		return history, pendingIdx
 	}
-	return append(history, completed)
+	return append(history, completed), len(history)
 }
 
 // screenOwnerLabel builds the AGLINK_OWNER_LABEL for a worker turn so the
@@ -1846,14 +1850,10 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	if cpBefore != "" {
 		turnChanges = TurnChangesBetween(workDir, cpBefore, Checkpoint(workDir, resolveHomeDir(m.cfg()), "after: "+workConv.Title))
 	}
-	workConv.History = recordCompletedTurn(workConv.History, pendingIdx, text, res.Text, imageRefs, time.Now().UTC())
-	if turnChanges != nil {
-		for i := len(workConv.History) - 1; i >= 0; i-- {
-			if t := &workConv.History[i]; t.Prompt == text && t.Response == res.Text {
-				t.Changes = turnChanges
-				break
-			}
-		}
+	var completedIdx int
+	workConv.History, completedIdx = recordCompletedTurn(workConv.History, pendingIdx, text, res.Text, imageRefs, time.Now().UTC())
+	if turnChanges != nil && completedIdx >= 0 && completedIdx < len(workConv.History) {
+		workConv.History[completedIdx].Changes = turnChanges
 	}
 	if len(workConv.History) > maxHistoryTurns {
 		dropped := len(workConv.History) - maxHistoryTurns

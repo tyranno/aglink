@@ -1200,6 +1200,7 @@ export function pushMessageToKey(key, message) {
   const current = chat.messagesByKey.get(key) || [];
   const last = current[current.length - 1];
   if (sameMessage(last, message)) return;
+  if (!message.at) message = { ...message, at: Date.now() };
   chat.messagesByKey = new Map(chat.messagesByKey).set(key, [...current, message]);
   for (const item of chat.panes) {
     if (item.target && targetKey(item.target) === key) scrollPaneLogToBottom(item.id);
@@ -1239,7 +1240,7 @@ export function flushBufferedFrames(key, messages) {
   for (const frame of frames) {
     const message = messageFromFrame(frame);
     const last = nextMessages[nextMessages.length - 1];
-    if (message && !sameMessage(last, message)) nextMessages.push(message);
+    if (message && !sameMessage(last, message)) nextMessages.push({ ...message, at: Date.now() });
   }
   const nextBuffers = new Map(chat.loadingBuffers);
   nextBuffers.delete(key);
@@ -1273,11 +1274,12 @@ export async function selectTargetInPane(paneId, rawTarget) {
     const history = Array.isArray(data.turns)
       ? data.turns.map((turn) =>
           turn.role === "user"
-            ? { ...userMessage(turn.text), image: turn.image || turn.data || "" }
+            ? { ...userMessage(turn.text), image: turn.image || turn.data || "", at: turn.at || 0 }
             : {
                 role: turn.role || "assistant",
                 text: turn.text || "",
                 image: turn.image || turn.data || "",
+                at: turn.at || 0,
               },
         )
       : [];
@@ -1440,6 +1442,26 @@ export async function sendFromPane(paneId, { voice = false } = {}) {
     pushMessageToKey(key, { role: "system", text: `전송 실패: ${error}` });
     stopWorking(key);
   }
+}
+
+// Puts an earlier message back in the composer so it can be edited and sent again.
+export async function editIntoComposer(paneId, text) {
+  setPaneComposerValue(paneId, text || "");
+  await tick();
+  const el = paneTextareas.get(paneId);
+  el?.focus();
+  el?.setSelectionRange(el.value.length, el.value.length);
+}
+
+// Sends an earlier message again as-is; a draft already in the composer is kept.
+export async function resendFromPane(paneId, text) {
+  const p = pane(paneId);
+  const caption = String(text || "").trim();
+  if (!p?.target || !caption || !chat.connected || p.attachments.length > 0) return;
+  const draft = p.composerText;
+  updatePane(paneId, { composerText: caption });
+  await sendFromPane(paneId);
+  if (draft) setPaneComposerValue(paneId, draft);
 }
 
 // adjustPaneTimeout sends the !timeout command for this pane's conversation,

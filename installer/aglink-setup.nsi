@@ -48,6 +48,19 @@ VIAddVersionKey /LANG=${LANG_KOREAN} "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=${LANG_KOREAN} "FileDescription" "aglink Installer"
 VIAddVersionKey /LANG=${LANG_KOREAN} "FileVersion" "${VERSION}.0"
 
+; Chrome relaunches the aglink-web native host as soon as it is killed, so the
+; exe can be locked again by the time File runs. A running exe can still be
+; renamed, so the old one is moved aside and the new one is copied in fresh.
+!macro MoveAside NAME
+    Delete "$INSTDIR\${NAME}.old.exe"
+    Delete "$INSTDIR\${NAME}.old2.exe"
+    ClearErrors
+    Rename "$INSTDIR\${NAME}.exe" "$INSTDIR\${NAME}.old.exe"
+    ${If} ${Errors}
+        Rename "$INSTDIR\${NAME}.exe" "$INSTDIR\${NAME}.old2.exe"
+    ${EndIf}
+!macroend
+
 ; ===== Install =====
 Section "Install"
     SetOutPath "$INSTDIR"
@@ -79,6 +92,8 @@ Section "Install"
     File "stage\aglink.exe"
     File "stage\aglink-chat.exe"
     File "stage\aglink-desktop.exe"
+    !insertmacro MoveAside "aglink-screen"
+    !insertmacro MoveAside "aglink-web"
     File "stage\aglink-screen.exe"
     File "stage\aglink-web.exe"
     File "stage\AI-SETUP.md"
@@ -167,6 +182,10 @@ Section "Uninstall"
     Delete "$INSTDIR\aglink-desktop.exe"
     Delete "$INSTDIR\aglink-screen.exe"
     Delete "$INSTDIR\aglink-web.exe"
+    Delete /REBOOTOK "$INSTDIR\aglink-web.old.exe"
+    Delete /REBOOTOK "$INSTDIR\aglink-web.old2.exe"
+    Delete /REBOOTOK "$INSTDIR\aglink-screen.old.exe"
+    Delete /REBOOTOK "$INSTDIR\aglink-screen.old2.exe"
     Delete "$INSTDIR\AI-SETUP.md"
     Delete "$INSTDIR\rnnoise.dll"
     !insertmacro RemoveNMHost HKLM

@@ -14,26 +14,37 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Agent cursor: a small ring shown for ~600ms where a background operation
-// acted, so the user sees what the agent touched while their own mouse stays
-// put. Same overlay recipe as the notice toast (layered, topmost, no-activate,
-// click-through, own OS thread) but its own window class and per-window state,
-// so it never interferes with the toast. AGLINK_SCREEN_AGENT_CURSOR=0 turns it
-// off.
+// Agent cursor: a small arrow pointer shown for ~600ms where a background
+// operation acted, its tip on the spot, so the user sees what the agent touched
+// while their own mouse stays put. Same overlay recipe as the notice toast
+// (layered, topmost, no-activate, click-through, own OS thread) but its own
+// window class and per-window state, so it never interferes with the toast.
+// AGLINK_SCREEN_AGENT_CURSOR=0 turns it off.
 
 const (
-	agentCursorSize    = 30
+	agentCursorW       = 23
+	agentCursorH       = 38
 	agentCursorTotalMS = 600
 	agentCursorFadeMS  = 250
-	agentCursorAlpha   = 220
+	agentCursorAlpha   = 230
 	agentCursorTimerID = 1
 
-	agentCursorColor = 0x00D6487A // #7A48D6 violet ring (COLORREF 0x00BBGGRR)
-	agentCursorInner = 0x00FFFFFF
+	agentCursorColor = 0x00D6487A // #7A48D6 violet arrow (COLORREF 0x00BBGGRR)
+	agentCursorInner = 0x004F1A2B // #2B1A4F dark outline
 )
 
+// agentCursorArrow is the pointer outline in window coordinates, tip at (0,0)
+// — the shape of the standard Windows arrow, scaled up a little.
+var agentCursorArrow = [...]point{
+	{0, 0}, {0, 32}, {8, 25}, {14, 37}, {19, 35}, {13, 24}, {22, 24},
+}
+
+type point struct{ x, y int32 }
+
 var (
-	procCreateEllipticRgnN = modGdi32N.NewProc("CreateEllipticRgn")
+	procCreatePolygonRgnN = modGdi32N.NewProc("CreatePolygonRgn")
+	procFrameRgnN         = modGdi32N.NewProc("FrameRgn")
+	procDeleteObjectAC    = modGdi32N.NewProc("DeleteObject")
 
 	agentCursorClassOnce sync.Once
 	agentCursorClassOK   bool
@@ -103,11 +114,12 @@ func agentCursorWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		var ps paintStruct
 		hdc, _, _ := procBeginPaintN.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		if hdc != 0 {
-			// Violet disc (class background) with a white centre dot.
-			old, _, _ := procSelectObjectN.Call(hdc, agentCursorInnerBr)
-			const c, r = agentCursorSize / 2, 4
-			procEllipseN.Call(hdc, c-r, c-r, c+r, c+r)
-			procSelectObjectN.Call(hdc, old)
+			// Violet arrow (class background, clipped by the window region)
+			// with a thin dark outline so its edge shows on light backgrounds.
+			if rgn := agentCursorRegion(); rgn != 0 {
+				procFrameRgnN.Call(hdc, rgn, agentCursorInnerBr, 1, 1)
+				procDeleteObjectAC.Call(rgn)
+			}
 			procEndPaintN.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		}
 		return 0
@@ -134,7 +146,15 @@ func agentCursorWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	return r
 }
 
-// runAgentCursorWindow shows a marker centred on (x,y) on its own OS thread
+// agentCursorRegion makes a region of the arrow outline (0 on failure).
+func agentCursorRegion() uintptr {
+	const winding = 2
+	rgn, _, _ := procCreatePolygonRgnN.Call(
+		uintptr(unsafe.Pointer(&agentCursorArrow[0])), uintptr(len(agentCursorArrow)), winding)
+	return rgn
+}
+
+// runAgentCursorWindow shows a marker with its tip on (x,y) on its own OS thread
 // and pumps it until its timer destroys it.
 func runAgentCursorWindow(x, y int) {
 	runtime.LockOSThread()
@@ -144,19 +164,19 @@ func runAgentCursorWindow(x, y int) {
 		return
 	}
 	hInst, _, _ := procGetModuleHandleN.Call(0)
-	left, top := x-agentCursorSize/2, y-agentCursorSize/2
+	left, top := x, y
 	hwnd, _, _ := procCreateWindowExN.Call(
 		uintptr(wsExTopmost|wsExLayered|wsExToolWindow|wsExNoActivate|wsExTransparent),
 		uintptr(unsafe.Pointer(agentCursorClassName)),
 		0,
 		uintptr(wsPopup),
-		uintptr(int32(left)), uintptr(int32(top)), agentCursorSize, agentCursorSize,
+		uintptr(int32(left)), uintptr(int32(top)), agentCursorW, agentCursorH,
 		0, 0, hInst, 0,
 	)
 	if hwnd == 0 {
 		return
 	}
-	if rgn, _, _ := procCreateEllipticRgnN.Call(0, 0, agentCursorSize+1, agentCursorSize+1); rgn != 0 {
+	if rgn := agentCursorRegion(); rgn != 0 {
 		procSetWindowRgnN.Call(hwnd, rgn, 1)
 	}
 	procSetLayeredWinAttrN.Call(hwnd, 0, agentCursorAlpha, lwaAlpha)

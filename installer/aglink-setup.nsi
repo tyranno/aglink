@@ -31,11 +31,15 @@ Unicode true
 !define MUI_WELCOMEPAGE_TITLE "aglink 설치"
 !define MUI_WELCOMEPAGE_TEXT "aglink는 Telegram·웹에서 claude / codex / opencode 를 구동하는 AI 게이트웨이입니다.$\r$\n$\r$\n※ 사전 준비: 이 프로그램은 이미 설치된 claude, codex, opencode CLI 를 사용합니다. 설치 전에 사용할 CLI가 준비돼 있어야 합니다(없어도 설치는 되지만 해당 백엔드는 동작하지 않습니다).$\r$\n$\r$\n설치 후 로그온 시 관리자 권한으로 자동 실행됩니다(화면제어용)."
 !define MUI_FINISHPAGE_TEXT "aglink 설치가 완료되었습니다.$\r$\n$\r$\n로그온 시 자동 시작되도록 등록되었습니다. 지금 바로 시작되었습니다.$\r$\n처음 설치라면 설정 파일을 만들어야 시작됩니다. Claude Code 에게 $\"$INSTDIR\AI-SETUP.md 대로 aglink 설정해줘$\" 라고 하면 AI 가 설정해 줍니다.$\r$\n직접 하려면 터미널에서 aglink.exe setup 을 실행하세요."
-; Custom run function (not MUI_FINISHPAGE_RUN "$INSTDIR\aglink-desktop.exe"
-; directly): the default launches the exe from this installer's own process,
-; which is elevated (RequestExecutionLevel admin), so the app would start
-; de-facto elevated. Route it through explorer.exe like the silent-install
-; relaunch below so it runs as the signed-in user instead.
+; MUI_FINISHPAGE_RUN enables the "run app" checkbox; MUI_FINISHPAGE_RUN_FUNCTION
+; (when set) takes over what actually happens on Finish instead of MUI2's
+; default Exec of the MUI_FINISHPAGE_RUN path directly. That default would run
+; from this installer's own elevated process (RequestExecutionLevel admin), so
+; the app would start de-facto elevated; the custom function below routes it
+; through explorer.exe like the silent-install relaunch so it runs as the
+; signed-in user instead. MUI_FINISHPAGE_RUN's value itself is unused once the
+; function is set, but MUI2.nsh requires it to be non-empty.
+!define MUI_FINISHPAGE_RUN "$INSTDIR\aglink-desktop.exe"
 !define MUI_FINISHPAGE_RUN_FUNCTION "RunDesktopAppUnelevated"
 !define MUI_FINISHPAGE_RUN_TEXT "aglink 데스크톱 앱 실행"
 

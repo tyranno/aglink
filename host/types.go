@@ -153,9 +153,14 @@ type Config struct {
 
 // ConversationTurn represents one exchange in a conversation.
 type ConversationTurn struct {
-	Timestamp time.Time `json:"timestamp"`
-	Prompt    string    `json:"prompt"`   // user input
-	Response  string    `json:"response"` // claude output
+	Timestamp time.Time `json:"timestamp"` // when the prompt was sent
+	Prompt    string    `json:"prompt"`    // user input
+	Response  string    `json:"response"`  // claude output
+	// RespondedAt is when the response finished, for turns that can run minutes
+	// long — the prompt and response bubbles should show their own send time,
+	// not both show completion time. Zero (old turns, pre-dating this field)
+	// falls back to Timestamp.
+	RespondedAt time.Time `json:"respondedAt,omitempty"`
 	// Images are refs ("<convID>/<name>.png") to tool screenshots captured during
 	// this turn, saved on disk (not inline) so store.json stays small; the history
 	// API reloads them so images survive a restart. Missing refs (pruned) are skipped.

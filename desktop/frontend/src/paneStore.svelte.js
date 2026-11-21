@@ -1576,8 +1576,13 @@ export async function resendFromPane(paneId, text) {
   if (!p?.target || !caption || !chat.connected || p.attachments.length > 0) return;
   const draft = p.composerText;
   updatePane(paneId, { composerText: caption });
-  await sendFromPane(paneId);
+  // sendFromPane reads composerText synchronously before its first await (and
+  // clears it right after), so the draft can be put back in the same tick —
+  // not after the network round trip finishes — or it would clobber whatever
+  // the user typed into the composer while the send was in flight.
+  const sent = sendFromPane(paneId);
   if (draft) setPaneComposerValue(paneId, draft);
+  await sent;
 }
 
 // adjustPaneTimeout sends the !timeout command for this pane's conversation,

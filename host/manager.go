@@ -1310,12 +1310,16 @@ func (m *Manager) validWorkDirOrHome(workDir string) string {
 // turn instead of re-matching on Prompt/Response text, which can collide
 // with an unrelated turn that happens to have identical text.
 func recordCompletedTurn(history []ConversationTurn, pendingIdx int, prompt, response string, images []string, now time.Time) ([]ConversationTurn, int) {
-	completed := ConversationTurn{Timestamp: now, Prompt: prompt, Response: response, Images: images}
 	if pendingIdx >= 0 && pendingIdx < len(history) &&
 		history[pendingIdx].Response == "" && history[pendingIdx].Prompt == prompt {
-		history[pendingIdx] = completed
+		// Keep the pending turn's own Timestamp (when the prompt was sent) —
+		// only RespondedAt moves to completion time — so a turn that runs
+		// minutes long doesn't show its prompt bubble at the wrong clock time.
+		t := &history[pendingIdx]
+		t.Response, t.Images, t.RespondedAt = response, images, now
 		return history, pendingIdx
 	}
+	completed := ConversationTurn{Timestamp: now, RespondedAt: now, Prompt: prompt, Response: response, Images: images}
 	return append(history, completed), len(history)
 }
 

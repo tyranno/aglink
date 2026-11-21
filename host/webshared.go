@@ -319,21 +319,25 @@ func buildHistoryResponse(store StoreRepo, tgt Target) historyResponse {
 	}
 
 	for ti, turn := range turns {
-		var at int64
+		var at, respondedAt int64
 		if !turn.Timestamp.IsZero() {
 			at = turn.Timestamp.UnixMilli()
+		}
+		respondedAt = at
+		if !turn.RespondedAt.IsZero() {
+			respondedAt = turn.RespondedAt.UnixMilli()
 		}
 		if turn.Prompt != "" {
 			resp.Turns = append(resp.Turns, historyTurn{Role: "user", Text: turn.Prompt, At: at})
 		}
 		if turn.Response != "" {
-			resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Text: turn.Response, At: at, Changes: turn.Changes})
+			resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Text: turn.Response, At: respondedAt, Changes: turn.Changes})
 		}
 		// Replay persisted tool screenshots after the response, so images survive a
 		// restart. Pruned/missing refs and any dropped to fit the budget are skipped.
 		for ii := range turn.Images {
 			if png, ok := keep[imgKey{ti, ii}]; ok {
-				resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Image: base64.StdEncoding.EncodeToString(png), At: at})
+				resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Image: base64.StdEncoding.EncodeToString(png), At: respondedAt})
 			}
 		}
 	}

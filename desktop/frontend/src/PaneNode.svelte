@@ -394,6 +394,13 @@
     return hits;
   }
 
+  // Computed once per render for the whole message list (not per message —
+  // {@const} can't hoist out of the big #each below since it isn't an
+  // immediate child of a block there) so highlighting hits in a long
+  // conversation doesn't become an O(n^2) scan.
+  const messageSearchHits = $derived.by(() => searchMatches(messagesForPane(pane(node.paneId)?.target)));
+  const messageSearchHitsSet = $derived.by(() => new Set(messageSearchHits));
+
   function openSearch() {
     searchOpen = true;
     requestAnimationFrame(() => {
@@ -802,8 +809,8 @@
             {/if}
 
             {#each messagesForPane(p.target) as message, mIndex (`${mIndex}-${message.role}-${message.text}-${message.image}`)}
-              {@const hits = searchMatches(messagesForPane(p.target))}
-              {@const isHit = hits.includes(mIndex)}
+              {@const hits = messageSearchHits}
+              {@const isHit = messageSearchHitsSet.has(mIndex)}
               {@const isCurrentHit = isHit && hits[searchCursor] === mIndex}
               {@const long = isLong(message)}
               {@const folded = long && !expanded.has(foldKey(message, mIndex))}

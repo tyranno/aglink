@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -257,6 +258,13 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
 	case "checkpoint_diff", "checkpoint_restore", "list_files":
 		// Slow (git / folder walk) — answer off the read loop.
+		if m.Type == "checkpoint_restore" && s.bot != nil && s.bot.manager != nil &&
+			s.bot.manager.ActiveWorkDirs()[strings.ToLower(filepath.Clean(m.Path))] {
+			data, _ := json.Marshal(map[string]any{"ok": false,
+				"error": "이 폴더에서 작업이 진행 중입니다 — 끝난 뒤 되돌려 주세요"})
+			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+			return
+		}
 		go func(m controlIn) {
 			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: handleCheckpointRequest(m)})
 		}(m)

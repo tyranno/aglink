@@ -22,8 +22,10 @@ import (
 const callTimeout = 30 * time.Second
 
 // defaultReconnectWait is how long a Chrome call waits for the extension to
-// (re)connect before failing; AGLINK_WEB_RECONNECT_WAIT_MS overrides it.
-const defaultReconnectWait = 20 * time.Second
+// (re)connect before failing; AGLINK_WEB_RECONNECT_WAIT_MS overrides it. 65s
+// covers chrome.alarms' worst-case ~60s clamp on reviving an idle MV3 service
+// worker — the exact gap this subsystem exists to wait out.
+const defaultReconnectWait = 65 * time.Second
 
 const reconnectWaitEnv = "AGLINK_WEB_RECONNECT_WAIT_MS"
 

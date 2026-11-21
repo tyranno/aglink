@@ -49,8 +49,13 @@
     error = "";
     try {
       const data = parse(await ControlService.CheckpointRestore(changes.workDir, to));
+      // Even when the checkout step fails partway, the backend has already
+      // snapshotted the pre-restore state and returns its SHA as `undo` — keep
+      // it so the partial restore can still be undone instead of stranding
+      // the user with some files removed and no way back.
+      if (to === changes.before && data.undo) undo = data.undo;
       if (!data.ok) throw new Error(data.error || "알 수 없는 오류");
-      undo = to === changes.before ? data.undo || "" : "";
+      if (to !== changes.before) undo = "";
       confirming = false;
       showToast(`${label} (파일 ${data.changed ?? 0}개)`);
     } catch (e) {

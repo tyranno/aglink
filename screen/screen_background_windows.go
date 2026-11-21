@@ -150,6 +150,6 @@ func backgroundClickControl(top uintptr, c control) (detail string, handled bool
 	if iconic, _, _ := procIsIconic.Call(top); iconic == 0 {
 		showAgentCursor(c.CenterX(), c.CenterY())
 	}
-	return fmt.Sprintf("clicked %s %q via %s (background: window not focused, cursor untouched — focus_window before typing into it)",
-		c.Class, c.Text, path), true, "", nil
+	return fmt.Sprintf("clicked %s %q via %s (background: window not focused, cursor untouched — focus_window before typing into it)%s",
+		c.Class, c.Text, path, uipiWarning(c.HWND, "click")), true, "", nil
 }

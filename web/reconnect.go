@@ -80,6 +80,7 @@ const maxResends = 3
 // rest may already have acted on the page. Returns the connection that answered.
 func (d *Daemon) sendChrome(ec *extConn, method string, params map[string]any, budget time.Duration) (*extConn, CallResult) {
 	resentAfterDrop := false
+	deadline := time.Now().Add(budget) // one shared budget across resends, not one per attempt
 	for attempt := 0; ; attempt++ {
 		res, out := d.roundTripOutcome(ec, method, params, callTimeout, "browser")
 		if out == tripDone {
@@ -89,7 +90,8 @@ func (d *Daemon) sendChrome(ec *extConn, method string, params map[string]any, b
 			res.Error += " after the command was sent — it may or may not have run; check the page before repeating it"
 			return ec, res
 		}
-		if attempt >= maxResends || budget <= 0 {
+		left := time.Until(deadline)
+		if attempt >= maxResends || budget <= 0 || left <= 0 {
 			return ec, res
 		}
 		if out == tripLostAfterSend {
@@ -101,7 +103,7 @@ func (d *Daemon) sendChrome(ec *extConn, method string, params map[string]any, b
 				return c, nil
 			}
 			return nil, notConnectedError(fmt.Sprintf("%s: %s did not reconnect", res.Error, old.account))
-		}, budget, chromeWaitHint)
+		}, left, chromeWaitHint)
 		if err != nil {
 			return ec, CallResult{Error: err.Error()}
 		}

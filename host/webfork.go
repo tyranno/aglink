@@ -45,6 +45,16 @@ func forkField(t ConversationTurn, role string) string {
 	return forkNormalize(t.Response)
 }
 
+// forkTimestamp mirrors webshared.go's historyTurn.At: a user bubble's time is
+// the turn's prompt timestamp, an assistant bubble's is when it was answered
+// (falling back to the prompt time if that was never recorded).
+func forkTimestamp(t ConversationTurn, role string) time.Time {
+	if role == "user" || t.RespondedAt.IsZero() {
+		return t.Timestamp
+	}
+	return t.RespondedAt
+}
+
 // findForkTurn returns the index of the history turn holding p. Tried in order:
 //  1. same timestamp and same text (a bubble loaded from the host's history),
 //  2. the p.Occurrence-th exact text match counted from the end (live bubbles,
@@ -61,7 +71,8 @@ func findForkTurn(history []ConversationTurn, p forkPoint) (int, bool) {
 	}
 	if p.At != 0 {
 		for i := len(history) - 1; i >= 0; i-- {
-			if !history[i].Timestamp.IsZero() && history[i].Timestamp.UnixMilli() == p.At && forkField(history[i], p.Role) == want {
+			ts := forkTimestamp(history[i], p.Role)
+			if !ts.IsZero() && ts.UnixMilli() == p.At && forkField(history[i], p.Role) == want {
 				return i, true
 			}
 		}

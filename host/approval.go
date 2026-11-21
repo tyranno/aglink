@@ -182,7 +182,7 @@ func splitAllowList(s string) []string {
 // one.
 func normalizeAllowEntry(s string) string {
 	tool, target, ok := strings.Cut(strings.TrimSpace(s), ":")
-	tool, target = strings.TrimSpace(tool), strings.Join(strings.Fields(strings.ToLower(target)), " ")
+	tool, target = strings.ToLower(strings.TrimSpace(tool)), strings.Join(strings.Fields(strings.ToLower(target)), " ")
 	if !ok || tool == "" || target == "" {
 		return ""
 	}

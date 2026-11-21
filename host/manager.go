@@ -1823,6 +1823,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 					return
 				}
 				_ = s.Send(chatID, "⚠️ 재시작 후 작업 실패: "+err.Error())
+				m.notifyAwayTurn(sink, workConv, elapsed, err.Error(), true)
 				_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
 				return
 			}
@@ -2048,6 +2049,22 @@ func (m *Manager) GetWorkerStatus(project, convID string) (WorkerStatus, bool) {
 // otherwise leave spinning: a conversation absent from this list is not busy.
 func (m *Manager) ActiveWorkers() []WorkerStatus {
 	return m.workerStatus.ListActive()
+}
+
+// ActiveWorkDirs returns the normalized (lowercased, cleaned) working
+// directories of currently running turns — the folders a checkpoint restore
+// must not touch, since its file removal/checkout would race the worker's
+// own writes there.
+func (m *Manager) ActiveWorkDirs() map[string]bool {
+	dirs := map[string]bool{}
+	for _, ws := range m.workerStatus.ListActive() {
+		c, ok := m.store.GetConversation(ws.Project, ws.ConversationID)
+		if !ok || c.WorkDir == "" {
+			continue
+		}
+		dirs[strings.ToLower(filepath.Clean(c.WorkDir))] = true
+	}
+	return dirs
 }
 
 // DescribeActiveWorkers returns a human-readable status of all running Workers.

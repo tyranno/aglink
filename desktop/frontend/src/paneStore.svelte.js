@@ -1476,6 +1476,12 @@ export async function sendFromPane(paneId, { voice = false } = {}) {
 // Puts an earlier message back in the composer so it can be edited and sent again.
 export async function editIntoComposer(paneId, text) {
   setPaneComposerValue(paneId, text || "");
+  // The new text invalidates any @mention picker open against the old text's
+  // offsets — clear it so a later Enter can't slice the new text with stale
+  // start/end positions (selectMentionForPane would otherwise corrupt it).
+  mentionSeqs.delete(paneId);
+  clearTimeout(mentionTimers.get(paneId));
+  if (pane(paneId)?.mention) updatePane(paneId, { mention: null });
   await tick();
   const el = paneTextareas.get(paneId);
   el?.focus();

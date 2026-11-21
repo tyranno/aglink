@@ -581,12 +581,16 @@ const whisperPrompt = "aglink, 에이지링크, 텔레그램, 클로드, 코덱�
 // the prompt's words (promptWords: the built-in ones and the user's). A short
 // request that happens to use one or two of them is not an echo.
 func isPromptEcho(phrases, vocab []string) bool {
+	squashed := make(map[string]bool, len(vocab))
+	for _, v := range vocab {
+		squashed[squash(v)] = true
+	}
 	n := 0
 	for _, p := range phrases {
 		if p = strings.TrimSpace(p); p == "" {
 			continue
 		}
-		if !slices.Contains(vocab, p) {
+		if !squashed[squash(p)] {
 			return false
 		}
 		n++

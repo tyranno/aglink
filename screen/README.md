@@ -16,6 +16,8 @@ teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 �
   - `get_value`: 2000자 (넘으면 `get_text` offset으로 이어 읽으라고 안내)
 - **백그라운드 조작(포커스 안 뺏음)** — `snapshot`/`invoke`/`set_value`/`get_value`/`get_text`/`wait_for_control`에 `window`(창 제목 일부 또는 hwnd)를 주면 그 창을 앞으로 가져오지 않고 UIA로 조작한다. 사용자 입력 대기 없이 제어권(리스)만 잡고, 조작한 지점에 보라색 원(에이전트 커서)이 잠깐 뜬다(`AGLINK_SCREEN_AGENT_CURSOR=0`으로 끔). `click_control`은 기본이 백그라운드 — 버튼/체크박스/라디오는 `BM_CLICK`, 그 밖은 UIA invoke, 안 되면 예전처럼 포커스+실제 클릭(`background:false`로 강제). 결과에 쓴 경로가 나온다
 - **Win32 자식창 폴백** — `win_controls`/`click_control`, UIA가 비어도 정확한 좌표 확보
+- **번호 표시(Set-of-Mark)** — `show_numbers`/`click_number`, 음성 액세스의 "번호 표시"처럼 조작 가능한 요소에 번호를 붙이고 번호로 클릭 (아래 "번호 표시와 OCR")
+- **내장 OCR** — `ocr`/`click_text`, UIA가 아무것도 안 주는 창(게임·원격 데스크톱·캔버스)의 글자를 Windows OCR로 읽고 글자로 클릭
 - **GDI 캡처** — `screenshot`/`capture_window`/`capture_region`, 비전 다운스케일을 피해 정확한 좌표 매핑
 - **입력** — `click`/`double_click`/`triple_click`/`drag`/`move`/`type`/`key`(hold_ms 지원)/`scroll` (+ modifier 조합), `get_cursor_position`으로 현재 좌표 확인
 - **가상 데스크톱 인식** — `focus_window`/`return_desktop`이 데스크톱 경계를 넘나듦
@@ -26,6 +28,37 @@ teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 �
 - **보안 경고 자동 통과** — `launch_app`(`elevated`/`unblock`) + `pass_security_prompts` (아래 "보안 경고 통과")
 
 Windows 전용 (`GOOS=windows` 빌드 태그). 다른 OS에서는 스텁이 명확한 에러를 반환한다.
+
+## 번호 표시와 OCR — `show_numbers` · `click_number` · `ocr` · `click_text`
+
+창을 보고 조작하는 도구의 선호 순서(도구 설명에도 들어 있다):
+`snapshot` + `invoke`/`set_value` → `win_controls`/`click_control` → `show_numbers` + `click_number`
+→ `ocr` + `click_text` → `capture_window`/`screenshot`.
+
+- `show_numbers(window?, seconds=10, capture=false, max=150)` — 창(기본: 포그라운드)의 보이는·활성
+  조작 요소(버튼, 링크, 입력칸, 체크박스, 목록/트리/탭/메뉴 항목 …)를 UIA로 모아 읽는 순서대로
+  1..N 번호를 매긴다. 각 요소 왼쪽 위에 보라색 번호 배지를 클릭 통과·최상위 오버레이로 띄우고
+  (`seconds` 뒤 자동으로 사라짐, `0` = 화면 배지 없이 목록만·기존 배지 숨김), 응답은
+  `N. [type] name — center(x,y)`. `max`(최대 300)를 넘으면 잘렸다고 알린다. `capture=true` 면
+  같은 번호를 그려 넣은 창 캡처도 함께 준다(capture_window 처럼 1568px 상한). 입력·포커스 변경 없음.
+- `click_number(n, window?, double?, right?, background=true)` — 최근 `show_numbers` 결과(창별로
+  메모리에 보관; `window` 를 안 주면 마지막 호출)의 n번을 누른다. 단일 클릭은 그 요소의 UIA invoke 로
+  백그라운드에서, 안 되거나 `double`/`right` 면 창을 앞으로 가져와 요소 중앙을 실제 마우스로.
+  배지를 숨긴다. 창이 닫히거나 움직였거나 크기가 바뀌었을 때, 요소가 사라졌거나 움직였을 때
+  (스크롤 등), 5분이 지났을 때는 누르지 않고 `show_numbers` 를 다시 부르라고 한다.
+- `ocr(window? | x,y,width,height, lang?)` — 내장 `Windows.Media.Ocr` 엔진. 영역을 캡처해(작은 글자
+  인식을 위해 2배 확대) 임시 PNG 로 쓰고, 실행파일에 내장된 PowerShell 5.1 스크립트로 인식한 뒤
+  임시 파일은 지운다(20초 제한). 결과는 읽는 순서의 `text — center(x,y)` (화면 좌표).
+  `lang` 기본은 자동 — 한국어 OCR 이 있으면 한국어, 없으면 사용자 프로필 언어. 원하는 언어가 없으면
+  설치 방법(설정 > 시간 및 언어 > 언어 > 해당 언어 옵션의 OCR, 또는 관리자 PowerShell
+  `Add-WindowsCapability -Online -Name "Language.OCR~~~ko-KR~0.0.1.0"`)을 담은 오류를 준다.
+  화면 픽셀을 읽으므로 대상 창이 가려져 있으면 안 된다.
+- `click_text(text, window?, nth=0, double?, x,y,width,height?, lang?)` — OCR 후 대소문자·공백을
+  무시한 부분일치로 찾아 그 단어들의 중앙을 실제 마우스로 클릭한다. 단어 경계에 딱 맞는 일치가
+  먼저, 같은 글자가 여럿이면 `nth`(0부터, 읽는 순서). `window` 를 주면 먼저 앞으로 가져온다.
+
+수동 확인(실제 메모장을 띄웠다 닫는다):
+`AGLINK_MANUAL_UI=1 go test -run TestManualNumbersAndOCR -v`
 
 ## 연속 동작 — `run_sequence`
 

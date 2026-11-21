@@ -443,7 +443,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// scale=1.0 to force full resolution, or an explicit 0.1–1.0 factor.
 	s.AddTool(
 		mcp.NewTool("screenshot",
-			mcp.WithDescription(fmt.Sprintf("Capture the entire screen and return it as a PNG image. Use this to see what is currently on screen. To SAVE TOKENS the image is downscaled by default to at most %dpx on its longer edge (readable, and clicking is unaffected — click coordinates come from win_controls/snapshot, not this image). Pass scale=1.0 for full resolution, or an explicit 0.1–1.0 downscale factor.", maxScreenshotLongEdge)),
+			mcp.WithDescription(fmt.Sprintf("Capture the entire screen and return it as a PNG image. Use this to see what is currently on screen. To SAVE TOKENS the image is downscaled by default to at most %dpx on its longer edge (readable, and clicking is unaffected — click coordinates come from win_controls/snapshot, not this image). Pass scale=1.0 for full resolution, or an explicit 0.1–1.0 downscale factor. "+screenToolPreference, maxScreenshotLongEdge)),
 			mcp.WithNumber("scale",
 				mcp.Description("Optional downscale factor between 0.1 and 1.0. Omit for the default token-saving downscale; pass 1.0 for full resolution."),
 			),
@@ -938,7 +938,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// more reliable than screenshot+vision for clicking by label.
 	s.AddTool(
 		mcp.NewTool("win_controls",
-			mcp.WithDescription(fmt.Sprintf("List a window's Win32 child controls with EXACT screen coordinates: 'class | \"label\" | center(x,y) | WxH'. Use the reported center as click(x,y), or click_control to click by label. Works for native apps even when snapshot/UIA is empty. Only visible controls unless include_hidden=true. Paged to save tokens: at most 'max' (default %d) controls per call, labels cut to %d chars; when cut, the reply ends with the offset=N for the next page.", defaultWinControlsMax, winControlLabelChars)),
+			mcp.WithDescription(fmt.Sprintf("List a window's Win32 child controls with EXACT screen coordinates: 'class | \"label\" | center(x,y) | WxH'. Use the reported center as click(x,y), or click_control to click by label. Works for native apps even when snapshot/UIA is empty. Only visible controls unless include_hidden=true. Paged to save tokens: at most 'max' (default %d) controls per call, labels cut to %d chars; when cut, the reply ends with the offset=N for the next page. If neither this nor snapshot finds the target, try show_numbers/click_number, then ocr/click_text.", defaultWinControlsMax, winControlLabelChars)),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd (e.g. 'NetGuard')."), mcp.Required()),
 			mcp.WithBoolean("include_hidden", mcp.Description("Include controls that are not currently visible (other tabs/panels). Default false.")),
 			mcp.WithNumber("max", mcp.Description(fmt.Sprintf("Max controls to return (default %d).", defaultWinControlsMax))),
@@ -1040,7 +1040,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot — read the foreground window's UIA element tree as text.
 	s.AddTool(
 		mcp.NewTool("snapshot",
-			mcp.WithDescription(fmt.Sprintf("Read the foreground window's (or, with 'window', any window's — no focus change) UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page.", defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
+			mcp.WithDescription(fmt.Sprintf("Read the foreground window's (or, with 'window', any window's — no focus change) UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page. "+screenToolPreference, defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
 			mcp.WithNumber("max_elements",
 				mcp.Description(fmt.Sprintf("Max elements to show (default %d, max %d).", defaultSnapshotMaxElements, ceilingSnapshotMaxElements)),
 			),
@@ -1245,6 +1245,9 @@ func newScreenMCPServer() *server.MCPServer {
 		}
 		return ""
 	}
+
+	// show_numbers / click_number / ocr / click_text (mcpscreen_marks_windows.go).
+	registerMarkOCRTools(s)
 
 	// run_sequence — execute several actions in one call instead of one
 	// round-trip per step. The bulk of a screen-control turn's wall-clock time

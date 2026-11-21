@@ -85,8 +85,15 @@ func ensureDaemon() (int, error) {
 		return 0, fmt.Errorf("locate self to start daemon: %w", err)
 	}
 	cmd := detachedCommand(self, "serve")
-	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("start daemon: %w", err)
+	if breakawayFromJob(cmd) {
+		if err := cmd.Start(); err != nil {
+			cmd = detachedCommand(self, "serve")
+		}
+	}
+	if cmd.Process == nil {
+		if err := cmd.Start(); err != nil {
+			return 0, fmt.Errorf("start daemon: %w", err)
+		}
 	}
 	// The daemon writes the port file on bind; poll /health until it is up.
 	deadline := time.Now().Add(5 * time.Second)

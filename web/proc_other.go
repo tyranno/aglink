@@ -12,3 +12,5 @@ import (
 func applyDetach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
+
+func breakawayFromJob(*exec.Cmd) bool { return false }

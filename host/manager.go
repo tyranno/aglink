@@ -1613,6 +1613,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		log.Printf("[manager] persist pending prompt: %v", err)
 	}
 
+	// Snapshot the folder so the turn's file changes can be shown and undone
+	// (checkpoint.go). "" when off / not eligible.
+	var cpBefore string
+	if m.cfg().Checkpoints {
+		cpBefore = Checkpoint(workDir, resolveHomeDir(m.cfg()), "before: "+workConv.Title)
+	}
+
 	res, err := client.Run(ctx, RunRequest{
 		Prompt:      prompt,
 		WorkDir:     workDir,
@@ -1814,7 +1821,19 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// Fill in the response on the pending turn persisted before the run (update in
 	// place), or append a completed turn if that slot no longer holds it.
 	imageRefs := saveConvImages(workConv.ID, capturedImages)
+	var turnChanges *TurnChanges
+	if cpBefore != "" {
+		turnChanges = TurnChangesBetween(workDir, cpBefore, Checkpoint(workDir, resolveHomeDir(m.cfg()), "after: "+workConv.Title))
+	}
 	workConv.History = recordCompletedTurn(workConv.History, pendingIdx, text, res.Text, imageRefs, time.Now().UTC())
+	if turnChanges != nil {
+		for i := len(workConv.History) - 1; i >= 0; i-- {
+			if t := &workConv.History[i]; t.Prompt == text && t.Response == res.Text {
+				t.Changes = turnChanges
+				break
+			}
+		}
+	}
 	if len(workConv.History) > maxHistoryTurns {
 		dropped := len(workConv.History) - maxHistoryTurns
 		workConv.History = workConv.History[dropped:]
@@ -1933,6 +1952,11 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// Any narration still held back belongs in front of the answer.
 	narration.Close()
 	_ = sendChunked(s, chatID, res.Text)
+	if turnChanges != nil {
+		if cs, ok := s.(changesSender); ok {
+			cs.Changes(chatID, turnChanges)
+		}
+	}
 
 	// Compact per-turn cache/cost footer (claude only; codex/opencode report no
 	// usage so this stays empty for them). Sent as its own short line, not folded

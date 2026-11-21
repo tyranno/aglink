@@ -1,5 +1,6 @@
 <script>
   import PaneNode from "./PaneNode.svelte";
+  import ChangesCard from "./ChangesCard.svelte";
   import {
     chat,
     pane,
@@ -20,6 +21,9 @@
     pickAttachment,
     clearPaneAttachment,
     setPaneComposerValue,
+    updateMentionForPane,
+    mentionCandidatesForPane,
+    selectMentionForPane,
     handleComposerKeydown,
     handleComposerPaste,
     registerPaneTextarea,
@@ -783,6 +787,7 @@
                     />
                   {/if}
                 </div>
+                {#if message.changes}<ChangesCard changes={message.changes} />{/if}
                 {#if message.role !== "narration" && (message.text || message.at)}
                   <div class={`mt-0.5 flex h-4 items-center gap-1 px-1 text-[10px] text-slate-400 dark:text-slate-500 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
                     {#if message.at}
@@ -910,7 +915,29 @@
       {/if}
 
       <div class="shrink-0 border-t border-slate-200/80 dark:border-slate-700/80 bg-white/92 dark:bg-slate-900/92 px-4 py-1.5 backdrop-blur relative">
-        {#if showCommandMenuForPane(p)}
+        {#if mentionCandidatesForPane(p).length}
+          <div
+            class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg"
+            role="listbox"
+          >
+            <div class="border-b border-slate-100 px-3 py-1 text-[11px] text-slate-400 dark:border-slate-800 dark:text-slate-500">작업 폴더의 파일 · Tab/Enter 넣기 · Esc 닫기</div>
+            {#each mentionCandidatesForPane(p) as file, fIndex (file)}
+              { slash = file.lastIndexOf("/")}
+              <button
+                type="button"
+                class={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left ${fIndex === (p.mention?.index || 0) ? "bg-blue-50 dark:bg-blue-950/40" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
+                role="option"
+                aria-selected={fIndex === (p.mention?.index || 0)}
+                onmouseenter={() => updatePane(p.id, { mention: { ...p.mention, index: fIndex } })}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => selectMentionForPane(p.id, file)}
+              >
+                <span class="shrink-0 font-mono text-[13px] font-semibold text-blue-700 dark:text-blue-300">{file.slice(slash + 1)}</span>
+                <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] text-slate-500 dark:text-slate-400">{slash > 0 ? file.slice(0, slash) : ""}</span>
+              </button>
+            {/each}
+          </div>
+        {:else if showCommandMenuForPane(p)}
           <div
             class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg"
             role="listbox"
@@ -1046,7 +1073,8 @@
             value={p.composerText}
             disabled={!p.target}
             rows="1"
-            oninput={(event) => setPaneComposerValue(p.id, event.currentTarget.value)}
+            oninput={(event) => { setPaneComposerValue(p.id, event.currentTarget.value); updateMentionForPane(p.id); }}
+            onblur={() => setTimeout(() => p.mention && updatePane(p.id, { mention: null }), 150)}
             onkeydown={(event) => {
               if (event.ctrlKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === "m") {
                 event.preventDefault();

@@ -298,6 +298,7 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 			{Key: "context.memory_consolidate", Label: "메모리 파일 자동 정리", Desc: "대화가 잠시 멈추면, 많이 늘어난 대화 메모리 파일과 사용자 프로필(USER.md)을 매니저 모델이 정리합니다(중복 합치기, 뒤집힌 내용은 최신 것만 남기기). 정리 전 파일은 memory/.history/ 에 최근 3개까지 보관되고, 결과가 지나치게 짧거나 이상하면 버립니다.", Type: "bool", Value: cfg.MemoryConsolidate},
 			{Key: "screen_control.adaptive_prompt", Label: "화면 제어 안내 축약", Desc: "화면 제어를 아직 쓰지 않은 대화에는 긴 화면 제어 안내 대신 짧은 요약만 넣습니다. 화면을 한 번 쓰거나 화면 관련 요청이 오면 그 대화부터 전체 안내를 넣습니다.", Type: "bool", Value: cfg.ScreenPromptAdaptive},
 			{Key: "ui.turn_stats", Label: "답변 뒤 사용량·소요 시간 표시", Desc: "켜면 답변마다 이번 턴의 토큰·비용 줄과 '✅ 작업 완료 (N초)'를 함께 보냅니다. 꺼도 사용량은 기록되어 사용량 화면에서 볼 수 있습니다.", Type: "bool", Value: cfg.TurnStats},
+			{Key: "ui.checkpoints", Label: "답변별 파일 변경 기록(되돌리기)", Desc: "답변 전후로 작업 폴더를 aglink 전용 저장소(~/.aglink/checkpoints)에 기록해, 답변 아래에 바뀐 파일 목록·변경 내용 보기·\"이 답변 전으로 되돌리기\"를 보여 줍니다. 프로젝트의 git 저장소는 건드리지 않습니다. 홈 폴더·드라이브 루트에서는 동작하지 않습니다.", Type: "bool", Value: cfg.Checkpoints},
 		}},
 
 		// ── 무료·로컬 AI 탭 (opencode 선택 시에만 표시) ────────────────
@@ -431,6 +432,8 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.SummaryOnReset = asBool(v)
 		case "context.memory_consolidate":
 			cfg.MemoryConsolidate = asBool(v)
+		case "ui.checkpoints":
+			cfg.Checkpoints = asBool(v)
 		case "ui.turn_stats":
 			cfg.TurnStats = asBool(v)
 		case "screen_control.keep_awake":

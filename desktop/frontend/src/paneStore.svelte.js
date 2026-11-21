@@ -1308,6 +1308,7 @@ export async function selectTargetInPane(paneId, rawTarget) {
                 text: turn.text || "",
                 image: turn.image || turn.data || "",
                 at: turn.at || 0,
+                changes: turn.changes || null,
               },
         )
       : [];
@@ -1737,6 +1738,7 @@ export async function handleComposerPaste(paneId, event) {
 export function handleComposerKeydown(paneId, event) {
   const p = pane(paneId);
   if (!p) return;
+  if (handleMentionKeydown(paneId, p, event)) return;
   const candidates = commandCandidatesForPane(p);
   if (candidates.length > 0 && !p.commandMenuHidden) {
     if (event.key === "ArrowDown") {
@@ -1841,6 +1843,12 @@ export function handleFrame(frame) {
     appendProgress(key, frame.text || "");
     return;
   }
+  if (frame.type === "changes") {
+    // The turn's file-change card (host checkpoint.go): hang it on the answer
+    // just sent. A pane not showing it gets it from history on open.
+    if (!chat.loadingBuffers.has(key)) attachChanges(key, parseJSON(frame.text, null));
+    return;
+  }
   if (frame.type === "narration") noteActivity(key);
 
   if (!isTargetVisibleAnywhere(key)) {
@@ -1852,4 +1860,102 @@ export function handleFrame(frame) {
 
   if (bufferFrame(key, frame)) return;
   appendLiveFrameToKey(key, frame);
+}
+
+function attachChanges(key, changes) {
+  if (!changes?.files?.length) return;
+  const current = chat.messagesByKey.get(key);
+  if (!current) return;
+  for (let i = current.length - 1; i >= 0; i--) {
+    if (current[i].role === "user") return;
+    if (current[i].role === "assistant" && current[i].text) {
+      const next = [...current];
+      next[i] = { ...current[i], changes };
+      chat.messagesByKey = new Map(chat.messagesByKey).set(key, next);
+      return;
+    }
+  }
+}
+
+// ---- @file completion ----
+// Typing "@" + part of a name in the composer lists matching files of the
+// conversation's working folder (host list_files); picking one inserts the
+// relative path so the AI reads exactly that file.
+const MENTION_RE = /(^|\s)@([^\s@"]*)$/;
+let mentionTimer = null;
+let mentionSeq = 0;
+
+export function updateMentionForPane(paneId) {
+  const p = pane(paneId);
+  const el = paneTextareas.get(paneId);
+  if (!p || !el) return;
+  const caret = el.selectionStart ?? p.composerText.length;
+  const m = MENTION_RE.exec(p.composerText.slice(0, caret));
+  const workDir = paneConversationMeta(p.target)?.workDir || "";
+  if (!m || !workDir) {
+    if (p.mention) updatePane(paneId, { mention: null });
+    return;
+  }
+  const start = caret - m[2].length - 1;
+  const query = m[2];
+  updatePane(paneId, { mention: { ...(p.mention || { files: [], index: 0 }), start, end: caret, query, hidden: false } });
+  clearTimeout(mentionTimer);
+  const seq = ++mentionSeq;
+  mentionTimer = setTimeout(async () => {
+    try {
+      const data = parseJSON(await ControlService.ListFiles(workDir, query), {});
+      if (seq !== mentionSeq) return;
+      const cur = pane(paneId)?.mention;
+      if (!cur) return;
+      updatePane(paneId, { mention: { ...cur, files: Array.isArray(data.files) ? data.files : [], index: 0 } });
+    } catch {
+      /* host too old or offline: no completion */
+    }
+  }, 120);
+}
+
+export function mentionCandidatesForPane(p) {
+  const m = p?.mention;
+  return m && !m.hidden ? m.files || [] : [];
+}
+
+export async function selectMentionForPane(paneId, path) {
+  const p = pane(paneId);
+  const m = p?.mention;
+  if (!p || !m || !path) return;
+  const token = /\s/.test(path) ? `@"${path}"` : `@${path}`;
+  const before = p.composerText.slice(0, m.start);
+  const after = p.composerText.slice(m.end).replace(/^\S*/, "");
+  const sep = after.startsWith(" ") ? "" : " ";
+  setPaneComposerValue(paneId, before + token + sep + after);
+  updatePane(paneId, { mention: null });
+  await tick();
+  const el = paneTextareas.get(paneId);
+  const pos = before.length + token.length + 1;
+  el?.focus();
+  el?.setSelectionRange(pos, pos);
+}
+
+// Returns true when the key was consumed by the open @file list.
+function handleMentionKeydown(paneId, p, event) {
+  const files = mentionCandidatesForPane(p);
+  if (!files.length) return false;
+  const index = p.mention.index || 0;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const next = event.key === "ArrowDown" ? Math.min(index + 1, files.length - 1) : Math.max(index - 1, 0);
+    updatePane(paneId, { mention: { ...p.mention, index: next } });
+    return true;
+  }
+  if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+    event.preventDefault();
+    void selectMentionForPane(paneId, files[index] || files[0]);
+    return true;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    updatePane(paneId, { mention: { ...p.mention, hidden: true } });
+    return true;
+  }
+  return false;
 }

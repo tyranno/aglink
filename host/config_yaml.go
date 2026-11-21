@@ -64,6 +64,7 @@ type yamlConfig struct {
 	// UI: how turns read in the chat.
 	UI struct {
 		TurnStats bool `yaml:"turn_stats,omitempty"` // per-turn usage/cost + "작업 완료" lines; default off
+		Checkpoints *bool `yaml:"checkpoints,omitempty"` // nil → true; see checkpoint.go
 	} `yaml:"ui,omitempty"`
 	Scripts struct {
 		Allow           bool     `yaml:"allow"`
@@ -153,6 +154,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 		ConversationTTLDays:  30,
 		SummaryOnReset:       true,
 		MemoryConsolidate:    true,
+		Checkpoints:          true,
 		ScreenPromptAdaptive: true,
 		PersistentWorker:     true,
 	}
@@ -225,6 +227,9 @@ func yamlToConfig(y *yamlConfig) *Config {
 		c.MemoryConsolidate = *y.Context.MemoryConsolidate
 	}
 	c.TurnStats = y.UI.TurnStats
+	if y.UI.Checkpoints != nil {
+		c.Checkpoints = *y.UI.Checkpoints
+	}
 	c.WebControl = y.WebControl.Enabled
 	c.WebBinaryPath = y.WebControl.BinaryPath
 	c.NotionControl = y.NotionControl.Enabled
@@ -323,6 +328,10 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Context.SummaryOnReset = &sor
 	y.Context.MemoryConsolidate = &mc
 	y.UI.TurnStats = c.TurnStats
+	if !c.Checkpoints {
+		off := false
+		y.UI.Checkpoints = &off
+	}
 	y.WebControl.Enabled = c.WebControl
 	y.WebControl.BinaryPath = c.WebBinaryPath
 	y.NotionControl.Enabled = c.NotionControl

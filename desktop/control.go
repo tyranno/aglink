@@ -62,6 +62,8 @@ type controlIn struct {
 	Target  json.RawMessage `json:"target,omitempty"`
 	Model   string          `json:"model,omitempty"` // set_conv_model: model to pin ("" | "default" → unpin)
 	Limit   int             `json:"limit,omitempty"` // get_usage_stats: recent turns per conversation (0 → default)
+	From    string          `json:"from,omitempty"` // checkpoint_diff
+	To      string          `json:"to,omitempty"`   // checkpoint_diff / checkpoint_restore
 }
 
 // ControlService is the Wails-bound service the Svelte frontend calls. It keeps a
@@ -851,4 +853,26 @@ func (c *ControlService) UploadAttachment(path, caption, kind, id string) error 
 		return nil
 	}
 	return c.send(uploadAttachmentControlIn(path, caption, kind, id))
+}
+
+// CheckpointDiff returns {diff, truncated} or {error}: the unified diff between
+// two per-turn snapshots of workDir (host checkpoint.go), for one file when
+// path is set.
+func (c *ControlService) CheckpointDiff(workDir, from, to, path string) (string, error) {
+	data, err := c.request(controlIn{Type: "checkpoint_diff", Path: workDir, From: from, To: to, Text: path})
+	return string(data), err
+}
+
+// CheckpointRestore puts workDir back to snapshot `to`. Returns {ok, undo,
+// changed, error}; restoring to `undo` reverses it.
+func (c *ControlService) CheckpointRestore(workDir, to string) (string, error) {
+	data, err := c.request(controlIn{Type: "checkpoint_restore", Path: workDir, To: to})
+	return string(data), err
+}
+
+// ListFiles returns {files:[…]} — workDir's files matching query, best first,
+// for the composer's @file completion.
+func (c *ControlService) ListFiles(workDir, query string) (string, error) {
+	data, err := c.request(controlIn{Type: "list_files", Path: workDir, Text: query, Limit: 12})
+	return string(data), err
 }

@@ -269,6 +269,7 @@ type historyTurn struct {
 	Text  string `json:"text,omitempty"`  // message text (empty for an image-only entry)
 	Image string `json:"image,omitempty"` // base64 PNG for a persisted tool screenshot
 	At    int64  `json:"at,omitempty"`    // turn time, unix ms (0 when unknown)
+	Changes *TurnChanges `json:"changes,omitempty"` // assistant turn: files the turn changed (checkpoint.go)
 }
 type historyResponse struct {
 	Turns []historyTurn `json:"turns"`
@@ -326,7 +327,7 @@ func buildHistoryResponse(store StoreRepo, tgt Target) historyResponse {
 			resp.Turns = append(resp.Turns, historyTurn{Role: "user", Text: turn.Prompt, At: at})
 		}
 		if turn.Response != "" {
-			resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Text: turn.Response, At: at})
+			resp.Turns = append(resp.Turns, historyTurn{Role: "assistant", Text: turn.Response, At: at, Changes: turn.Changes})
 		}
 		// Replay persisted tool screenshots after the response, so images survive a
 		// restart. Pruned/missing refs and any dropped to fit the budget are skipped.

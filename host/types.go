@@ -72,6 +72,10 @@ type Config struct {
 	// recorded either way (usage views, get_usage_stats).
 	TurnStats bool
 
+	// Checkpoints (yaml ui.checkpoints, default true) snapshots the working
+	// folder around each turn so the desktop can show and undo its file changes.
+	Checkpoints bool
+
 	ConversationTTLDays int    // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 	WebChat             bool   // local web chat transport enabled
 	WebChatAddr         string // web chat bind address (localhost only), default 127.0.0.1:27271
@@ -150,6 +154,9 @@ type ConversationTurn struct {
 	// this turn, saved on disk (not inline) so store.json stays small; the history
 	// API reloads them so images survive a restart. Missing refs (pruned) are skipped.
 	Images []string `json:"images,omitempty"`
+	// Changes is what the turn changed in its working folder (checkpoint.go);
+	// nil when nothing changed or checkpoints were off.
+	Changes *TurnChanges `json:"changes,omitempty"`
 }
 
 // Conversation is one topic within a project; maps 1:1 to a claude session.

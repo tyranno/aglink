@@ -50,6 +50,8 @@ type controlIn struct {
 	Payload json.RawMessage `json:"payload,omitempty"` // playbook_save/pbgroup_save: the Playbook/PlaybookGroup JSON; save_mcp_servers: {"servers":[…]}
 	Model   string          `json:"model,omitempty"` // set_conv_model: model to pin ("" | "default" → unpin)
 	Limit   int             `json:"limit,omitempty"` // get_usage_stats: recent turns per conversation (0 → default)
+	From    string          `json:"from,omitempty"` // checkpoint_diff: snapshot range
+	To      string          `json:"to,omitempty"`   // checkpoint_diff/checkpoint_restore
 }
 
 // controlOut is a message to aglink-chat: either a Hub-driven browser frame
@@ -253,6 +255,11 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 			return
 		}
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "checkpoint_diff", "checkpoint_restore", "list_files":
+		// Slow (git / folder walk) — answer off the read loop.
+		go func(m controlIn) {
+			ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: handleCheckpointRequest(m)})
+		}(m)
 	case "get_history":
 		tgt := Target{Kind: "telegram"}
 		if m.Target != nil {

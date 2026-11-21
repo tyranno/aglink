@@ -272,6 +272,7 @@ func LoadConfig(path string) (*Config, error) {
 		ConversationTTLDays:  30,
 		SummaryOnReset:       true,
 		MemoryConsolidate:    true,
+		Checkpoints:          true,
 		ScreenPromptAdaptive: true,
 		PersistentWorker:     true,
 	}

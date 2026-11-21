@@ -110,6 +110,9 @@ func TestCallWaitTimesOut(t *testing.T) {
 	if res.OK || !strings.Contains(res.Error, "Chrome extension not connected") || !strings.Contains(res.Error, "waited 0.15s") {
 		t.Fatalf("want the not-connected error with the wait, got %+v", res)
 	}
+	if !strings.Contains(res.Error, "still not connected") || !strings.Contains(res.Error, chromeWaitHint) {
+		t.Fatalf("a timed-out wait should say what to check: %+v", res)
+	}
 	if el := time.Since(start); el < 150*time.Millisecond {
 		t.Fatalf("returned after %v, before the wait was up", el)
 	}
@@ -196,5 +199,103 @@ func TestUnsentCallDeliveredAfterReconnect(t *testing.T) {
 	_, res := d.sendChrome(old, "click", map[string]any{"selector": "#x"}, 3*time.Second)
 	if !res.OK || second.count("click") != 1 {
 		t.Fatalf("unsent click should go to the new connection once: %+v (count %d)", res, second.count("click"))
+	}
+}
+
+// A named profile waits for THAT account: another profile connecting wakes the
+// call but does not satisfy it, and it proceeds on the right one.
+func TestNamedProfileWaitsForItsOwnAccount(t *testing.T) {
+	d := newDaemon("")
+	d.reconnectWait = 3 * time.Second
+	srv := httptest.NewServer(d.handler())
+	defer srv.Close()
+
+	other := dialFakeExtension(t, srv, "a@example.com")
+	defer other.Close()
+	otherLog := &methodLog{}
+	go answerAndLog(other, otherLog)
+	waitForProfile(t, d, "a@example.com")
+
+	done := make(chan CallResult, 1)
+	go func() { done <- d.call("list_tabs", nil, "b@") }()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case res := <-done:
+		t.Fatalf("call for b@ should be waiting, got %+v", res)
+	default:
+	}
+
+	mine := dialFakeExtension(t, srv, "b@example.com")
+	defer mine.Close()
+	mineLog := &methodLog{}
+	go answerAndLog(mine, mineLog)
+
+	select {
+	case res := <-done:
+		if !res.OK || mineLog.count("list_tabs") != 1 || otherLog.count("list_tabs") != 0 {
+			t.Fatalf("want the call on b@ only: %+v (b=%d a=%d)", res, mineLog.count("list_tabs"), otherLog.count("list_tabs"))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call did not proceed once b@ connected")
+	}
+}
+
+// An ambiguous name is not a gap a reconnect fills: it fails at once.
+func TestAmbiguousProfileDoesNotWait(t *testing.T) {
+	d := newDaemon("")
+	d.reconnectWait = time.Hour
+	srv := httptest.NewServer(d.handler())
+	defer srv.Close()
+	for _, a := range []string{"a1@example.com", "a2@example.com"} {
+		c := dialFakeExtension(t, srv, a)
+		defer c.Close()
+		go runFakeExtension(c, true)
+		waitForProfile(t, d, a)
+	}
+	start := time.Now()
+	res := d.call("list_tabs", nil, "a")
+	if res.OK || !strings.Contains(res.Error, "ambiguous") || time.Since(start) > time.Second {
+		t.Fatalf("want an immediate ambiguity error, got %+v after %v", res, time.Since(start))
+	}
+}
+
+func TestVSCodeCallWaitsForWindow(t *testing.T) {
+	d, srv := vscodeDaemon(t)
+	d.reconnectWait = 3 * time.Second
+
+	done := make(chan CallResult, 1)
+	go func() { done <- d.call("vscode_workspace", nil, "vscode:backend") }()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case res := <-done:
+		t.Fatalf("call should be waiting for the window, got %+v", res)
+	default:
+	}
+
+	c := dialFakeVSCode(t, srv, "backend", "", "/p/backend", "s1")
+	defer c.Close()
+	go runFakeExtension(c, true)
+
+	select {
+	case res := <-done:
+		if !res.OK || res.Text != "pong:workspace" {
+			t.Fatalf("after the window connected: %+v", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call did not proceed once the window connected")
+	}
+}
+
+func TestVSCodeCallWaitTimesOut(t *testing.T) {
+	d, _ := vscodeDaemon(t)
+	d.reconnectWait = 150 * time.Millisecond
+	start := time.Now()
+	res := d.call("vscode_workspace", nil, "vscode:backend")
+	if res.OK || !strings.Contains(res.Error, "no VS Code window connected") ||
+		!strings.Contains(res.Error, "waited 0.15s") || !strings.Contains(res.Error, vscodeWaitHint) {
+		t.Fatalf("want the not-connected error with the wait and hint, got %+v", res)
+	}
+	if el := time.Since(start); el < 150*time.Millisecond {
+		t.Fatalf("returned after %v, before the wait was up", el)
 	}
 }

@@ -474,6 +474,40 @@ func (c *ControlService) WebDelete(id string) error {
 	return c.mutate(controlIn{Type: "web_delete", ID: id, Origin: "web"})
 }
 
+// WebFork ("여기서 갈라 새 대화") creates a new local conversation carrying the
+// source conversation's history up to one message. kind/id address the source;
+// point is the forkPoint JSON {role,text,at,occurrence}. Like mutate it waits
+// for the host's ack, and returns {"ok":true,"id","title"} as a JSON string so
+// the caller can open the new conversation; a refused fork comes back as an
+// error.
+func (c *ControlService) WebFork(kind, id, point string) (string, error) {
+	if kind == "" {
+		kind = "telegram"
+	}
+	m := controlIn{Type: "web_fork", Origin: "web", Target: targetJSON(kind, "", id), Payload: json.RawMessage(point)}
+	if !json.Valid(m.Payload) {
+		return "", errors.New("web_fork: bad fork point")
+	}
+	data, err := c.request(m)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return "", fmt.Errorf("web_fork: bad reply: %w", err)
+	}
+	if !res.OK {
+		if res.Error == "" {
+			return "", errors.New("web_fork failed")
+		}
+		return "", errors.New(res.Error)
+	}
+	return string(data), nil
+}
+
 // mutate sends an acknowledged change (setdir/rename/delete) and waits for
 // the host's {"ok":…,"error":…} reply, so the caller refreshes only after the
 // change is durable and a refused change (bad folder, unknown id) comes back

@@ -116,3 +116,23 @@ textarea {
   outline-offset: -4px;
   background-color: rgb(59 130 246 / 0.08);
 }
+
+/* Buttons: hover/state changes ease over 150ms and a press sinks the button
+   slightly. In the base layer so a component's own transition-* / transform
+   utilities still win. */
+@layer base {
+  button {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
+  }
+  button:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+}
+
+/* A faint top highlight over a solid button color (works with any bg-*
+   utility and its hover/disabled variants). */
+.btn-gloss:not(:disabled) {
+  background-image: linear-gradient(180deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0) 60%);
+}

@@ -368,6 +368,9 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	}
 
 	bot := NewBot(api, holder, store, manager, sched, userStore)
+	// Away from the PC → short Telegram notice when a desktop/web turn ends
+	// (awaynotify.go). No Telegram (api nil) → the notifier stays silent.
+	manager.SetAwayNotifier(newTelegramAwayNotifier(holder.Get, api))
 	approvalConfigPath = cfgPath // "항상 허용" writes approvals.tools here
 	bot.playbooks = playbooks
 

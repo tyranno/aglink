@@ -1491,6 +1491,45 @@ export async function quoteIntoComposer(paneId, text) {
   await editIntoComposer(paneId, `${current ? `${current}\n\n` : ""}${quoted}\n\n`);
 }
 
+// "여기서 갈라 새 대화": asks the host (web_fork) for a new local conversation
+// that carries this conversation's history up to messages[index] — same work
+// folder, backend and model — then opens it in the same pane. The host finds
+// the turn from the bubble's role/text/time; occurrence says how many later
+// bubbles of the same role repeat the exact text, so identical replies resolve
+// to the right turn. Resolves to "" on success or an error message to show.
+export function canForkMessage(message) {
+  return !!message && (message.role === "user" || message.role === "assistant") && !!(message.text || "").trim();
+}
+
+export async function forkConversationAt(paneId, index) {
+  const p = pane(paneId);
+  if (!p?.target) return "대화가 선택되어 있지 않습니다.";
+  if (!chat.connected) return "aglink 에 연결되어 있지 않습니다.";
+  const source = { ...p.target };
+  const messages = messagesForPane(source);
+  const message = messages[index];
+  if (!canForkMessage(message)) return "이 메시지에서는 갈라낼 수 없습니다.";
+  let occurrence = 0;
+  for (let i = index + 1; i < messages.length; i++) {
+    if (messages[i].role === message.role && (messages[i].text || "") === message.text) occurrence++;
+  }
+  const point = { role: message.role, text: message.text, at: message.at || 0, occurrence };
+  try {
+    const reply = parseJSON(await ControlService.WebFork(source.kind || "telegram", source.id || "", JSON.stringify(point)), {});
+    if (!reply.id) return "새 대화를 만들지 못했습니다.";
+    if (source.kind === "web" && source.id) {
+      const group = chat.webGroupOf.get(source.id);
+      if (group) setConversationGroup(reply.id, group);
+    }
+    await loadConversations();
+    await selectTargetInPane(paneId, { kind: "web", id: reply.id });
+    showToast(`갈래 대화를 열었습니다 — ${reply.title || "새 대화"}`);
+    return "";
+  } catch (error) {
+    return `${error?.message || error}`;
+  }
+}
+
 // Formats a conversation as Markdown ("## 나 · 오후 3:59" headings per
 // message) for the header's 대화 내보내기 button.
 export function conversationMarkdown(target) {

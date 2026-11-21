@@ -17,6 +17,7 @@
   import MarkdownPreview from "./MarkdownPreview.svelte";
   import AttentionToast from "./AttentionToast.svelte";
   import QuickSwitcher from "./QuickSwitcher.svelte";
+  import BoardView from "./BoardView.svelte";
   import {
     chat,
     MAX_PANES,
@@ -121,6 +122,7 @@
   // 테마) live here. Own popup — closes on outside click (clickAway) and Esc,
   // arrow keys move between items, Esc returns focus to the trigger.
   let moreMenuOpen = $state(false);
+  let boardOpen = $state(false); // 작업 보드 (BoardView, also Ctrl+B)
   let moreMenuTrigger = $state(null);
   let moreMenuEl = $state(null);
   function moreMenuItems() {
@@ -774,6 +776,17 @@
               >
                 <span class="w-4 shrink-0 text-center">🗂</span>
                 <span class="min-w-0 flex-1 truncate">회의 목록</span>
+              </button>
+              <button
+                role="menuitem"
+                class="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-medium outline-none hover:bg-slate-100 focus-visible:bg-slate-100 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+                onclick={() => { closeMoreMenu(); boardOpen = true; }}
+                title="작업 보드 — 모든 대화를 상태별로 보기"
+                aria-label="작업 보드"
+              >
+                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1.5" /><rect x="10" y="4" width="5" height="11" rx="1.5" /><rect x="17" y="4" width="4" height="7" rx="1.5" /></svg>
+                <span class="min-w-0 flex-1 truncate">작업 보드</span>
+                <span class="text-[11px] text-slate-400 dark:text-slate-500">Ctrl+B</span>
               </button>
               <div class="my-1 border-t border-slate-200 dark:border-slate-700" role="separator"></div>
               <button
@@ -1507,4 +1520,5 @@
   onClose={closePreview}
 />
 <AttentionToast />
+<BoardView bind:open={boardOpen} onnavigate={() => { if (view !== "chat") void backToChat(); }} />
 <QuickSwitcher />

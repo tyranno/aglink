@@ -1322,3 +1322,37 @@ test("navigate files its new tab under the session's group, created once", async
   await sb.navigate({ url: "https://d/" });
   assert.strictEqual(calls.group.length, 2);
 });
+
+test("a link that drops is retried at once, then on the backoff", async () => {
+  const { WS, opened } = countingWebSocket();
+  const sb = loadBackground(signedInChrome(null), { WebSocket: WS });
+  await tick();
+  assert.strictEqual(opened.length, 1);
+
+  // Up, then lost (daemon restarted): reconnects without waiting the 1s backoff.
+  opened[0].readyState = WS.OPEN;
+  opened[0].onopen();
+  opened[0].readyState = WS.CLOSED;
+  opened[0].onclose();
+  await tick();
+  assert.strictEqual(opened.length, 2, "immediate retry after a drop");
+
+  // That one comes up and drops again right away: no second immediate retry.
+  opened[1].readyState = WS.OPEN;
+  opened[1].onopen();
+  opened[1].readyState = WS.CLOSED;
+  opened[1].onclose();
+  await tick();
+  assert.strictEqual(opened.length, 2, "a flapping link falls back to the backoff");
+  assert.ok(vm.runInContext("reconnectTimer", sb), "a backoff retry is armed");
+
+  // A socket that never opened (daemon down) also takes the backoff.
+  vm.runInContext("clearTimeout(reconnectTimer); reconnectTimer = null; lastImmediateRetry = 0", sb);
+  sb.connect();
+  await tick();
+  assert.strictEqual(opened.length, 3);
+  opened[2].readyState = WS.CLOSED;
+  opened[2].onclose();
+  await tick();
+  assert.strictEqual(opened.length, 3, "a failed attempt waits for the backoff");
+});

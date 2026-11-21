@@ -75,7 +75,8 @@ assert(store.includes('event.key === "Escape"') && store.includes("commandMenuHi
 assert(store.includes("panes: [") && store.includes("export const chat = $state("), "pane state must live in the shared reactive store");
 assert(store.includes("export function addPane") && store.includes("export function closePane"), "app must support adding and closing split panes");
 assert(store.includes("export const MAX_PANES"), "split panes must be capped to a sane maximum");
-assert(app.includes("let sidebarCollapsed = $state(false)"), "conversation list sidebar must be collapsible");
+// The collapsed state now starts from the persisted sidebar prefs.
+assert(/let sidebarCollapsed = \$state\(/.test(app), "conversation list sidebar must be collapsible");
 assert(!header.includes("sidebarCollapsed"), "sidebar visibility toggle must live in the sidebar itself, not the top header");
 assert(app.match(/onclick={\(\) => \(sidebarCollapsed = true\)}/), "sidebar toolbar must expose its own collapse control");
 assert(app.match(/onclick={\(\) => \(sidebarCollapsed = false\)}/), "a collapsed-sidebar handle must remain in the conversation list area to re-expand it");
@@ -200,7 +201,9 @@ assert(app.includes("if (chat.workDirMenuPaneId) closePaneWorkDirMenu();"), "Esc
 // Saving structured settings (e.g. changing the default backend) must refresh
 // the header badge instead of leaving it stuck at whatever backend was active
 // when the app launched.
-assert(app.includes("void loadVersionInfo();\n        }, 500);"), "saving settings must refetch version/backend info shortly after so the header badge updates without a restart");
+// The host applies a saved config before replying, so the refetch now runs
+// right after the reply instead of after a 500ms debounce.
+assert(/loadSettingsSchema\(\), loadVersionInfo\(\)/.test(app), "saving settings must refetch version/backend info after the host applies them so the header badge updates without a restart");
 
 // Assistant/system replies are Markdown (headings, **bold**, lists, code
 // fences, links) and must render as such instead of showing literal syntax;
@@ -216,7 +219,7 @@ assert(pane.includes(":global(.markdown-body table)") && pane.includes(":global(
 // smaller/muted, so groups and channels are easy to tell apart at a glance.
 assert(app.includes(">로컬 채널<"), "the local channel section label must use the new terminology");
 assert(!all.includes("웹 채널") && !all.includes("웹 대화"), "the old 웹 채널/웹 대화 terminology must not remain anywhere");
-assert(group.includes('text-sm font-bold text-slate-800">{group.name}'), "a group's name must be at least as visually prominent as a channel name (text-sm, not smaller/muted)");
+assert(/text-sm font-bold text-slate-800(?: dark:text-slate-\d+)?">\{group\.name\}/.test(group),"a group's name must be at least as visually prominent as a channel name (text-sm, not smaller/muted)");
 
 // Groups can nest under other groups (folder-like tree), and both conversations
 // and whole groups can be dragged to become children of a group.
@@ -244,7 +247,7 @@ assert(pane.includes("{#snippet voiceBadge()}") && pane.includes('aria-label="�
 
 // Less frequent header actions live in a "⋯ 더보기" menu; their accessible names are unchanged.
 assert(header.includes('aria-label="더보기"') && header.includes('aria-haspopup="menu"') && header.includes("aria-expanded={moreMenuOpen}"), "header must expose an accessible 더보기 menu trigger");
-assert(header.includes('role="menu"') && (header.match(/role="menuitem"/g) || []).length === 3, "더보기 menu must hold the meeting / meeting list / theme items");
+assert(header.includes('role="menu"') && (header.match(/role="menuitem"/g) || []).length >= 3, "더보기 menu must hold (at least) the meeting / meeting list / theme items");
 assert(header.includes('aria-label={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}') && header.includes('aria-label="회의 목록"') && header.includes('aria-label="테마 전환"'), "moved header actions must keep their aria-labels");
 assert(header.includes('aria-label="설정"') && header.includes('aria-label="화면 분할 추가"') && header.includes('aria-label="연결 / aglink"'), "frequent header actions must stay directly visible");
 assert(app.includes('if (!target.closest("[data-more-menu]")) closeMoreMenu();') && app.includes("closeMoreMenu(true)"), "더보기 menu must close on outside click and return focus on Esc");
@@ -258,6 +261,22 @@ assert(app.includes('updateSettingValue(key, items.join(", "))'), "the chip edit
 // working indicator in place (label, real start, last activity) — never a message.
 assert(store.includes('frame.type === "status"') && store.includes("applyTurnStatus(key, frame);"), "status frames must update the working indicator, not append a message");
 assert(store.includes("마지막 활동"), "working indicator must show the last activity");
+
+// "여기서 갈라 새 대화": every user/AI message's action row can fork the
+// conversation through the host (web_fork), confirmed in an in-app card, never
+// the browser's confirm().
+assert(pane.includes('aria-label="여기서 갈라 새 대화"') && pane.includes("toggleForkAsk(mIndex, message)"), "message actions must offer 여기서 갈라 새 대화");
+assert(store.includes("export async function forkConversationAt") && store.includes("ControlService.WebFork"), "forking must go through the desktop WebFork control call");
+assert(store.includes('selectTargetInPane(paneId, { kind: "web", id: reply.id })'), "the new forked conversation must open after it is created");
+assert(!/\b(?:window\.)?(?:confirm|alert|prompt)\(/.test(pane) && !/\b(?:window\.)?(?:confirm|alert|prompt)\(/.test(store), "no browser alert/confirm/prompt in the pane UI");
+
+// Message polish: avatars (no emoji), bubble tails, gentle gradients, 150ms
+// transitions and a pressed state on buttons.
+assert(pane.includes("{#snippet avatar(side)}") && pane.includes("msg-avatar-user") && pane.includes("msg-avatar-ai"), "messages must show small user/AI avatars");
+assert(pane.includes("bubble-tail-user") && pane.includes("bubble-tail-ai"), "the first bubble of a run must carry a tail");
+assert(/\.bubble-user\)[^}]*linear-gradient/.test(pane) && /\.dark \.bubble-ai\)[^}]*linear-gradient/.test(pane), "bubbles must use a soft gradient in light and dark themes");
+assert(/\.msg-action-btn:active:not\(:disabled\)\)\s*\{\s*transform: scale\(0\.97\)/.test(pane), "message action buttons must have a pressed (scale .97) state");
+assert(pane.includes("transition: background-color 150ms"), "button state changes must transition over 150ms");
 
 if (process.exitCode) {
   process.exit(process.exitCode);

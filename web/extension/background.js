@@ -147,7 +147,11 @@ async function connect() {
   ws = socket;
   connecting = false;
 
-  socket.onopen = () => onLinkUp(account, "websocket");
+  let opened = false;
+  socket.onopen = () => {
+    opened = true;
+    onLinkUp(account, "websocket");
+  };
 
   socket.onmessage = (event) => {
     let req;
@@ -164,7 +168,8 @@ async function connect() {
     // closing must not trigger a reconnect loop.
     if (ws === socket) {
       ws = null;
-      scheduleReconnect();
+      if (opened) onLinkLost();
+      else scheduleReconnect();
     }
   };
 
@@ -218,7 +223,7 @@ function connectNativeLink(account, boot) {
       connect();
       return;
     }
-    scheduleReconnect();
+    onLinkLost();
   });
   try {
     p.postMessage({ type: "hello", account, boot });
@@ -265,6 +270,7 @@ function send(socket, obj) {
 // scheduleReconnect arms one retry. Short cap with jitter: a call on the daemon
 // side waits for us (AGLINK_WEB_RECONNECT_WAIT_MS), so being back within a few
 // seconds turns a dropped connection into a delay instead of an error.
+// Sequence after a failed attempt: ~1s, 2s, 4s, then every 5s.
 function scheduleReconnect() {
   if (reconnectTimer) return;
   const delay = Math.round(backoffMs * (0.8 + Math.random() * 0.4));
@@ -273,6 +279,31 @@ function scheduleReconnect() {
     connect();
   }, delay);
   backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+}
+
+// onLinkLost handles a transport that had been up and just dropped (daemon
+// restarted, host exited): one immediate retry — usually the daemon is already
+// back, or a fresh one is about to bind — and only if that fails the backoff
+// above, starting again from its minimum. A link that keeps dropping right
+// after it comes up gets the backoff instead, so it cannot spin.
+const IMMEDIATE_RETRY_GAP_MS = 5000;
+let lastImmediateRetry = 0;
+function onLinkLost() {
+  const now = Date.now();
+  if (now - lastImmediateRetry < IMMEDIATE_RETRY_GAP_MS) {
+    scheduleReconnect();
+    return;
+  }
+  lastImmediateRetry = now;
+  backoffMs = MIN_BACKOFF_MS;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, 0);
 }
 
 // reconnectNow skips the backoff when something suggests the daemon may be
@@ -1839,6 +1870,12 @@ function waitForComplete(tabId, timeoutMs = 15000) {
 
 // Connect on install and on browser startup, and keep a heartbeat alarm so the
 // service worker is periodically revived to re-establish a dropped connection.
+// 0.5 minutes is the shortest period chrome.alarms allows (Chrome 120+; older
+// versions clamp it to 1 minute), so a stopped worker is back within ~30s at
+// worst. While a link is up the worker does not stop at all: the daemon's 10s
+// pings reset the idle timer, and an open native port keeps it alive. A worker
+// that is awake retries on its own 1-5s timers, well inside the daemon's 20s
+// wait for a call.
 chrome.runtime.onInstalled.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.alarms.create("aglink-web-keepalive", { periodInMinutes: 0.5 });

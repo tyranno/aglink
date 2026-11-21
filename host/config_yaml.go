@@ -140,6 +140,11 @@ type yamlConfig struct {
 		// Allow: "tool:target" entries that skip the prompt (approval.go).
 		Allow []string `yaml:"allow,omitempty"`
 	} `yaml:"approvals,omitempty"`
+	// Notify: Telegram notices while the user is away from the PC (awaynotify.go).
+	Notify struct {
+		AwayTelegram    *bool `yaml:"away_telegram,omitempty"`     // nil → true
+		AwayIdleMinutes int   `yaml:"away_idle_minutes,omitempty"` // 0 → 5
+	} `yaml:"notify,omitempty"`
 }
 
 // defaults mirror config.go LoadConfig defaults.
@@ -157,6 +162,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 		Checkpoints:          true,
 		ScreenPromptAdaptive: true,
 		PersistentWorker:     true,
+		AwayNotify:           true,
 	}
 	c.HomeDir = y.HomeDir
 	c.TelegramBotToken = y.Telegram.BotToken
@@ -276,6 +282,10 @@ func yamlToConfig(y *yamlConfig) *Config {
 	c.ApprovalTools = y.Approvals.Tools
 	c.ApprovalTimeoutSec = y.Approvals.TimeoutSec
 	c.ApprovalAllow = y.Approvals.Allow
+	if y.Notify.AwayTelegram != nil {
+		c.AwayNotify = *y.Notify.AwayTelegram
+	}
+	c.AwayIdleMinutes = y.Notify.AwayIdleMinutes
 	return c
 }
 
@@ -362,6 +372,11 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Approvals.Tools = c.ApprovalTools
 	y.Approvals.TimeoutSec = c.ApprovalTimeoutSec
 	y.Approvals.Allow = c.ApprovalAllow
+	if !c.AwayNotify {
+		off := false
+		y.Notify.AwayTelegram = &off
+	}
+	y.Notify.AwayIdleMinutes = c.AwayIdleMinutes
 	return y
 }
 

@@ -346,6 +346,10 @@ func buildSettings(cfg *Config, codexModels []string) []settingSection {
 		// list, which this scalar form can't express, so they have their own
 		// control verbs (get_mcp_servers/save_mcp_servers) and a dedicated
 		// add/remove list UI — see mcpserver_settings.go.
+		{Title: "자리 비움 알림 (텔레그램)", Group: settingsGroupNetwork, Desc: "PC 앞에 없을 때(키보드·마우스 입력이 한동안 없을 때) 데스크톱·웹에서 시작한 작업이 끝나면 텔레그램으로 짧게 알려 줍니다. 텔레그램 봇이 설정돼 있어야 하고, Windows 에서만 동작합니다. 텔레그램에서 시작한 대화는 원래 텔레그램으로 답이 가므로 따로 알리지 않습니다.", Fields: []settingField{
+			{Key: "notify.away_telegram", Label: "자리 비움 시 텔레그램 알림", Desc: "켜면 '🔔 [대화이름] 작업 끝남 · 12분 걸림 · 답변 첫 줄' 같은 알림을 보냅니다. 승인 요청은 이 설정과 관계없이 원래부터 텔레그램으로 갑니다.", Type: "bool", Value: cfg.AwayNotify},
+			{Key: "notify.away_idle_minutes", Label: "자리 비움 판정 시간(분)", Desc: "마지막 키보드·마우스 입력 후 이 시간이 지나면 자리를 비운 것으로 봅니다. 0이면 5분.", Type: "int", Value: cfg.AwayIdleMinutes},
+		}},
 		{Title: "연결 / 네트워크", Group: settingsGroupNetwork, Advanced: true, Desc: "웹 화면·제어 API가 어느 주소에서 열릴지 정합니다. 기본값으로 두면 됩니다. (대부분 변경 시 재시작 필요)", Fields: []settingField{
 			{Key: "aglink_chat.enabled", Label: "웹 채팅 화면 사용", Desc: "aglink가 웹 채팅 프론트를 함께 띄웁니다.", Type: "bool", Value: cfg.AglinkChat},
 			{Key: "aglink_chat.addr", Label: "웹 채팅 주소", Desc: "예: 127.0.0.1:27271", Type: "string", Value: cfg.AglinkChatAddr},
@@ -450,6 +454,12 @@ func applySettings(cfg *Config, updates map[string]any) error {
 			cfg.ApprovalAllow = splitAllowList(asListString(v))
 		case "approvals.timeout_sec":
 			cfg.ApprovalTimeoutSec = asInt(v)
+		case "notify.away_telegram":
+			cfg.AwayNotify = asBool(v)
+		case "notify.away_idle_minutes":
+			if n := asInt(v); n >= 0 {
+				cfg.AwayIdleMinutes = n
+			}
 		case "web_chat.enabled":
 			cfg.WebChat = asBool(v)
 		case "web_chat.addr":

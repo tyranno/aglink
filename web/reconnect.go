@@ -30,10 +30,18 @@ func (d *Daemon) reconnectBudget() time.Duration {
 	return d.reconnectWait
 }
 
+// Hints appended when a wait for a connection runs out: by then a reconnect on
+// its own is clearly not coming, so say what to look at.
+const (
+	chromeWaitHint = "check that Chrome is running and the aglink-web extension is enabled (chrome://extensions)"
+	vscodeWaitHint = "check that the VS Code window is open and the aglink-vscode extension is enabled"
+)
+
 // waitConn runs pick (under d.mu) until it yields a connection, waking on every
-// registration, for at most budget. Only a notConnectedError is waited on; the
-// last one is returned with how long it waited.
-func (d *Daemon) waitConn(pick func() (*extConn, error), budget time.Duration) (*extConn, error) {
+// registration (d.connected — no polling), for at most budget. Only a
+// notConnectedError is waited on; the last one is returned with how long it
+// waited and hint.
+func (d *Daemon) waitConn(pick func() (*extConn, error), budget time.Duration, hint string) (*extConn, error) {
 	deadline := time.Now().Add(budget)
 	d.mu.Lock()
 	for {
@@ -47,7 +55,7 @@ func (d *Daemon) waitConn(pick func() (*extConn, error), budget time.Duration) (
 		if left <= 0 {
 			d.mu.Unlock()
 			if budget > 0 {
-				return nil, fmt.Errorf("%v (waited %gs for it to reconnect)", err, budget.Seconds())
+				return nil, fmt.Errorf("%v (waited %gs for it to reconnect, still not connected — %s)", err, budget.Seconds(), hint)
 			}
 			return nil, err
 		}
@@ -93,7 +101,7 @@ func (d *Daemon) sendChrome(ec *extConn, method string, params map[string]any, b
 				return c, nil
 			}
 			return nil, notConnectedError(fmt.Sprintf("%s: %s did not reconnect", res.Error, old.account))
-		}, budget)
+		}, budget, chromeWaitHint)
 		if err != nil {
 			return ec, CallResult{Error: err.Error()}
 		}

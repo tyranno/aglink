@@ -13,6 +13,8 @@
   let st = $state(null); // { tokenSet, tokenTail, lastFailureAt, lastFailureMsg, canIssue, job }
   let loadError = $state("");
   let actionError = $state("");
+  // 저장은 됐지만 적용 실패(호스트 응답 ok + applied:false) — 주황색 안내.
+  let applyWarn = $state("");
   let busy = $state(false);
   let code = $state("");
   let paste = $state("");
@@ -43,9 +45,13 @@
   async function call(fn, ...args) {
     busy = true;
     actionError = "";
+    applyWarn = "";
     try {
       const r = JSON.parse((await fn(...args)) || "{}");
       if (r && r.ok === false) actionError = r.error || "요청이 거부됐습니다.";
+      else if (r && r.applied === false) {
+        applyWarn = `config.yaml 에는 저장됐지만 적용하지 못했습니다: ${r.applyError || "알 수 없는 오류"} (이전 설정으로 동작 중 — 고친 뒤 다시 저장하거나 aglink 를 재시작하세요)`;
+      }
       return r && r.ok !== false;
     } catch (e) {
       actionError = "aglink 와 연결이 끊겨 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
@@ -120,6 +126,8 @@
       class={`mb-4 rounded-md border px-3 py-3 text-sm ${
         job.phase === "error"
           ? "border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300"
+          : job.phase === "warn"
+            ? "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300"
           : job.phase === "done"
             ? "border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300"
             : "border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200"
@@ -153,6 +161,9 @@
 
   {#if actionError}
     <div class="mb-3 text-xs text-red-600 dark:text-red-400">{actionError}</div>
+  {/if}
+  {#if applyWarn}
+    <div class="mb-3 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-800 dark:text-amber-300" role="alert">{applyWarn}</div>
   {/if}
 
   <div class="flex flex-wrap items-center gap-2">

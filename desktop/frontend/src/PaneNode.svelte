@@ -52,6 +52,8 @@
     quoteIntoComposer,
     conversationMarkdown,
     showToast,
+    canForkMessage,
+    forkConversationAt,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
   import { voice, sendNow, skipReading, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
@@ -112,6 +114,52 @@
     quoteSel = null;
     window.getSelection()?.removeAllRanges();
     void quoteIntoComposer(paneId, text);
+  }
+
+  // --- Bubble grouping: consecutive messages from the same side share one
+  // avatar and one tail (on the first bubble of the run). Narration is the
+  // AI's side but never starts a group's avatar on its own row. ---
+  function msgSide(message) {
+    if (message?.role === "user") return "user";
+    if (message?.role === "system") return "system";
+    return "ai";
+  }
+
+  function msgGroupStart(messages, index) {
+    if (index === 0) return true;
+    const prev = messages[index - 1];
+    const cur = messages[index];
+    if (msgSide(prev) !== msgSide(cur)) return true;
+    // A narration line followed by the answer: the answer still gets the avatar.
+    return prev.role === "narration" && cur.role !== "narration" && !msgHasAvatarAbove(messages, index - 1);
+  }
+
+  function msgHasAvatarAbove(messages, index) {
+    for (let i = index; i >= 0; i--) {
+      if (msgSide(messages[i]) !== "ai") return false;
+      if (messages[i].role !== "narration") return true;
+    }
+    return false;
+  }
+
+  // --- "여기서 갈라 새 대화": the action button opens a small in-app confirm
+  // under the message (not the browser dialog); 만들기 asks the host to fork. ---
+  let forkAsk = $state(null); // { index, text, busy, error }
+
+  function isForkAsk(index, message) {
+    return !!forkAsk && forkAsk.index === index && forkAsk.text === (message.text || "");
+  }
+
+  function toggleForkAsk(index, message) {
+    forkAsk = isForkAsk(index, message) ? null : { index, text: message.text || "", busy: false, error: "" };
+  }
+
+  async function runFork(paneId, index) {
+    if (!forkAsk || forkAsk.busy) return;
+    forkAsk = { ...forkAsk, busy: true, error: "" };
+    const error = await forkConversationAt(paneId, index);
+    if (error) forkAsk = forkAsk ? { ...forkAsk, busy: false, error } : null;
+    else forkAsk = null;
   }
 
   // How long the answer took: from the user message that started the turn to
@@ -373,7 +421,12 @@
   }
 
   function handleWindowKeydown(event) {
-    if (node.type !== "leaf" || chat.focusedPaneId !== node.paneId) return;
+    if (node.type !== "leaf") return;
+    if (forkAsk && event.key === "Escape") {
+      forkAsk = null;
+      return;
+    }
+    if (chat.focusedPaneId !== node.paneId) return;
     if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openSearch();
@@ -485,6 +538,22 @@
 
 {#snippet iconQuote()}
   <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.2 6C4.9 6 3 7.9 3 10.2c0 2.1 1.5 3.8 3.5 4.1-.3 1.5-1.2 2.6-2.6 3.2l.7 1.5C8.3 18 10.5 15.4 10.5 11V9.7C10.5 7.7 9.1 6 7.2 6zm10 0C14.9 6 13 7.9 13 10.2c0 2.1 1.5 3.8 3.5 4.1-.3 1.5-1.2 2.6-2.6 3.2l.7 1.5c3.7-1 5.9-3.6 5.9-8V9.7C20.5 7.7 19.1 6 17.2 6z"/></svg>
+{/snippet}
+
+{#snippet iconFork()}
+  <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+{/snippet}
+
+<!-- Small round avatar beside the first bubble of each run: "나" for the user,
+     a spark mark for the AI. -->
+{#snippet avatar(side)}
+  {#if side === "user"}
+    <span class="msg-avatar msg-avatar-user" role="img" aria-label="나" title="나">나</span>
+  {:else}
+    <span class="msg-avatar msg-avatar-ai" role="img" aria-label="AI" title="AI">
+      <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l1.9 5.6 5.6 1.9-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.9z"/><path d="M18.5 15l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" opacity=".75"/></svg>
+    </span>
+  {/if}
 {/snippet}
 
 {#snippet iconCheck()}
@@ -745,93 +814,129 @@
                   <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
                 </div>
               {/if}
+              {@const side = msgSide(message)}
+              {@const startsGroup = msgGroupStart(messagesForPane(p.target), mIndex)}
               <div
                 data-msg-index={mIndex}
-                class={`msg-enter group/msg flex w-full flex-col ${message.role === "user" ? "items-end" : message.role === "system" ? "items-center" : "items-start"}`}
+                class={`msg-enter group/msg flex w-full ${side === "user" ? "flex-row-reverse" : "flex-row"} ${side === "system" ? "justify-center" : "items-start gap-2"} ${startsGroup && mIndex > 0 ? "mt-1.5" : ""}`}
               >
-                <div class={`${message.role === "narration"
-                  ? "relative min-w-0 max-w-[92%] overflow-hidden border-l-2 border-blue-300 dark:border-blue-700 py-0.5 pl-2.5 pr-2 italic text-slate-500 dark:text-slate-400"
-                  : `relative min-w-0 max-w-[92%] overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
-                  message.role === "user"
-                    ? "bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-300 ring-blue-200 dark:ring-blue-900/40"
-                    : message.role === "system"
-                      ? "bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 ring-amber-200 dark:ring-amber-800"
-                      : "bg-white/95 dark:bg-slate-900/95 text-slate-900 dark:text-slate-300 ring-slate-200 dark:ring-slate-700"
-                }`} ${isCurrentHit ? "search-current" : isHit ? "search-hit" : ""}`}>
-                  {#if message.role === "user" && message.voice && !message.text}
-                    {@render voiceBadge()}
+                {#if side !== "system"}
+                  {#if startsGroup && message.role !== "narration"}
+                    {@render avatar(side)}
+                  {:else}
+                    <span class="w-6 shrink-0" aria-hidden="true"></span>
                   {/if}
-                  {#if message.text}
-                    <div class={folded ? "msg-folded" : ""}>
-                      {#if message.role === "user"}
-                        <div class="msg-text whitespace-pre-wrap break-words">{#if message.voice}{@render voiceBadge()}{/if}{message.text}</div>
-                      {:else}
-                        <div class="msg-text markdown-body" use:renderMarkdownInto={message.text}></div>
-                      {/if}
-                    </div>
-                    {#if long}
-                      <button
-                        type="button"
-                        class="mt-1 text-[11px] font-semibold text-blue-600 hover:underline dark:text-blue-400"
-                        onclick={(event) => { event.stopPropagation(); toggleExpanded(foldKey(message, mIndex)); }}
-                      >{folded ? `전체 보기 (${(message.text || "").split("\n").length}줄)` : "접기"}</button>
-                    {/if}
+                {/if}
+                <div class={`relative flex min-w-0 max-w-[88%] flex-col ${side === "user" ? "items-end" : side === "system" ? "items-center" : "items-start"}`}>
+                  {#if startsGroup && message.role !== "narration" && side !== "system"}
+                    <span class={`bubble-tail ${side === "user" ? "bubble-tail-user" : "bubble-tail-ai"}`} aria-hidden="true"></span>
                   {/if}
-                  {#if message.image}
-                    <img
-                      alt=""
-                      class="mt-2 max-h-[420px] w-auto max-w-full cursor-zoom-in rounded-lg border border-slate-200 dark:border-slate-700 transition hover:brightness-95"
-                      src={`data:image/png;base64,${message.image}`}
-                      title="클릭하면 창으로 크게 봅니다 (이동·크기조절 가능)"
-                      onclick={() => openLightbox(`data:image/png;base64,${message.image}`)}
-                    />
-                  {/if}
-                </div>
-                {#if message.changes}<ChangesCard changes={message.changes} />{/if}
-                {#if message.role !== "narration" && (message.text || message.at)}
-                  <div class={`mt-0.5 flex h-4 items-center gap-1 px-1 text-[10px] text-slate-400 dark:text-slate-500 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
-                    {#if message.at}
-                      <span class="tabular-nums" title={new Date(message.at).toLocaleString("ko-KR")}>{messageTime(message.at)}</span>
-                    {/if}
-                    {#if replyDuration(messagesForPane(p.target), mIndex)}
-                      <span class="tabular-nums" title="질문부터 이 답변까지 걸린 시간">· {replyDuration(messagesForPane(p.target), mIndex)}</span>
-                    {/if}
-                    {#if message.role === "user" && message.ack}
-                      <span class="text-blue-500/80 dark:text-blue-400/70" title="aglink 가 메시지를 받아 작업을 시작했습니다">✓ 확인함</span>
+                  <div class={`${message.role === "narration"
+                    ? "relative min-w-0 max-w-full overflow-hidden border-l-2 border-blue-300 dark:border-blue-700 py-0.5 pl-2.5 pr-2 italic text-slate-500 dark:text-slate-400"
+                    : `bubble relative min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-1.5 shadow-sm ring-1 ${
+                    message.role === "user"
+                      ? `bubble-user ring-blue-200 dark:ring-blue-800/60 ${startsGroup ? "rounded-tr-[4px]" : ""}`
+                      : message.role === "system"
+                        ? "bubble-system ring-amber-200 dark:ring-amber-800"
+                        : `bubble-ai ring-slate-200 dark:ring-slate-700 ${startsGroup ? "rounded-tl-[4px]" : ""}`
+                  }`} ${isCurrentHit ? "search-current" : isHit ? "search-hit" : ""}`}>
+                    {#if message.role === "user" && message.voice && !message.text}
+                      {@render voiceBadge()}
                     {/if}
                     {#if message.text}
-                      <span class={`msg-actions flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
+                      <div class={folded ? "msg-folded" : ""}>
+                        {#if message.role === "user"}
+                          <div class="msg-text whitespace-pre-wrap break-words">{#if message.voice}{@render voiceBadge()}{/if}{message.text}</div>
+                        {:else}
+                          <div class="msg-text markdown-body" use:renderMarkdownInto={message.text}></div>
+                        {/if}
+                      </div>
+                      {#if long}
                         <button
                           type="button"
-                          class="msg-action-btn"
-                          onclick={(event) => { event.stopPropagation(); copyMessageText(message.text, event.currentTarget); }}
-                          title="메시지 복사"
-                          aria-label="메시지 복사"
-                        >
-                          <span class="copy-icon grid">{@render iconCopy()}</span>
-                          <span class="check-icon hidden text-emerald-500">{@render iconCheck()}</span>
-                        </button>
-                        {#if message.role === "user"}
+                          class="mt-1 text-[11px] font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                          onclick={(event) => { event.stopPropagation(); toggleExpanded(foldKey(message, mIndex)); }}
+                        >{folded ? `전체 보기 (${(message.text || "").split("\n").length}줄)` : "접기"}</button>
+                      {/if}
+                    {/if}
+                    {#if message.image}
+                      <img
+                        alt=""
+                        class="mt-2 max-h-[420px] w-auto max-w-full cursor-zoom-in rounded-lg border border-slate-200 dark:border-slate-700 transition hover:brightness-95"
+                        src={`data:image/png;base64,${message.image}`}
+                        title="클릭하면 창으로 크게 봅니다 (이동·크기조절 가능)"
+                        onclick={() => openLightbox(`data:image/png;base64,${message.image}`)}
+                      />
+                    {/if}
+                  </div>
+                  {#if message.changes}<ChangesCard changes={message.changes} />{/if}
+                  {#if message.role !== "narration" && (message.text || message.at)}
+                    <div class={`mt-0.5 flex h-5 items-center gap-1 px-1 text-[10.5px] text-slate-500 dark:text-slate-500 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
+                      {#if message.at}
+                        <span class="tabular-nums" title={new Date(message.at).toLocaleString("ko-KR")}>{messageTime(message.at)}</span>
+                      {/if}
+                      {#if replyDuration(messagesForPane(p.target), mIndex)}
+                        <span class="tabular-nums" title="질문부터 이 답변까지 걸린 시간">· {replyDuration(messagesForPane(p.target), mIndex)}</span>
+                      {/if}
+                      {#if message.role === "user" && message.ack}
+                        <span class="text-blue-600/90 dark:text-blue-400/80" title="aglink 가 메시지를 받아 작업을 시작했습니다">✓ 확인함</span>
+                      {/if}
+                      {#if message.text}
+                        <span class={`msg-actions flex items-center gap-0.5 transition-opacity duration-150 group-hover/msg:opacity-100 focus-within:opacity-100 ${message.role === "user" ? "flex-row-reverse" : ""} ${isForkAsk(mIndex, message) ? "opacity-100" : "opacity-0"}`}>
                           <button
                             type="button"
                             class="msg-action-btn"
-                            onclick={(event) => { event.stopPropagation(); void editIntoComposer(p.id, message.text); }}
-                            title="입력창에 넣어 고쳐서 다시 보내기"
-                            aria-label="고쳐서 다시 보내기"
-                          >{@render iconEdit()}</button>
-                          <button
-                            type="button"
-                            class="msg-action-btn disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={!chat.connected || p.attachments.length > 0}
-                            onclick={(event) => { event.stopPropagation(); void resendFromPane(p.id, message.text); }}
-                            title="이 메시지를 그대로 다시 보내기"
-                            aria-label="다시 보내기"
-                          >{@render iconRetry()}</button>
-                        {/if}
-                      </span>
-                    {/if}
-                  </div>
-                {/if}
+                            onclick={(event) => { event.stopPropagation(); copyMessageText(message.text, event.currentTarget); }}
+                            title="메시지 복사"
+                            aria-label="메시지 복사"
+                          >
+                            <span class="copy-icon grid">{@render iconCopy()}</span>
+                            <span class="check-icon hidden text-emerald-500">{@render iconCheck()}</span>
+                          </button>
+                          {#if message.role === "user"}
+                            <button
+                              type="button"
+                              class="msg-action-btn"
+                              onclick={(event) => { event.stopPropagation(); void editIntoComposer(p.id, message.text); }}
+                              title="입력창에 넣어 고쳐서 다시 보내기"
+                              aria-label="고쳐서 다시 보내기"
+                            >{@render iconEdit()}</button>
+                            <button
+                              type="button"
+                              class="msg-action-btn disabled:cursor-not-allowed disabled:opacity-40"
+                              disabled={!chat.connected || p.attachments.length > 0}
+                              onclick={(event) => { event.stopPropagation(); void resendFromPane(p.id, message.text); }}
+                              title="이 메시지를 그대로 다시 보내기"
+                              aria-label="다시 보내기"
+                            >{@render iconRetry()}</button>
+                          {/if}
+                          {#if canForkMessage(message) && p.target}
+                            <button
+                              type="button"
+                              class={`msg-action-btn disabled:cursor-not-allowed disabled:opacity-40 ${isForkAsk(mIndex, message) ? "msg-action-btn-on" : ""}`}
+                              disabled={!chat.connected}
+                              onclick={(event) => { event.stopPropagation(); toggleForkAsk(mIndex, message); }}
+                              title="여기서 갈라 새 대화 — 이 메시지까지의 대화를 이어받은 새 대화를 엽니다"
+                              aria-label="여기서 갈라 새 대화"
+                              aria-expanded={isForkAsk(mIndex, message)}
+                            >{@render iconFork()}</button>
+                          {/if}
+                        </span>
+                      {/if}
+                    </div>
+                  {/if}
+                  {#if isForkAsk(mIndex, message)}
+                    <div class="fork-confirm mt-1 w-72 max-w-full rounded-lg border border-blue-200 px-3 py-2 text-[12px] text-blue-950 shadow-sm dark:border-blue-900/70 dark:text-blue-100" role="dialog" aria-label="여기서 갈라 새 대화">
+                      <p class="font-semibold">여기서 갈라 새 대화를 만들까요?</p>
+                      <p class="mt-0.5 text-[11.5px] text-blue-900/80 dark:text-blue-200/80">이 메시지까지의 대화를 이어받고, 작업 폴더·모델도 그대로 씁니다. 원래 대화는 바뀌지 않습니다.</p>
+                      {#if forkAsk.error}<p class="mt-1 text-rose-700 dark:text-rose-300">갈라내지 못했습니다: {forkAsk.error}</p>{/if}
+                      <div class="mt-2 flex justify-end gap-1.5">
+                        <button type="button" class="ui-btn ui-btn-ghost" onclick={(event) => { event.stopPropagation(); forkAsk = null; }}>취소</button>
+                        <button type="button" class="ui-btn ui-btn-primary" disabled={forkAsk.busy || !chat.connected} onclick={(event) => { event.stopPropagation(); void runFork(p.id, mIndex); }}>{forkAsk.busy ? "만드는 중…" : "새 대화 만들기"}</button>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
               </div>
             {/each}
           </div>
@@ -1116,7 +1221,7 @@
           </button>
 
           <button
-            class="grid h-[34px] w-[40px] shrink-0 place-items-center rounded-md bg-blue-600 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
+            class="btn-gloss grid h-[34px] w-[40px] shrink-0 place-items-center rounded-md bg-blue-600 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
             onclick={() => sendFromPane(p.id)}
             disabled={(p.attachments.length === 0 && !canSendPane(p)) || !chat.connected}
             title={p.attachments.length > 0 ? "업로드" : "전송"}
@@ -1286,18 +1391,194 @@
   :global(.msg-action-btn) {
     display: grid;
     place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 5px;
-    color: #94a3b8;
-    transition: background-color 0.15s, color 0.15s;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    color: #64748b;
+    transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
   }
-  :global(.msg-action-btn:hover:not(:disabled)) {
-    background: rgba(148, 163, 184, 0.18);
-    color: #2563eb;
+  :global(.dark .msg-action-btn) {
+    color: #a3a3a3;
   }
-  :global(.dark .msg-action-btn:hover:not(:disabled)) {
-    color: #93c5fd;
+  :global(.msg-action-btn:hover:not(:disabled)),
+  :global(.msg-action-btn-on) {
+    background: linear-gradient(180deg, rgba(219, 234, 254, 0.9), rgba(191, 219, 254, 0.75));
+    color: #1d4ed8;
+    box-shadow: 0 0 0 1px rgba(147, 197, 253, 0.7);
+  }
+  :global(.dark .msg-action-btn:hover:not(:disabled)),
+  :global(.dark .msg-action-btn-on) {
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.28), rgba(37, 99, 235, 0.18));
+    color: #bfdbfe;
+    box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35);
+  }
+  :global(.msg-action-btn:active:not(:disabled)) {
+    transform: scale(0.97);
+  }
+  :global(.msg-action-btn:focus-visible) {
+    outline: 2px solid #3b82f6;
+    outline-offset: 1px;
+  }
+
+  /* --- Message bubbles: a soft top-to-bottom gradient per side, a small tail
+     on the first bubble of each run. Colors are spelled out (not slate-*)
+     because html.dark re-points the slate palette. Contrast (text on the
+     gradient's darker end): user 14:1 light / 11:1 dark, AI 16:1 / 10:1. --- */
+  :global(.bubble) {
+    transition: box-shadow 150ms ease, background-color 150ms ease;
+  }
+  :global(.bubble-user) {
+    background: linear-gradient(160deg, #eff6ff 0%, #dbeafe 100%);
+    color: #172554;
+  }
+  :global(.bubble-ai) {
+    background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%);
+    color: #0f172a;
+  }
+  :global(.bubble-system) {
+    background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+    color: #78350f;
+  }
+  :global(.dark .bubble-user) {
+    background: linear-gradient(160deg, #1e3a6e 0%, #1a2f57 100%);
+    color: #e0ecff;
+  }
+  :global(.dark .bubble-ai) {
+    background: linear-gradient(180deg, #2a2a2c 0%, #242426 100%);
+    color: #dcdcdc;
+  }
+  :global(.dark .bubble-system) {
+    background: linear-gradient(180deg, rgba(120, 53, 15, 0.45) 0%, rgba(120, 53, 15, 0.3) 100%);
+    color: #fde68a;
+  }
+  :global(.group\/msg:hover .bubble) {
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 2px 8px rgba(15, 23, 42, 0.06), 0 0 0 1px var(--tw-ring-color, transparent);
+  }
+  :global(.dark .group\/msg:hover .bubble) {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--tw-ring-color, transparent);
+  }
+  /* The tail: a small corner wedge in the bubble's top color, outlined with a
+     hairline (drop-shadow on the wrapper, since clip-path would cut a border). */
+  :global(.bubble-tail) {
+    position: absolute;
+    top: 0;
+    z-index: 1;
+    width: 8px;
+    height: 10px;
+    pointer-events: none;
+  }
+  :global(.bubble-tail::before) {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+  :global(.bubble-tail-ai) {
+    left: -7px;
+    filter: drop-shadow(-0.5px 0 0 #e2e8f0) drop-shadow(0 -0.5px 0 #e2e8f0);
+  }
+  :global(.bubble-tail-ai::before) {
+    background: #ffffff;
+    clip-path: polygon(0 0, 100% 0, 100% 100%);
+  }
+  :global(.bubble-tail-user) {
+    right: -7px;
+    filter: drop-shadow(0.5px 0 0 #bfdbfe) drop-shadow(0 -0.5px 0 #bfdbfe);
+  }
+  :global(.bubble-tail-user::before) {
+    background: #eff6ff;
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+  }
+  :global(.dark .bubble-tail-ai) {
+    filter: drop-shadow(-0.5px 0 0 #3c3c3c) drop-shadow(0 -0.5px 0 #3c3c3c);
+  }
+  :global(.dark .bubble-tail-ai::before) {
+    background: #2a2a2c;
+  }
+  :global(.dark .bubble-tail-user) {
+    filter: drop-shadow(0.5px 0 0 rgba(30, 64, 175, 0.6)) drop-shadow(0 -0.5px 0 rgba(30, 64, 175, 0.6));
+  }
+  :global(.dark .bubble-tail-user::before) {
+    background: #1e3a6e;
+  }
+
+  /* --- Avatars (24px): initial "나" for the user, a spark for the AI. --- */
+  :global(.msg-avatar) {
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    margin-top: 1px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    user-select: none;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+  }
+  :global(.msg-avatar-user) {
+    background: linear-gradient(145deg, #e0e7ff 0%, #c7d2fe 100%);
+    color: #312e81;
+  }
+  :global(.msg-avatar-ai) {
+    background: linear-gradient(145deg, #4f46e5 0%, #0284c7 100%);
+    color: #ffffff;
+  }
+  :global(.dark .msg-avatar-user) {
+    background: linear-gradient(145deg, #3730a3 0%, #312e81 100%);
+    color: #e0e7ff;
+  }
+  :global(.dark .msg-avatar-ai) {
+    background: linear-gradient(145deg, #6366f1 0%, #0369a1 100%);
+  }
+
+  /* --- In-app confirm card + its small buttons. --- */
+  :global(.fork-confirm) {
+    background: linear-gradient(180deg, #eff6ff 0%, #e0edff 100%);
+    animation: msg-enter-anim 0.15s ease-out;
+  }
+  :global(.dark .fork-confirm) {
+    background: linear-gradient(180deg, rgba(30, 58, 110, 0.6) 0%, rgba(23, 37, 84, 0.55) 100%);
+  }
+  :global(.ui-btn) {
+    border-radius: 6px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.6;
+    transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms ease, opacity 150ms ease;
+  }
+  :global(.ui-btn:active:not(:disabled)) {
+    transform: scale(0.97);
+  }
+  :global(.ui-btn:disabled) {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  :global(.ui-btn:focus-visible) {
+    outline: 2px solid #3b82f6;
+    outline-offset: 1px;
+  }
+  :global(.ui-btn-ghost) {
+    color: #1e3a8a;
+  }
+  :global(.ui-btn-ghost:hover:not(:disabled)) {
+    background: rgba(147, 197, 253, 0.35);
+  }
+  :global(.dark .ui-btn-ghost) {
+    color: #dbeafe;
+  }
+  :global(.dark .ui-btn-ghost:hover:not(:disabled)) {
+    background: rgba(96, 165, 250, 0.2);
+  }
+  :global(.ui-btn-primary) {
+    background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+    color: #ffffff;
+    box-shadow: 0 1px 2px rgba(37, 99, 235, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  }
+  :global(.ui-btn-primary:hover:not(:disabled)) {
+    background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.18);
   }
   :global(.search-hit) {
     box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.55);

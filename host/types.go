@@ -143,6 +143,12 @@ type Config struct {
 	// though the tool is in ApprovalTools ("launch_app:notepad",
 	// "vscode_terminal_run:git status") — the "이 대상만 항상 허용" answer.
 	ApprovalAllow []string
+
+	// AwayNotify (yaml notify.away_telegram, default true): when a web/desktop
+	// conversation's turn ends while the user has been idle for AwayIdleMinutes
+	// (0 → 5), send a short Telegram notice. See awaynotify.go.
+	AwayNotify      bool
+	AwayIdleMinutes int
 }
 
 // ConversationTurn represents one exchange in a conversation.

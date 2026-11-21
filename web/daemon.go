@@ -124,8 +124,8 @@ type Daemon struct {
 	nextID  uint64
 	pending map[uint64]chan Reply
 
-	// connected is closed and replaced (under mu) each time an extension
-	// registers, waking every call parked in waitConn.
+	// connected is closed and replaced (under mu) each time an extension or a
+	// VS Code window registers, waking every call parked in waitConn.
 	connected chan struct{}
 
 	// navTabs maps (account, session) to its nav tab id; see navKey. Cleared
@@ -134,8 +134,9 @@ type Daemon struct {
 	navTabs map[navKey]int
 	boots   map[string]string
 
-	// reconnectWait is the default bound on that wait; 0 fails at once. Only
-	// the real daemon sets it (runDaemon), so tests keep the immediate error.
+	// reconnectWait is the default bound on that wait, for Chrome and VS Code
+	// calls alike; 0 fails at once. Only the real daemon sets it (runDaemon),
+	// so tests keep the immediate error unless they inject a wait.
 	reconnectWait time.Duration
 
 	upgrader websocket.Upgrader
@@ -434,7 +435,7 @@ func (d *Daemon) callAs(sess callSession, method string, params map[string]any, 
 	}
 
 	wait := d.reconnectBudget()
-	ec, err := d.waitConn(func() (*extConn, error) { return d.resolve(profile) }, wait)
+	ec, err := d.waitConn(func() (*extConn, error) { return d.resolve(profile) }, wait, chromeWaitHint)
 	if err != nil {
 		return CallResult{Error: err.Error()}
 	}

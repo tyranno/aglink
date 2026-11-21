@@ -261,10 +261,14 @@ func (b *Bot) askApproval(in approvalInput, timeout time.Duration) (bool, string
 	entry := approvalLogEntry{ID: req.ID, Source: req.Source, Tool: req.Tool, Target: req.Target, Session: req.Session, Summary: req.Summary}
 
 	head := fmt.Sprintf("🔐 승인 요청 #%s — %s · %s", req.ID, req.Source, req.Tool)
+	// Name the conversation, so a phone glance tells which job is waiting
+	// ("🔐 [대화이름] 승인 요청 …"); fall back to the short id.
 	if req.Target != "" {
 		head += " → " + req.Target
 	}
-	if s := shortSession(req.Session); s != "" {
+	if title := b.approvalConvTitle(req.Session); title != "" {
+		head = "🔐 [" + awayTitle(title) + "] " + strings.TrimPrefix(head, "🔐 ")
+	} else if s := shortSession(req.Session); s != "" {
 		head += " (" + s + ")"
 	}
 	opts := "!ok " + req.ID

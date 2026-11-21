@@ -77,7 +77,7 @@ func clearClaudeAuthFailure() {
 // authJobState is what the UI shows while issuing or verifying.
 type authJobState struct {
 	Kind    string `json:"kind,omitempty"`    // "issue" | "verify"
-	Phase   string `json:"phase"`             // "idle" | "running" | "need_code" | "done" | "error"
+	Phase   string `json:"phase"`             // "idle" | "running" | "need_code" | "done" | "warn" (saved, not applied) | "error"
 	Message string `json:"message,omitempty"` // what to tell the user now
 	URL     string `json:"url,omitempty"`     // sign-in page, if the browser did not open by itself
 }
@@ -177,8 +177,13 @@ func saveClaudeToken(cfgPath string, cfg *Config, token string) json.RawMessage 
 	newCfg := *cfg
 	newCfg.ClaudeOauthToken = token
 	reply := persistConfig(cfgPath, &newCfg)
-	var r struct{ OK bool }
-	if json.Unmarshal(reply, &r) == nil && r.OK {
+	var r struct {
+		OK      bool  `json:"ok"`
+		Applied *bool `json:"applied"`
+	}
+	// Saved but not applied (configSaveReply applied:false): the running
+	// process still has the old token, so the "expired" mark stays.
+	if json.Unmarshal(reply, &r) == nil && r.OK && (r.Applied == nil || *r.Applied) {
 		clearClaudeAuthFailure()
 		if token == "" {
 			log.Printf("[claude-auth] token removed")
@@ -221,7 +226,9 @@ func startClaudeVerify(cfg *Config) json.RawMessage {
 }
 
 // startClaudeIssue runs `claude setup-token` and saves what it prints.
-func startClaudeIssue(cfg *Config, save func(token string) error) json.RawMessage {
+// save returns applyErr ("" = applied) for a token written to config.yaml but
+// not live-applied, and err when it was not saved at all.
+func startClaudeIssue(cfg *Config, save func(token string) (applyErr string, err error)) json.RawMessage {
 	if !claudeSetupTokenSupported {
 		return settingsFail("이 기기에서는 자동 발급을 지원하지 않습니다. 다른 PC 의 터미널에서 claude setup-token 을 실행해 나온 토큰을 붙여넣어 주세요.")
 	}
@@ -245,8 +252,13 @@ func startClaudeIssue(cfg *Config, save func(token string) error) json.RawMessag
 		case err != nil:
 			claudeAuthJob.finish("error", "발급하지 못했습니다: "+truncate(redactSecrets(err.Error()), 300))
 		default:
-			if serr := save(token); serr != nil {
+			applyErr, serr := save(token)
+			if serr != nil {
 				claudeAuthJob.finish("error", "발급은 됐지만 저장하지 못했습니다: "+serr.Error())
+				return
+			}
+			if applyErr != "" {
+				claudeAuthJob.finish("warn", "새 토큰("+tokenTail(token)+")을 파일에는 저장했지만 적용하지 못했습니다: "+applyErr+" (이전 설정으로 동작 중 — 설정 파일을 고친 뒤 다시 저장하거나 aglink 를 재시작하세요)")
 				return
 			}
 			claudeAuthJob.finish("done", "새 토큰("+tokenTail(token)+")을 저장했습니다 ✓ 다음 메시지부터 적용됩니다.")

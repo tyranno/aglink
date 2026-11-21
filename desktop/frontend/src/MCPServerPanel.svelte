@@ -10,6 +10,9 @@
   let servers = $state([]);
   let reserved = $state([]);
   let loadError = $state("");
+  // 저장은 됐지만 적용 실패(호스트 응답 ok + applied:false). 파일엔 새 목록이
+  // 있지만 실행 중인 aglink 는 이전 설정으로 돌고 있다는 주황색 안내.
+  let applyWarn = $state("");
   let busy = $state(false); // 목록 단위 변경(토글/삭제) 진행 중
 
   let ask = $state(null); // { title, message, danger, confirmLabel, resolve }
@@ -49,6 +52,9 @@
       const raw = await ControlService.SaveMCPServers(JSON.stringify({ servers: newList }));
       const j = JSON.parse(raw || "{}");
       if (j && j.ok === false) { ok = false; err = j.error || "요청 실패"; }
+      else if (j && j.applied === false) {
+        applyWarn = `config.yaml 에는 저장됐지만 적용하지 못했습니다: ${j.applyError || "알 수 없는 오류"} (이전 설정으로 동작 중 — 고친 뒤 다시 저장하거나 aglink 를 재시작하세요)`;
+      } else applyWarn = "";
     } catch (e) {
       ok = false;
       err = "연결이 끊겨 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
@@ -174,6 +180,12 @@
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+    {#if applyWarn}
+      <div class="mb-2 flex items-start gap-2 rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 text-xs text-amber-800 dark:text-amber-300" role="alert">
+        <span class="min-w-0 flex-1 break-words">{applyWarn}</span>
+        <button type="button" class="shrink-0 rounded px-1 text-amber-600 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/40" onclick={() => (applyWarn = "")} aria-label="안내 닫기" title="닫기">✕</button>
+      </div>
+    {/if}
     {#if loadError}
       <div class="mb-2 rounded bg-rose-50 dark:bg-rose-950/40 px-2 py-1 text-xs text-rose-700 dark:text-rose-300">{loadError}</div>
     {/if}

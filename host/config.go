@@ -275,6 +275,7 @@ func LoadConfig(path string) (*Config, error) {
 		Checkpoints:          true,
 		ScreenPromptAdaptive: true,
 		PersistentWorker:     true,
+		AwayNotify:           true,
 	}
 
 	sc := bufio.NewScanner(f)

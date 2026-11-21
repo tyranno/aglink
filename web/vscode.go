@@ -76,6 +76,8 @@ func (d *Daemon) handleVSCode(w http.ResponseWriter, r *http.Request) {
 	ec := &extConn{conn: conn, account: key, since: time.Now(), waiting: make(map[uint64]struct{})}
 	d.vscodes[key] = ec
 	d.vscodeInfo[key] = win
+	close(d.connected) // wake calls waiting for this window (waitConn)
+	d.connected = make(chan struct{})
 	n := len(d.vscodes)
 	d.mu.Unlock()
 	log.Printf("aglink-web: VS Code window registered as %s (%d window(s))", key, n)
@@ -114,10 +116,12 @@ func (d *Daemon) vscodeKeyLocked(win vscodeWindow) string {
 // resolveVSCode picks a window by name: exact, else a unique prefix. There is
 // no default — the calling session's own window is connected too, and landing
 // on the wrong window is exactly what naming it prevents. Caller holds d.mu.
+// "Nothing connected" and "no match" are notConnectedError, so callVSCode waits
+// for the window to (re)connect; a missing or ambiguous name fails at once.
 func (d *Daemon) resolveVSCode(name string) (*extConn, error) {
 	n := strings.ToLower(strings.TrimSpace(name))
 	if len(d.vscodes) == 0 {
-		return nil, fmt.Errorf("no VS Code window connected — install the aglink-vscode extension (see vscode/README.md)")
+		return nil, notConnectedError("no VS Code window connected — install the aglink-vscode extension (see vscode/README.md)")
 	}
 	if n == "" || n == "vscode:" {
 		return nil, fmt.Errorf("name the VS Code window: pass profile=\"vscode:<name>\" — connected: %s", strings.Join(d.vscodeKeysLocked(), ", "))
@@ -136,7 +140,7 @@ func (d *Daemon) resolveVSCode(name string) (*extConn, error) {
 	case 1:
 		return d.vscodes[hits[0]], nil
 	case 0:
-		return nil, fmt.Errorf("no VS Code window matches %q — connected: %s", name, strings.Join(d.vscodeKeysLocked(), ", "))
+		return nil, notConnectedError(fmt.Sprintf("no VS Code window matches %q — connected: %s", name, strings.Join(d.vscodeKeysLocked(), ", ")))
 	default:
 		return nil, fmt.Errorf("VS Code window %q is ambiguous — matches: %s", name, strings.Join(hits, ", "))
 	}
@@ -197,9 +201,9 @@ func (d *Daemon) callVSCode(method string, params map[string]any, profile string
 	if !isVSCodeProfile(profile) {
 		return CallResult{Error: fmt.Sprintf("%s needs a VS Code window: pass profile=\"vscode:<name>\" (see list_profiles)", method)}
 	}
-	d.mu.Lock()
-	ec, err := d.resolveVSCode(profile)
-	d.mu.Unlock()
+	// A window reloading (or VS Code starting after the agent) is a gap, not
+	// an error: wait for it like a Chrome call waits for the extension.
+	ec, err := d.waitConn(func() (*extConn, error) { return d.resolveVSCode(profile) }, d.reconnectBudget(), vscodeWaitHint)
 	if err != nil {
 		return CallResult{Error: err.Error()}
 	}

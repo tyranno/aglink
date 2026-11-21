@@ -52,6 +52,25 @@ type Manager struct {
 	// size (see memconsolidate.go), keyed by absolute path.
 	memMu    sync.Mutex
 	memFiles map[string]*memFileState
+
+	// away sends a Telegram notice when a web-conversation turn ends while the
+	// user is away from the PC (awaynotify.go). nil → off.
+	away *awayNotifier
+}
+
+// SetAwayNotifier wires the away-from-PC Telegram notice (awaynotify.go).
+func (m *Manager) SetAwayNotifier(n *awayNotifier) { m.away = n }
+
+// notifyAwayTurn reports a finished turn to the away notifier — web
+// conversations only: the Telegram stream already answers in Telegram.
+func (m *Manager) notifyAwayTurn(sink convSink, c *Conversation, elapsed time.Duration, text string, failed bool) {
+	if m.away == nil || c == nil {
+		return
+	}
+	if _, ok := sink.(webConvSink); !ok {
+		return
+	}
+	m.away.turnDone(c.Title, elapsed, text, failed)
 }
 
 func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *ConfigHolder) *Manager {
@@ -1722,6 +1741,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 			}
 			log.Printf("[worker] ✗ backend=%s error after %s: %v", backend, elapsed, err)
 			_ = s.Send(chatID, "⚠️ 작업 실패: "+err.Error())
+			m.notifyAwayTurn(sink, workConv, elapsed, err.Error(), true)
 			_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
 			return
 		}
@@ -1745,6 +1765,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 		_ = s.Send(chatID, "⚠️ 작업 실패: Claude CLI 인증 만료 — 토큰을 갱신해 주세요.\n"+
 			"데스크톱 앱: 설정 → 'Claude 로그인' → [토큰 새로 받기] 를 누르면 브라우저 승인만으로 끝납니다.\n"+
 			"(서버라면 다른 PC 에서 claude setup-token 으로 발급한 값을 config 의 claude.oauth_token 에 넣으세요.)")
+		m.notifyAwayTurn(sink, workConv, elapsed, "Claude CLI 인증 만료 — 토큰을 갱신해 주세요", true)
 		_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", "auth: "+strings.TrimSpace(res.Text))
 		return
 	}
@@ -1952,6 +1973,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	// Any narration still held back belongs in front of the answer.
 	narration.Close()
 	_ = sendChunked(s, chatID, res.Text)
+	m.notifyAwayTurn(sink, workConv, elapsed, res.Text, res.IsError)
 	if turnChanges != nil {
 		if cs, ok := s.(changesSender); ok {
 			cs.Changes(chatID, turnChanges)

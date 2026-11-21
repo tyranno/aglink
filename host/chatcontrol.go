@@ -34,7 +34,7 @@ type chatControlServer struct {
 
 // controlIn is a request from aglink-chat.
 type controlIn struct {
-	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | get_mcp_servers | save_mcp_servers | claude_auth_status | claude_auth_issue | claude_auth_code | claude_auth_save | claude_auth_verify | claude_auth_clear | claude_auth_cancel | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel | get_usage_stats | set_conv_model
+	Type    string  `json:"type"` // send_text | handle_command | list_conversations | get_active_workers | get_history | upload_attachment | web_new | web_setdir | web_rename | web_fork | web_delete | set_channel_backend | get_version | get_aux | get_config | set_config | get_settings | set_settings | get_mcp_servers | save_mcp_servers | claude_auth_status | claude_auth_issue | claude_auth_code | claude_auth_save | claude_auth_verify | claude_auth_clear | claude_auth_cancel | playbook_list | playbook_save | playbook_delete | pbgroup_save | pbgroup_delete | playbook_run | task_list | task_save | task_delete | task_pause | task_resume | task_cancel | get_usage_stats | set_conv_model
 	ReqID   string  `json:"reqID,omitempty"`
 	ChatID  int64   `json:"chatID,omitempty"`
 	Text    string  `json:"text,omitempty"`
@@ -300,6 +300,19 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 			return
 		}
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: data})
+	case "web_fork":
+		// "여기서 갈라 새 대화": synchronous + acknowledged like web_rename; the
+		// reply carries the new conversation's id so the client can open it.
+		// Payload is a forkPoint (webfork.go); Target is the source conversation.
+		var p forkPoint
+		if len(m.Payload) > 0 {
+			if err := json.Unmarshal(m.Payload, &p); err != nil {
+				ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: webForkResult(nil, errors.New("잘못된 요청입니다"))})
+				return
+			}
+		}
+		c, err := s.bot.webFork(tgt, p)
+		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: webForkResult(c, err)})
 	case "web_delete":
 		// Synchronous + acknowledged: the browser removes the row and its unread
 		// badge only after this reply says ok, so a slow or failed save can't
@@ -378,16 +391,24 @@ func (s *chatControlServer) handleInbound(ch *remoteChatChannel, m controlIn) {
 	case "claude_auth_verify":
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: startClaudeVerify(s.bot.cfg())})
 	case "claude_auth_issue":
-		save := func(token string) error {
+		save := func(token string) (string, error) {
 			var r struct {
-				OK    bool   `json:"ok"`
-				Error string `json:"error"`
+				OK         bool   `json:"ok"`
+				Error      string `json:"error"`
+				Applied    *bool  `json:"applied"`
+				ApplyError string `json:"applyError"`
 			}
 			_ = json.Unmarshal(saveClaudeToken(s.cfgPath, s.bot.cfg(), token), &r)
 			if !r.OK {
-				return errors.New(r.Error)
+				return "", errors.New(r.Error)
 			}
-			return nil
+			if r.Applied != nil && !*r.Applied {
+				if r.ApplyError == "" {
+					return "알 수 없는 오류", nil
+				}
+				return r.ApplyError, nil
+			}
+			return "", nil
 		}
 		ch.push(controlOut{Kind: "reply", ReqID: m.ReqID, Data: startClaudeIssue(s.bot.cfg(), save)})
 	case "claude_auth_code":

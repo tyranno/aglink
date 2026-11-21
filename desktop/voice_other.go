@@ -9,4 +9,6 @@ import (
 
 func hideConsole(*exec.Cmd) {}
 
+func belowNormal(*exec.Cmd) {}
+
 func killWithApp(*os.Process) {}

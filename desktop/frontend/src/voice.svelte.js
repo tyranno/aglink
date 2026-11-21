@@ -23,6 +23,7 @@ import {
   targetKey,
   findWebConv,
   paneConversationMeta,
+  targetBackend,
   parseJSON,
   loadConversations,
   selectTargetInPane,
@@ -33,6 +34,7 @@ import {
 } from "./paneStore.svelte.js";
 import { alarms, parseAlarm, addAlarm, removeAlarm, startAlarms, fireText, confirmText, timeLabel } from "./alarms.js";
 import { describeCron } from "./schedule.js";
+import { splitAddressee, AGENT_NAMES } from "./addressee.js";
 import { parsePc, parseUsage, usageText, parseDaily, dailyDue, dayKey, clockLabel, parseMemo, MAX_MEMO_CMD_CHARS, parseTapeSummary, tapeSummaryPrompt, briefingPrompt, meetingAdvicePrompt, meetingSummaryPrompt } from "./assist.js";
 
 const SPEAK_STORAGE_KEY = "aglink.voice.speak";
@@ -1437,7 +1439,7 @@ function normalizeForEcho(s) {
 // voice reading them in Hangul ("OpenVoice" → "오픈 보이스", "M2" → "엠투"),
 // so the echo check compares against how they are read aloud too.
 const READ_WORDS = {
-  openvoice: "오픈보이스", supertonic: "슈퍼토닉", whisper: "위스퍼", claude: "클로드", aglink: "에이지링크",
+  openvoice: "오픈보이스", supertonic: "슈퍼토닉", whisper: "위스퍼", claude: "클로드", codex: "코덱스", aglink: "에이지링크",
   windows: "윈도우", wav: "웨이브", ok: "오케이", okay: "오케이", go: "고", git: "깃", commit: "커밋",
   push: "푸시", build: "빌드", server: "서버", test: "테스트", log: "로그", app: "앱", mode: "모드",
 };
@@ -2786,6 +2788,27 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       relisten = true;
       return;
     }
+    // "코덱스한테 …", "클로드야, …": the request goes to an open conversation on
+    // that AI, this one if it already is; the voice conversation moves there.
+    const addr = conv() && !voice.vscode ? splitAddressee(text) : null;
+    if (addr) {
+      const on = (id) => pane(id)?.target && targetBackend(pane(id).target) === addr.agent;
+      const to = on(paneId) ? paneId : chat.panes.find((p) => on(p.id))?.id;
+      if (!to) {
+        vlog(`no ${addr.agent} pane for ${quote(text)}`);
+        void speak(`열려 있는 ${AGENT_NAMES[addr.agent]} 대화가 없어요. ${AGENT_NAMES[addr.agent]} 대화를 창에 띄운 뒤 다시 말씀해 주세요.`, "full");
+        return; // the mic opens again after it
+      }
+      text = addr.text;
+      if (to !== paneId) {
+        vlog(`to ${addr.agent} pane ${to}`);
+        voice.convPaneId = to;
+        saveConversation(to);
+        // After this clip's cleanup below, as a clip said in that conversation.
+        setTimeout(() => void transcribeClip(to, null, null, text), 0);
+        return;
+      }
+    }
     // The vocabulary's snippets go in only now, on what is sent: their text may
     // span lines or hold "- " lists the checks above would take for dialogue.
     text = await VoiceService.ExpandSnippets(text).catch(() => text);
@@ -3230,7 +3253,9 @@ async function playWav(b64, gen) {
 }
 
 // The page's player. One AudioContext is kept for every clip: a new one each
-// time costs a device open per sentence.
+// time costs a device open per sentence. "playback" asks for a large output
+// buffer: with "interactive" (~10 ms) the opening sentence broke up while the
+// next one was being synthesized on every core. A cut-off now lags a little.
 const PAGE_START_MS = 400; // a context whose clock has not moved by then is not playing
 let playCtx = null;
 let pageClip = null; // {stop} of the clip playWavContext is playing now
@@ -3255,7 +3280,7 @@ if (typeof document !== "undefined")
 // off: true, or false when it could not play (then nothing was heard of it).
 async function playWavContext(b64, gen) {
   try {
-    if (!playCtx || playCtx.state === "closed") playCtx = new AudioContext({ latencyHint: "interactive" });
+    if (!playCtx || playCtx.state === "closed") playCtx = new AudioContext({ latencyHint: "playback" });
     const ctx = playCtx;
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);

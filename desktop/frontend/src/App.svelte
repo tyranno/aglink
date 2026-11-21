@@ -240,6 +240,7 @@
     } catch {
       versionInfo = {};
     }
+    chat.defaultBackend = versionInfo.backend || "";
   }
 
   async function loadAuxInfo() {

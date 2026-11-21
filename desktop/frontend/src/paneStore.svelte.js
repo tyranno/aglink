@@ -31,6 +31,7 @@ export const chat = $state({
   telegram: null,
   webConvs: [],
   backendModels: {},
+  defaultBackend: "", // the host's own backend, for conversations without one of their own
   lightboxSrc: null, // when set, a full-screen image viewer overlays everything
   panes: [
     { id: "pane-0", target: null, attachments: [], composerText: "", commandMenuHidden: false, highlightedCommandIndex: 0 },
@@ -963,6 +964,13 @@ export function paneConversationMeta(target) {
     workDir: conv?.workDir || "",
     backend: conv?.backend || "",
   };
+}
+
+// targetBackend is the AI a conversation runs on: its own backend, else the
+// host's default, else claude.
+export function targetBackend(target) {
+  const meta = paneConversationMeta(target);
+  return String(meta?.backend || chat.defaultBackend || "claude").toLowerCase();
 }
 
 export function scrollPaneLogToBottom(paneId) {

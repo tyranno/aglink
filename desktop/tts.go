@@ -253,6 +253,7 @@ func startTTSServer() (*ttsServer, error) {
 	cmd := exec.Command(filepath.Join(dir, "bin", "supertonic-server.exe"), dir)
 	cmd.Dir = filepath.Join(dir, "bin")
 	hideConsole(cmd)
+	belowNormal(cmd)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

@@ -240,17 +240,26 @@ func vscodePaste(app *application.App, w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
-// stopHook is the part of Claude Code's Stop hook input used here.
+// stopHook is the part of Claude Code's Stop hook input used here, or of
+// Codex's notify turn (the aglink-voice notify script posts it as is).
 type stopHook struct {
 	SessionID string `json:"session_id"`
 	Cwd       string `json:"cwd"`
 	Last      string `json:"last_assistant_message"`
+	Thread    string `json:"thread-id"`
+	CodexLast string `json:"last-assistant-message"`
 }
 
 func vscodeStop(app *application.App, w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 	var h stopHook
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&h); err != nil || strings.TrimSpace(h.Last) == "" {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&h); err != nil {
+		return
+	}
+	if h.Last == "" {
+		h.Last, h.SessionID = h.CodexLast, h.Thread
+	}
+	if strings.TrimSpace(h.Last) == "" {
 		return
 	}
 	vscodeVoice.mu.Lock()

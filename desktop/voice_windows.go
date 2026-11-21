@@ -17,6 +17,16 @@ func hideConsole(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 }
 
+// belowNormal starts cmd (after hideConsole) one priority step down. The
+// speech synthesizer fills every core while the next sentence is made, and at
+// normal priority it starved the reading of the one before: a few syllables
+// into the first sentence the voice broke off, then went on.
+func belowNormal(cmd *exec.Cmd) {
+	if cmd.SysProcAttr != nil {
+		cmd.SysProcAttr.CreationFlags |= windows.BELOW_NORMAL_PRIORITY_CLASS
+	}
+}
+
 var (
 	appJobOnce sync.Once
 	appJob     windows.Handle

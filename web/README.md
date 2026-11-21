@@ -22,9 +22,30 @@ worker **spawns its own stdio MCP server on demand** (exactly how `aglink-screen
 is wired: teleclaude points the worker's `--mcp-config` at the binary).
 
 Instead, the extension **dials out** to a persistent local daemon over a
-localhost WebSocket. No Native Messaging, no registry host manifest. teleclaude's
-spawn-a-stdio-server model stays unchanged: it spawns a thin **bridge** that
-forwards tool calls to the daemon.
+localhost WebSocket. teleclaude's spawn-a-stdio-server model stays unchanged: it
+spawns a thin **bridge** that forwards tool calls to the daemon.
+
+Native messaging is used only as a *transport* to that same daemon, when the
+installer has registered the host: the extension first tries
+`chrome.runtime.connectNative("com.aglink.web")`; Chrome starts
+`aglink-web.exe` (the extension origin as its first argument selects the
+`nm-host` relay), which starts the daemon if needed and dials its `/ext`
+endpoint for the extension. While that port is open Chrome keeps the MV3
+service worker alive, so the connection stops dropping when the worker idles.
+If the host is missing or fails, the extension falls back to the WebSocket (and
+retries native a minute later). The host manifest is
+`<install dir>\com.aglink.web.json`, registered under
+`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.aglink.web` (the
+aglink-web setup) or the `HKLM` equivalent (the machine-wide aglink setup).
+
+**Fixed extension id.** Native messaging only admits extension ids listed in
+the host manifest, so `extension/manifest.json` carries a `key` (public key
+only) that pins the id to **`oojfjplopnochjenjpmjpmjelndnomoi`**, wherever the
+folder is loaded from. Adding the key changed the id: if you loaded the
+extension before, **remove it in `chrome://extensions` and Load unpacked again
+once** (its options, e.g. a custom port, are per-id and must be set again), and
+update `AGLINK_WEB_EXT_ID` if you had pinned the old id. The private key is not
+needed for unpacked loading and is not kept anywhere.
 
 ```
 Chrome (always running)
@@ -78,8 +99,11 @@ go build -o aglink-web.exe .
 3. Note the extension **ID** shown on the card. To pin it, set
    `AGLINK_WEB_EXT_ID=<that-id>` in the daemon's environment.
 
-The extension auto-connects to `ws://127.0.0.1:48219/ext` and reconnects with
-backoff (a keepalive alarm revives the MV3 service worker if it sleeps).
+The extension auto-connects (native messaging if registered, else
+`ws://127.0.0.1:48219/ext`) and reconnects with a short backoff (1s doubling to
+5s, with jitter) — at once when the network comes back, on tab activity, and
+when the worker wakes (a 30s keepalive alarm revives it if it sleeps). Calls
+that arrive meanwhile wait for it (`AGLINK_WEB_RECONNECT_WAIT_MS`).
 
 ### 3. Wire teleclaude
 
@@ -600,18 +624,21 @@ reload needed). Leave the field blank to fall back to the default.
 ## Layout
 
 ```
-main.go        subcommand dispatch (mcp | serve | cmd)
+main.go        subcommand dispatch (mcp | serve | cmd | nm-host)
 command.go     single source of truth for the browser command set (shared by mcp + cmd)
 mcpweb.go      MCP server: registers each command as a tool (forwards to daemon)
 cmd.go         `cmd` fast-path: dispatches a subcommand from the command table
 daemon.go      `serve`: WS /ext + HTTP /call + /health, request router
 client.go      bridge → daemon: ensureDaemon (auto-spawn) + call
+reconnect.go   wait for the extension to (re)connect; resend only what is safe
+session.go     the bridge's session key (nav tab + tab group per session)
+nmhost.go      `nm-host`: Chrome native messaging ↔ daemon /ext relay
 protocol.go    shared JSON wire types
 datadir.go     ~/.teleclaude, port file
 proc_windows.go / proc_other.go   detached daemon spawn per OS
 extension/     MV3 extension:
                  manifest.json      permissions + options_ui + content_scripts
-                 background.js      service worker (WS client + command handlers)
+                 background.js      service worker (native/WS client + command handlers)
                  console-capture.js MAIN-world content script buffering console output
                                     (read by get_console_logs) — purely observational,
                                     never changes page behavior

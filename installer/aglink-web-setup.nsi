@@ -13,6 +13,7 @@
 Unicode true
 !include "MUI2.nsh"
 !include "common.nsh"
+!include "nmhost.nsh"
 
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -39,7 +40,7 @@ RequestExecutionLevel user
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "aglink-web ${VERSION} 설치"
 !define MUI_WELCOMEPAGE_TEXT "aglink-web 은 Claude 가 브라우저와 VS Code 창을 텍스트로 읽고 조작하게 해 주는 도구입니다.$\r$\n$\r$\n• 크롬 탭 읽기·클릭·입력$\r$\n• Electron·Wails 앱 화면 조작$\r$\n• 다른 VS Code 창(Remote-SSH 포함)의 파일·터미널·문제 목록$\r$\n$\r$\n관리자 권한 없이 사용자 폴더에 설치됩니다. 이미 설치돼 있으면 새 버전으로 바꿉니다 — 이때 aglink-web 을 쓰던 Claude 세션은 한 번 다시 시작해야 도구가 다시 붙습니다."
-!define MUI_FINISHPAGE_TEXT "설치가 끝났습니다.$\r$\n$\r$\n남은 일 하나 — 크롬 확장은 직접 불러와야 합니다. 아래 안내를 열어 2단계만 따라 하세요.$\r$\n$\r$\n이미 크롬 확장을 쓰고 계셨다면 chrome://extensions 에서 aglink-web 의 새로고침(↻)을 한 번 눌러 주세요."
+!define MUI_FINISHPAGE_TEXT "설치가 끝났습니다.$\r$\n$\r$\n남은 일 하나 — 크롬 확장은 직접 불러와야 합니다. 아래 안내를 열어 2단계만 따라 하세요.$\r$\n$\r$\n이미 크롬 확장을 쓰고 계셨다면 chrome://extensions 에서 aglink-web 의 새로고침(↻)을 한 번 눌러 주세요. 확장 ID 가 바뀌는 업데이트(네이티브 메시징 도입)라면 카드를 삭제하고 다시 불러와야 합니다 — 안내 2단계 참고."
 !define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\guide.html"
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "사용 안내 열기 (크롬 확장 불러오기)"
 !define MUI_FINISHPAGE_SHOWREADME_CHECKED
@@ -83,6 +84,7 @@ Section "Install"
     SetOutPath "$INSTDIR\chrome-extension"
     File /r "${STAGE}\chrome-extension\*.*"
     SetOutPath "$INSTDIR"
+    !insertmacro WriteNMHost HKCU
 
     StrCpy $McpEnvArgs ""
     !insertmacro McpEnvSetting "aglink-web" "AGLINK_WEB_STEP_DELAY_MS" $OptStepDelay $HasStepDelay
@@ -112,6 +114,7 @@ Section "Uninstall"
     DetailPrint "실행 중인 aglink-web 종료..."
     !insertmacro StopFromInstDir "aglink-web"
     !insertmacro UnregisterClaudeMCP "aglink-web"
+    !insertmacro RemoveNMHost HKCU
     DeleteRegKey HKCU "Software\aglink\mcp-env\aglink-web"
 
     Delete "$INSTDIR\aglink-web.exe"

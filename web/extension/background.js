@@ -1,10 +1,20 @@
 // aglink-web MV3 background service worker.
 //
-// Dials OUT to the local aglink-web daemon over a WebSocket and executes the
-// browser commands it pushes (list_tabs / navigate / get_page_text) via the
-// chrome.* APIs. No Native Messaging is involved. The daemon validates our
-// chrome-extension:// Origin at the WS handshake, so arbitrary web pages that
-// try ws://127.0.0.1 are rejected.
+// Connects to the local aglink-web daemon and executes the browser commands it
+// pushes (list_tabs / navigate / get_page_text …) via the chrome.* APIs. Two
+// transports carry the same messages:
+//
+//   - native messaging (preferred): chrome.runtime.connectNative("com.aglink.web")
+//     makes Chrome start aglink-web.exe as a relay to the daemon. While that
+//     port is open Chrome keeps this service worker alive (Chrome 105+). Needs
+//     the host the installer registers, and the fixed extension id that the
+//     manifest's "key" gives.
+//   - WebSocket (fallback): ws://127.0.0.1:<port>/ext. The daemon validates our
+//     chrome-extension:// Origin at the handshake, so arbitrary web pages that
+//     try ws://127.0.0.1 are rejected.
+//
+// Only one is open at a time: the daemon keeps the newest connection per
+// account, so two would evict each other.
 //
 // Port: defaults to 48219 (must match the daemon's defaultPort / AGLINK_WEB_PORT).
 // A browser extension can't read env vars or the daemon's port file, so if you
@@ -14,11 +24,21 @@
 
 const DEFAULT_PORT = 48219;
 const DEFAULT_MAX_CHARS = 20000;
+const NATIVE_HOST = "com.aglink.web";
 
 let ws = null;
+let nmPort = null; // native messaging port, from open until it disconnects
 let connecting = false; // guards the async gap between the connect guard and socket creation
-let backoffMs = 1000;
-const MAX_BACKOFF_MS = 30000;
+const MIN_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 5000;
+let backoffMs = MIN_BACKOFF_MS;
+let reconnectTimer = null;
+
+// After the native host fails before reaching the daemon (not installed, or
+// the daemon would not start), use the WebSocket for this long before trying
+// native again.
+const NATIVE_RETRY_MS = 60000;
+let nativeUnavailableUntil = 0;
 
 // currentPort reads the configured daemon port from chrome.storage.local,
 // falling back to DEFAULT_PORT when unset or invalid.
@@ -29,6 +49,24 @@ async function currentPort() {
     return Number.isInteger(n) && n > 0 && n < 65536 ? n : DEFAULT_PORT;
   } catch (e) {
     return DEFAULT_PORT;
+  }
+}
+
+// bootId names this browser run. chrome.storage.session survives worker
+// restarts but not a browser restart, which is exactly when Chrome starts
+// reusing tab ids — the daemon keeps the agents' remembered tabs only while
+// this stays the same.
+async function bootId() {
+  try {
+    const s = chrome.storage.session;
+    if (!s) return "";
+    const { boot } = await s.get("boot");
+    if (boot) return boot;
+    const v = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    await s.set({ boot: v });
+    return v;
+  } catch (e) {
+    return "";
   }
 }
 
@@ -54,17 +92,25 @@ async function currentAccount() {
   }
 }
 
+// linkBusy reports a transport that is open or on its way to opening.
+function linkBusy() {
+  if (nmPort) return true;
+  return !!(ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN));
+}
+
 async function connect() {
-  // Idempotent: never open a second socket while one is connecting/open.
-  // onInstalled, onStartup, the keepalive alarm, storage changes, and the initial
-  // load all call connect(); without this guard they would race into several
-  // sockets that the daemon's "newest wins" then churns. `connecting` extends the
-  // guard across the async gap while we read the port from storage.
-  if (connecting) return;
-  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
-    return;
-  }
+  // Idempotent: never open a second transport while one is connecting/open.
+  // onInstalled, onStartup, the keepalive alarm, storage changes, tab/network
+  // events and the initial load all call connect(); without this guard they
+  // would race into several connections that the daemon's "newest wins" then
+  // churns. `connecting` extends the guard across the async gap while we read
+  // the port and account from storage.
+  if (connecting || linkBusy()) return;
   connecting = true;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
 
   const port = await currentPort();
   const account = await currentAccount();
@@ -76,15 +122,23 @@ async function connect() {
     } catch (e) {
       // storage is a convenience for the options page; never block on it
     }
-    // Retry anyway: the backoff caps at 30s, so signing in to Chrome recovers on
+    // Retry anyway: the backoff is short, so signing in to Chrome recovers on
     // its own without the user having to come back and reload the extension.
     scheduleReconnect();
+    return;
+  }
+  const boot = await bootId();
+
+  if (Date.now() >= nativeUnavailableUntil && connectNativeLink(account, boot)) {
+    connecting = false;
     return;
   }
 
   let socket;
   try {
-    socket = new WebSocket(`ws://127.0.0.1:${port}/ext?account=${encodeURIComponent(account)}`);
+    socket = new WebSocket(
+      `ws://127.0.0.1:${port}/ext?account=${encodeURIComponent(account)}&boot=${encodeURIComponent(boot)}`
+    );
   } catch (e) {
     connecting = false;
     scheduleReconnect();
@@ -93,34 +147,16 @@ async function connect() {
   ws = socket;
   connecting = false;
 
-  socket.onopen = () => {
-    console.log("aglink-web: connected to daemon as " + account);
-    backoffMs = 1000;
-    chrome.storage.local.set({ lastError: "", connectedAs: account }).catch(() => {});
-  };
+  socket.onopen = () => onLinkUp(account, "websocket");
 
-  socket.onmessage = async (event) => {
+  socket.onmessage = (event) => {
     let req;
     try {
       req = JSON.parse(event.data);
     } catch (e) {
       return;
     }
-    // Keepalive ping from the daemon (id 0): reply so the daemon can refresh its
-    // read deadline, and — because sending/receiving a WS message resets the MV3
-    // service-worker idle timer — this exchange keeps this worker alive.
-    if (req.method === "__ping") {
-      send(socket, { id: req.id, ok: true });
-      return;
-    }
-    const reply = { id: req.id, ok: false };
-    try {
-      reply.text = await withDialogWatch(req.method, req.params || {}, () => dispatch(req.method, req.params || {}));
-      reply.ok = true;
-    } catch (e) {
-      reply.error = await explainError(req.params || {}, String(e && e.message ? e.message : e));
-    }
-    send(socket, reply);
+    handleRequest(req, (reply) => send(socket, reply));
   };
 
   socket.onclose = () => {
@@ -137,15 +173,115 @@ async function connect() {
   };
 }
 
+// connectNativeLink opens the native messaging port and says hello; the host
+// answers {"type":"ready"} once it reached the daemon. Returns false when the
+// API is missing, so the caller goes straight to the WebSocket.
+function connectNativeLink(account, boot) {
+  if (!chrome.runtime || typeof chrome.runtime.connectNative !== "function") return false;
+  let p;
+  try {
+    p = chrome.runtime.connectNative(NATIVE_HOST);
+  } catch (e) {
+    return false;
+  }
+  nmPort = p;
+  let ready = false;
+  p.onMessage.addListener((msg) => {
+    if (nmPort !== p || !msg) return;
+    if (msg.type === "ready") {
+      ready = true;
+      onLinkUp(account, "native");
+      return;
+    }
+    if (msg.type === "error") {
+      console.warn("aglink-web: native host: " + msg.error);
+      return; // the host exits next; onDisconnect follows
+    }
+    handleRequest(msg, (reply) => {
+      if (nmPort !== p) return;
+      try {
+        p.postMessage(reply);
+      } catch (e) {
+        // port closed meanwhile; the daemon fails the call on its side
+      }
+    });
+  });
+  p.onDisconnect.addListener(() => {
+    const err = chrome.runtime.lastError; // read it, or Chrome logs it as unchecked
+    if (nmPort !== p) return;
+    nmPort = null;
+    if (!ready) {
+      // Host missing or could not reach the daemon: fall back to the
+      // WebSocket now rather than after a backoff.
+      console.log("aglink-web: native host unavailable, using WebSocket" + (err && err.message ? ": " + err.message : ""));
+      nativeUnavailableUntil = Date.now() + NATIVE_RETRY_MS;
+      connect();
+      return;
+    }
+    scheduleReconnect();
+  });
+  try {
+    p.postMessage({ type: "hello", account, boot });
+  } catch (e) {
+    nmPort = null;
+    nativeUnavailableUntil = Date.now() + NATIVE_RETRY_MS;
+    return false;
+  }
+  return true;
+}
+
+function onLinkUp(account, via) {
+  console.log(`aglink-web: connected to daemon as ${account} (${via})`);
+  backoffMs = MIN_BACKOFF_MS;
+  chrome.storage.local.set({ lastError: "", connectedAs: account, connectedVia: via }).catch(() => {});
+}
+
+// handleRequest runs one daemon request and hands the reply to reply().
+async function handleRequest(req, reply) {
+  if (!req || typeof req !== "object") return;
+  // Keepalive ping from the daemon (id 0): reply so the daemon can refresh its
+  // read deadline, and — because a message on either transport resets the MV3
+  // service-worker idle timer — this exchange keeps this worker alive.
+  if (req.method === "__ping") {
+    reply({ id: req.id, ok: true });
+    return;
+  }
+  const out = { id: req.id, ok: false };
+  try {
+    out.text = await withDialogWatch(req.method, req.params || {}, () => dispatch(req.method, req.params || {}));
+    out.ok = true;
+  } catch (e) {
+    out.error = await explainError(req.params || {}, String(e && e.message ? e.message : e));
+  }
+  reply(out);
+}
+
 function send(socket, obj) {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(obj));
   }
 }
 
+// scheduleReconnect arms one retry. Short cap with jitter: a call on the daemon
+// side waits for us (AGLINK_WEB_RECONNECT_WAIT_MS), so being back within a few
+// seconds turns a dropped connection into a delay instead of an error.
 function scheduleReconnect() {
-  setTimeout(connect, backoffMs);
+  if (reconnectTimer) return;
+  const delay = Math.round(backoffMs * (0.8 + Math.random() * 0.4));
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
   backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+}
+
+// reconnectNow skips the backoff when something suggests the daemon may be
+// reachable again (network back, the user is using the browser, the worker
+// woke up). A no-op while connected or connecting.
+function reconnectNow() {
+  if (connecting || linkBusy()) return;
+  backoffMs = MIN_BACKOFF_MS;
+  connect();
 }
 
 // ---- command handlers -------------------------------------------------------
@@ -264,7 +400,7 @@ async function navigate(params) {
       // active:false — open in the background so the agent's navigation does not
       // yank the user's current tab away. The daemon remembers this tab id and
       // targets it for later tabId-less calls, so working in the background tab
-      // still flows naturally (see extConn.navTab).
+      // still flows naturally (see the daemon's navTabs).
       tab = await chrome.tabs.create({ url, active: false });
     } catch (e) {
       // Chrome left running in the background (no window open, e.g. after
@@ -1657,21 +1793,31 @@ function waitForComplete(tabId, timeoutMs = 15000) {
 // ---- lifecycle --------------------------------------------------------------
 
 // Connect on install and on browser startup, and keep a heartbeat alarm so the
-// service worker is periodically revived to re-establish a dropped socket.
+// service worker is periodically revived to re-establish a dropped connection.
 chrome.runtime.onInstalled.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.alarms.create("aglink-web-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "aglink-web-keepalive" && (!ws || ws.readyState !== WebSocket.OPEN)) {
-    connect();
-  }
+  if (alarm.name === "aglink-web-keepalive") reconnectNow();
 });
+
+// Skip the backoff when the network comes back or the user is using the
+// browser: these events also wake a stopped worker, which then reconnects at
+// once instead of waiting for the alarm.
+if (typeof self !== "undefined" && self.addEventListener) {
+  self.addEventListener("online", reconnectNow);
+}
+for (const ev of [chrome.tabs.onActivated, chrome.tabs.onCreated, chrome.windows && chrome.windows.onFocusChanged]) {
+  if (ev && ev.addListener) ev.addListener(() => reconnectNow());
+}
 
 // Reconnect immediately when the port is changed from the options page. Drop the
 // current socket first, clearing our reference so its onclose won't schedule a
 // competing reconnect (same "superseded socket stays quiet" rule as elsewhere).
+// The native transport does not use the port (the host reads the daemon's port
+// file), so it is left alone.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.port) return;
+  if (area !== "local" || !changes.port || nmPort) return;
   const old = ws;
   ws = null;
   if (old) {
@@ -1681,7 +1827,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
       // ignore
     }
   }
-  backoffMs = 1000;
+  backoffMs = MIN_BACKOFF_MS;
   connect();
 });
 

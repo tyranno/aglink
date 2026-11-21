@@ -5,6 +5,7 @@
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "nmhost.nsh"
 
 ; ===== Product Info =====
 !define PRODUCT_NAME "aglink"
@@ -86,6 +87,8 @@ Section "Install"
     SetOutPath "$INSTDIR\chrome-extension"
     File /r "stage\chrome-extension\*.*"
     SetOutPath "$INSTDIR"
+    ; Machine-wide install, so the host is registered for every user (HKLM).
+    !insertmacro WriteNMHost HKLM
 
     ; --- Dependency check (informational; install proceeds either way) ---
     DetailPrint "외부 CLI 확인 (claude/codex/opencode)..."
@@ -166,6 +169,7 @@ Section "Uninstall"
     Delete "$INSTDIR\aglink-web.exe"
     Delete "$INSTDIR\AI-SETUP.md"
     Delete "$INSTDIR\rnnoise.dll"
+    !insertmacro RemoveNMHost HKLM
     RMDir /r "$INSTDIR\chrome-extension"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"

@@ -75,7 +75,7 @@ test.after(() => {
   sandboxTimers.clear();
 });
 
-function loadBackground(chrome) {
+function loadBackground(chrome, extra = {}) {
   class FakeWebSocket {
     constructor() {
       this.readyState = FakeWebSocket.CONNECTING;
@@ -104,6 +104,7 @@ function loadBackground(chrome) {
       }
     },
   };
+  Object.assign(sandbox, extra);
   vm.createContext(sandbox);
   vm.runInContext(SRC, sandbox);
   return sandbox;
@@ -1201,4 +1202,93 @@ test("upload_file refuses what is not a file input, and too many files", async (
   await assert.rejects(() => single.sb.uploadFile({ tabId: 7, selector: "#f", paths: ["C:\\a", "C:\\b"] }), /takes one file, 2 given/);
   const missing = uploadChrome({ found: false });
   await assert.rejects(() => missing.sb.uploadFile({ tabId: 7, selector: "#nope", paths: ["C:\\a"] }), /no element matched selector: #nope/);
+});
+
+// ---- connection: native messaging first, WebSocket fallback, tab groups ------
+
+function sessionStore() {
+  const data = {};
+  return {
+    get: async (k) => (k in data ? { [k]: data[k] } : {}),
+    set: async (o) => Object.assign(data, o),
+    data,
+  };
+}
+
+function fakePort() {
+  const port = { sent: [], msg: [], disc: [] };
+  port.onMessage = { addListener: (f) => port.msg.push(f) };
+  port.onDisconnect = { addListener: (f) => port.disc.push(f) };
+  port.postMessage = (m) => port.sent.push(m);
+  port.receive = (m) => port.msg.forEach((f) => f(m));
+  port.disconnect = () => port.disc.forEach((f) => f());
+  return port;
+}
+
+// countingWebSocket records every socket the worker opens.
+function countingWebSocket() {
+  const opened = [];
+  class WS {
+    constructor(url) {
+      this.url = url;
+      this.readyState = WS.CONNECTING;
+      opened.push(this);
+    }
+    send() {}
+    close() {}
+  }
+  WS.CONNECTING = 0;
+  WS.OPEN = 1;
+  WS.CLOSING = 2;
+  WS.CLOSED = 3;
+  return { WS, opened };
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 20));
+
+function signedInChrome(port, extra = {}) {
+  return makeChrome({
+    identity: { getProfileUserInfo: async () => ({ email: "Me@Example.com" }) },
+    storage: { session: sessionStore() },
+    runtime: { connectNative: port ? () => port : undefined, lastError: undefined },
+    ...extra,
+  });
+}
+
+test("connect prefers native messaging, says hello, and opens no WebSocket", async () => {
+  const port = fakePort();
+  const { WS, opened } = countingWebSocket();
+  const sb = loadBackground(signedInChrome(port), { WebSocket: WS });
+  await tick();
+  assert.strictEqual(port.sent[0].type, "hello");
+  assert.strictEqual(port.sent[0].account, "me@example.com");
+  assert.ok(port.sent[0].boot, "hello carries the browser-run id");
+  port.receive({ type: "ready" });
+  port.receive({ id: 0, method: "__ping" });
+  await tick();
+  assert.deepStrictEqual({ ...port.sent[1] }, { id: 0, ok: true });
+  sb.connect();
+  await tick();
+  assert.strictEqual(opened.length, 0, "no second transport while native is up");
+});
+
+test("a native host that fails before ready falls back to the WebSocket at once", async () => {
+  const port = fakePort();
+  const { WS, opened } = countingWebSocket();
+  loadBackground(signedInChrome(port), { WebSocket: WS });
+  await tick();
+  port.disconnect(); // "Specified native messaging host not found."
+  await tick();
+  assert.strictEqual(opened.length, 1);
+  assert.match(opened[0].url, /^ws:\/\/127\.0\.0\.1:48219\/ext\?account=me%40example\.com&boot=.+/);
+});
+
+test("reconnect backoff is capped at 5s and arms a single timer", async () => {
+  const sb = loadBackground(makeChrome());
+  await tick();
+  const timer = vm.runInContext("clearTimeout(reconnectTimer); reconnectTimer = null; backoffMs = 4000; scheduleReconnect(); reconnectTimer", sb);
+  assert.strictEqual(vm.runInContext("backoffMs", sb), 5000);
+  sb.scheduleReconnect();
+  assert.strictEqual(vm.runInContext("reconnectTimer", sb), timer, "an armed retry is not doubled up");
+  assert.strictEqual(vm.runInContext("backoffMs", sb), 5000);
 });

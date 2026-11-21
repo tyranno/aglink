@@ -2,12 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -153,5 +158,35 @@ func TestNMRelayRejectsBadHello(t *testing.T) {
 	b, _ := readNMMessage(&out)
 	if !strings.Contains(string(b), `"type":"error"`) {
 		t.Fatalf("the extension should be told why: %s", b)
+	}
+}
+
+// The extension id follows from the manifest's public key; the installer's
+// allowed_origins must name that same id or Chrome refuses connectNative.
+func TestNMHostAllowsTheManifestKeyID(t *testing.T) {
+	raw, err := os.ReadFile("extension/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct{ Key string }
+	if err := json.Unmarshal(raw, &m); err != nil || m.Key == "" {
+		t.Fatalf("manifest key: %v", err)
+	}
+	der, err := base64.StdEncoding.DecodeString(m.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(der)
+	id := make([]byte, 32)
+	for i, c := range hex.EncodeToString(sum[:16]) {
+		v, _ := strconv.ParseUint(string(c), 16, 8)
+		id[i] = byte('a' + v)
+	}
+	nsh, err := os.ReadFile("../installer/nmhost.nsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(nsh), `!define NMHOST_EXT_ID "`+string(id)+`"`) {
+		t.Fatalf("installer/nmhost.nsh must allow extension id %s", id)
 	}
 }

@@ -61,9 +61,21 @@ VIAddVersionKey /LANG=${LANG_KOREAN} "FileVersion" "${VERSION}.0"
     ${EndIf}
 !macroend
 
+; Whether the desktop app was open when the install began: it is closed to be
+; replaced, and a silent install (an agent running the setup, an update) has
+; no finish page to start it again, so it is brought back afterwards.
+Var DesktopWasRunning
+
 ; ===== Install =====
 Section "Install"
     SetOutPath "$INSTDIR"
+    StrCpy $DesktopWasRunning "0"
+    nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq aglink-desktop.exe" /NH | find /I "aglink-desktop.exe"'
+    Pop $0
+    Pop $1
+    ${If} $0 == "0"
+        StrCpy $DesktopWasRunning "1"
+    ${EndIf}
 
     ; --- Stop any previous auto-start + running instance (idempotent re-install) ---
     DetailPrint "기존 aglink 정리..."
@@ -134,6 +146,15 @@ Section "Install"
     ; --- Start now (no logout needed) ---
     DetailPrint "지금 시작..."
     nsExec::ExecToLog '"$INSTDIR\${PRODUCT_EXE}" start'
+
+    ; --- Bring the desktop app back (silent install only; the finish page offers it otherwise) ---
+    ; Started through explorer so it runs as the signed-in user, not elevated
+    ; like this installer.
+    ${If} ${Silent}
+    ${AndIf} $DesktopWasRunning == "1"
+        DetailPrint "데스크톱 앱 다시 실행..."
+        Exec '"$WINDIR\explorer.exe" "$INSTDIR\aglink-desktop.exe"'
+    ${EndIf}
 
     ; --- Desktop shortcut (launch the desktop app directly) ---
     CreateShortcut "$DESKTOP\aglink.lnk" "$INSTDIR\aglink-desktop.exe" "" "$INSTDIR\aglink-desktop.exe" 0

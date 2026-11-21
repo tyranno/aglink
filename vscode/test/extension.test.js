@@ -92,3 +92,23 @@ test("port comes from the setting when set", () => {
   assert.match(sockets[0].url, /^ws:\/\/127\.0\.0\.1:48299\//);
   c.stop();
 });
+
+test("a pending result from a disconnected socket is never sent to the new socket", async () => {
+  const { vscode } = makeVSCode({ remote: "host1" });
+  const { FakeSocket, sockets } = socketFactory();
+  const timers = manualTimers();
+  let finishOld;
+  const methods = { read: ({ old }) => old ? new Promise((resolve) => { finishOld = resolve; }) : "current result" };
+  const c = createConnector({ vscode, WebSocketImpl: FakeSocket, readPort: () => 48219, methods, timers, log: () => {} });
+  c.start();
+  sockets[0].open();
+  sockets[0].receive({ id: 1, method: "read", params: { old: true } });
+  sockets[0].close();
+  timers.fire();
+  sockets[1].open();
+  sockets[1].receive({ id: 1, method: "read" });
+  finishOld("stale result");
+  await tick();
+  assert.deepStrictEqual(sockets[1].sent, [{ id: 1, ok: true, text: "current result" }]);
+  c.stop();
+});

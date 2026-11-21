@@ -14,8 +14,9 @@ window is doing and act in it, as text instead of screenshots.
 It works for **Remote-SSH windows**. The extension is a *UI extension*: it runs
 on the Windows machine even when the window is attached to a remote host, so it
 reaches the daemon on `127.0.0.1` directly, and VS Code carries file and
-terminal operations to the remote. **Install it once, on the machine that runs
-VS Code — nothing is installed on the remote.**
+terminal operations to the remote. Install aglink-vscode on the Windows PC.
+For remote agents to call this PC's tools, it installs the bundled
+**aglink-bridge** workspace extension on each SSH server as needed.
 
 ## Install
 
@@ -29,6 +30,22 @@ the **Output** panel under **aglink**.
 
 The aglink-web daemon must be running (it is started on demand by the
 aglink-web MCP bridge, or kept up by `scripts/aglink-always-on.ps1`).
+
+After a bridge install or upgrade, reload the SSH window and reopen the agent.
+If you run Claude Code or Codex from the CLI, use a new integrated terminal.
+Restored terminals can still have the previous window's bridge port and token.
+Check **Output → aglink** on the PC and **Output → aglink bridge** on the remote.
+`aglink.port` selects the same local daemon for direct VS Code connections and
+requests relayed from the SSH server. When an aglink-web is already running on
+another port (its `~/.aglink/aglink-web.port`), a relayed request does not start
+a second one on `aglink.port`; it fails with a message naming both ports — set
+`aglink.port` to the running one or clear it.
+
+The bridge is installed without asking when the window lists the server's
+extensions and the bridge is not among them. When no bridge answers within
+15 s and the server's extensions are not visible yet (a slow remote extension
+host), it asks first, so a newer bridge another PC installed is not replaced by
+the bundled one.
 
 ## Use
 

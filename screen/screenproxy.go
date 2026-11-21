@@ -117,6 +117,9 @@ func runScreenProxy(host, token string) error {
 	ictx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if _, err := c.Initialize(ictx, initReq); err != nil {
+		if screenBridgeToken() != "" {
+			return fmt.Errorf("screen proxy: cannot reach the VS Code SSH bridge at %s: %w. Reopen the agent from the current window or a new integrated terminal to refresh its port and token", base, err)
+		}
 		return fmt.Errorf("screen proxy: cannot reach the screen server at %s (is aglink-screen serve running on the client, token matching?): %w", base, err)
 	}
 

@@ -3,7 +3,10 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("events");
-const { relay, startDaemon } = require("../relay");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { ensureBridge, relay, startDaemon } = require("../relay");
 
 const readPort = () => 48219;
 const body = (res) => JSON.parse(Buffer.from(res.body, "base64").toString("utf8"));
@@ -60,6 +63,93 @@ test("web readiness follows the port file as the daemon rewrites it", async () =
   assert.deepStrictEqual(checked.slice(0, 2), [48221, 48221]);
   assert.strictEqual(checked[checked.length - 1], 48219);
   assert.strictEqual(d.spawned[0].opts.env, undefined, "web inherits the environment as is");
+});
+
+test("web relay spawns and probes the configured port", async () => {
+  const d = fakeDeps({ relayResults: [refused, ok200] });
+  const checked = [];
+  d.healthy = async (port) => { checked.push(port); return true; };
+  assert.strictEqual((await relay({ target: "web" }, () => 48299, d, 48299)).status, 200);
+  assert.strictEqual(d.spawned[0].opts.env.AGLINK_WEB_PORT, "48299");
+  assert.deepStrictEqual(checked, [48299]);
+});
+
+test("bridge installation is based on the current SSH server", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aglink-bridge-install-"));
+  const files = [path.join(dir, "aglink-bridge.vsix"), path.join(dir, "bridge-version.json")];
+  fs.writeFileSync(files[0], "");
+  fs.writeFileSync(files[1], '{"version":"0.2.1"}');
+  t.after(() => { for (const file of files) fs.unlinkSync(file); fs.rmdirSync(dir); });
+  const installs = [];
+  const wait = async () => {};
+  // sees: the remote host's extensions are listed in this window (any one
+  // will do); answer: what the "not answering" question is answered with.
+  function remote(host, probe, { sees = true, answer } = {}) {
+    const asked = [];
+    return {
+      asked,
+      env: { remoteName: "ssh-remote" },
+      extensions: {
+        getExtension: () => undefined,
+        all: sees ? [{ id: "other.ext", extensionUri: { scheme: "vscode-remote" } }] : [{ id: "local.ext", extensionUri: { scheme: "file" } }],
+      },
+      commands: {
+        getCommands: async () => probe ? ["aglink.bridge.ports"] : [],
+        executeCommand: async (name) => {
+          if (name === "aglink.bridge.ports") return probe();
+          if (name === "workbench.extensions.installExtension") installs.push(host);
+        },
+      },
+      window: {
+        showInformationMessage: async (msg, ...items) => {
+          if (items.includes("설치")) {
+            asked.push(host);
+            return answer;
+          }
+          return undefined;
+        },
+      },
+      Uri: { file: (file) => file },
+    };
+  }
+  await ensureBridge(remote("server-a"), dir, () => {}, wait);
+  await ensureBridge(remote("server-b"), dir, () => {}, wait);
+  await ensureBridge(remote("server-c", () => ({ version: "0.3.0" })), dir, () => {}, wait);
+  await assert.rejects(ensureBridge(remote("server-d", () => { throw new Error("extension host restarting"); }), dir, () => {}, wait), /did not answer/);
+  assert.deepStrictEqual(installs, ["server-a", "server-b"]);
+
+  // The remote extension host is not visible yet (slow, or a newer bridge that
+  // has not started): nothing is installed without the user's click.
+  const slow = remote("server-e", undefined, { sees: false });
+  await ensureBridge(slow, dir, () => {}, wait);
+  assert.deepStrictEqual(slow.asked, ["server-e"]);
+  assert.deepStrictEqual(installs, ["server-a", "server-b"], "no install while the remote host is unseen");
+  await ensureBridge(remote("server-f", undefined, { sees: false, answer: "설치" }), dir, () => {}, wait);
+  assert.deepStrictEqual(installs, ["server-a", "server-b", "server-f"], "installed on the click");
+});
+
+test("a newer bridge that starts after the wait is not replaced by the bundled one", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aglink-bridge-late-"));
+  fs.writeFileSync(path.join(dir, "aglink-bridge.vsix"), "");
+  fs.writeFileSync(path.join(dir, "bridge-version.json"), '{"version":"0.2.1"}');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const installs = [];
+  let polls = 0;
+  const vscode = {
+    env: { remoteName: "ssh-remote" },
+    extensions: { getExtension: () => undefined, all: [] }, // the remote host is not listed yet
+    commands: {
+      getCommands: async () => (polls++ >= 15 ? ["aglink.bridge.ports"] : []), // answers only after the wait
+      executeCommand: async (name) => {
+        if (name === "aglink.bridge.ports") return { version: "0.3.0" };
+        if (name === "workbench.extensions.installExtension") installs.push(name);
+      },
+    },
+    window: { showInformationMessage: async () => undefined }, // the user dismisses the question
+    Uri: { file: (file) => file },
+  };
+  await ensureBridge(vscode, dir, () => {}, async () => {});
+  assert.deepStrictEqual(installs, []);
 });
 
 test("screenToken prefers VS Code's AGLINK_SCREEN_REMOTE_TOKEN, else keeps one relay token on disk", () => {
@@ -321,4 +411,31 @@ test("a lock left by a crashed window is taken over", () => {
     assert.match(t, /^[0-9a-f]{48}$/);
     assert.ok(!fs.existsSync(`${f}.lock`));
   });
+});
+
+test("aglink.port differing from the running aglink-web: no second daemon, the mismatch is reported", async () => {
+  const spawned = [];
+  const d = {
+    daemonExe: () => "C:\aglink\aglink-web.exe",
+    spawn: (exe, args, opts) => { spawned.push(opts.env && opts.env.AGLINK_WEB_PORT); return { on() {}, unref() {} }; },
+    healthy: async (port) => port === 48219, // the daemon already running, from its port file
+    webPortFile: () => 48219,
+    screenToken: () => "x",
+    screenFeatures: () => ["require-token"],
+    sleep: async () => {},
+    relayOnce: async () => ({ refused: true }), // nothing on aglink.port (48300)
+  };
+  const res = await relay({ target: "web" }, () => 48300, d, 48300);
+  assert.deepStrictEqual(spawned, []);
+  assert.strictEqual(res.status, 502);
+  assert.match(Buffer.from(res.body, "base64").toString(), /already running on 127\.0\.0\.1:48219.*aglink\.port is 48300/);
+
+  // Same port, or no daemon yet: started as before.
+  d.webPortFile = () => 0;
+  let up = false;
+  d.healthy = async () => up;
+  d.spawn = (exe, args, opts) => { spawned.push(opts.env.AGLINK_WEB_PORT); up = true; return { on() {}, unref() {} }; };
+  d.relayOnce = async () => (up ? { status: 200, body: "" } : { refused: true });
+  assert.strictEqual((await relay({ target: "web" }, () => 48300, d, 48300)).status, 200);
+  assert.deepStrictEqual(spawned, ["48300"]);
 });

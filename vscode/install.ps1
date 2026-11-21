@@ -8,7 +8,8 @@
   one directly instead of requiring @vscode/vsce and npm.
 
   Install once on the Windows machine that runs VS Code. It is a UI extension,
-  so it runs here for Remote-SSH windows too; nothing is installed remotely.
+  so it runs here for Remote-SSH windows too. It bundles the aglink-bridge
+  workspace extension, which it installs on each SSH server as needed.
 
   Environment variables ELECTRON_RUN_AS_NODE and VSCODE_* are cleared first: a
   shell opened from inside VS Code inherits them, and they make the `code` CLI

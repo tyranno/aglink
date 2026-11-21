@@ -46,6 +46,15 @@ function readPortFile() {
   return DEFAULT_PORT;
 }
 
+function configuredWebPort(vscode) {
+  const port = Number(vscode.workspace.getConfiguration("aglink").get("port", 0));
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : 0;
+}
+
+function webPort(vscode, readPort) {
+  return configuredWebPort(vscode) || readPort();
+}
+
 function createConnector({ vscode, WebSocketImpl, readPort, methods, timers, log }) {
   const t = timers || { setTimeout, clearTimeout };
   let socket = null;
@@ -54,18 +63,18 @@ function createConnector({ vscode, WebSocketImpl, readPort, methods, timers, log
   let retry = null;
 
   function url() {
-    const cfg = vscode.workspace.getConfiguration("aglink");
-    const port = Number(cfg.get("port", 0)) || readPort();
+    const port = webPort(vscode, readPort);
     const id = windowIdentity(vscode);
     const q = new URLSearchParams(id).toString();
     return `ws://127.0.0.1:${port}/vscode?${q}`;
   }
 
-  function send(obj) {
-    if (socket && socket.readyState === WebSocketImpl.OPEN) socket.send(JSON.stringify(obj));
+  function send(conn, obj) {
+    if (socket === conn && conn.readyState === WebSocketImpl.OPEN) conn.send(JSON.stringify(obj));
   }
 
-  async function handle(raw) {
+  async function handle(conn, raw) {
+    if (socket !== conn) return;
     let msg;
     try {
       msg = JSON.parse(typeof raw === "string" ? raw : raw.toString());
@@ -73,19 +82,19 @@ function createConnector({ vscode, WebSocketImpl, readPort, methods, timers, log
       return;
     }
     if (msg.method === "ping") {
-      send({ id: 0, ok: true });
+      send(conn, { id: 0, ok: true });
       return;
     }
     const fn = methods[msg.method];
     if (!fn) {
-      send({ id: msg.id, ok: false, error: `unknown method: ${msg.method}` });
+      send(conn, { id: msg.id, ok: false, error: `unknown method: ${msg.method}` });
       return;
     }
     try {
       const text = await fn(msg.params || {});
-      send({ id: msg.id, ok: true, text: String(text) });
+      send(conn, { id: msg.id, ok: true, text: String(text) });
     } catch (e) {
-      send({ id: msg.id, ok: false, error: e && e.message ? e.message : String(e) });
+      send(conn, { id: msg.id, ok: false, error: e && e.message ? e.message : String(e) });
     }
   }
 
@@ -93,19 +102,22 @@ function createConnector({ vscode, WebSocketImpl, readPort, methods, timers, log
     if (stopped) return;
     let opened = false;
     const target = url();
-    socket = new WebSocketImpl(target);
-    socket.onopen = () => {
+    const conn = new WebSocketImpl(target);
+    socket = conn;
+    conn.onopen = () => {
+      if (socket !== conn) return;
       opened = true;
       backoff = MIN_BACKOFF_MS;
       log(`connected to aglink-web (${target.split("?")[0]})`);
     };
-    socket.onmessage = (ev) => {
-      handle(ev.data);
+    conn.onmessage = (ev) => {
+      handle(conn, ev.data);
     };
-    socket.onerror = () => {
+    conn.onerror = () => {
       // onclose follows and schedules the retry
     };
-    socket.onclose = () => {
+    conn.onclose = () => {
+      if (socket !== conn) return;
       socket = null;
       if (stopped) return;
       if (opened) log("disconnected from aglink-web — retrying");
@@ -159,8 +171,11 @@ function activate(context) {
 
   // The per-window channel for Remote-SSH (relay.js, bridge/extension.js).
   const { relay, ensureBridge } = require("./relay");
-  context.subscriptions.push(vscode.commands.registerCommand("aglink.relay", (req) => relay(req, readPortFile)));
-  ensureBridge(vscode, context.extensionPath, log, context.globalState).catch((e) => log(`aglink-bridge: ${e.message}`));
+  context.subscriptions.push(vscode.commands.registerCommand("aglink.relay", (req) => {
+    const port = configuredWebPort(vscode);
+    return relay(req, () => port || readPortFile(), undefined, port);
+  }));
+  ensureBridge(vscode, context.extensionPath, log).catch((e) => log(`aglink-bridge: ${e.message}`));
 
   context.subscriptions.push(
     out,

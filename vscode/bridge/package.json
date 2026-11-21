@@ -2,7 +2,7 @@
   "name": "aglink-bridge",
   "displayName": "aglink bridge (remote side)",
   "description": "Runs on the Remote-SSH server and carries aglink-web, aglink-screen and the voice Stop hook back to the PC this VS Code window runs on, over VS Code's own connection. Installed automatically by aglink-vscode.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "aglink",
   "private": true,
   "engines": {

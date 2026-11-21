@@ -71,7 +71,7 @@ func ensureDaemon() (int, error) {
 		status, body, err := probeDaemon(port)
 		switch {
 		case err != nil:
-			return 0, fmt.Errorf("aglink-web: nothing answers at %s (this window's aglink bridge): %v", daemonBaseURL(port), err)
+			return 0, fmt.Errorf("aglink-web: nothing answers at %s: %w. If this is a VS Code SSH bridge, reopen the agent from the current window or a new integrated terminal to refresh its port and token", daemonBaseURL(port), err)
 		case status != http.StatusOK:
 			return 0, fmt.Errorf("aglink-web: %s/health answered %d: %s", daemonBaseURL(port), status, body)
 		}

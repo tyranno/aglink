@@ -21,6 +21,17 @@ function aglinkDir() {
   return process.env.AGLINK_HOME || path.join(os.homedir(), ".aglink");
 }
 
+// webPortFile is the port the running aglink-web recorded
+// (~/.aglink/aglink-web.port), or 0 when there is none.
+function webPortFile() {
+  try {
+    const n = parseInt(fs.readFileSync(path.join(aglinkDir(), "aglink-web.port"), "utf8").trim(), 10);
+    return n > 0 && n < 65536 ? n : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
 function webToken() {
   try {
     return fs.readFileSync(path.join(aglinkDir(), "aglink-web.token"), "utf8").trim();
@@ -200,6 +211,7 @@ const deps = {
   healthy,
   screenToken,
   screenFeatures,
+  webPortFile,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   relayOnce: (req, readPort) => relayOnce(req, readPort),
 };
@@ -216,7 +228,7 @@ const deps = {
 // { ok: true } or { ok: false, reason } — never throws, and a child that fails
 // to spawn or exits at once is reported instead of waited out.
 const starting = {};
-function startDaemon(target, readPort, d = deps) {
+function startDaemon(target, readPort, d = deps, webStartupPort = 0) {
   if (starting[target]) return starting[target];
   starting[target] = (async () => {
     const exe = d.daemonExe(target);
@@ -228,6 +240,17 @@ function startDaemon(target, readPort, d = deps) {
       };
     const portNow = () => (target === "web" ? readPort() : 48220);
     const port = portNow();
+    // aglink.port names another port than the aglink-web already running: a
+    // second daemon there would take over the port file while Chrome stays on
+    // the first, splitting the browser tools between two daemons.
+    if (target === "web" && webStartupPort) {
+      const running = d.webPortFile ? d.webPortFile() : 0;
+      if (running && running !== webStartupPort && (await d.healthy(running)))
+        return {
+          ok: false,
+          reason: `aglink-web is already running on 127.0.0.1:${running}, but the VS Code setting aglink.port is ${webStartupPort} — set aglink.port to ${running} or clear it (a second aglink-web was not started)`,
+        };
+    }
     const screen = target === "screen";
     const args = screen ? ["serve", "--addr", `127.0.0.1:${port}`, "--require-token"] : ["serve"];
     const opts = { detached: true, stdio: "ignore", windowsHide: true };
@@ -245,6 +268,8 @@ function startDaemon(target, readPort, d = deps) {
       } catch (e) {
         return { ok: false, reason: e.message };
       }
+    } else if (webStartupPort) {
+      opts.env = { ...process.env, AGLINK_WEB_PORT: String(webStartupPort) };
     }
     let died = "";
     let child;
@@ -287,7 +312,7 @@ const TOKEN_HINT = {
     "the running aglink-screen serve was started with another token (AGLINK_SCREEN_REMOTE_TOKEN, or ~/.aglink/aglink-screen-relay.token when VS Code has none) — restart that server, or restart VS Code after changing the token",
 };
 
-async function relay(req, readPort, d = deps) {
+async function relay(req, readPort, d = deps, webStartupPort = 0) {
   const managed = req.target === "web" || req.target === "screen";
   let res;
   try {
@@ -296,7 +321,7 @@ async function relay(req, readPort, d = deps) {
     return errorResult(e.message); // e.g. the screen token could not be kept
   }
   if (res.refused && managed) {
-    const st = await startDaemon(req.target, readPort, d);
+    const st = await startDaemon(req.target, readPort, d, webStartupPort);
     res = st.ok
       ? await d.relayOnce(req, readPort).catch((e) => errorResult(e.message))
       : errorResult(`${req.target} is not running on this PC and could not be started: ${st.reason}`);
@@ -355,26 +380,28 @@ function atLeast(a, b) {
 // remoteBridgeVersion reports the aglink-bridge running on the remote extension
 // host, or "" when none shows up. The bridge activates on "*" but may still be
 // starting, so wait a little for its command. 0.1.0 answers without a version.
-async function remoteBridgeVersion(vscode, tries = 15) {
-  for (let i = 0; i < tries; i++) {
+async function remoteBridgeVersion(vscode, wait) {
+  let lastError;
+  for (let i = 0; i < 15; i++) {
     const cmds = await vscode.commands.getCommands(true);
     if (cmds.includes("aglink.bridge.ports")) {
       try {
         const r = await vscode.commands.executeCommand("aglink.bridge.ports");
         return (r && r.version) || "0.1.0";
       } catch (e) {
-        return "0.1.0";
+        lastError = e;
       }
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await wait(1000);
   }
+  if (lastError) throw new Error(`the installed bridge did not answer; reload this SSH window: ${lastError.message}`);
   return "";
 }
 
 // ensureBridge installs the bundled aglink-bridge on the remote server the
 // first time this PC opens a window there (or when the bundled one is newer),
 // so connecting a new server needs nothing done by hand.
-async function ensureBridge(vscode, extensionPath, log, state) {
+async function ensureBridge(vscode, extensionPath, log, wait = deps.sleep) {
   if (!vscode.env.remoteName) return;
   const bundled = path.join(extensionPath, "aglink-bridge.vsix");
   if (!fs.existsSync(bundled)) return;
@@ -383,24 +410,42 @@ async function ensureBridge(vscode, extensionPath, log, state) {
     want = JSON.parse(fs.readFileSync(path.join(extensionPath, "bridge-version.json"), "utf8")).version;
   } catch (e) {}
   const have = vscode.extensions.getExtension(BRIDGE_ID);
-  if (have && (!want || atLeast(have.packageJSON.version, want))) return;
   // A UI-side extension host cannot see an extension living on the remote
-  // one, so getExtension is no proof of absence. Commands do cross hosts: ask
-  // the running bridge itself, and only fall back to what was remembered.
-  const running = await remoteBridgeVersion(vscode);
+  // one reliably. Ask the bridge in this window; never infer installation
+  // from a previous connection of the same type (e.g. another SSH server).
+  const running = await remoteBridgeVersion(vscode, wait);
   // Never downgrade: another PC with an older aglink-vscode shares this server's
   // extensions, and replacing its newer bridge would flip it back and forth.
   if (running && (!want || atLeast(running, want))) return;
-  const key = `aglink.bridge.${vscode.env.remoteName}`;
-  if (!running && state && want && state.get(key) === want) return;
-  log(`installing aglink-bridge ${want} on ${vscode.env.remoteName} (had ${running || (have ? have.packageJSON.version : "none")})`);
+  const remoteHave = have?.extensionUri?.scheme === "vscode-remote" ? have : null;
+  if (remoteHave && (!want || atLeast(remoteHave.packageJSON.version, want))) {
+    if (!running) log("aglink-bridge is installed but did not start; reload this SSH window and check the remote Extension Host log");
+    return;
+  }
+  if (!running && !remoteHave) {
+    // No bridge answered. When this window lists the remote host's extensions
+    // the bridge is truly missing there; when it lists none, the remote
+    // extension host may just be slow, and an automatic install could put the
+    // bundled bridge over a newer one another PC installed — ask instead.
+    const seesRemote = (vscode.extensions.all || []).some((e) => e?.extensionUri?.scheme === "vscode-remote");
+    if (!seesRemote) {
+      log(`aglink-bridge did not answer on ${vscode.env.remoteName} and the remote extensions are not visible yet — asking before installing ${want}`);
+      const ok = await vscode.window.showInformationMessage(
+        "aglink: 이 SSH 서버에서 연결 통로(aglink-bridge)가 응답하지 않습니다. 설치되어 있지 않으면 설치할까요? (이미 있으면 창을 다시 불러오세요)",
+        "설치",
+        "다시 불러오기"
+      );
+      if (ok === "다시 불러오기") return void (await vscode.commands.executeCommand("workbench.action.reloadWindow"));
+      if (ok !== "설치") return;
+    }
+  }
+  log(`installing aglink-bridge ${want} on ${vscode.env.remoteName} (had ${running || (remoteHave ? remoteHave.packageJSON.version : "none")})`);
   try {
     await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(bundled));
   } catch (e) {
     log(`aglink-bridge install failed: ${e.message}`);
     return;
   }
-  if (state && want) await state.update(key, want);
   const pick = await vscode.window.showInformationMessage(
     "aglink: 이 서버에 연결 통로(aglink-bridge)를 설치했습니다. 창을 다시 불러오면 적용됩니다.",
     "다시 불러오기"

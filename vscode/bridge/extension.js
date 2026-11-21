@@ -114,7 +114,7 @@ function serve(vscode, target, token, log) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error: `aglink-bridge: ${TOKEN_ENV} missing or wrong — the caller must run under this VS Code window (Claude Code started from it) and be aglink-web / aglink-screen 0.2+`,
+            error: `aglink-bridge: ${TOKEN_ENV} missing or wrong. After reconnecting or reloading VS Code, start Claude Code or Codex again from this window. For CLI use, open a new integrated terminal; restored terminals can retain old connection settings. Use aglink-web / aglink-screen 0.2+.`,
           })
         );
         return;
@@ -182,8 +182,86 @@ async function activate(context) {
       ...Object.fromEntries(Object.entries(TARGETS).map(([t, n]) => [t, Number(process.env[n]) || 0])),
       version: context.extension && context.extension.packageJSON ? context.extension.packageJSON.version : "",
     })),
+    // aglink-voice (on the PC) writes the Codex notify line through these.
+    vscode.commands.registerCommand("aglink.bridge.codexNotifyPaths", () => {
+      const p = codexNotifyPaths();
+      return { config: vscode.Uri.file(p.config).path, script: vscode.Uri.file(p.script).path, commandPath: p.script, node: findNode() };
+    }),
     { dispose: deactivate }
   );
+  try {
+    refreshCodexNotify(log);
+  } catch (e) {
+    log(`Codex notify: ${e.message}`);
+  }
+}
+
+const CODEX_NOTIFY_MARK = "aglink-voice-codex-notify";
+
+function codexNotifyPaths(env = process.env, home = require("os").homedir()) {
+  const path = require("path");
+  return {
+    config: path.resolve(env.CODEX_HOME || path.join(home, ".codex"), "config.toml"),
+    script: path.resolve(env.AGLINK_VOICE_HOME || path.join(home, ".aglink-voice"), `${CODEX_NOTIFY_MARK}.js`),
+  };
+}
+
+// findNode is a node Codex can run from its notify line. Codex on the server
+// inherits this extension host's PATH, which often has no node (nvm adds it in
+// interactive shells only), so an absolute path is looked up: a login shell,
+// then an interactive one (nvm), else VS Code's own bundled node — that last
+// one moves when the VS Code server updates (refreshCodexNotify follows it).
+let foundNode = "";
+function findNode() {
+  if (foundNode) return foundNode;
+  const { spawnSync } = require("child_process");
+  for (const args of [["sh", ["-lc", "command -v node"]], ["bash", ["-lic", "command -v node"]]]) {
+    try {
+      const r = spawnSync(args[0], args[1], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+      const hit = String(r.stdout || "").split(/\r?\n/).map((l) => l.trim()).reverse().find((l) => l.startsWith("/"));
+      if (hit) return (foundNode = hit);
+    } catch (e) {}
+  }
+  return (foundNode = process.execPath);
+}
+
+// refreshCodexNotify fixes our notify line in the server's Codex config when
+// the node it names cannot run: a bare "node" that is not on this host's PATH,
+// or a VS Code server node removed by an update. Another program's notify,
+// or ours on a node that exists, is left alone.
+function refreshCodexNotify(log, { env = process.env, home, find = findNode } = {}) {
+  const fs = require("fs");
+  const { config } = codexNotifyPaths(env, home || require("os").homedir());
+  let toml;
+  try {
+    toml = fs.readFileSync(config, "utf8");
+  } catch (e) {
+    return false; // no Codex config on this server
+  }
+  const re = new RegExp(String.raw`^([ \t]*notify[ \t]*=[ \t]*\[[ \t]*)("(?:[^"\\]|\\.)*")([ \t]*,[ \t]*"[^"\n]*` + CODEX_NOTIFY_MARK + String.raw`[^"\n]*".*)$`, "m");
+  const m = re.exec(toml);
+  if (!m) return false;
+  let node;
+  try {
+    node = JSON.parse(m[2]);
+  } catch (e) {
+    return false;
+  }
+  const runnable = node.startsWith("/") ? fs.existsSync(node) : onPath(node, env);
+  if (runnable) return false;
+  const next = find();
+  if (!next || next === node) return false;
+  fs.writeFileSync(config, toml.replace(re, (_, a, _n, c) => a + JSON.stringify(next) + c));
+  log(`Codex notify: ${node} cannot run here, now ${next} (${config})`);
+  return true;
+}
+
+function onPath(name, env) {
+  const fs = require("fs");
+  const path = require("path");
+  return String(env.PATH || "")
+    .split(path.delimiter)
+    .some((d) => d && fs.existsSync(path.join(d, name)));
 }
 
 function deactivate() {
@@ -191,4 +269,4 @@ function deactivate() {
   servers = [];
 }
 
-module.exports = { activate, deactivate, authorized, serve };
+module.exports = { activate, deactivate, authorized, serve, refreshCodexNotify, codexNotifyPaths };

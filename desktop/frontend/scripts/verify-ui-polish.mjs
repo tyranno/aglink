@@ -238,6 +238,27 @@ assert(group.includes("childWebGroups(group.id)") && group.includes("<GroupNode 
 assert(app.includes("function selectOptionsFor(field)"), "settings select fields must be able to surface a legacy value not in the detected options list");
 assert(app.includes("selectOptionsFor(field)") && app.includes('option === "" ? "기본값"'), "the settings select must render options through selectOptionsFor and label the blank option as 기본값");
 
+// Voice-transcribed user messages get a compact inline mic badge, not an extra line.
+assert(!pane.includes("인식했습니다:"), "voice messages must not render a separate '인식했습니다' line");
+assert(pane.includes("{#snippet voiceBadge()}") && pane.includes('aria-label="음성 입력"') && pane.includes("{#if message.voice}{@render voiceBadge()}{/if}{message.text}"), "voice messages must show an inline 음성 입력 badge before the text");
+
+// Less frequent header actions live in a "⋯ 더보기" menu; their accessible names are unchanged.
+assert(header.includes('aria-label="더보기"') && header.includes('aria-haspopup="menu"') && header.includes("aria-expanded={moreMenuOpen}"), "header must expose an accessible 더보기 menu trigger");
+assert(header.includes('role="menu"') && (header.match(/role="menuitem"/g) || []).length === 3, "더보기 menu must hold the meeting / meeting list / theme items");
+assert(header.includes('aria-label={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}') && header.includes('aria-label="회의 목록"') && header.includes('aria-label="테마 전환"'), "moved header actions must keep their aria-labels");
+assert(header.includes('aria-label="설정"') && header.includes('aria-label="화면 분할 추가"') && header.includes('aria-label="연결 / aglink"'), "frequent header actions must stay directly visible");
+assert(app.includes('if (!target.closest("[data-more-menu]")) closeMoreMenu();') && app.includes("closeMoreMenu(true)"), "더보기 menu must close on outside click and return focus on Esc");
+
+// "list" settings fields (approvals.allow / approvals.tools) render as chips + add input,
+// but keep the comma-joined string value on the wire.
+assert(app.includes('field.type === "list"') && app.includes("function addListItems(key)") && app.includes("function removeListItem(key, index)"), "list settings fields must render as a chip editor");
+assert(app.includes('updateSettingValue(key, items.join(", "))'), "the chip editor must save the same comma-joined string older clients edit");
+
+// The host's routine heartbeat arrives as a "status" frame that updates the
+// working indicator in place (label, real start, last activity) — never a message.
+assert(store.includes('frame.type === "status"') && store.includes("applyTurnStatus(key, frame);"), "status frames must update the working indicator, not append a message");
+assert(store.includes("마지막 활동"), "working indicator must show the last activity");
+
 if (process.exitCode) {
   process.exit(process.exitCode);
 }

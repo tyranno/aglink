@@ -18,4 +18,6 @@ assert(app.includes("/api/channel/backend"), "channel backend menu must call the
 assert(app.includes("setChannelBackend"), "channel backend setter must be wired in app.js");
 assert(app.includes('fd.append("target", JSON.stringify(currentTarget || { kind: "telegram" }))'), "attachment uploads must include the current conversation target");
 
+assert(app.includes('f.type === "status") { applyTurnStatus(key, f); return; }'), "status frames must update the in-place working indicator and never render as a message");
+assert(app.includes("마지막 활동"), "working indicator must show the last activity from status frames");
 if (process.exitCode) process.exit(process.exitCode);

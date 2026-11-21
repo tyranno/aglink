@@ -22,6 +22,12 @@ type wsFrame struct {
 	Text    string `json:"text,omitempty"`
 	Caption string `json:"caption,omitempty"`
 	Data    string `json:"data,omitempty"`
+	// "status" frames (the host's in-place working indicator): label and unix-ms
+	// times. Decoded and re-encoded here, so these must exist to reach browsers.
+	Label          string `json:"label,omitempty"`
+	StartedAt      int64  `json:"startedAt,omitempty"`
+	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
+	At             int64  `json:"at,omitempty"`
 	// Target names the conversation the frame belongs to. The browser renders both
 	// the telegram stream and web topics, so without this it would append every
 	// frame to whatever conversation is on screen. A missing target means the

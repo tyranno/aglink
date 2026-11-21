@@ -115,6 +115,48 @@
   let configMsg = $state("");
   let configMsgWarn = $state(false);
   let openMenuId = $state("");
+
+  // Header "⋯ 더보기" menu: less frequent header actions (회의 모드, 회의 목록,
+  // 테마) live here. Own popup — closes on outside click (clickAway) and Esc,
+  // arrow keys move between items, Esc returns focus to the trigger.
+  let moreMenuOpen = $state(false);
+  let moreMenuTrigger = $state(null);
+  let moreMenuEl = $state(null);
+  function moreMenuItems() {
+    return moreMenuEl ? [...moreMenuEl.querySelectorAll('[role="menuitem"]')] : [];
+  }
+  async function openMoreMenu() {
+    moreMenuOpen = true;
+    await tick();
+    moreMenuItems()[0]?.focus();
+  }
+  function closeMoreMenu(returnFocus = false) {
+    if (!moreMenuOpen) return;
+    moreMenuOpen = false;
+    if (returnFocus) moreMenuTrigger?.focus();
+  }
+  function toggleMoreMenu() {
+    if (moreMenuOpen) closeMoreMenu();
+    else void openMoreMenu();
+  }
+  function handleMoreMenuKeydown(event) {
+    const items = moreMenuItems();
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMoreMenu(true);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      (event.key === "Home" ? items[0] : items[items.length - 1])?.focus();
+    } else if (event.key === "Tab") {
+      closeMoreMenu();
+    }
+  }
   let showArchived = $state(false);
 
   // In-app file preview panel. A file path shown in a message (markdown.js marks
@@ -258,6 +300,33 @@
 
   function updateSettingValue(key, value) {
     settingsValues = { ...settingsValues, [key]: value };
+  }
+
+  // "list" fields (e.g. approvals.allow) arrive and are saved as a comma-joined
+  // string — the same wire format older clients edit as plain text — and are
+  // shown here as removable chips plus an add input.
+  let listDrafts = $state({});
+  function listItems(value) {
+    return String(value ?? "")
+      .split(/[,;\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  function addListItems(key) {
+    const items = listItems(settingsValues[key]);
+    const seen = new Set(items.map((item) => item.toLowerCase()));
+    for (const item of listItems(listDrafts[key])) {
+      if (seen.has(item.toLowerCase())) continue;
+      seen.add(item.toLowerCase());
+      items.push(item);
+    }
+    listDrafts = { ...listDrafts, [key]: "" };
+    updateSettingValue(key, items.join(", "));
+  }
+  function removeListItem(key, index) {
+    const items = listItems(settingsValues[key]);
+    items.splice(index, 1);
+    updateSettingValue(key, items.join(", "));
   }
 
   // A select field's current value can be a legacy/custom string the backend
@@ -586,6 +655,7 @@
       if (!target.closest("[data-progress-popup]")) closeProgressPopup();
       if (!target.closest("[data-pane-backend-menu]")) closePaneBackendMenu();
       if (!target.closest("[data-pane-workdir-menu]")) closePaneWorkDirMenu();
+      if (!target.closest("[data-more-menu]")) closeMoreMenu();
     };
 
     const onEscape = (event) => {
@@ -597,6 +667,7 @@
       if (chat.progressPopupPaneId) closeProgressPopup();
       if (chat.backendMenuPaneId) closePaneBackendMenu();
       if (chat.workDirMenuPaneId) closePaneWorkDirMenu();
+      if (moreMenuOpen) closeMoreMenu(true);
       openMenuId = "";
     };
 
@@ -635,35 +706,80 @@
         {versionBadgeText()}
       </span>
       <div class="ml-auto flex items-center gap-2">
-        <button
-          class={`flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm ${voice.meeting ? "border-rose-400 bg-rose-600 text-white hover:bg-rose-700" : "border-white/20 bg-white/5 text-slate-100 hover:bg-white/10"}`}
-          onclick={() => (voice.meeting ? stopMeeting() : startMeeting())}
-          title={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작 — 주변 대화를 받아 적고, “조언해 줘”라고 하면 조언해요"}
-          aria-label={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}
-        >
-          {#if voice.meeting}
+        {#if voice.meeting}
+          <!-- Live state stays visible; ending it lives in the 더보기 menu. -->
+          <span class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-rose-400 bg-rose-600 px-2 text-white" title="회의 모드 진행 중 (더보기 메뉴에서 끝내기)">
             <span class="h-2 w-2 animate-pulse rounded-full bg-white"></span>
             <span class="font-mono text-xs">{voice.meetingClock || "00:00"}</span>
-          {:else}
-            🎙<span class="text-xs">회의</span>
+          </span>
+        {/if}
+        <div class="relative" data-more-menu>
+          <button
+            bind:this={moreMenuTrigger}
+            class={`grid h-8 w-8 place-items-center rounded-md border text-base leading-none text-slate-100 hover:bg-white/10 ${moreMenuOpen ? "border-white/40 bg-white/15" : "border-white/20 bg-white/5"}`}
+            onclick={toggleMoreMenu}
+            onkeydown={(event) => {
+              if (event.key === "ArrowDown" && !moreMenuOpen) {
+                event.preventDefault();
+                void openMoreMenu();
+              }
+            }}
+            title="더보기"
+            aria-label="더보기"
+            aria-haspopup="menu"
+            aria-expanded={moreMenuOpen}
+            aria-controls="header-more-menu"
+          >
+            ⋯
+          </button>
+          {#if moreMenuOpen}
+            <div
+              bind:this={moreMenuEl}
+              id="header-more-menu"
+              role="menu"
+              tabindex="-1"
+              aria-label="더보기"
+              class="absolute right-0 top-10 z-50 w-52 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 text-slate-700 dark:text-slate-200 shadow-xl"
+              onkeydown={handleMoreMenuKeydown}
+            >
+              <button
+                role="menuitem"
+                class={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-medium outline-none focus-visible:bg-slate-100 dark:focus-visible:bg-slate-800 ${voice.meeting ? "text-rose-600 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40" : "hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+                onclick={() => { closeMoreMenu(true); voice.meeting ? stopMeeting() : startMeeting(); }}
+                title={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작 — 주변 대화를 받아 적고, “조언해 줘”라고 하면 조언해요"}
+                aria-label={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}
+              >
+                <span class="w-4 shrink-0 text-center">{voice.meeting ? "■" : "🎙"}</span>
+                <span class="min-w-0 flex-1 truncate">{voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}</span>
+                {#if voice.meeting}
+                  <span class="font-mono text-[11px]">{voice.meetingClock || "00:00"}</span>
+                {/if}
+              </button>
+              <button
+                role="menuitem"
+                class="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-medium outline-none hover:bg-slate-100 focus-visible:bg-slate-100 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+                onclick={() => { closeMoreMenu(true); showMeetings(); }}
+                title="회의 목록"
+                aria-label="회의 목록"
+              >
+                <span class="w-4 shrink-0 text-center">🗂</span>
+                <span class="min-w-0 flex-1 truncate">회의 목록</span>
+              </button>
+              <div class="my-1 border-t border-slate-200 dark:border-slate-700" role="separator"></div>
+              <button
+                role="menuitem"
+                class="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-medium outline-none hover:bg-slate-100 focus-visible:bg-slate-100 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+                onclick={cycleTheme}
+                title={`테마: ${themeLabel()} (클릭하여 전환)`}
+                aria-label="테마 전환"
+              >
+                <span class="w-4 shrink-0 text-center">{themeIcon()}</span>
+                <span class="min-w-0 flex-1 truncate">테마 전환</span>
+                <span class="text-[11px] text-slate-400 dark:text-slate-500">{themeLabel()}</span>
+              </button>
+            </div>
           {/if}
-        </button>
-        <button
-          class="grid h-8 w-8 place-items-center rounded-md border border-white/20 bg-white/5 text-sm text-slate-100 hover:bg-white/10"
-          onclick={showMeetings}
-          title="회의 목록"
-          aria-label="회의 목록"
-        >
-          🗂
-        </button>
-        <button
-          class="grid h-8 w-8 place-items-center rounded-md border border-white/20 bg-white/5 text-sm text-slate-100 hover:bg-white/10"
-          onclick={cycleTheme}
-          title={`테마: ${themeLabel()} (클릭하여 전환)`}
-          aria-label="테마 전환"
-        >
-          {themeIcon()}
-        </button>
+        </div>
         <button
           class="grid h-8 w-8 place-items-center rounded-md border border-white/20 bg-white/5 text-sm text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
           onclick={addPane}
@@ -1022,8 +1138,51 @@
                               <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-500 dark:text-slate-400">{field.desc}</div>
                             {/if}
                           </div>
-                          <div class="md:min-w-[220px]">
-                            {#if field.type === "bool"}
+                          <div class={field.type === "list" ? "min-w-0 md:w-[420px] md:shrink-0" : "md:min-w-[220px]"}>
+                            {#if field.type === "list"}
+                              {@const items = listItems(settingsValues[field.key])}
+                              <div class="flex flex-col gap-2" data-setting-list={field.key}>
+                                {#if items.length}
+                                  <ul class="flex flex-wrap gap-1.5" aria-label={`${field.label} 목록`}>
+                                    {#each items as item, index (`${index}-${item}`)}
+                                      <li class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 py-0.5 pl-2.5 pr-1 font-mono text-xs text-slate-700 dark:text-slate-300">
+                                        <span class="min-w-0 truncate" title={item}>{item}</span>
+                                        <button
+                                          type="button"
+                                          class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-[11px] leading-none text-slate-400 dark:text-slate-500 hover:bg-rose-100 dark:hover:bg-rose-900/40 hover:text-rose-600 dark:hover:text-rose-300"
+                                          onclick={() => removeListItem(field.key, index)}
+                                          title={`${item} 삭제`}
+                                          aria-label={`${item} 삭제`}
+                                        >×</button>
+                                      </li>
+                                    {/each}
+                                  </ul>
+                                {:else}
+                                  <div class="text-xs text-slate-400 dark:text-slate-500">비어 있음</div>
+                                {/if}
+                                <div class="flex gap-2">
+                                  <input
+                                    class="min-w-0 flex-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30"
+                                    type="text"
+                                    placeholder="추가할 항목"
+                                    aria-label={`${field.label} 항목 추가`}
+                                    value={listDrafts[field.key] ?? ""}
+                                    oninput={(event) => (listDrafts = { ...listDrafts, [field.key]: event.currentTarget.value })}
+                                    onkeydown={(event) => {
+                                      if (event.key !== "Enter" || event.isComposing) return;
+                                      event.preventDefault();
+                                      addListItems(field.key);
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    class="shrink-0 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                    disabled={!listItems(listDrafts[field.key]).length}
+                                    onclick={() => addListItems(field.key)}
+                                  >추가</button>
+                                </div>
+                              </div>
+                            {:else if field.type === "bool"}
                               <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
                                 <input
                                   class="h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 dark:text-blue-400 focus:ring-blue-500"

@@ -240,12 +240,14 @@ func (b *Bot) isAllowed(userID int64, username string) bool {
 // address any chatID, so it receives fan-out for every conversation.
 type telegramChannel struct {
 	api    *tgbotapi.BotAPI
-	typing *typingLoops // nil (tests): Typing sends a single action
+	typing *typingLoops    // nil (tests): Typing sends a single action
+	status *statusMessages // nil (tests): Status falls back to a plain Send
 }
 
 func newTelegramChannel(api *tgbotapi.BotAPI) *telegramChannel {
 	t := &telegramChannel{api: api}
 	t.typing = newTypingLoops(t.sendTyping)
+	t.status = newTelegramStatusMessages(api)
 	return t
 }
 
@@ -290,10 +292,14 @@ func (t *telegramChannel) sendTyping(chatID int64) {
 	}
 }
 
-// Done stops the typing indicator Typing keeps alive.
+// Done stops the typing indicator Typing keeps alive and removes the turn's
+// in-place status message (see Status in turnstatus.go).
 func (t *telegramChannel) Done(_ Target, chatID int64) {
 	if t.typing != nil {
 		t.typing.stop(chatID)
+	}
+	if t.status != nil {
+		t.status.clear(chatID)
 	}
 }
 

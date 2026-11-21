@@ -398,3 +398,59 @@ func TestWorkerLightModelSettingRoundTrip(t *testing.T) {
 		t.Fatal("models.worker_light is missing from the settings form")
 	}
 }
+
+// approvals.tools / approvals.allow are "list" fields: the desktop edits them
+// as chips, but the value on the wire stays the comma-joined string so older
+// clients (which render unknown types as a text input) keep working. Saving
+// accepts that string and, for robustness, a JSON array too.
+func TestApprovalListSettings(t *testing.T) {
+	cfg := &Config{ApprovalTools: []string{"eval", "launch_app"}, ApprovalAllow: []string{"launch_app:notepad", "vscode_terminal_run:git status"}}
+	fields := map[string]settingField{}
+	for _, s := range buildSettings(cfg, nil) {
+		for _, f := range s.Fields {
+			fields[f.Key] = f
+		}
+	}
+	if f := fields["approvals.tools"]; f.Type != "list" || f.Value != "eval, launch_app" {
+		t.Errorf("approvals.tools = %+v, want list with comma-joined string value", f)
+	}
+	if f := fields["approvals.allow"]; f.Type != "list" || f.Value != "launch_app:notepad, vscode_terminal_run:git status" {
+		t.Errorf("approvals.allow = %+v, want list with comma-joined string value", f)
+	}
+
+	// The chip editor sends the same comma-joined string back.
+	if err := applySettings(cfg, map[string]any{
+		"approvals.tools": "eval, upload_file",
+		"approvals.allow": "launch_app:notepad, launch_app:Calc ,vscode_terminal_run:git status",
+	}); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	if got := strings.Join(cfg.ApprovalTools, ","); got != "eval,upload_file" {
+		t.Errorf("ApprovalTools = %q", got)
+	}
+	if got := strings.Join(cfg.ApprovalAllow, "|"); got != "launch_app:notepad|launch_app:calc|vscode_terminal_run:git status" {
+		t.Errorf("ApprovalAllow = %q", got)
+	}
+
+	// A JSON array (decoded as []any) is accepted as well; duplicates collapse.
+	if err := applySettings(cfg, map[string]any{
+		"approvals.tools": []any{"launch_app", "launch_app", "eval"},
+		"approvals.allow": []any{"launch_app:notepad", " launch_app:notepad "},
+	}); err != nil {
+		t.Fatalf("applySettings array: %v", err)
+	}
+	if got := strings.Join(cfg.ApprovalTools, ","); got != "launch_app,eval" {
+		t.Errorf("ApprovalTools from array = %q", got)
+	}
+	if got := strings.Join(cfg.ApprovalAllow, ","); got != "launch_app:notepad" {
+		t.Errorf("ApprovalAllow from array = %q", got)
+	}
+
+	// Clearing the list empties it.
+	if err := applySettings(cfg, map[string]any{"approvals.allow": ""}); err != nil {
+		t.Fatalf("applySettings clear: %v", err)
+	}
+	if len(cfg.ApprovalAllow) != 0 {
+		t.Errorf("ApprovalAllow after clear = %v", cfg.ApprovalAllow)
+	}
+}

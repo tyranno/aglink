@@ -1039,11 +1039,39 @@ export function startWorking(key) {
   const next = new Map(chat.working);
   const prev = next.get(key);
   next.set(key, {
+    ...prev, // label / lastActivityAt from the host's "status" frames
     startedAt: prev?.startedAt || now,
     lastAliveAt: now,
     timeoutMin: prev?.timeoutMin, // per-task override set by !timeout; undefined = use base
   });
   chat.working = next;
+}
+
+// applyTurnStatus folds the host's "status" frame (runHeartbeat's in-place
+// progress, sent instead of a "⏳ 작업 진행 중…" message per tick) into the
+// working indicator: the label, the turn's real start (so the elapsed timer is
+// right even after a reconnect) and its last stream activity. frame.at is the
+// host clock when sent; the difference corrects for a skewed client clock.
+export function applyTurnStatus(key, frame, now = Date.now()) {
+  const skew = Number.isFinite(frame?.at) && frame.at > 0 ? now - frame.at : 0;
+  const prev = chat.working.get(key);
+  const next = new Map(chat.working);
+  next.set(key, {
+    ...prev,
+    startedAt: frame?.startedAt > 0 ? frame.startedAt + skew : prev?.startedAt || now,
+    lastAliveAt: now,
+    lastActivityAt: frame?.lastActivityAt > 0 ? frame.lastActivityAt + skew : prev?.lastActivityAt,
+    label: frame?.label || prev?.label,
+  });
+  chat.working = next;
+}
+
+// noteActivity marks visible turn activity (a tool-use progress line or the
+// model's narration) so "마지막 활동" doesn't wait for the next status frame.
+function noteActivity(key) {
+  const prev = chat.working.get(key);
+  if (!prev) return;
+  chat.working = new Map(chat.working).set(key, { ...prev, lastActivityAt: Date.now() });
 }
 
 // setWorkingTimeout records the adjusted per-task limit (minutes) locally so the
@@ -1089,13 +1117,16 @@ export function paneWorkingText(target) {
   if (chat.nowTick - active.lastAliveAt > STALE_AFTER_MS) {
     return `작업 상태 확인이 오래되었습니다 (${elapsed})`;
   }
+  const parts = [active.label || "작업 진행 중", `경과 ${elapsed}`];
+  const quietMin = active.lastActivityAt ? Math.floor((chat.nowTick - active.lastActivityAt) / 60000) : 0;
+  if (quietMin >= 1) parts.push(`마지막 활동 ${quietMin}분 전`);
   const limitMin = paneWorkingTimeoutMin(target);
   if (limitMin > 0) {
     const remainSec = limitMin * 60 - elapsedSec;
     const remain = remainSec > 0 ? `남은 ${fmtDuration(remainSec)}` : "시간 초과 임박";
-    return `작업 진행 중 · 경과 ${elapsed} · 제한 ${limitMin}분 (${remain})`;
+    parts.push(`제한 ${limitMin}분 (${remain})`);
   }
-  return `작업 진행 중 (${elapsed})`;
+  return parts.join(" · ");
 }
 
 // VOICE_PREFIX tells the model a message was dictated, so it reads
@@ -1699,10 +1730,17 @@ export function handleFrame(frame) {
     stopWorking(key);
     turnDoneListener?.(key);
   }
+  if (frame.type === "status") {
+    // In-place progress: updates the working indicator, never a message.
+    applyTurnStatus(key, frame);
+    return;
+  }
   if (frame.type === "progress") {
+    noteActivity(key);
     appendProgress(key, frame.text || "");
     return;
   }
+  if (frame.type === "narration") noteActivity(key);
 
   if (!isTargetVisibleAnywhere(key)) {
     if (frame.type === "text" || frame.type === "image" || frame.type === "user") {

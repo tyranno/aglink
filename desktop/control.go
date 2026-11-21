@@ -24,11 +24,17 @@ import (
 // wsFrame is aglink's browser-facing frame envelope (relayed to the UI as a
 // Wails "frame" event).
 type wsFrame struct {
-	Type    string          `json:"type"` // text | image | typing | done | user
+	Type    string          `json:"type"` // text | image | typing | done | user | progress | narration | status
 	Text    string          `json:"text,omitempty"`
 	Caption string          `json:"caption,omitempty"`
 	Data    string          `json:"data,omitempty"` // base64 PNG
 	Target  json.RawMessage `json:"target,omitempty"`
+	// "status" frames (the host's in-place working indicator): label and unix-ms
+	// times. Decoded and re-emitted here, so these must exist to reach the UI.
+	Label          string `json:"label,omitempty"`
+	StartedAt      int64  `json:"startedAt,omitempty"`
+	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
+	At             int64  `json:"at,omitempty"`
 }
 
 // controlOut is what aglink's control API sends us.

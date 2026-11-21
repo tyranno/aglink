@@ -90,10 +90,16 @@ func originOK(r *http.Request) bool {
 // but the control-API channel (remoteChatChannel) still serializes these to
 // aglink-chat, which forwards them to real browsers.
 type wsFrame struct {
-	Type    string `json:"type"` // "text" | "image" | "typing" | "done" | "user" | "progress" | "narration"
+	Type    string `json:"type"` // "text" | "image" | "typing" | "done" | "user" | "progress" | "narration" | "status"
 	Text    string `json:"text,omitempty"`
 	Caption string `json:"caption,omitempty"`
 	Data    string `json:"data,omitempty"` // base64 PNG for images
+	// "status" frames only (TurnStatus, turnstatus.go): the in-place working
+	// indicator's label and times as unix millis; At is the host clock when sent.
+	Label          string `json:"label,omitempty"`
+	StartedAt      int64  `json:"startedAt,omitempty"`
+	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
+	At             int64  `json:"at,omitempty"`
 	// Target names the conversation this frame belongs to, so a client files it
 	// under the right topic instead of whatever is on screen. A frame with no
 	// target means the telegram stream — the same default an empty Target.Kind

@@ -178,7 +178,7 @@
   // Busy state is per conversation, not per screen: a turn running in another
   // topic must not paint (or keep painting) the indicator on the one you're
   // looking at. Keyed like targetKey(): "telegram" or "web:<id>".
-  const working = new Map(); // key -> { startedAt, lastAliveAt }
+  const working = new Map(); // key -> { startedAt, lastAliveAt, label?, lastActivityAt? }
   let workingTimer = null;
 
   // STALE_AFTER_MS: the server re-sends a "typing" frame roughly every 2
@@ -202,12 +202,17 @@
   const WORKING_GRACE_MS = 30 * 1000;
 
   function workingElapsedText(w) {
-    const secs = Math.max(0, Math.floor((Date.now() - w.startedAt) / 1000));
+    const now = Date.now();
+    const secs = Math.max(0, Math.floor((now - w.startedAt) / 1000));
     const elapsed = secs < 60 ? `${secs}초` : `${Math.floor(secs / 60)}분 ${secs % 60}초`;
-    if (Date.now() - w.lastAliveAt > STALE_AFTER_MS) {
-      return `⚠️ 작업 진행 중… (${elapsed} 경과, 서버 응답 확인 안 된 지 오래됨 — 멈췄을 수 있음)`;
+    const label = w.label || "작업 진행 중";
+    if (now - w.lastAliveAt > STALE_AFTER_MS) {
+      return `⚠️ ${label}… (${elapsed} 경과, 서버 응답 확인 안 된 지 오래됨 — 멈췄을 수 있음)`;
     }
-    return `작업 진행 중… (${elapsed} 경과)`;
+    const parts = [label, elapsed];
+    const quietMin = w.lastActivityAt ? Math.floor((now - w.lastActivityAt) / 60000) : 0;
+    if (quietMin >= 1) parts.push(`마지막 활동 ${quietMin}분 전`);
+    return parts.join(" · ");
   }
 
   // startWorking/stopWorking mutate the state; renderWorking is the only place
@@ -221,6 +226,28 @@
   }
   function stopWorking(key) {
     if (working.delete(key)) renderWorking();
+  }
+  // applyTurnStatus folds the host's "status" frame — runHeartbeat's in-place
+  // progress, sent instead of a "⏳ 작업 진행 중…" chat line per tick — into the
+  // indicator: label, the turn's real start (right even after a reconnect) and
+  // its last stream activity. f.at is the host clock when sent, so a skewed
+  // client clock is corrected.
+  function applyTurnStatus(key, f) {
+    const now = Date.now();
+    const skew = Number.isFinite(f.at) && f.at > 0 ? now - f.at : 0;
+    const w = working.get(key) || { startedAt: now };
+    if (f.startedAt > 0) w.startedAt = f.startedAt + skew;
+    if (f.lastActivityAt > 0) w.lastActivityAt = f.lastActivityAt + skew;
+    if (f.label) w.label = f.label;
+    w.lastAliveAt = now;
+    working.set(key, w);
+    renderWorking();
+  }
+  // noteActivity: a tool-use progress line or narration is turn activity, so
+  // "마지막 활동" needn't wait for the next status frame.
+  function noteActivity(key) {
+    const w = working.get(key);
+    if (w) w.lastActivityAt = Date.now();
   }
   function currentWorking() {
     return currentTarget ? working.get(targetKey(currentTarget)) : undefined;
@@ -994,6 +1021,8 @@
       // conversation would strand its indicator the moment you switched away.
       if (f.type === "typing") startWorking(key);
       else if (f.type === "done") stopWorking(key);
+      else if (f.type === "status") { applyTurnStatus(key, f); return; } // in-place progress, never a message
+      else if (f.type === "progress" || f.type === "narration") noteActivity(key);
 
       // Content for a conversation that isn't on screen must never be appended
       // to the one that is — that mixed the Telegram stream into web topics.

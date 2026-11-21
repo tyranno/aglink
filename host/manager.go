@@ -1124,37 +1124,74 @@ func (m *Manager) estimateTurnDuration(backend string) (avg time.Duration, sampl
 	return total / time.Duration(len(ds)), len(ds), true
 }
 
-// runHeartbeat sends a periodic "still going" text message every 2 minutes
-// while a Worker turn is in flight, and — critically — also refreshes the
-// channel's live "typing" signal on each tick (s.Typing), not just once at
-// turn start. Without this, the web UI's "작업 진행 중" indicator was a client-
-// side timer with no server-side confirmation the worker was still alive: a
-// hung/dead worker and a slow-but-fine one looked identical until the turn
-// eventually returned (or timed out). label distinguishes the normal run
-// ("작업 진행 중") from a post-session-loss retry ("세션 복구 진행 중").
+// runHeartbeat keeps a running Worker turn's "still going" signal alive. Every
+// heartbeatInterval it refreshes the channel's live "typing" signal (s.Typing),
+// not just once at turn start — without that, a hung/dead worker and a
+// slow-but-fine one looked identical until the turn returned. label
+// distinguishes the normal run ("작업 진행 중") from a post-session-loss retry
+// ("세션 복구 진행 중") or a restart ("재시작 진행 중").
+//
+// The routine "⏳ 작업 진행 중... (N분 N초 경과)" note is shown IN PLACE, not as
+// a new message each tick: when s supports TurnStatus (boundSender), the turn's
+// status goes out once at start, refreshed every statusInterval, and the
+// channels render it as one live element — the web/desktop working indicator,
+// a single Telegram message edited in place (turnstatus.go). A long turn no
+// longer fills the conversation with heartbeat lines. A sender without
+// TurnStatus keeps the old behavior: the routine line as a message per tick.
 //
 // The turn's watchdog (turnwatch.go, carried in ctx by Bot.runTurn) stops a
 // turn only after an idle window without stream activity or at an absolute
-// cap. The last heartbeat before either limit switches to an explicit warning
-// instead of the routine message, so the user gets a heads-up (and a chance
-// to !cancel or !timeout) before the turn is stopped. A ctx without a tracker
-// (no watchdog) just gets the routine message.
+// cap. The last heartbeat before either limit switches to an explicit warning,
+// which is always Sent as a normal visible message so the user gets a heads-up
+// (and a chance to !cancel or !timeout) before the turn is stopped.
 //
-// narration (may be nil) is the turn's narration relay: the routine "still
-// going" text is skipped while the model's own narration has reached the user
-// within the last heartbeat interval — it already says the turn is alive, in
-// better words. Warnings are always sent.
+// narration (may be nil) is the turn's narration relay: no NEW routine message
+// is created while the model's own narration has reached the user within the
+// last heartbeat interval — it already says the turn is alive, in better words.
 func runHeartbeat(ctx context.Context, s MessageSender, chatID int64, label string, startTime time.Time, done <-chan struct{}, narration *narrationGate) {
-	ticker := time.NewTicker(heartbeatInterval)
-	defer ticker.Stop()
 	act := turnActivityFrom(ctx)
-	for {
+	ss, _ := s.(turnStatusSender)
+	status := func(now time.Time, tick, skipText bool) {
+		st := TurnStatus{Label: label, Start: startTime, Text: heartbeatRoutineText(label, now, startTime, act), Tick: tick, SkipText: skipText}
+		if act != nil {
+			st.LastActivity = act.Last()
+		}
+		ss.Status(chatID, st)
+	}
+
+	interval := heartbeatInterval
+	if ss != nil {
+		interval = statusInterval
+		status(time.Now(), false, true) // label + start time for the live indicator
+	}
+	every := int(heartbeatInterval / interval)
+	if every < 1 {
+		every = 1
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for n := 1; ; n++ {
 		select {
 		case <-ticker.C:
-			s.Typing(chatID) // refresh the live-signal independent of the text bubble below
+			select {
+			case <-done: // the turn ended while this tick was pending: emit nothing after it
+				return
+			default:
+			}
 			now := time.Now()
+			if n%every != 0 { // light refresh between heartbeats (status channels only)
+				status(now, false, true)
+				continue
+			}
+			s.Typing(chatID) // refresh the live-signal independent of the text below
 			msg, warn := heartbeatText(label, now, startTime, act)
-			if warn || !narratedRecently(narration.LastSent(), now) {
+			narrated := narratedRecently(narration.LastSent(), now)
+			if ss != nil {
+				status(now, true, warn || narrated)
+				if warn {
+					_ = s.Send(chatID, msg)
+				}
+			} else if warn || !narrated {
 				_ = s.Send(chatID, msg)
 			}
 		case <-done:
@@ -1163,8 +1200,14 @@ func runHeartbeat(ctx context.Context, s MessageSender, chatID int64, label stri
 	}
 }
 
-// heartbeatInterval is how often runHeartbeat ticks.
-const heartbeatInterval = 2 * time.Minute
+// heartbeatInterval is how often runHeartbeat refreshes Typing, checks for a
+// warning, and (Telegram) edits the status message. statusInterval is the
+// lighter refresh of the web/desktop live indicator in between, so its "마지막
+// 활동" stays current. Vars so tests can shorten them.
+var (
+	heartbeatInterval = 2 * time.Minute
+	statusInterval    = 30 * time.Second
+)
 
 // narratedRecently reports whether narration reached the user within the last
 // heartbeat interval (last is zero when none has).
@@ -1178,15 +1221,31 @@ func heartbeatMessage(label string, now, startTime time.Time, act *turnActivity)
 	return msg
 }
 
+// heartbeatRoutineText is the routine "still going" line — never a warning.
+// It is what the in-place status shows (Telegram's edited message).
+func heartbeatRoutineText(label string, now, startTime time.Time, act *turnActivity) string {
+	msg := heartbeatBase(label, now, startTime)
+	if act != nil {
+		if quiet := now.Sub(act.Last()); quiet >= 2*time.Minute {
+			msg += fmt.Sprintf(" · 마지막 활동 %d분 전", int(quiet.Minutes()))
+		}
+	}
+	return msg
+}
+
+func heartbeatBase(label string, now, startTime time.Time) string {
+	elapsed := now.Sub(startTime)
+	mins, secs := int(elapsed.Minutes()), int(elapsed.Seconds())%60
+	return fmt.Sprintf("⏳ %s... (%d분 %d초 경과)", label, mins, secs)
+}
+
 // heartbeatText is heartbeatMessage plus whether the line is a warning (the
 // turn is about to be stopped) rather than the routine "still going" note.
 func heartbeatText(label string, now, startTime time.Time, act *turnActivity) (msg string, warn bool) {
-	elapsed := now.Sub(startTime)
-	mins, secs := int(elapsed.Minutes()), int(elapsed.Seconds())%60
-	msg = fmt.Sprintf("⏳ %s... (%d분 %d초 경과)", label, mins, secs)
 	if act == nil {
-		return msg, false
+		return heartbeatBase(label, now, startTime), false
 	}
+	msg = heartbeatBase(label, now, startTime)
 	quiet := now.Sub(act.Last())
 	if capLeft := act.Deadline().Sub(now); capLeft > 0 && capLeft <= 2*time.Minute {
 		return fmt.Sprintf("%s — 곧 최대 작업 시간(%s)에 도달합니다. 더 필요하면 !timeout +<분>, 그만두려면 !cancel",
@@ -1196,10 +1255,7 @@ func heartbeatText(label string, now, startTime time.Time, act *turnActivity) (m
 		return fmt.Sprintf("%s — %d분째 진행 출력이 없습니다. %s 동안 활동이 없으면 중단됩니다. 그만두려면 !cancel",
 			msg, int(quiet.Minutes()), formatLimit(act.idle)), true
 	}
-	if quiet >= 2*time.Minute {
-		msg += fmt.Sprintf(" · 마지막 활동 %d분 전", int(quiet.Minutes()))
-	}
-	return msg, false
+	return heartbeatRoutineText(label, now, startTime, act), false
 }
 
 // validWorkDirOrHome falls back to the service home when workDir no longer

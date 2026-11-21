@@ -92,6 +92,16 @@
   });
 </script>
 
+<!-- Compact inline marker on voice-transcribed user messages (message.voice). -->
+{#snippet voiceBadge()}
+  <span
+    class="mr-1 inline-flex h-4 w-4 select-none items-center justify-center rounded-full bg-blue-100 align-[-3px] text-blue-600 dark:bg-blue-900/50 dark:text-blue-300"
+    title="음성 입력"
+    aria-label="음성 입력"
+    role="img"
+  ><svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span>
+{/snippet}
+
 {#if node.type === "split"}
   <div class={`flex min-h-0 flex-1 overflow-hidden ${node.direction === "column" ? "flex-col" : "flex-row"}`}>
     {#each node.children as child, index (child.node.type === "leaf" ? child.node.paneId : child.node.id)}
@@ -154,17 +164,20 @@
           <span class={`h-2 w-2 shrink-0 rounded-full ${color.dot}`}></span>
         {/if}
         {#if paneConversationMeta(p.target)}
-          <span class={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${paneConversationMeta(p.target).kind === "web" ? "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300" : "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"}`}>
+          <span class={`inline-flex shrink-0 whitespace-nowrap rounded px-1.5 py-px text-[10px] font-semibold leading-4 ${paneConversationMeta(p.target).kind === "web" ? "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300" : "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"}`}>
             {paneConversationMeta(p.target).kind === "web" ? "로컬" : "텔레그램"}
           </span>
-          <div class="flex min-w-0 flex-1 items-center gap-2">
-            <div class="min-w-0 truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{paneConversationMeta(p.target).title}</div>
-            <span class="shrink-0 rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 font-mono text-[11px] text-slate-600 dark:text-slate-400">#{paneConversationMeta(p.target).id}</span>
+          <!-- One compact line: title #id · backend model · workdir. Nothing wraps;
+               the title and work folder truncate (full text in their tooltips). -->
+          <div class="flex min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap text-[11px] leading-5">
+            <div class="min-w-[2.5rem] shrink truncate text-sm font-semibold text-slate-900 dark:text-slate-100" title={paneConversationMeta(p.target).title}>{paneConversationMeta(p.target).title}</div>
+            <span class="shrink-0 font-mono text-slate-400 dark:text-slate-500">#{paneConversationMeta(p.target).id}</span>
+            <span class="shrink-0 select-none text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
             <div class="relative shrink-0" data-pane-backend-menu>
               <button
                 type="button"
                 draggable="false"
-                class="rounded-full bg-slate-200 dark:bg-slate-700 px-2 py-0.5 text-[11px] font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600"
+                class="rounded bg-slate-200/80 dark:bg-slate-700/80 px-1.5 py-px text-[11px] font-semibold leading-4 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600"
                 onmousedown={(event) => { event.preventDefault(); event.stopPropagation(); togglePaneBackendMenu(p.id); }}
                 onclick={(event) => event.stopPropagation()}
                 onkeydown={(event) => {
@@ -189,18 +202,19 @@
             </div>
             {#if backendModelLabel(paneConversationMeta(p.target).backend)}
               <span
-                class="shrink-0 truncate font-mono text-[11px] text-slate-400 dark:text-slate-500"
+                class="max-w-[8rem] shrink-0 truncate font-mono text-[11px] text-slate-500 dark:text-slate-400"
                 title={`연결된 LLM: ${backendModelLabel(paneConversationMeta(p.target).backend)}`}
               >
                 {backendModelLabel(paneConversationMeta(p.target).backend)}
               </span>
             {/if}
             {#if paneConversationMeta(p.target).kind === "web"}
-              <div class="relative min-w-0 shrink" data-pane-workdir-menu>
+              <span class="shrink-0 select-none text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
+              <div class="relative min-w-0 shrink-[2]" data-pane-workdir-menu>
                 <button
                   type="button"
                   draggable="false"
-                  class={`block max-w-[260px] truncate rounded-full px-2 py-0.5 text-left text-[11px] ${paneConversationMeta(p.target).workDir ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"}`}
+                  class={`block w-full max-w-[260px] truncate rounded px-1.5 py-px text-left text-[11px] leading-4 ${paneConversationMeta(p.target).workDir ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"}`}
                   onmousedown={(event) => { event.preventDefault(); event.stopPropagation(); togglePaneWorkDirMenu(p.id); }}
                   onclick={(event) => event.stopPropagation()}
                   onkeydown={(event) => {
@@ -266,12 +280,12 @@
                       ? "bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 ring-amber-200 dark:ring-amber-800"
                       : "bg-white/95 dark:bg-slate-900/95 text-slate-900 dark:text-slate-300 ring-slate-200 dark:ring-slate-700"
                 }`}>
-                  {#if message.role === "user" && message.voice}
-                    <div class="mb-0.5 text-[11px] text-blue-700/80 dark:text-blue-400/80">🎤 인식했습니다:</div>
+                  {#if message.role === "user" && message.voice && !message.text}
+                    {@render voiceBadge()}
                   {/if}
                   {#if message.text}
                     {#if message.role === "user"}
-                      <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{message.text}</div>
+                      <div class="whitespace-pre-wrap break-words text-[13px] leading-4">{#if message.voice}{@render voiceBadge()}{/if}{message.text}</div>
                     {:else}
                       <div class="markdown-body text-[13px] leading-4" use:renderMarkdownInto={message.text}></div>
                     {/if}

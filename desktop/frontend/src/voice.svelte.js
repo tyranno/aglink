@@ -2770,7 +2770,7 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       if (rest !== heard) vlog(`echo dropped${tail ? " (tail)" : ""} ${quote(heard)} kept ${quote(rest)}`);
       heard = rest;
     }
-    const text = [rec?.prefix, heard].filter(Boolean).join(" ");
+    let text = [rec?.prefix, heard].filter(Boolean).join(" ");
     if (!text) {
       if (conv()) relisten = true;
       else setNote(paneId, "말씀을 알아듣지 못했습니다. 다시 한 번 말해 주세요.");
@@ -2786,6 +2786,9 @@ async function transcribeClip(paneId, wavBytes, rec = null, known = null) {
       relisten = true;
       return;
     }
+    // The vocabulary's snippets go in only now, on what is sent: their text may
+    // span lines or hold "- " lists the checks above would take for dialogue.
+    text = await VoiceService.ExpandSnippets(text).catch(() => text);
     if (conv() && voice.vscode) {
       sendToVSCode(text);
       return;

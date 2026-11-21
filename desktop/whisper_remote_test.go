@@ -8,6 +8,7 @@ import (
 )
 
 func TestConnectRemoteWhisper(t *testing.T) {
+	t.Setenv("AGLINK_HOME", t.TempDir()) // no voice-words.json: the prompt is whisperPrompt itself
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/inference" {
 			http.NotFound(w, r)

@@ -4,6 +4,7 @@
   // 앱을 다시 켤 필요가 없다. 아래의 "최근 들린 말" 표는 기준을 정할 때 보라고
   // 둔 것으로, 들린 말마다 등록한 목소리와 얼마나 비슷했는지와 받았는지를 보여 준다.
   import { onMount } from "svelte";
+  import VocabCard from "./VocabCard.svelte";
   import {
     voice,
     TTS_VOICES,
@@ -500,6 +501,8 @@
         <div class="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{whisperMsg}</div>
       {/if}
     </div>
+
+    <VocabCard {card} {label} {desc} {field} {button} />
 
     <div class={card}>
       <div class={label}>마이크 소리 정리</div>

@@ -122,7 +122,8 @@ func startWhisperServer() (*whisperServer, error) {
 	if ko := filepath.Join(filepath.Dir(model), whisperKoModel); loadSTTModelPref() != "small" && fileExists(ko) {
 		model = ko
 		// -mc caps the text carried between 30 s windows, which the model card
-		// blames for loops on long audio; 64 still fits whisperPrompt (0 drops it).
+		// blames for loops on long audio; 64 still fits whisperPrompt (0 drops it;
+		// voicePrompt puts the user's words last, where they are kept).
 		args = append(args, "-sns", "-mc", "64")
 	}
 	exe := whisperServerPath()
@@ -187,7 +188,7 @@ func (s *whisperServer) transcribe(wav []byte, timeout time.Duration) (string, e
 	_, _ = fw.Write(wav)
 	_ = mw.WriteField("response_format", "text")
 	_ = mw.WriteField("language", "ko")
-	_ = mw.WriteField("prompt", whisperPrompt)
+	_ = mw.WriteField("prompt", voicePrompt())
 	_ = mw.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

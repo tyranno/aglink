@@ -10,6 +10,7 @@ import (
 )
 
 func TestCleanTranscript(t *testing.T) {
+	t.Setenv("AGLINK_HOME", t.TempDir()) // no voice-words.json here
 	cases := map[string]string{
 		"  오늘 빌드 로그\n 확인해 줘. ":           "오늘 빌드 로그 확인해 줘.",
 		"시청해주셔서 감사합니다.":                  "",

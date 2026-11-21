@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -277,6 +277,13 @@ assert(pane.includes("bubble-tail-user") && pane.includes("bubble-tail-ai"), "th
 assert(/\.bubble-user\)[^}]*linear-gradient/.test(pane) && /\.dark \.bubble-ai\)[^}]*linear-gradient/.test(pane), "bubbles must use a soft gradient in light and dark themes");
 assert(/\.msg-action-btn:active:not\(:disabled\)\)\s*\{\s*transform: scale\(0\.97\)/.test(pane), "message action buttons must have a pressed (scale .97) state");
 assert(pane.includes("transition: background-color 150ms"), "button state changes must transition over 150ms");
+
+// "{@const x = …}" that lost its "@const" still compiles (it assigns an
+// undeclared global) and throws at render — the @file list broke this way.
+for (const name of readdirSync(join(here, "..", "src")).filter((n) => n.endsWith(".svelte"))) {
+  const src = readFileSync(join(here, "..", "src", name), "utf8");
+  assert(!/^\s*\{\s+[A-Za-z_$][\w$]*\s*=[^=]/m.test(src), `${name}: a template tag looks like "{@const …}" without "@const"`);
+}
 
 if (process.exitCode) {
   process.exit(process.exitCode);

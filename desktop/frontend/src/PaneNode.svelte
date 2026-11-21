@@ -1027,7 +1027,7 @@
           >
             <div class="border-b border-slate-100 px-3 py-1 text-[11px] text-slate-400 dark:border-slate-800 dark:text-slate-500">작업 폴더의 파일 · Tab/Enter 넣기 · Esc 닫기</div>
             {#each mentionCandidatesForPane(p) as file, fIndex (file)}
-              { slash = file.lastIndexOf("/")}
+              {@const slash = file.lastIndexOf("/")}
               <button
                 type="button"
                 class={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left ${fIndex === (p.mention?.index || 0) ? "bg-blue-50 dark:bg-blue-950/40" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}

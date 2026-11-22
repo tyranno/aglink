@@ -16,6 +16,9 @@ import (
 // applyCmdLine is a no-op on Linux/macOS — .cmd/.bat wrappers don't exist here.
 func applyCmdLine(_ *exec.Cmd, _ string) {}
 
+// hideWindow is a no-op on Linux/macOS — there is no console window to hide.
+func hideWindow(_ *exec.Cmd) {}
+
 const exeSuffix = ""
 
 func killTree(pid int) error {

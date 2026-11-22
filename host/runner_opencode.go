@@ -310,6 +310,7 @@ func (r *opencodeRunner) exec(ctx context.Context, dir string, args []string, ow
 		applyCmdLine(cmd, "cmd.exe /C "+sb.String())
 	} else {
 		cmd = exec.CommandContext(ctx, r.opencodePath, args...)
+		hideWindow(cmd)
 	}
 	cmd.Dir = dir
 	if env := opencodeEnv(resolveOpencodeConfigPath(r.cfg()), ownerLabel); env != nil {

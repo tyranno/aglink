@@ -565,6 +565,7 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdin
 		applyCmdLine(cmd, "cmd.exe /C "+sb.String())
 	} else {
 		cmd = exec.CommandContext(ctx, r.codexPath, args...)
+		hideWindow(cmd)
 	}
 	cmd.Dir = dir
 	// Export AGLINK_OWNER_LABEL so the aglink-screen the worker spawns can name

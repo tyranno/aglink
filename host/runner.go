@@ -448,6 +448,7 @@ func (r *claudeRunner) streamTurn(ctx context.Context, req RunRequest, args []st
 func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdin, ownerLabel string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
 	cmd.Dir = dir
+	hideWindow(cmd)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -479,6 +480,7 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string, stdi
 func (r *claudeRunner) execStream(ctx context.Context, dir string, args []string, stdin, ownerLabel string, onLine func(line string)) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, r.claudePath, args...)
 	cmd.Dir = dir
+	hideWindow(cmd)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

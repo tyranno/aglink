@@ -775,6 +775,7 @@ type cliProc struct {
 func startCLIProc(spec persistentSpec) (persistentProc, error) {
 	cmd := exec.Command(spec.path, spec.args...)
 	cmd.Dir = spec.dir
+	hideWindow(cmd)
 	if spec.env != nil {
 		cmd.Env = spec.env
 	}

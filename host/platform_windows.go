@@ -197,8 +197,23 @@ func waitForProcessExit(pid int, timeout time.Duration) {
 
 // applyCmdLine sets cmd.SysProcAttr.CmdLine for cmd.exe /C invocation.
 // This field exists only on Windows; callers must use this helper for cross-platform builds.
+// Also sets HideWindow (see hideWindow) since every current caller is a
+// console-subsystem worker that must not pop its own window.
 func applyCmdLine(cmd *exec.Cmd, cmdLine string) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: cmdLine}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: cmdLine, HideWindow: true}
+}
+
+// hideWindow suppresses the console window Windows would otherwise create for a
+// console-subsystem child (claude.exe, codex.exe, opencode.exe, ...). aglink
+// itself runs under a headless conhost (see taskinstall.go) so its own window
+// never shows, but each worker process spawned without this gets its own
+// visible console — most noticeably the resident claude.exe that
+// runtime.persistent_worker keeps running for the life of the host.
+func hideWindow(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.HideWindow = true
 }
 
 // findClaudeOS returns Windows-specific candidate paths for the claude CLI.

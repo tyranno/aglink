@@ -190,6 +190,21 @@ func TestRunStepsFollowsAPopupWhenAsked(t *testing.T) {
 	}
 }
 
+// get_network_requests' own "full" reaches the tool; elsewhere "full" keeps
+// the step's whole output.
+func TestParseStepsPassesFullToNetworkRequests(t *testing.T) {
+	steps, err := parseSteps(`[{"tool":"get_network_requests","full":"true"},{"tool":"get_page_text","full":true}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].Args["full"] != "true" || steps[0].Full {
+		t.Fatalf("get_network_requests full must go to the tool: %+v", steps[0])
+	}
+	if _, passed := steps[1].Args["full"]; passed || !steps[1].Full {
+		t.Fatalf("other tools: full steers the report: %+v", steps[1])
+	}
+}
+
 func TestRunStepsExpectGoneTimesOut(t *testing.T) {
 	x := &stepsExtension{visible: map[string]int{".spinner": 0}}
 	d := newStepsDaemon(t, x)

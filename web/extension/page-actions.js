@@ -945,6 +945,6 @@
   P.constants = { AGLINK_ID_ATTR, INTERACTIVE_SELECTOR, KEY_SPECS, MOD_PROPS };
   // Version of this file. The daemon re-injects into an app window whose copy
   // is older (apptarget.go pageActionsVersion); bump both together.
-  P.__v = 7;
+  P.__v = 8;
   globalThis.__aglinkPage = P;
 })();

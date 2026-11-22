@@ -45,6 +45,9 @@ type runStep struct {
 	FollowPopup bool
 }
 
+// toolOwnsFull lists the tools whose own argument is named "full".
+var toolOwnsFull = map[string]bool{"get_network_requests": true}
+
 // Step keys that steer run_steps itself rather than being passed to the tool.
 var stepControlKeys = map[string]bool{"tool": true, "wait_ms": true, "full": true, "follow_popup": true}
 
@@ -90,7 +93,12 @@ func parseSteps(v any) ([]runStep, error) {
 			return nil, fmt.Errorf("step %d: run_steps cannot be nested", i+1)
 		}
 		st := runStep{Tool: tool, Args: map[string]any{}, WaitMs: intp(m, "wait_ms", 0)}
-		st.Full, _ = m["full"].(bool)
+		// get_network_requests has a "full" argument of its own (the debugger
+		// capture); there it goes to the tool instead of steering the report.
+		toolFull := toolOwnsFull[tool]
+		if !toolFull {
+			st.Full, _ = m["full"].(bool)
+		}
 		switch v := m["follow_popup"].(type) {
 		case bool:
 			st.FollowPopup = v
@@ -98,7 +106,7 @@ func parseSteps(v any) ([]runStep, error) {
 			st.FollowPopup = isTrue(v)
 		}
 		for k, v := range m {
-			if !stepControlKeys[k] {
+			if !stepControlKeys[k] || (k == "full" && toolFull) {
 				st.Args[k] = v
 			}
 		}

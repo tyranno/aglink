@@ -36,7 +36,7 @@
   // Bump __v whenever this file changes: a page that already holds an older
   // copy keeps it until reload otherwise, and a new locator kind would be
   // silently missing there.
-  if (globalThis.__aglink && globalThis.__aglink.__v === 4) return;
+  if (globalThis.__aglink && globalThis.__aglink.__v === 5) return;
 
   // isVisible mirrors the rendered-check used elsewhere (non-zero rect) plus a
   // computed-style gate, so semantic locators prefer the element a human would
@@ -413,7 +413,7 @@
     }
     const needles = needlesOf(selector).map((n) => String(n).trim().toLowerCase()).filter((n) => n.length >= 2);
     if (!needles.length) return "";
-    const hits = [];
+    const hays = [];
     for (const el of deepAll(root)) {
       if (!el.getAttribute || !isVisible(el)) continue;
       const tag = el.tagName.toLowerCase();
@@ -422,8 +422,13 @@
         .map((a) => el.getAttribute(a) || "").join(" ");
       // A big container's text contains everything; only small ones count.
       const text = (el.textContent || "").length <= 200 ? accessibleName(el) : "";
-      const hay = (own + " " + text).toLowerCase();
-      if (needles.some((n) => hay.includes(n))) hits.push(el);
+      hays.push({ el, hay: (own + " " + text).toLowerCase() });
+    }
+    let hits = hays.filter((x) => needles.some((n) => x.hay.includes(n))).map((x) => x.el);
+    if (!hits.length) {
+      // A typo ("Learn mroe") or a reworded label: any one of its words.
+      const words = [...new Set(needles.flatMap((n) => n.split(/[\s\-_]+/)).filter((w) => w.length >= 3))];
+      hits = hays.filter((x) => words.some((w) => x.hay.includes(w))).map((x) => x.el);
     }
     const interactive = (el) => /^(a|button|input|select|textarea|label|summary)$/i.test(el.tagName) || roleOf(el) !== "";
     const best = innermost(hits)
@@ -436,7 +441,7 @@
   }
 
   globalThis.__aglink = {
-    __v: 4,
+    __v: 5,
     resolve,
     resolveAll,
     resolveInfo,

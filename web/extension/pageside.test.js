@@ -178,7 +178,10 @@ test("a selector that matches nothing names what nearly matched", () => {
   const r = sb.__aglinkPage.getAttribute('text="Save"', "id");
   assert.strictEqual(r.found, false);
   assert.match(r.hint, /^similar elements: button#save-draft "Save draft"/);
-  assert.match(sb.__aglink.nearMiss("#save-draft-btn") || "", /^$/, "no needle matches: nothing to say");
+  // A typo or reworded name still finds its element by one of its words.
+  assert.match(sb.__aglink.nearMiss("text=Save drfat"), /^similar elements: button#save-draft "Save draft"/);
+  assert.match(sb.__aglink.nearMiss("#save-draft-btn"), /button#save-draft/);
+  assert.strictEqual(sb.__aglink.nearMiss("text=zz qq"), "", "nothing like it: nothing to say");
   assert.match(sb.__aglink.nearMiss("ref=e99"), /take a new page_snapshot/);
 });
 

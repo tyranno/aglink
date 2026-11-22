@@ -254,6 +254,9 @@ func ensureDaemon() (int, error) {
 			return 0, fmt.Errorf("start daemon: %w", err)
 		}
 	}
+	// Reap the child if it exits while this bridge lives (lost a bind race,
+	// crashed); otherwise it stays a zombie under us on Linux for days.
+	go cmd.Wait()
 	// The daemon writes the port file on bind; poll /health until it is up.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

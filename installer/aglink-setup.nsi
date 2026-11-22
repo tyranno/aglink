@@ -97,11 +97,15 @@ Section "Install"
     ; --- Stop any previous auto-start + running instance (idempotent re-install) ---
     DetailPrint "기존 aglink 정리..."
     nsExec::ExecToLog '"$INSTDIR\${PRODUCT_EXE}" uninstall'
-    nsExec::ExecToLog 'taskkill /F /T /IM aglink.exe'
+    ; The host is stopped without /T: its children are the agent workers, and
+    ; when one of them runs this setup, the setup is in that tree — /T killed
+    ; the setup itself right after the uninstall above, leaving no task and
+    ; no aglink. Its own helpers are stopped by name (here and below).
+    nsExec::ExecToLog 'taskkill /F /IM aglink.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-chat.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-desktop.exe'
-    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude.exe'
-    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude_new.exe'
+    nsExec::ExecToLog 'taskkill /F /IM teleclaude.exe'
+    nsExec::ExecToLog 'taskkill /F /IM teleclaude_new.exe'
     ; aglink-screen / aglink-web servers started from this folder (by the host, or
     ; on demand by aglink-vscode's relay for Remote-SSH windows) hold their exe
     ; open, so the File step below could not replace them. Only copies running
@@ -205,13 +209,13 @@ Section "Uninstall"
     nsExec::ExecToLog '"$INSTDIR\${PRODUCT_EXE}" uninstall'
     Sleep 800
     DetailPrint "실행 중 프로세스 종료..."
-    nsExec::ExecToLog 'taskkill /F /T /IM aglink.exe'
+    nsExec::ExecToLog 'taskkill /F /IM aglink.exe' ; no /T: an agent worker may be running this uninstaller (see Install)
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-chat.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-desktop.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-screen.exe'
     nsExec::ExecToLog 'taskkill /F /T /IM aglink-web.exe'
-    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude.exe'
-    nsExec::ExecToLog 'taskkill /F /T /IM teleclaude_new.exe'
+    nsExec::ExecToLog 'taskkill /F /IM teleclaude.exe'
+    nsExec::ExecToLog 'taskkill /F /IM teleclaude_new.exe'
     Sleep 1000
 
     DetailPrint "파일 삭제..."

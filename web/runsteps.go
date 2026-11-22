@@ -129,8 +129,8 @@ func (d *Daemon) runSteps(sess callSession, params map[string]any, profile strin
 		return CallResult{Error: err.Error()}
 	}
 	snapshot := strings.ToLower(strings.TrimSpace(str(params, "snapshot")))
-	if snapshot != "" && snapshot != "none" && snapshot != "text" && snapshot != "elements" && snapshot != "tree" {
-		return CallResult{Error: fmt.Sprintf("snapshot must be tree, text, elements or none, not %q", snapshot)}
+	if snapshot != "" && snapshot != "none" && snapshot != "text" && snapshot != "elements" && snapshot != "tree" && snapshot != "diff" {
+		return CallResult{Error: fmt.Sprintf("snapshot must be tree, diff, text, elements or none, not %q", snapshot)}
 	}
 	keepGoing := isTrue(str(params, "continue_on_error"))
 	delay := time.Duration(intp(params, "step_delay_ms", defaultStepDelayMs())) * time.Millisecond
@@ -300,13 +300,16 @@ func (d *Daemon) stepsSnapshot(sess callSession, kind string, tab int, profile s
 		q["tabId"] = tab
 	}
 	switch kind {
-	case "tree":
+	case "tree", "diff":
 		q["maxLines"] = 150
+		if kind == "diff" {
+			q["diff"] = "true"
+		}
 		res := d.callAs(sess, "page_snapshot", q, profile)
 		if !res.OK {
-			return "--- snapshot (tree) unavailable: " + oneLine(res.Error, stepDetailMax)
+			return "--- snapshot (" + kind + ") unavailable: " + oneLine(res.Error, stepDetailMax)
 		}
-		return "--- snapshot (tree) ---\n" + res.Text
+		return "--- snapshot (" + kind + ") ---\n" + res.Text
 	case "text":
 		q["offset"] = -snapshotTextChars
 		res := d.callAs(sess, "get_page_text", q, profile)

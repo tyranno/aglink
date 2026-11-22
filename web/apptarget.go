@@ -40,6 +40,8 @@ type appTarget struct {
 	// that is waiting on the (now frozen) page. A fresh one replaces it when
 	// the dialog closes.
 	opened chan struct{}
+	// media is the prefers-* features emulate set (EmulatedMedia).
+	media map[string]string
 }
 
 func openAppTarget(t cdpTarget, port int) (*appTarget, error) {
@@ -67,7 +69,7 @@ func openAppTarget(t cdpTarget, port int) (*appTarget, error) {
 }
 
 // ConsoleText is get_console_logs for this window.
-func (a *appTarget) ConsoleText(max int) string { return a.logs.consoleText(max) }
+func (a *appTarget) ConsoleText(q consoleQuery) string { return a.logs.consoleText(q) }
 
 // NetworkIdle reports the window's in-flight fetch/XHR, for wait_for_element.
 func (a *appTarget) NetworkIdle() (pending []string, count int, idleFor time.Duration) {
@@ -75,8 +77,31 @@ func (a *appTarget) NetworkIdle() (pending []string, count int, idleFor time.Dur
 }
 
 // NetworkText is get_network_requests for this window.
-func (a *appTarget) NetworkText(ctx context.Context, max int, filter string) string {
-	return networkText(ctx, a.logs.networkEntries(max, filter), a.conn.Call)
+func (a *appTarget) NetworkText(ctx context.Context, q netQuery) string {
+	if q.ID != "" {
+		e, ok := a.logs.networkEntry(q.ID)
+		if !ok {
+			return fmt.Sprintf("(no captured request with id=%s — it may have been dropped from the last %d; list again)", q.ID, appNetworkKeep)
+		}
+		return networkDetail(ctx, e, a.conn.Call)
+	}
+	entries, total := a.logs.networkEntries(q)
+	return networkText(ctx, entries, total, q, a.conn.Call)
+}
+
+// EmulatedMedia applies an emulate call's media feature changes to what this
+// window already emulates (reset clears it first) and returns the full list
+// for Emulation.setEmulatedMedia. The state lives as long as the connection,
+// as the emulation itself does.
+func (a *appTarget) EmulatedMedia(delta map[string]string, reset bool) []map[string]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if reset {
+		a.media = nil
+	}
+	var list []map[string]string
+	a.media, list = mediaFeatures(a.media, delta)
+	return list
 }
 
 func (a *appTarget) onEvent(method string, params json.RawMessage) {
@@ -213,7 +238,7 @@ func (a *appTarget) EvalResult(ctx context.Context, expr string) (*evalResult, e
 const needInjectMarker = "__aglinkNeedInject"
 
 // pageActionsVersion must equal P.__v in extension/page-actions.js.
-const pageActionsVersion = 8
+const pageActionsVersion = 9
 
 // CallPage runs globalThis.__aglinkPage[name](...args) in the page. The check
 // for the shared scripts is folded into the same round trip, so an already

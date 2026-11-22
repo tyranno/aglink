@@ -936,6 +936,112 @@
         return noted({ found: true, isSelect: true, matched: true, selected: match.textContent.trim() }, info);
       };
 
+  // getStyles reports an element's computed CSS and its box: by default the
+  // properties that explain most layout questions (is it shown, where, how
+  // big, what colour, stacked how), or the comma list props — "default" in it
+  // stands for that set. Shorthands the engine does not serialize (margin on
+  // some elements) are put together from their longhands. pseudo is
+  // "::before" / "::after" to read a pseudo-element instead. Returns
+  // {found, tag, text, note}; text is ready to show.
+  const STYLE_DEFAULTS = ["display", "position", "top", "left", "width", "height", "box-sizing", "margin", "padding",
+    "color", "background-color", "background-image", "font-family", "font-size", "font-weight", "line-height",
+    "z-index", "visibility", "opacity", "overflow", "pointer-events"];
+  P.getStyles = (sel, props, pseudo) => {
+    const info = find(sel);
+    const el = info.el;
+    if (!el) return miss(sel);
+    const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    const cs = (view.getComputedStyle || getComputedStyle)(el, pseudo || null);
+    let names = STYLE_DEFAULTS;
+    if (props) {
+      names = [];
+      for (const raw of String(props).split(/[,\s]+/)) {
+        const n = raw.trim().toLowerCase();
+        if (!n) continue;
+        if (n === "default" || n === "defaults") names.push(...STYLE_DEFAULTS);
+        else names.push(n);
+      }
+      names = [...new Set(names)];
+    }
+    const SIDES = ["top", "right", "bottom", "left"];
+    const get = (n) => (cs.getPropertyValue ? cs.getPropertyValue(n) : cs[n]) || "";
+    const value = (n) => {
+      let v = get(n);
+      if (v === "" && (n === "margin" || n === "padding")) {
+        // top right bottom left, shortened the way CSS writes it
+        const [t, r, b, l] = SIDES.map((sd) => get(n + "-" + sd));
+        if (t && r && b && l) v = r === l ? (t === b ? (t === r ? t : `${t} ${r}`) : `${t} ${r} ${b}`) : `${t} ${r} ${b} ${l}`;
+      }
+      if (v === "" && n === "overflow") {
+        const x = get("overflow-x");
+        const y = get("overflow-y");
+        if (x || y) v = x === y ? x : `${x} ${y}`;
+      }
+      return v === undefined || v === null ? "" : String(v).trim();
+    };
+    const r = el.getBoundingClientRect();
+    const px = (x) => Math.round(x * 10) / 10;
+    const lines = [
+      `${desc(el)}${pseudo ? pseudo : ""} — box x=${px(r.left)} y=${px(r.top)} ${px(r.width)}x${px(r.height)} (viewport ${view.innerWidth}x${view.innerHeight})`,
+    ];
+    for (const n of names) {
+      const v = value(n);
+      // In the default set an unset image adds nothing.
+      if (!props && n === "background-image" && (v === "none" || v === "")) continue;
+      lines.push(`${n}: ${v === "" ? "(not set)" : v}`);
+    }
+    return noted({ found: true, tag: el.tagName.toLowerCase(), text: lines.join("\n") }, info);
+  };
+
+  // storage reads and writes the page origin's localStorage or
+  // sessionStorage: action get (every key, or key), set, delete, clear.
+  // Listing shows each value cut to STORAGE_LIST_MAX chars; one key returns up
+  // to maxChars. Returns {ok, text} or {ok:false, error}.
+  const STORAGE_LIST_MAX = 200;
+  const STORAGE_LIST_KEYS = 200;
+  P.storage = (action, area, key, value, maxChars) => {
+    const name = area === "session" ? "sessionStorage" : "localStorage";
+    let st;
+    try {
+      st = window[name];
+    } catch (e) {
+      return { ok: false, error: `${name} is not available on this page: ${e && e.message ? e.message : e}` };
+    }
+    if (!st) return { ok: false, error: `${name} is not available on this page` };
+    const origin = (window.location && window.location.origin) || "this page";
+    const clip = (v, n) => (v.length > n ? JSON.stringify(v.slice(0, n)) + `… (${v.length} chars)` : JSON.stringify(v));
+    try {
+      if (action === "set") {
+        st.setItem(key, value == null ? "" : String(value));
+        return { ok: true, text: `ok: set ${name}[${JSON.stringify(key)}] (${String(value == null ? "" : value).length} chars) on ${origin}` };
+      }
+      if (action === "delete") {
+        const had = st.getItem(key) !== null;
+        st.removeItem(key);
+        return { ok: true, text: had ? `ok: deleted ${name}[${JSON.stringify(key)}] on ${origin}` : `ok: ${name}[${JSON.stringify(key)}] was not set on ${origin}` };
+      }
+      if (action === "clear") {
+        const n = st.length;
+        st.clear();
+        return { ok: true, text: `ok: cleared ${name} on ${origin} (${n} key${n === 1 ? "" : "s"} removed)` };
+      }
+      if (key != null && key !== "") {
+        const v = st.getItem(key);
+        return { ok: true, text: v === null ? `${JSON.stringify(key)} = (not set) in ${name} of ${origin}` : `${JSON.stringify(key)} = ${clip(v, maxChars || 20000)}` };
+      }
+      const n = st.length;
+      if (n === 0) return { ok: true, text: `(${name} of ${origin} is empty)` };
+      const lines = [`${name} of ${origin} — ${n} key${n === 1 ? "" : "s"}${n > STORAGE_LIST_KEYS ? `, first ${STORAGE_LIST_KEYS} shown` : ""} (values cut at ${STORAGE_LIST_MAX} chars; give key for one in full):`];
+      for (let i = 0; i < Math.min(n, STORAGE_LIST_KEYS); i++) {
+        const k = st.key(i);
+        lines.push(`${JSON.stringify(k)} = ${clip(st.getItem(k) || "", STORAGE_LIST_MAX)}`);
+      }
+      return { ok: true, text: lines.join("\n") };
+    } catch (e) {
+      return { ok: false, error: `${name} ${action}: ${e && e.message ? e.message : e}` };
+    }
+  };
+
   // The daemon calls these instead of keyCombo/listElements directly, so the
   // key table and the interactive-element selector never have to travel over
   // the wire on every call. The extension keeps passing its own copies.
@@ -945,6 +1051,6 @@
   P.constants = { AGLINK_ID_ATTR, INTERACTIVE_SELECTOR, KEY_SPECS, MOD_PROPS };
   // Version of this file. The daemon re-injects into an app window whose copy
   // is older (apptarget.go pageActionsVersion); bump both together.
-  P.__v = 8;
+  P.__v = 9;
   globalThis.__aglinkPage = P;
 })();

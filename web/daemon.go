@@ -37,7 +37,7 @@ var retryAfterDropMethods = map[string]bool{
 	"element_exists": true, "get_html": true, "query_all": true,
 	"get_attribute": true, "list_elements": true, "get_value": true,
 	"wait_for_element": true, "dialog_status": true, "screenshot": true,
-	"get_console_logs": true, "get_network_requests": true,
+	"get_console_logs": true, "get_network_requests": true, "get_styles": true,
 }
 
 // extConn is one connected Chrome profile. The daemon holds one per signed-in
@@ -101,6 +101,9 @@ var navTargetMethods = map[string]bool{
 	"wait_for_element": true, "type": true, "get_value": true, "key": true,
 	"scroll": true, "select_option": true, "dialog_status": true,
 	"proceed_insecure": true, "handle_dialog": true, "screenshot": true,
+	"get_styles": true, "storage": true, "emulate": true, "page_snapshot": true,
+	"get_console_logs": true, "get_network_requests": true, "print_pdf": true,
+	"upload_file": true,
 }
 
 // Daemon is the persistent process (`aglink-web serve`). It holds one live
@@ -154,6 +157,10 @@ type Daemon struct {
 	// default Chrome profile.
 	vscodes    map[string]*extConn
 	vscodeInfo map[string]vscodeWindow
+
+	// snaps is the last page_snapshot of each recent tab, for diff="true"
+	// (snapdiff.go).
+	snaps snapCache
 }
 
 func newDaemon(expectedExtID string) *Daemon {
@@ -413,6 +420,9 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 // updates is that session's own, and navigate files its new tab under the
 // session's tab group.
 func (d *Daemon) callAs(sess callSession, method string, params map[string]any, profile string) CallResult {
+	if method == "page_snapshot" {
+		return d.snapshotCall(sess, params, profile)
+	}
 	res := d.callAsRoute(sess, method, params, profile)
 	if method == "print_pdf" && res.Error == "" {
 		res = savePDFResult(res)
@@ -458,8 +468,20 @@ func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]
 	if isVSCodeProfile(profile) {
 		return CallResult{Error: fmt.Sprintf("%s works on web pages; for a VS Code window use the vscode_* tools", method)}
 	}
+	// Filters and settings are checked here, once, so a typo fails the same
+	// way on either kind of target (toolargs.go).
+	params, err := prepareToolArgs(method, params)
+	if err != nil {
+		return CallResult{Error: err.Error()}
+	}
 	if isAppProfile(profile) {
 		return d.callApp(method, params, profile)
+	}
+	// The extension runs the CDP commands the daemon works out for emulate.
+	if method == "emulate" {
+		if params, err = chromeEmulateParams(params); err != nil {
+			return CallResult{Error: err.Error()}
+		}
 	}
 
 	wait := d.reconnectBudget()

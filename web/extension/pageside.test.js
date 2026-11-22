@@ -283,3 +283,50 @@ test("frame= reaches into a same-origin iframe; snapshot and page text include i
   assert.strictEqual(info.isFrame, true);
   assert.strictEqual(info.sameOrigin, false);
 });
+
+test("getStyles reports the box and the computed properties", () => {
+  const btn = h("button", { id: "go", class: "primary" }, "Go");
+  const sb = loadPage(btn);
+  sb.innerWidth = 800;
+  sb.innerHeight = 600;
+  const values = { display: "none", "margin-top": "4px", "margin-right": "8px", "margin-bottom": "4px", "margin-left": "8px", color: "rgb(0, 0, 0)" };
+  sb.getComputedStyle = () => ({ getPropertyValue: (n) => values[n] || "", display: "none", visibility: "" });
+  const r = sb.__aglinkPage.getStyles("#go", "display,margin,color,z-index", null);
+  assert.strictEqual(r.found, true);
+  const lines = r.text.split("\n");
+  assert.match(lines[0], /box x=10 y=20 100x30 \(viewport 800x600\)$/);
+  assert.deepStrictEqual(lines.slice(1), ["display: none", "margin: 4px 8px", "color: rgb(0, 0, 0)", "z-index: (not set)"]);
+  // The default set, and "default" plus extras.
+  assert.ok(sb.__aglinkPage.getStyles("#go").text.includes("\nposition: "));
+  assert.ok(sb.__aglinkPage.getStyles("#go", "default,cursor").text.endsWith("\ncursor: (not set)"));
+  assert.strictEqual(sb.__aglinkPage.getStyles("#nope").found, false);
+});
+
+test("storage lists, reads, writes, deletes and clears", () => {
+  const sb = loadPage(h("div", {}));
+  const data = new Map();
+  sb.location = { origin: "https://app.test" };
+  sb.localStorage = {
+    get length() { return data.size; },
+    key: (i) => [...data.keys()][i] ?? null,
+    getItem: (k) => (data.has(k) ? data.get(k) : null),
+    setItem: (k, v) => data.set(k, String(v)),
+    removeItem: (k) => data.delete(k),
+    clear: () => data.clear(),
+  };
+  const P = sb.__aglinkPage;
+  assert.strictEqual(P.storage("get", "local", null, "", 0).text, "(localStorage of https://app.test is empty)");
+  assert.strictEqual(P.storage("set", "local", "token", "abc", 0).text, 'ok: set localStorage["token"] (3 chars) on https://app.test');
+  P.storage("set", "local", "big", "x".repeat(300), 0);
+  const list = P.storage("get", "local", null, "", 0).text.split("\n");
+  assert.match(list[0], /^localStorage of https:\/\/app.test — 2 keys/);
+  assert.strictEqual(list[1], '"token" = "abc"');
+  assert.strictEqual(list[2], `"big" = "${"x".repeat(200)}"… (300 chars)`);
+  assert.strictEqual(P.storage("get", "local", "big", "", 20000).text, `"big" = "${"x".repeat(300)}"`);
+  assert.strictEqual(P.storage("get", "local", "nope", "", 0).text, '"nope" = (not set) in localStorage of https://app.test');
+  assert.strictEqual(P.storage("delete", "local", "token", "", 0).text, 'ok: deleted localStorage["token"] on https://app.test');
+  assert.strictEqual(P.storage("clear", "local", null, "", 0).text, "ok: cleared localStorage on https://app.test (1 key removed)");
+  const r = P.storage("get", "session", null, "", 0);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /sessionStorage is not available/);
+});

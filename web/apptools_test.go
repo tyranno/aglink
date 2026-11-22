@@ -32,6 +32,8 @@ type fakePage struct {
 	rawParams  map[string]any    // last params each CDP method was sent
 
 	loading bool // document.readyState never reaches "complete"
+
+	media map[string]string // what EmulatedMedia keeps
 }
 
 func (f *fakePage) CallPage(ctx context.Context, name string, args []any) (json.RawMessage, error) {
@@ -79,12 +81,22 @@ func (f *fakePage) Raw(ctx context.Context, method string, params any) (json.Raw
 	}
 	return json.RawMessage(`{}`), nil
 }
-func (f *fakePage) ConsoleText(max int) string { return fmt.Sprintf("console(max=%d)", max) }
+func (f *fakePage) ConsoleText(q consoleQuery) string {
+	return fmt.Sprintf("console(max=%d,levels=%s,filter=%s)", q.Max, strings.Join(sortedKeys(q.Levels), "+"), q.Filter)
+}
 func (f *fakePage) NetworkIdle() ([]string, int, time.Duration) {
 	return f.pending, len(f.pending), f.idleFor
 }
-func (f *fakePage) NetworkText(ctx context.Context, max int, filter string) string {
-	return fmt.Sprintf("network(max=%d,filter=%s)", max, filter)
+func (f *fakePage) NetworkText(ctx context.Context, q netQuery) string {
+	return fmt.Sprintf("network(max=%d,filter=%s,id=%s)", q.Max, q.Filter, q.ID)
+}
+func (f *fakePage) EmulatedMedia(delta map[string]string, reset bool) []map[string]string {
+	if reset {
+		f.media = nil
+	}
+	var list []map[string]string
+	f.media, list = mediaFeatures(f.media, delta)
+	return list
 }
 func (f *fakePage) Dialog() *dialogInfo { return f.dialog }
 func (f *fakePage) HandleDialog(ctx context.Context, accept bool, text string) error {
@@ -328,11 +340,23 @@ func TestAppUnsupportedMethods(t *testing.T) {
 		}
 	}
 	// Console and network now come from the window's own CDP capture.
-	if r := run(t, &fakePage{}, "get_console_logs", map[string]any{"max": 20}); r.Text != "console(max=20)" {
+	if r := run(t, &fakePage{}, "get_console_logs", map[string]any{"max": 20}); r.Text != "console(max=20,levels=,filter=)" {
 		t.Errorf("get_console_logs: %+v", r)
 	}
-	if r := run(t, &fakePage{}, "get_network_requests", map[string]any{"filter": "/api/"}); r.Text != "network(max=50,filter=/api/)" {
+	if r := run(t, &fakePage{}, "get_console_logs", map[string]any{"level": "warn,error", "filter": "Boom"}); r.Text != "console(max=50,levels=error+uncaught+unhandledrejection+warn,filter=boom)" {
+		t.Errorf("get_console_logs level/filter: %+v", r)
+	}
+	if r := run(t, &fakePage{}, "get_console_logs", map[string]any{"level": "fatal"}); !strings.Contains(r.Error, `unknown level "fatal"`) {
+		t.Errorf("bad level: %+v", r)
+	}
+	if r := run(t, &fakePage{}, "get_network_requests", map[string]any{"filter": "/api/"}); r.Text != "network(max=50,filter=/api/,id=)" {
 		t.Errorf("get_network_requests: %+v", r)
+	}
+	if r := run(t, &fakePage{}, "get_network_requests", map[string]any{"id": "77.1"}); r.Text != "network(max=50,filter=,id=77.1)" {
+		t.Errorf("get_network_requests id: %+v", r)
+	}
+	if r := run(t, &fakePage{}, "get_network_requests", map[string]any{"status": "6xx"}); !strings.Contains(r.Error, `bad status "6xx"`) {
+		t.Errorf("bad status: %+v", r)
 	}
 	if r := run(t, &fakePage{evalErr: errors.New("boom")}, "get_value", map[string]any{"selector": "x"}); r.Error != "boom" {
 		t.Errorf("transport errors pass through: %+v", r)

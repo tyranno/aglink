@@ -23,7 +23,10 @@ import (
 const (
 	appConsoleKeep = 300
 	appNetworkKeep = 300
-	appBodyMax     = 3000 // chars of a request/response body shown per entry
+	// netListBodyMax keeps the list short: a body preview per line, the
+	// whole of it (up to netDetailBodyMax) with id=.
+	netListBodyMax   = 200
+	netDetailBodyMax = 20000
 )
 
 type appConsoleEntry struct {
@@ -37,6 +40,9 @@ type appNetEntry struct {
 	Method   string
 	URL      string
 	PostData string
+	ReqHdrs  json.RawMessage
+	RespHdrs json.RawMessage
+	Mime     string
 	Status   int
 	Error    string
 	start    float64 // CDP monotonic seconds
@@ -139,15 +145,16 @@ func (l *appLogs) onEvent(method string, params json.RawMessage) {
 			Type      string  `json:"type"`
 			Timestamp float64 `json:"timestamp"`
 			Request   struct {
-				URL      string `json:"url"`
-				Method   string `json:"method"`
-				PostData string `json:"postData"`
+				URL      string          `json:"url"`
+				Method   string          `json:"method"`
+				PostData string          `json:"postData"`
+				Headers  json.RawMessage `json:"headers"`
 			} `json:"request"`
 		}
 		if json.Unmarshal(params, &p) != nil || strings.HasPrefix(p.Request.URL, "data:") {
 			return
 		}
-		e := &appNetEntry{ID: p.RequestID, Type: p.Type, Method: p.Request.Method, URL: p.Request.URL, PostData: p.Request.PostData, start: p.Timestamp}
+		e := &appNetEntry{ID: p.RequestID, Type: p.Type, Method: p.Request.Method, URL: p.Request.URL, PostData: p.Request.PostData, ReqHdrs: p.Request.Headers, start: p.Timestamp}
 		l.mu.Lock()
 		if isAjax(p.Type) {
 			l.inflight[p.RequestID] = truncateRunes(p.Request.URL, 200)
@@ -166,7 +173,9 @@ func (l *appLogs) onEvent(method string, params json.RawMessage) {
 			RequestID string `json:"requestId"`
 			Type      string `json:"type"`
 			Response  struct {
-				Status int `json:"status"`
+				Status   int             `json:"status"`
+				Headers  json.RawMessage `json:"headers"`
+				MimeType string          `json:"mimeType"`
 			} `json:"response"`
 		}
 		if json.Unmarshal(params, &p) != nil {
@@ -175,6 +184,8 @@ func (l *appLogs) onEvent(method string, params json.RawMessage) {
 		l.mu.Lock()
 		if e := l.byID[p.RequestID]; e != nil {
 			e.Status = p.Response.Status
+			e.RespHdrs = p.Response.Headers
+			e.Mime = p.Response.MimeType
 			if p.Type != "" {
 				e.Type = p.Type
 			}
@@ -208,15 +219,24 @@ func (l *appLogs) onEvent(method string, params json.RawMessage) {
 	}
 }
 
-// consoleText renders the last max console entries as the extension does.
-func (l *appLogs) consoleText(max int) string {
+// consoleText renders the last q.Max console entries matching q as the
+// extension does.
+func (l *appLogs) consoleText(q consoleQuery) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	entries := l.console
-	if len(entries) > max {
-		entries = entries[len(entries)-max:]
+	var entries []appConsoleEntry
+	for _, e := range l.console {
+		if q.match(e.Level, e.Text) {
+			entries = append(entries, e)
+		}
+	}
+	if len(entries) > q.Max {
+		entries = entries[len(entries)-q.Max:]
 	}
 	if len(entries) == 0 {
+		if q.filtered() && len(l.console) > 0 {
+			return fmt.Sprintf("(no console messages match — %d captured in all)", len(l.console))
+		}
 		return "(no console messages captured — capture starts when aglink-web first attaches to the window; reproduce the action now)"
 	}
 	lines := make([]string, len(entries))
@@ -226,63 +246,122 @@ func (l *appLogs) consoleText(max int) string {
 	return strings.Join(lines, "\n")
 }
 
-// networkEntries returns copies of the last max requests matching filter.
-func (l *appLogs) networkEntries(max int, filter string) []appNetEntry {
+// networkEntries returns copies of the last q.Max requests matching q, and
+// how many are captured in all.
+func (l *appLogs) networkEntries(q netQuery) ([]appNetEntry, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	filter = strings.ToLower(filter)
 	var out []appNetEntry
 	for _, e := range l.net {
-		if filter != "" && !strings.Contains(strings.ToLower(e.URL), filter) {
-			continue
+		if q.match(e.Method, e.URL, e.Status, e.Error != "") {
+			out = append(out, *e)
 		}
-		out = append(out, *e)
 	}
-	if len(out) > max {
-		out = out[len(out)-max:]
+	if len(out) > q.Max {
+		out = out[len(out)-q.Max:]
 	}
-	return out
+	return out, len(l.net)
+}
+
+// networkEntry returns a copy of the request with CDP id id.
+func (l *appLogs) networkEntry(id string) (appNetEntry, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if e := l.byID[id]; e != nil {
+		return *e, true
+	}
+	return appNetEntry{}, false
+}
+
+// responseBody fetches a finished request's body over raw; "" when there is
+// none to show (evicted, a redirect, a preflight).
+func responseBody(ctx context.Context, e appNetEntry, raw func(context.Context, string, any) (json.RawMessage, error)) string {
+	if e.end == 0 || e.Error != "" || raw == nil {
+		return ""
+	}
+	bctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	r, err := raw(bctx, "Network.getResponseBody", map[string]any{"requestId": e.ID})
+	if err != nil {
+		return ""
+	}
+	var body struct {
+		Body          string `json:"body"`
+		Base64Encoded bool   `json:"base64Encoded"`
+	}
+	if json.Unmarshal(r, &body) != nil || body.Body == "" {
+		return ""
+	}
+	if body.Base64Encoded {
+		return fmt.Sprintf("(binary, %d bytes)", len(body.Body)*3/4)
+	}
+	return fixMojibake(body.Body)
+}
+
+// netStatusText is a request's "-> 200 (12ms)" / "ERROR: …" / "-> (pending)".
+func netStatusText(e appNetEntry) string {
+	switch {
+	case e.Error != "":
+		return "ERROR: " + e.Error
+	case e.Status == 0:
+		return "-> (pending)"
+	}
+	ms := ""
+	if e.end > 0 && e.start > 0 {
+		ms = fmt.Sprintf(" (%dms)", int((e.end-e.start)*1000))
+	}
+	return fmt.Sprintf("-> %d%s", e.Status, ms)
+}
+
+// networkDetail is get_network_requests id=: one request in full — headers
+// both ways and the bodies up to netDetailBodyMax.
+func networkDetail(ctx context.Context, e appNetEntry, raw func(context.Context, string, any) (json.RawMessage, error)) string {
+	lines := []string{
+		fmt.Sprintf("%s | %s %s", strings.ToLower(e.Type), e.Method, e.URL),
+		"status: " + netStatusText(e),
+	}
+	if len(e.ReqHdrs) > 0 && string(e.ReqHdrs) != "null" {
+		lines = append(lines, "request headers: "+compactJSON(e.ReqHdrs))
+	}
+	if e.PostData != "" {
+		lines = append(lines, "request body: "+jsQuote(truncateRunes(e.PostData, netDetailBodyMax)))
+	}
+	if len(e.RespHdrs) > 0 && string(e.RespHdrs) != "null" {
+		lines = append(lines, "response headers: "+compactJSON(e.RespHdrs))
+	}
+	if e.Mime != "" {
+		lines = append(lines, "mime: "+e.Mime)
+	}
+	if b := responseBody(ctx, e, raw); strings.HasPrefix(b, "(binary,") {
+		lines = append(lines, "response body: "+b)
+	} else if b != "" {
+		lines = append(lines, "response body: "+jsQuote(truncateRunes(b, netDetailBodyMax)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // networkText renders requests like the extension's get_network_requests,
 // fetching response bodies for XHR/fetch calls (the API traffic the tool is
-// for) over raw.
-func networkText(ctx context.Context, entries []appNetEntry, raw func(context.Context, string, any) (json.RawMessage, error)) string {
+// for) over raw. Bodies are previews of netListBodyMax; a line's id= is what
+// get_network_requests id= takes for the whole request. total is how many
+// requests are captured in all, for the reply when the filters match none.
+func networkText(ctx context.Context, entries []appNetEntry, total int, q netQuery, raw func(context.Context, string, any) (json.RawMessage, error)) string {
 	if len(entries) == 0 {
+		if q.filtered() && total > 0 {
+			return fmt.Sprintf("(no network requests match — %d captured in all)", total)
+		}
 		return "(no network requests captured — capture starts when aglink-web first attaches to the window; reproduce the action now)"
 	}
 	lines := make([]string, len(entries))
 	for i, e := range entries {
-		parts := []string{fmt.Sprintf("%d | %s | %s %s", i, strings.ToLower(e.Type), e.Method, e.URL)}
-		switch {
-		case e.Error != "":
-			parts = append(parts, "ERROR: "+e.Error)
-		case e.Status == 0:
-			parts = append(parts, "-> (pending)")
-		default:
-			ms := ""
-			if e.end > 0 && e.start > 0 {
-				ms = fmt.Sprintf(" (%dms)", int((e.end-e.start)*1000))
-			}
-			parts = append(parts, fmt.Sprintf("-> %d%s", e.Status, ms))
-		}
+		parts := []string{fmt.Sprintf("%d | %s | %s %s", i, strings.ToLower(e.Type), e.Method, e.URL), netStatusText(e), "id=" + e.ID}
 		if e.PostData != "" {
-			b, _ := json.Marshal(truncateRunes(e.PostData, appBodyMax))
-			parts = append(parts, "req="+string(b))
+			parts = append(parts, "req="+jsQuote(truncateRunes(e.PostData, netListBodyMax)))
 		}
-		if (e.Type == "XHR" || e.Type == "Fetch") && e.end > 0 && e.Error == "" && raw != nil {
-			bctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			if r, err := raw(bctx, "Network.getResponseBody", map[string]any{"requestId": e.ID}); err == nil {
-				var body struct {
-					Body          string `json:"body"`
-					Base64Encoded bool   `json:"base64Encoded"`
-				}
-				if json.Unmarshal(r, &body) == nil && !body.Base64Encoded && body.Body != "" {
-					b, _ := json.Marshal(truncateRunes(fixMojibake(body.Body), appBodyMax))
-					parts = append(parts, "resp="+string(b))
-				}
+		if isAjax(e.Type) {
+			if b := responseBody(ctx, e, raw); b != "" && !strings.HasPrefix(b, "(binary,") {
+				parts = append(parts, "resp="+jsQuote(truncateRunes(b, netListBodyMax)))
 			}
-			cancel()
 		}
 		lines[i] = strings.Join(parts, " | ")
 	}

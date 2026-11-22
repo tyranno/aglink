@@ -1508,11 +1508,26 @@ test("full network capture attaches the debugger, reports headers and bodies, an
   assert.match(first, /^ok: full network capture started on tab 4/);
   assert.ok(st.cmds.includes("Network.enable"));
   const src = { tabId: 4 };
-  onEvent(src, "Network.requestWillBeSent", { requestId: "r1", type: "Fetch", timestamp: 1, request: { url: "https://a/api/x", method: "POST", postData: "q=1" } });
+  onEvent(src, "Network.requestWillBeSent", { requestId: "r1", type: "Fetch", timestamp: 1, request: { url: "https://a/api/x", method: "POST", postData: "q=1", headers: { Accept: "*/*" } } });
   onEvent(src, "Network.responseReceived", { requestId: "r1", type: "Fetch", response: { status: 201, mimeType: "application/json", headers: { "content-type": "application/json" } } });
   onEvent(src, "Network.loadingFinished", { requestId: "r1", timestamp: 1.25 });
+  onEvent(src, "Network.requestWillBeSent", { requestId: "r2", type: "Document", timestamp: 2, request: { url: "https://a/gone", method: "GET" } });
+  onEvent(src, "Network.loadingFailed", { requestId: "r2", timestamp: 2.1, errorText: "net::ERR_INTERNET_DISCONNECTED" });
   const out = await sb.getNetworkRequests({});
-  assert.strictEqual(out, '0 | fetch | POST https://a/api/x | -> 201 (250ms) | req="q=1" | headers={"content-type":"application/json"} | resp="{\\"ok\\":true}"');
+  assert.strictEqual(
+    out,
+    '0 | fetch | POST https://a/api/x | -> 201 (250ms) | id=r1 | req="q=1" | resp="{\\"ok\\":true}"\n' +
+      "1 | document | GET https://a/gone | ERROR: net::ERR_INTERNET_DISCONNECTED | id=r2"
+  );
+  // The list stays short; id= has the headers and whole bodies.
+  assert.match(await sb.getNetworkRequests({ status: "failed" }), /^0 \| document \| GET https:\/\/a\/gone .* id=r2$/);
+  assert.match(await sb.getNetworkRequests({ method: "post", status: "2xx" }), /^0 \| fetch \| POST https:\/\/a\/api\/x/);
+  assert.strictEqual(await sb.getNetworkRequests({ status: "404" }), "(no network requests match — 2 captured in all)");
+  assert.strictEqual(
+    await sb.getNetworkRequests({ id: "r1" }),
+    'fetch | POST https://a/api/x\nstatus: -> 201 (250ms)\nrequest headers: {"Accept":"*/*"}\nrequest body: "q=1"\n' +
+      'response headers: {"content-type":"application/json"}\nmime: application/json\nresponse body: "{\\"ok\\":true}"'
+  );
   // A borrowed debugger (a dialog check, typing) does not end the capture.
   await sb.detachDebugger({ tabId: 4 });
   assert.strictEqual(st.detached, 0);
@@ -1534,4 +1549,113 @@ test("page_snapshot appends a cross-origin iframe's own outline", async () => {
   }));
   const out = await sb.pageSnapshot({});
   assert.match(out, /\n\[iframe ref=e3 https:\/\/pay\/ — its controls: selector "frame=ref=e3 >> ref=eN"\]\n- button "Pay" \[ref=e1\]$/);
+});
+
+// runInPage makes executeScript actually run the MAIN-world func; the
+// sandbox is given a stand-in window holding the capture buffers.
+const runInPage = async (o) => [{ result: o.func(...(o.args || [])) }];
+
+test("getConsoleLogs filters by level and text in the page", async () => {
+  const win = {
+    __aglinkConsole: [
+      { level: "log", text: "Saved draft" },
+      { level: "warn", text: "slow render" },
+      { level: "uncaught", text: "TypeError: draft is null" },
+    ],
+  };
+  const sb = loadBackground(makeChrome({ tabs: { query: async () => [{ id: 4, active: true }] }, scripting: { executeScript: runInPage } }), { window: win });
+  // The daemon expands level=error to its three levels before sending.
+  assert.strictEqual(await sb.getConsoleLogs({ level: "error,uncaught,unhandledrejection,warn" }), "[warn] slow render\n[uncaught] TypeError: draft is null");
+  assert.strictEqual(await sb.getConsoleLogs({ filter: "DRAFT" }), "[log] Saved draft\n[uncaught] TypeError: draft is null");
+  assert.strictEqual(await sb.getConsoleLogs({ level: "debug" }), "(no console messages match — 3 captured in all)");
+});
+
+test("getNetworkRequests filters the page capture by status and method and gives one request by id", async () => {
+  const win = {
+    __aglinkNetwork: [
+      { id: 1, type: "fetch", method: "GET", url: "https://x/api/list", status: 200, durationMs: 5, responseBody: "y".repeat(500), requestHeaders: { a: "1" } },
+      { id: 2, type: "xhr", method: "POST", url: "https://x/api/save", status: 422, durationMs: 9, requestBody: '{"n":1}' },
+      { id: 3, type: "fetch", method: "GET", url: "https://x/api/ping", error: "Failed to fetch", durationMs: 1 },
+    ],
+  };
+  const sb = loadBackground(makeChrome({ tabs: { query: async () => [{ id: 4, active: true }] }, scripting: { executeScript: runInPage } }), { window: win });
+  const list = await sb.getNetworkRequests({});
+  assert.ok(list.startsWith(`0 | fetch | GET https://x/api/list | -> 200 (5ms) | id=1 | resp="${"y".repeat(200)}…"`), list);
+  assert.strictEqual(await sb.getNetworkRequests({ status: "4xx,failed" }), '0 | xhr | POST https://x/api/save | -> 422 (9ms) | id=2 | req="{\\"n\\":1}"\n1 | fetch | GET https://x/api/ping | ERROR: Failed to fetch | id=3');
+  assert.strictEqual(await sb.getNetworkRequests({ method: "post" }), '0 | xhr | POST https://x/api/save | -> 422 (9ms) | id=2 | req="{\\"n\\":1}"');
+  assert.strictEqual(await sb.getNetworkRequests({ status: "500" }), "(no network requests match — 3 captured in all)");
+  const one = await sb.getNetworkRequests({ id: "1" });
+  assert.ok(one.startsWith('fetch | GET https://x/api/list\nstatus: -> 200 (5ms)\nrequest headers (as the page set them): {"a":"1"}\nresponse body: "' + "y".repeat(500) + '"'), one);
+  assert.match(await sb.getNetworkRequests({ id: "9" }), /^\(no captured request with id=9/);
+});
+
+test("netStatusMatch mirrors the daemon's status items", () => {
+  const sb = loadBackground(makeChrome());
+  assert.strictEqual(sb.netStatusMatch("4xx", 404, false), true);
+  assert.strictEqual(sb.netStatusMatch("4xx", 500, false), false);
+  assert.strictEqual(sb.netStatusMatch("400-499,201", 201, false), true);
+  assert.strictEqual(sb.netStatusMatch("failed", 0, true), true);
+  assert.strictEqual(sb.netStatusMatch("2xx", 0, true), false);
+  assert.strictEqual(sb.netStatusMatch("pending", 0, false), true);
+  assert.strictEqual(sb.netStatusMatch("", 0, false), true);
+});
+
+test("emulate keeps the debugger, merges media features, and reset detaches", async () => {
+  const st = { attached: 0, detached: 0, cmds: [] };
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 6, active: true }] },
+    debugger: {
+      attach: async () => { st.attached++; },
+      detach: async () => { st.detached++; },
+      sendCommand: async (t, method, p) => { st.cmds.push([method, p]); return {}; },
+      onDetach: { addListener: () => {} },
+      onEvent: { addListener: () => {} },
+    },
+  }));
+  const vp = { method: "Emulation.setDeviceMetricsOverride", params: { width: 393, height: 852, deviceScaleFactor: 3, mobile: true } };
+  const out = await sb.emulate({ cmds: [vp], media: { "prefers-color-scheme": "dark" }, summary: "viewport 393x852" });
+  assert.match(out, /^ok: emulating viewport 393x852 on tab 6 — lasts while the debugger stays attached/);
+  assert.deepStrictEqual(st.cmds.map((c) => c[0]), ["Emulation.setDeviceMetricsOverride", "Emulation.setEmulatedMedia"]);
+  await sb.emulate({ cmds: [], media: { "prefers-reduced-motion": "reduce" }, summary: "x" });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(st.cmds[st.cmds.length - 1][1])), {
+    media: "",
+    features: [{ name: "prefers-color-scheme", value: "dark" }, { name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  // A borrowed attach (dialog check, typing) must not end the emulation.
+  await sb.detachDebugger({ tabId: 6 });
+  assert.strictEqual(st.detached, 0);
+  const reset = await sb.emulate({ reset: true, cmds: [{ method: "Emulation.clearDeviceMetricsOverride", params: {} }] });
+  assert.match(reset, /^ok: emulation cleared on tab 6/);
+  assert.strictEqual(st.detached, 1);
+  assert.match(await sb.emulate({ reset: true, cmds: [] }), /nothing was being emulated on tab 6/);
+});
+
+test("get_styles and storage go through the shared page functions", async () => {
+  const calls = [];
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 7, active: true }] },
+    scripting: {
+      executeScript: async (o) => {
+        if (!o.func) return [{}];
+        calls.push(o.args);
+        if (o.args[0] === "getStyles") return [{ result: { found: true, tag: "div", text: "div#x — box …\ndisplay: none", note: "matched 2 elements, used the first" } }];
+        if (o.args[0] === "storage") return [{ result: { ok: true, text: '"k" = "v"' } }];
+        return [{ result: null }];
+      },
+    },
+  }));
+  assert.strictEqual(await sb.dispatch("get_styles", { selector: "#x", properties: "display" }), "div#x — box …\ndisplay: none\nnote: matched 2 elements, used the first");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(calls[0])), ["getStyles", ["#x", "display", null]]);
+  assert.strictEqual(await sb.dispatch("storage", { key: "k", area: "session" }), '"k" = "v"');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(calls[1])), ["storage", ["get", "session", "k", "", 20000]]);
+  await assert.rejects(() => sb.dispatch("get_styles", {}), /get_styles requires 'selector'/);
+});
+
+test("page_snapshot puts the page line on top when the daemon asks", async () => {
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 5, active: true }], get: async () => ({ id: 5, url: "https://app/x" }) },
+    scripting: { executeScript: async (o) => (o.func ? [{ result: { text: "[snapshot 0 lines, 0 refs]", xframes: [] } }] : [{}]) },
+  }));
+  assert.strictEqual(await sb.pageSnapshot({ withPage: true }), "[aglink-page tab=5 url=https://app/x]\n[snapshot 0 lines, 0 refs]");
+  assert.strictEqual(await sb.pageSnapshot({}), "[snapshot 0 lines, 0 refs]");
 });

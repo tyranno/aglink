@@ -57,7 +57,7 @@ var commands = []command{
 		desc: `Run several of these tools in one call — the way to do a known sequence of UI actions (open a screen, fill a form, press a button, wait for the result) without a round trip per step. Works the same in a Chrome tab and in an Electron/Wails app window (profile app:/cdp:). Each step is {"tool": <any tool name>, ...that tool's own arguments}, plus optional "wait_ms" (pause after the step), "full": true (keep the step's whole output instead of a one-line summary; for get_network_requests "full" is that tool's own argument) and "follow_popup": true (if this step — usually a click — opened a new tab, run the following steps in that tab). Two extra step kinds: {"tool":"wait","ms":500} and {"tool":"expect","selector":"…" | "text":"…", "gone": true?, "timeout_ms"?} — expect waits until the element is visible (or, with gone, until it disappears) and fails the batch if it does not happen in time (default 5000ms). Steps without a tabId follow the batch: a navigate that opens a tab, or an activate_tab, carries the following steps with it. Stops at the first failed step and reports how far it got; with snapshot="text" or "elements" the page's state (when it finished, or where it stopped) is appended, so no extra call is needed to see the result. Example: [{"tool":"click","selector":"text=설정"},{"tool":"expect","selector":"role=dialog"},{"tool":"type","selector":"label=이름","text":"홍길동"},{"tool":"click","selector":"role=button[name=\"저장\"]"},{"tool":"expect","text":"저장됨"}]. Keep an irreversible final action (send, delete, pay) out of the batch and do it separately once the state is confirmed.`,
 		args: []argSpec{
 			{name: "steps", typ: argString, required: true, desc: `JSON array of steps, each {"tool": "<tool name>", ...its arguments, "wait_ms"?: n, "full"?: true}.`},
-			{name: "snapshot", typ: argString, desc: `Append the page's state afterwards: "tree" (page_snapshot outline with ref=eN numbers — usually best), "text" (last 4000 chars of page text), "elements" (visible interactive elements with selectors), or "none" (default).`},
+			{name: "snapshot", typ: argString, desc: `Append the page's state afterwards: "tree" (page_snapshot outline with ref=eN numbers — usually best), "diff" (only what changed since the last page_snapshot of the tab — cheapest when one was taken before the batch), "text" (last 4000 chars of page text), "elements" (visible interactive elements with selectors), or "none" (default).`},
 			{name: "continue_on_error", typ: argString, desc: `"true" runs every step even after a failure and reports each; default stops at the first failure.`},
 			{name: "save_as", typ: argString, desc: `Save this batch under a name when every step succeeds, to replay later with run_flow (or "!flow <name>" in chat, which runs it without any model tokens). Letters, digits, - _ . only.`},
 			{name: "tabId", typ: argInt, desc: "Tab (or app window number) for steps that do not name one. Omit for the active tab / first window."},
@@ -66,10 +66,11 @@ var commands = []command{
 	},
 	{
 		name: "page_snapshot",
-		desc: `Compact outline of what is on screen — headings, dialogs/landmarks, every visible control with its state (value, checked, disabled, expanded) and short text — with each control numbered: '- button "저장" [ref=e7]'. Then act on it with selector "ref=e7" in click/type/select_option/… (a control keeps its number across snapshots while it exists; one a framework re-rendered is re-found by its role and name). Usually the cheapest way to see a screen and decide what to do: far smaller than get_page_text or get_html, and it keeps structure that list_elements drops (which dialog a button belongs to). Same-origin iframes are outlined inline (their controls numbered like the rest); a cross-origin iframe in Chrome gets its own section, whose controls are reached with selector "frame=ref=<iframe ref> >> ref=eN". Works in Chrome tabs and app windows.`,
+		desc: `Compact outline of what is on screen — headings, dialogs/landmarks, every visible control with its state (value, checked, disabled, expanded) and short text — with each control numbered: '- button "저장" [ref=e7]'. Then act on it with selector "ref=e7" in click/type/select_option/… (a control keeps its number across snapshots while it exists; one a framework re-rendered is re-found by its role and name). Usually the cheapest way to see a screen and decide what to do: far smaller than get_page_text or get_html, and it keeps structure that list_elements drops (which dialog a button belongs to). Same-origin iframes are outlined inline (their controls numbered like the rest); a cross-origin iframe in Chrome gets its own section, whose controls are reached with selector "frame=ref=<iframe ref> >> ref=eN". Works in Chrome tabs and app windows. After an action (click, type, a dialog opening), pass diff="true" to get only what changed since the previous snapshot of that tab — '+ added', '- removed', '~ changed (was: …)' lines under '@ <enclosing dialog/section>' — instead of the whole outline again; refs stay valid. With no earlier snapshot, after the page navigated to another URL, or when most of the screen changed, the full snapshot comes back with a note saying so.`,
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Tab (or app window number). Omit for the active tab / first window."},
 			{name: "maxLines", typ: argInt, desc: "Cap on output lines (default 200, max 1000)."},
+			{name: "diff", typ: argString, desc: `"true" returns only the lines that changed since the previous snapshot of this tab (full snapshot when there is none or the URL changed).`},
 		},
 	},
 	{
@@ -236,6 +237,36 @@ var commands = []command{
 		},
 	},
 	{
+		name: "storage",
+		desc: "Read or change the page's localStorage or sessionStorage (for the origin of the page the tab or app window shows) — where SPAs keep tokens, feature flags, drafts and cached state. action=get (default) lists every key with its value cut to 200 chars, or with 'key' returns that one value in full (up to maxChars); action=set requires 'key' and 'value'; action=delete requires 'key'; action=clear empties the whole area. Works in Chrome tabs and app windows; runs as page script, no debugger.",
+		args: []argSpec{
+			{name: "action", typ: argString, desc: `"get" (default), "set", "delete", or "clear".`},
+			{name: "key", typ: argString, desc: "Item key. Required for set/delete; for get, returns just this key's value."},
+			{name: "value", typ: argString, desc: "Value to store (action=set)."},
+			{name: "area", typ: argString, desc: `"local" (default, localStorage) or "session" (sessionStorage).`},
+			{name: "maxChars", typ: argInt, desc: "Cap on one value returned by get with 'key' (default 20000)."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
+		},
+	},
+	{
+		name: "emulate",
+		desc: `Make a Chrome tab or app window behave like another device or environment, through DevTools emulation: viewport size, device pixel ratio and mobile/touch (device preset iphone-se, iphone-15, iphone-15-pro-max, pixel-8, galaxy-s24, ipad, ipad-pro, laptop, desktop — or width/height), prefers-color-scheme, prefers-reduced-motion, network throttling (offline, slow-3g, fast-3g), geolocation and user agent. Settings add up across calls; give a setting "none" to undo just that one (device="none", network="none", …) and reset="true" to undo all. State persists only while the debugger stays attached: in Chrome the debugger stays on the tab (Chrome shows its "started debugging" bar) until reset="true" or the user dismisses the bar; in an app window it lasts while aglink-web stays connected to the window. A page reads some of these only on load (user agent, often the viewport) — navigate or reload after setting them. Geolocation only answers pages that already have location permission.`,
+		args: []argSpec{
+			{name: "device", typ: argString, desc: `Device preset (iphone-se, iphone-15, iphone-15-pro-max, pixel-8, galaxy-s24, ipad, ipad-pro, laptop, desktop) — sets viewport, pixel ratio, mobile/touch and, for phones/tablets, the user agent. "none" restores the real viewport.`},
+			{name: "width", typ: argInt, desc: "Viewport width in CSS px (with height; overrides the preset's)."},
+			{name: "height", typ: argInt, desc: "Viewport height in CSS px."},
+			{name: "scale", typ: argString, desc: `Device pixel ratio, e.g. "2" or "2.625". Default: the preset's, or the screen's own.`},
+			{name: "mobile", typ: argString, desc: `"true" for a mobile viewport with touch events, "false" for desktop. Default: the preset's, else false.`},
+			{name: "colorScheme", typ: argString, desc: `prefers-color-scheme: "light", "dark", or "none" to stop emulating it.`},
+			{name: "reducedMotion", typ: argString, desc: `prefers-reduced-motion: "reduce", "no-preference", or "none" to stop emulating it.`},
+			{name: "network", typ: argString, desc: `"offline", "slow-3g", "fast-3g", or "none" to stop throttling.`},
+			{name: "geolocation", typ: argString, desc: `"lat,lon" (optionally ",accuracy" in metres), e.g. "37.5665,126.9780"; "none" restores the real position.`},
+			{name: "userAgent", typ: argString, desc: `User-Agent string to send and report in navigator.userAgent; "none" restores the browser's own.`},
+			{name: "reset", typ: argString, desc: `"true" undoes every emulated setting (in Chrome also detaches the debugger). Not combinable with other settings.`},
+			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
+		},
+	},
+	{
 		name: "wait_download",
 		desc: "Wait for a browser download to finish and report where it was saved — call this right after triggering one (e.g. clicking a download link), not before. Chrome tabs only; not supported for app windows, which handle downloads their own way.",
 		args: []argSpec{
@@ -273,6 +304,16 @@ var commands = []command{
 		args: []argSpec{
 			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element to read."},
 			{name: "name", typ: argString, required: true, desc: "Attribute name to read (e.g. 'href', 'aria-expanded', 'disabled', 'class', 'data-id'), or 'text' for the element's textContent."},
+			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
+		},
+	},
+	{
+		name: "get_styles",
+		desc: "Read an element's computed CSS and its box, in a Chrome tab or app window, matched by CSS selector or semantic locator (role=/text=/label=/placeholder=/testid=/ref=, same as click). First line: the element and its bounding box (x, y, width x height in CSS px, viewport-relative). Then 'property: value' lines — by default display, position, top/left, width/height, box-sizing, margin, padding, color, background, font, line-height, z-index, visibility, opacity, overflow and pointer-events: what answers 'why is this hidden / misplaced / unclickable / the wrong colour' without a screenshot. 'properties' picks others instead. Page script only (no debugger).",
+		args: []argSpec{
+			{name: "selector", typ: argString, required: true, desc: "CSS selector or semantic locator for the element."},
+			{name: "properties", typ: argString, desc: `Comma-separated CSS properties to read instead of the default set, e.g. "transform,cursor,flex-direction"; include "default" to add them to it.`},
+			{name: "pseudo", typ: argString, desc: `Read a pseudo-element instead: "::before" or "::after".`},
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 		},
 	},
@@ -317,16 +358,21 @@ var commands = []command{
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 			{name: "max", typ: argInt, desc: "Maximum number of recent messages to return (default 50)."},
+			{name: "level", typ: argString, desc: `Only these levels, comma-separated: error, warn, info, log, debug (e.g. "error,warn"). error includes uncaught exceptions and unhandled promise rejections.`},
+			{name: "filter", typ: argString, desc: "Only messages containing this text (case-insensitive)."},
 		},
 	},
 	{
 		name: "get_network_requests",
-		desc: "Read recent AJAX calls (fetch and XMLHttpRequest) made by the page — method, URL, status, duration, and truncated request/response bodies — captured from a tab since it loaded. The tool for reverse-engineering a web app's own API: what endpoint does clicking a button actually call, with what payload, and what does it return. get_page_text/get_html/eval can't see this, since it never touches the rendered DOM. Binary responses (images, blobs) are recorded without a body preview. Use 'filter' to narrow a busy page down to the one call you care about. In Chrome, full=\"true\" starts a complete capture through the debugger instead — every request (documents, scripts, redirects, failures, not just fetch/XHR) with status, timing, response headers and bodies, from that moment on; later calls read it (no need to repeat full) until full=\"false\" stops it or 5 minutes pass without a read. Chrome shows its 'started debugging' bar while it runs. In an app window (app:/cdp:) it reads what the window logged since aglink-web first attached to it, always with bodies.",
+		desc: "Read recent AJAX calls (fetch and XMLHttpRequest) made by the page — method, URL, status, duration, and a short preview of the request/response bodies — captured from a tab since it loaded, one line each ending in its id=. The tool for reverse-engineering a web app's own API: what endpoint does clicking a button actually call, with what payload, and what does it return. get_page_text/get_html/eval can't see this, since it never touches the rendered DOM. Binary responses (images, blobs) are recorded without a body preview. Narrow a busy page down with 'filter' (URL), 'method' and 'status' (e.g. status=\"4xx,5xx,failed\" for what went wrong), then pass one line's id to get that request in full: request/response headers (as far as the capture has them) and the whole bodies. In Chrome, full=\"true\" starts a complete capture through the debugger instead — every request (documents, scripts, redirects, failures, not just fetch/XHR) with status, timing, response headers and bodies, from that moment on; later calls read it (no need to repeat full) until full=\"false\" stops it or 5 minutes pass without a read. Chrome shows its 'started debugging' bar while it runs. In an app window (app:/cdp:) it reads what the window logged since aglink-web first attached to it, always with bodies.",
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 			{name: "max", typ: argInt, desc: "Maximum number of recent requests to return (default 50)."},
 			{name: "filter", typ: argString, desc: "Optional case-insensitive substring to filter by URL (e.g. 'approve' or '/api/')."},
 			{name: "full", typ: argString, desc: "Chrome only: \"true\" starts (or keeps reading) the full debugger capture with headers and bodies; \"false\" stops it."},
+			{name: "status", typ: argString, desc: `Only these statuses, comma-separated: a code ("404"), a class ("4xx"), a range ("400-499"), "failed" (no response: blocked, offline, aborted) or "pending".`},
+			{name: "method", typ: argString, desc: `Only these HTTP methods, comma-separated, e.g. "POST,PUT".`},
+			{name: "id", typ: argString, desc: "Return this one request in full (the id= from a list line) instead of the list."},
 		},
 	},
 	{

@@ -15,6 +15,8 @@
   const MAX_BODY_CHARS = 6000;
   const buf = [];
   window.__aglinkNetwork = buf;
+  // Each entry carries its request number (id), what get_network_requests
+  // id= picks one by.
   // In-flight requests, for wait_for_element's idleMs: id -> url, and when
   // the last request started or ended.
   const state = { pending: new Map(), last: Date.now(), seq: 0 };
@@ -72,7 +74,7 @@
             const isBinary = /^(image|video|audio|font)\//.test(ct) || ct.includes("octet-stream");
             if (isBinary) {
               end(flight);
-              record({ type: "fetch", method, url, status: response.status, time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
+              record({ id: flight, type: "fetch", method, url, status: response.status, time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
             } else {
               response
                 .clone()
@@ -80,6 +82,7 @@
                 .then((text) => {
                   end(flight);
                   record({
+                    id: flight,
                     type: "fetch",
                     method,
                     url,
@@ -93,7 +96,7 @@
                 })
                 .catch(() => {
                   end(flight);
-                  record({ type: "fetch", method, url, status: response.status, time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
+                  record({ id: flight, type: "fetch", method, url, status: response.status, time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
                 });
             }
           } catch (e) {
@@ -104,7 +107,7 @@
         },
         (err) => {
           end(flight);
-          record({ type: "fetch", method, url, error: String(err && err.message ? err.message : err), time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
+          record({ id: flight, type: "fetch", method, url, error: String(err && err.message ? err.message : err), time: start, durationMs: Date.now() - start, requestHeaders, requestBody });
           throw err;
         }
       );
@@ -150,6 +153,7 @@
           // binary responseType (blob/arraybuffer/document) — no text preview
         }
         record({
+          id: flight,
           type: "xhr",
           method: meta.method,
           url: meta.url,

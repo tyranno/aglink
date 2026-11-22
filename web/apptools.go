@@ -30,9 +30,10 @@ type appPage interface {
 	Dialog() *dialogInfo
 	HandleDialog(ctx context.Context, accept bool, promptText string) error
 	Screenshot(ctx context.Context) (string, error)
-	ConsoleText(max int) string
+	ConsoleText(q consoleQuery) string
 	NetworkIdle() (pending []string, count int, idleFor time.Duration)
-	NetworkText(ctx context.Context, max int, filter string) string
+	NetworkText(ctx context.Context, q netQuery) string
+	EmulatedMedia(delta map[string]string, reset bool) []map[string]string
 }
 
 // Mirrors of background.js constants.
@@ -665,7 +666,70 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		if json.Unmarshal(raw, &s) != nil {
 			return "", errors.New("page_snapshot returned no result")
 		}
+		// For the daemon's diff cache (snapdiff.go): which window, at what URL.
+		if params["withPage"] == true {
+			var href string
+			if r, err := p.Eval(ctx, "location.href"); err == nil {
+				_ = json.Unmarshal(r, &href)
+			}
+			s = fmt.Sprintf("%stab=%d url=%s]\n%s", snapPageMarker, intp(params, "tabId", 1), href, s)
+		}
 		return s, nil
+
+	case "get_styles":
+		if sel == "" {
+			return "", errors.New("get_styles requires 'selector'")
+		}
+		var r tagText
+		if err := callInto(ctx, p, "getStyles", []any{sel, nullable(str(params, "properties")), nullable(str(params, "pseudo"))}, &r); err != nil {
+			return "", err
+		}
+		if err := r.err(sel); err != nil {
+			return "", err
+		}
+		return r.noted(r.Text), nil
+
+	case "storage":
+		a, err := parseStorageArgs(params)
+		if err != nil {
+			return "", err
+		}
+		var r struct {
+			OK    bool   `json:"ok"`
+			Text  string `json:"text"`
+			Error string `json:"error"`
+		}
+		if err := callInto(ctx, p, "storage", []any{a.Action, a.Area, nullable(a.Key), a.Value, intp(params, "maxChars", defaultMaxChars)}, &r); err != nil {
+			return "", err
+		}
+		if !r.OK {
+			if r.Error == "" {
+				r.Error = "storage returned no result"
+			}
+			return "", errors.New(r.Error)
+		}
+		return r.Text, nil
+
+	case "emulate":
+		plan, err := buildEmulatePlan(params)
+		if err != nil {
+			return "", err
+		}
+		for _, c := range plan.Cmds {
+			if _, err := p.Raw(ctx, c.Method, c.Params); err != nil {
+				return "", fmt.Errorf("emulate: %s: %w", c.Method, err)
+			}
+		}
+		if plan.Media != nil {
+			features := p.EmulatedMedia(plan.Media, plan.Reset)
+			if _, err := p.Raw(ctx, "Emulation.setEmulatedMedia", map[string]any{"media": "", "features": features}); err != nil {
+				return "", fmt.Errorf("emulate: Emulation.setEmulatedMedia: %w", err)
+			}
+		}
+		if plan.Reset {
+			return "ok: emulation cleared — viewport, user agent, media features, network and geolocation are the window's own again", nil
+		}
+		return fmt.Sprintf("ok: emulating %s in window %d — lasts while aglink-web stays attached to the window (until the app or the daemon restarts); emulate reset=\"true\" clears it", strings.Join(plan.Summary, ", "), intp(params, "tabId", 1)), nil
 
 	case "upload_file":
 		paths := toStrings(params["paths"])
@@ -750,10 +814,18 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		return fmt.Sprintf("ok: %s %s %s", verb, d.Type, jsQuote(d.Message)), nil
 
 	case "get_console_logs":
-		return p.ConsoleText(intp(params, "max", 50)), nil
+		q, err := parseConsoleQuery(params)
+		if err != nil {
+			return "", err
+		}
+		return p.ConsoleText(q), nil
 
 	case "get_network_requests":
-		return p.NetworkText(ctx, intp(params, "max", 50), str(params, "filter")), nil
+		q, err := parseNetQuery(params)
+		if err != nil {
+			return "", err
+		}
+		return p.NetworkText(ctx, q), nil
 
 	case "close_tab", "reload_extension":
 		return "", fmt.Errorf("not supported for app profiles: %s", method)
@@ -1054,7 +1126,7 @@ func appFullPageScreenshot(ctx context.Context, p appPage) (string, error) {
 		return "", errors.New("screenshot: could not measure the full page size")
 	}
 	shot, err := p.Raw(ctx, "Page.captureScreenshot", map[string]any{
-		"format":              "png",
+		"format":                "png",
 		"captureBeyondViewport": true,
 		"clip": map[string]any{
 			"x": 0, "y": 0,

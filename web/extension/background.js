@@ -441,6 +441,12 @@ async function dispatch(method, params) {
       return await dialogStatus(params);
     case "handle_dialog":
       return await handleDialog(params);
+    case "emulate":
+      return await emulate(params);
+    case "get_styles":
+      return await getStyles(params);
+    case "storage":
+      return await storageCmd(params);
     default:
       throw new Error(`unknown method: ${method}`);
   }
@@ -1565,6 +1571,10 @@ async function activateTab(params) {
 // scripts can't see it). Useful for web debugging tasks ("did this click
 // throw a JS error?") that get_page_text can't answer since console output
 // isn't part of the rendered DOM at all.
+//
+// level is a comma list the daemon has already checked and expanded (error
+// brings uncaught and unhandledrejection with it, toolargs.go
+// parseConsoleLevels); filter is a case-insensitive substring of the message.
 async function getConsoleLogs(params) {
   let tabId = params.tabId;
   if (!tabId) {
@@ -1573,16 +1583,67 @@ async function getConsoleLogs(params) {
     tabId = active.id;
   }
   const max = params.max || 50;
+  const levels = String(params.level || "").toLowerCase().split(/[,\s|]+/).filter(Boolean);
+  const filter = String(params.filter || "").toLowerCase();
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (n) => (window.__aglinkConsole || []).slice(-n),
-    args: [max],
+    func: (n, lv, f) => {
+      const all = window.__aglinkConsole || [];
+      const hit = all.filter((l) => (!lv.length || lv.includes(l.level)) && (!f || String(l.text).toLowerCase().includes(f)));
+      return { logs: hit.slice(-n), total: all.length };
+    },
+    args: [max, levels, filter],
   });
-  const logs = (results && results[0] && results[0].result) || [];
-  if (logs.length === 0) return "(no console messages captured)";
+  const r = results && results[0] && results[0].result;
+  // An array is the pre-filter shape (a test double, or nothing filtered).
+  const logs = Array.isArray(r) ? r : (r && r.logs) || [];
+  const total = Array.isArray(r) ? r.length : (r && r.total) || 0;
+  if (logs.length === 0) {
+    if ((levels.length || filter) && total > 0) return `(no console messages match — ${total} captured in all)`;
+    return "(no console messages captured)";
+  }
   return logs.map((l) => `[${l.level}] ${l.text}`).join("\n");
 }
+
+// netStatusMatch is toolargs.go netQuery.match's status half: items are a
+// code ("404"), a class ("4xx"), a range ("400-499"), "failed" or "pending".
+// The daemon has already rejected anything else.
+function netStatusMatch(spec, status, failed) {
+  const items = String(spec || "").toLowerCase().split(/[,\s|]+/).filter(Boolean);
+  if (!items.length) return true;
+  return items.some((it) => {
+    if (it === "failed" || it === "error" || it === "failure") return failed;
+    if (it === "pending") return !failed && !status;
+    if (failed) return false;
+    let m = /^([1-5])xx$/.exec(it);
+    if (m) return status >= m[1] * 100 && status <= m[1] * 100 + 99;
+    m = /^(\d{3})-(\d{3})$/.exec(it);
+    if (m) return status >= Number(m[1]) && status <= Number(m[2]);
+    return status === Number(it);
+  });
+}
+
+// netFilter is every get_network_requests filter as one predicate over
+// (method, url, status, failed).
+function netFilter(params) {
+  const url = String(params.filter || "").toLowerCase();
+  const methods = String(params.method || "").toUpperCase().split(/[,\s|]+/).filter(Boolean);
+  const status = params.status || "";
+  return {
+    any: !!(url || methods.length || status),
+    test: (method, u, st, failed) =>
+      (!url || String(u || "").toLowerCase().includes(url)) &&
+      (!methods.length || methods.includes(String(method || "").toUpperCase())) &&
+      netStatusMatch(status, st || 0, !!failed),
+  };
+}
+
+// NET_LIST_BODY_MAX keeps the list short (applogs.go netListBodyMax); id=
+// gives one request whole, up to NET_DETAIL_BODY_MAX.
+const NET_LIST_BODY_MAX = 200;
+const NET_DETAIL_BODY_MAX = 20000;
+const clipText = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
 
 // getNetworkRequests reads the buffer network-capture.js maintains on the
 // page's own window (MAIN world — same rationale as getConsoleLogs: an
@@ -1595,6 +1656,8 @@ async function getConsoleLogs(params) {
 // full="true" switches the tab to the debugger's Network domain instead
 // (startNetCapture): every request, response headers and bodies, until
 // full="false" or NET_CAPTURE_IDLE_MS without a read.
+//
+// filter/method/status narrow the list; id returns one request in full.
 async function getNetworkRequests(params) {
   let tabId = params.tabId;
   if (!tabId) {
@@ -1603,7 +1666,8 @@ async function getNetworkRequests(params) {
     tabId = active.id;
   }
   const max = params.max || 50;
-  const filter = (params.filter || "").toLowerCase();
+  const nf = netFilter(params);
+  const id = params.id === undefined || params.id === null ? "" : String(params.id).trim();
   const full = params.full === undefined || params.full === null || params.full === "" ? null : String(params.full).toLowerCase();
   if (full !== null && /^(false|no|0|off)$/.test(full)) {
     return (await stopNetCapture(tabId))
@@ -1613,28 +1677,46 @@ async function getNetworkRequests(params) {
   let started = false;
   if (full !== null && /^(true|yes|1|on)$/.test(full)) started = await startNetCapture(tabId);
   if (netCaptures.has(tabId)) {
-    const body = await netCaptureText(tabId, max, filter);
+    const body = id ? await netCaptureDetail(tabId, id) : await netCaptureText(tabId, max, nf);
     if (!started) return body;
     return `ok: full network capture started on tab ${tabId} — the debugger stays attached (Chrome shows its "started debugging" bar) until get_network_requests full="false", or ${NET_CAPTURE_IDLE_MS / 60000} minutes without a read. Reproduce the action, then call get_network_requests again (no need to repeat full).\n${body}`;
   }
+  // The page hands back every entry (filtering needs them all) but with the
+  // bodies cut to what a list line shows, or just the one entry asked for.
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (n, f) => {
-      const all = window.__aglinkNetwork || [];
-      const matched = f ? all.filter((e) => (e.url || "").toLowerCase().includes(f)) : all;
-      return matched.slice(-n);
+    func: (want, clip) => {
+      const all = (window.__aglinkNetwork || []).map((e, i) => (e.id != null ? e : { ...e, id: "i" + i }));
+      if (want) return all.filter((e) => String(e.id) === want);
+      const cut = (s) => (typeof s === "string" && s.length > clip ? s.slice(0, clip + 1) : s);
+      return all.map((e) => ({ ...e, requestHeaders: undefined, requestBody: cut(e.requestBody), responseBody: cut(e.responseBody) }));
     },
-    args: [max, filter],
+    args: [id, NET_LIST_BODY_MAX],
   });
-  const entries = (results && results[0] && results[0].result) || [];
-  if (entries.length === 0) return "(no network requests captured)";
+  const all = (results && results[0] && results[0].result) || [];
+  if (id) {
+    const e = all.find((x) => String(x.id) === id);
+    if (!e) return `(no captured request with id=${id} — the page keeps the last 300 and starts over when it reloads; list again)`;
+    const lines = [`${e.type} | ${e.method} ${e.url}`, `status: ${e.error ? `ERROR: ${e.error}` : `-> ${e.status} (${e.durationMs}ms)`}`];
+    if (e.requestHeaders && Object.keys(e.requestHeaders).length) lines.push(`request headers (as the page set them): ${JSON.stringify(e.requestHeaders)}`);
+    if (e.requestBody) lines.push(`request body: ${JSON.stringify(clipText(e.requestBody, NET_DETAIL_BODY_MAX))}`);
+    if (e.responseBody) lines.push(`response body: ${JSON.stringify(clipText(e.responseBody, NET_DETAIL_BODY_MAX))}`);
+    lines.push('(response headers need the debugger capture: get_network_requests full="true", then repeat the action)');
+    return lines.join("\n");
+  }
+  const entries = all.filter((e) => nf.test(e.method, e.url, e.status, !!e.error)).slice(-max);
+  if (entries.length === 0) {
+    if (nf.any && all.length) return `(no network requests match — ${all.length} captured in all)`;
+    return "(no network requests captured)";
+  }
   return entries
     .map((e, i) => {
       const parts = [`${i} | ${e.type} | ${e.method} ${e.url}`];
       parts.push(e.error ? `ERROR: ${e.error}` : `-> ${e.status} (${e.durationMs}ms)`);
-      if (e.requestBody) parts.push(`req=${JSON.stringify(e.requestBody)}`);
-      if (e.responseBody) parts.push(`resp=${JSON.stringify(e.responseBody)}`);
+      if (e.id != null) parts.push(`id=${e.id}`);
+      if (e.requestBody) parts.push(`req=${JSON.stringify(clipText(e.requestBody, NET_LIST_BODY_MAX))}`);
+      if (e.responseBody) parts.push(`resp=${JSON.stringify(clipText(e.responseBody, NET_LIST_BODY_MAX))}`);
       return parts.join(" | ");
     })
     .join("\n");
@@ -1651,8 +1733,6 @@ async function getNetworkRequests(params) {
 const netCaptures = new Map(); // tabId → { entries, byId, timer }
 const NET_CAPTURE_KEEP = 500;
 const NET_CAPTURE_IDLE_MS = 5 * 60 * 1000;
-const NET_BODY_MAX = 4000;
-const NET_HEADERS_MAX = 800;
 
 async function startNetCapture(tabId) {
   if (netCaptures.has(tabId)) return false;
@@ -1686,10 +1766,13 @@ async function stopNetCapture(tabId) {
   clearTimeout(c.timer);
   netCaptures.delete(tabId);
   const target = { tabId };
-  try {
-    await chrome.debugger.sendCommand(target, "Network.disable");
-  } catch (e) {
-    // tab gone or already detached
+  // Network.disable would also end emulate's network throttling.
+  if (!emulatedTabs.has(tabId)) {
+    try {
+      await chrome.debugger.sendCommand(target, "Network.disable");
+    } catch (e) {
+      // tab gone or already detached
+    }
   }
   // A certificate bypass that needs the debugger keeps it.
   if (!overrideCertTabs.has(tabId)) await detachDebugger(target);
@@ -1705,7 +1788,7 @@ function onNetworkEvent(source, method, params) {
       if (/^data:/.test(rq.url || "")) return;
       const e = {
         id: params.requestId, type: params.type || "", method: rq.method || "", url: rq.url || "",
-        postData: rq.postData || "", status: 0, headers: null, error: "", start: params.timestamp || 0, end: 0,
+        postData: rq.postData || "", reqHeaders: rq.headers || null, status: 0, headers: null, error: "", start: params.timestamp || 0, end: 0,
       };
       c.entries.push(e);
       c.byId.set(params.requestId, e); // a redirect reuses the id: the newest hop wins
@@ -1737,36 +1820,67 @@ function onNetworkEvent(source, method, params) {
 }
 
 // netCaptureText renders the capture in the same line format as an app
-// window's get_network_requests (applogs.go networkText), plus response
-// headers; bodies are fetched for finished text responses.
-async function netCaptureText(tabId, max, filter) {
+// window's get_network_requests (applogs.go networkText): bodies cut to a
+// preview, each line's id= for netCaptureDetail. nf is getNetworkRequests'
+// netFilter; bodies are fetched for finished text responses.
+async function netCaptureText(tabId, max, nf) {
   const c = netCaptures.get(tabId);
   touchNetCapture(tabId);
   const all = c ? c.entries : [];
-  const entries = (filter ? all.filter((e) => e.url.toLowerCase().includes(filter)) : all).slice(-max);
-  if (entries.length === 0) return "(no requests captured yet — capture runs from when full network capture started; reproduce the action now)";
-  const clip = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
+  const entries = all.filter((e) => nf.test(e.method, e.url, e.status, !!e.error)).slice(-max);
+  if (entries.length === 0) {
+    if (nf.any && all.length) return `(no network requests match — ${all.length} captured in all)`;
+    return "(no requests captured yet — capture runs from when full network capture started; reproduce the action now)";
+  }
   const lines = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
-    const parts = [`${i} | ${e.type.toLowerCase()} | ${e.method} ${e.url}`];
-    if (e.error) parts.push(`ERROR: ${e.error}`);
-    else if (!e.status) parts.push("-> (pending)");
-    else parts.push(`-> ${e.status}${e.end && e.start ? ` (${Math.round((e.end - e.start) * 1000)}ms)` : ""}`);
-    if (e.postData) parts.push(`req=${JSON.stringify(clip(e.postData, NET_BODY_MAX))}`);
-    if (e.headers) parts.push(`headers=${clip(JSON.stringify(e.headers), NET_HEADERS_MAX)}`);
-    const textual = !/^(image|font|video|audio)\//.test(e.mime || "") && !/^(Image|Font|Media|Stylesheet|Script)$/.test(e.type);
-    if (e.end && !e.error && e.status && textual) {
-      try {
-        const b = await chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId: e.id });
-        if (b && b.base64Encoded) parts.push(`resp=(binary, ${Math.floor(((b.body || "").length * 3) / 4)} bytes)`);
-        else if (b && b.body) parts.push(`resp=${JSON.stringify(clip(b.body, NET_BODY_MAX))}`);
-      } catch (err) {
-        // evicted from the browser's cache, or a redirect / preflight without a body
-      }
-    }
+    const parts = [`${i} | ${e.type.toLowerCase()} | ${e.method} ${e.url}`, netCaptureStatus(e), `id=${e.id}`];
+    if (e.postData) parts.push(`req=${JSON.stringify(clipText(e.postData, NET_LIST_BODY_MAX))}`);
+    const b = await netCaptureBody(tabId, e);
+    if (b && !b.binary) parts.push(`resp=${JSON.stringify(clipText(b.text, NET_LIST_BODY_MAX))}`);
     lines.push(parts.join(" | "));
   }
+  return lines.join("\n");
+}
+
+function netCaptureStatus(e) {
+  if (e.error) return `ERROR: ${e.error}`;
+  if (!e.status) return "-> (pending)";
+  return `-> ${e.status}${e.end && e.start ? ` (${Math.round((e.end - e.start) * 1000)}ms)` : ""}`;
+}
+
+// netCaptureBody fetches a finished text response's body: {text} or
+// {binary, bytes}, or null when there is none to show.
+async function netCaptureBody(tabId, e) {
+  const textual = !/^(image|font|video|audio)\//.test(e.mime || "") && !/^(Image|Font|Media|Stylesheet|Script)$/.test(e.type);
+  if (!e.end || e.error || !e.status || !textual) return null;
+  try {
+    const b = await chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId: e.id });
+    if (b && b.base64Encoded) return { binary: true, bytes: Math.floor(((b.body || "").length * 3) / 4) };
+    if (b && b.body) return { text: b.body };
+  } catch (err) {
+    // evicted from the browser's cache, or a redirect / preflight without a body
+  }
+  return null;
+}
+
+// netCaptureDetail is get_network_requests id= on the debugger capture: one
+// request with its headers both ways and whole bodies (applogs.go
+// networkDetail).
+async function netCaptureDetail(tabId, id) {
+  const c = netCaptures.get(tabId);
+  touchNetCapture(tabId);
+  const e = c && c.byId.get(id);
+  if (!e) return `(no captured request with id=${id} — it may have been dropped from the last ${NET_CAPTURE_KEEP}; list again)`;
+  const lines = [`${e.type.toLowerCase()} | ${e.method} ${e.url}`, `status: ${netCaptureStatus(e)}`];
+  if (e.reqHeaders) lines.push(`request headers: ${JSON.stringify(e.reqHeaders)}`);
+  if (e.postData) lines.push(`request body: ${JSON.stringify(clipText(e.postData, NET_DETAIL_BODY_MAX))}`);
+  if (e.headers) lines.push(`response headers: ${JSON.stringify(e.headers)}`);
+  if (e.mime) lines.push(`mime: ${e.mime}`);
+  const b = await netCaptureBody(tabId, e);
+  if (b && b.binary) lines.push(`response body: (binary, ${b.bytes} bytes)`);
+  else if (b) lines.push(`response body: ${JSON.stringify(clipText(b.text, NET_DETAIL_BODY_MAX))}`);
   return lines.join("\n");
 }
 
@@ -1974,9 +2088,10 @@ async function attachDebugger(target) {
 }
 
 async function detachDebugger(target) {
-  // A full network capture holds the debugger until it is stopped; a
-  // borrowed attach (dialog check, upload, typing) must not end it.
-  if (netCaptures.has(target.tabId)) return;
+  // A full network capture and an emulation hold the debugger until they
+  // are stopped; a borrowed attach (dialog check, upload, typing) must not
+  // end them.
+  if (netCaptures.has(target.tabId) || emulatedTabs.has(target.tabId)) return;
   debuggerTabs.delete(target.tabId);
   overrideCertTabs.delete(target.tabId);
   // Detached, the tab's dialog events stop arriving; what we knew goes stale.
@@ -2164,6 +2279,9 @@ async function proceedInsecure(params) {
 // cross-origin one is outlined here by running in that frame, appended as its
 // own section — its refs are the frame's own, reached with
 // "frame=ref=<iframe ref> >> ref=eN".
+//
+// withPage (set by the daemon, for page_snapshot diff — snapdiff.go) puts a
+// "[aglink-page tab=N url=…]" line on top; the daemon takes it off again.
 async function pageSnapshot(params) {
   const tabId = await activeTabId(params);
   const maxLines = params.maxLines || 200;
@@ -2197,7 +2315,111 @@ async function pageSnapshot(params) {
       // a frame the extension may not script
     }
   }
+  if (params.withPage) {
+    let url = "";
+    try {
+      url = ((await chrome.tabs.get(tabId)) || {}).url || "";
+    } catch (e) {
+      // tab gone mid-call; the daemon then compares by content alone
+    }
+    out = `[aglink-page tab=${tabId} url=${url}]\n${out}`;
+  }
   return out;
+}
+
+// ---- emulation (emulate) -------------------------------------------------------
+//
+// The daemon works out the DevTools commands (toolargs.go buildEmulatePlan:
+// device presets, throttling figures, argument checks); this side sends them
+// on the tab's debugger and keeps the debugger attached, since Chrome drops
+// every emulation the moment it detaches. emulatedTabs holds the prefers-*
+// media features set so far: Emulation.setEmulatedMedia replaces the whole
+// list, so each call sends the merged set. reset clears it all and lets the
+// debugger go (unless a full network capture or certificate bypass holds it).
+
+const emulatedTabs = new Map(); // tabId → { media: { feature: value } }
+
+async function emulate(params) {
+  const tabId = await activeTabId(params);
+  const cmds = Array.isArray(params.cmds) ? params.cmds : [];
+  if (!chrome.debugger) throw new Error("emulate needs the debugger permission — reload the aglink-web extension");
+  const target = { tabId };
+  if (params.reset) {
+    const had = emulatedTabs.delete(tabId);
+    if (debuggerTabs.has(tabId)) {
+      for (const c of cmds) {
+        try {
+          await chrome.debugger.sendCommand(target, c.method, c.params || {});
+        } catch (e) {
+          // best effort: detaching undoes it anyway
+        }
+      }
+      try {
+        await chrome.debugger.sendCommand(target, "Emulation.setEmulatedMedia", { media: "", features: [] });
+      } catch (e) {
+        // as above
+      }
+      await detachDebugger(target);
+    }
+    return had
+      ? `ok: emulation cleared on tab ${tabId} — viewport, user agent, media features, network and geolocation are the browser's own again`
+      : `ok: nothing was being emulated on tab ${tabId}`;
+  }
+  if (!cmds.length && !params.media) throw new Error("emulate: nothing to emulate (the daemon sends the settings as cmds)");
+  await attachDebugger(target);
+  const state = emulatedTabs.get(tabId) || { media: {} };
+  emulatedTabs.set(tabId, state);
+  for (const c of cmds) {
+    try {
+      await chrome.debugger.sendCommand(target, c.method, c.params || {});
+    } catch (e) {
+      throw new Error(`emulate: ${c.method}: ${e && e.message ? e.message : e}`);
+    }
+  }
+  if (params.media && typeof params.media === "object") {
+    for (const [k, v] of Object.entries(params.media)) {
+      if (v) state.media[k] = v;
+      else delete state.media[k];
+    }
+    const features = Object.keys(state.media).sort().map((name) => ({ name, value: state.media[name] }));
+    try {
+      await chrome.debugger.sendCommand(target, "Emulation.setEmulatedMedia", { media: "", features });
+    } catch (e) {
+      throw new Error(`emulate: Emulation.setEmulatedMedia: ${e && e.message ? e.message : e}`);
+    }
+  }
+  return `ok: emulating ${params.summary || "the given settings"} on tab ${tabId} — lasts while the debugger stays attached (Chrome shows its "started debugging" bar; dismissing it ends the emulation); emulate reset="true" clears it`;
+}
+
+// ---- computed styles and web storage (get_styles, storage) -----------------
+
+// getStyles reports an element's computed CSS and box through the shared
+// page function (page-actions.js P.getStyles), which formats the reply.
+async function getStyles(params) {
+  const selector = params.selector;
+  if (!selector) throw new Error("get_styles requires 'selector'");
+  const tabId = await activeTabId(params);
+  const r = await runPage(tabId, selector, "getStyles", (sel) => [sel, params.properties || null, params.pseudo || null]);
+  if (!r || !r.found) throw notFound(selector, r);
+  return withNote(r.text, r);
+}
+
+// storageCmd reads or writes the page origin's localStorage/sessionStorage
+// (page-actions.js P.storage). The daemon has checked action/area/key.
+async function storageCmd(params) {
+  const tabId = await activeTabId(params);
+  const action = String(params.action || "get").toLowerCase() === "remove" ? "delete" : String(params.action || "get").toLowerCase();
+  const area = /^session/i.test(String(params.area || "")) ? "session" : "local";
+  await ensureHelpers(tabId);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (name, args) => globalThis.__aglinkPage[name](...args),
+    args: ["storage", [action, area, params.key || null, params.value === undefined ? "" : String(params.value), params.maxChars || DEFAULT_MAX_CHARS]],
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r) throw new Error("storage returned no result (the page may block script injection)");
+  if (!r.ok) throw new Error(r.error || "storage failed");
+  return r.text;
 }
 
 // ---- file upload -------------------------------------------------------------
@@ -2299,6 +2521,7 @@ const DIALOG_WATCHED = new Set([
   "get_page_text", "element_exists", "click", "double_click", "hover", "drag", "get_html",
   "query_all", "eval", "get_attribute", "list_elements", "wait_for_element", "type",
   "get_value", "key", "scroll", "select_option", "get_console_logs", "get_network_requests",
+  "get_styles", "storage",
 ]);
 
 function onDialogEvent(source, method, params) {
@@ -2529,6 +2752,7 @@ if (chrome.tabs.onRemoved) {
     const c = netCaptures.get(tabId);
     if (c) clearTimeout(c.timer);
     netCaptures.delete(tabId);
+    emulatedTabs.delete(tabId);
   });
 }
 if (chrome.tabs.onCreated && chrome.tabs.onCreated.addListener) {
@@ -2544,6 +2768,7 @@ if (chrome.debugger) {
       const c = netCaptures.get(source.tabId);
       if (c) clearTimeout(c.timer);
       netCaptures.delete(source.tabId);
+      emulatedTabs.delete(source.tabId);
     }
   });
   if (chrome.debugger.onEvent) {

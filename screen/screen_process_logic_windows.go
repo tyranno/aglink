@@ -26,6 +26,10 @@ type procInfo struct {
 	Name  string  // executable name, e.g. "notepad.exe"
 	MemMB float64 // working set; 0 when it could not be read (access denied)
 	Title string  // first visible window title, "" if none
+	// Windows is every visible top-level window title the process owns. One
+	// process can host several windows (Windows 11 Notepad keeps all its
+	// windows in one), so killing it closes all of them.
+	Windows []string
 }
 
 // criticalProcesses are executables kill_process never terminates: killing one
@@ -76,8 +80,24 @@ func killRefusal(p procInfo, self, parent uint32, force bool) string {
 		return "the session that runs this screen server"
 	case name == "explorer.exe" && !force:
 		return "the Windows shell (pass force=true to restart it)"
+	case len(p.Windows) > 0 && !force:
+		return fmt.Sprintf("it has %d open window(s) that would all close, unsaved work lost: %s — close the one you mean with close_window, or pass force=true", len(p.Windows), quoteTitles(p.Windows))
 	}
 	return ""
+}
+
+// quoteTitles lists window titles for a refusal, the first few in full.
+func quoteTitles(ts []string) string {
+	const show = 5
+	q := make([]string, 0, show+1)
+	for i, t := range ts {
+		if i == show {
+			q = append(q, fmt.Sprintf("… %d more", len(ts)-show))
+			break
+		}
+		q = append(q, strconv.Quote(t))
+	}
+	return strings.Join(q, ", ")
 }
 
 // filterSortProcs keeps the processes whose name or window title contains

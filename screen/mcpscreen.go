@@ -471,10 +471,10 @@ func newScreenMCPServer() *server.MCPServer {
 	// system-critical and aglink's own processes (killRefusal).
 	s.AddTool(
 		mcp.NewTool("kill_process",
-			mcp.WithDescription("Forcefully terminate a process (TerminateProcess — unsaved work in it is LOST; prefer close_window for an app that still responds). Give 'pid', or 'name' to kill EVERY process whose executable is exactly that name (\"notepad\" or \"notepad.exe\"; no substring matching — check with list_processes first). Refuses system-critical processes (csrss, wininit, winlogon, services, lsass, smss, svchost, dwm, System, …), aglink's own processes and the session running this server; explorer.exe only with force=true. Reports each process killed or refused."),
+			mcp.WithDescription("Forcefully terminate a process (TerminateProcess — unsaved work in it is LOST; prefer close_window for an app that still responds). Give 'pid', or 'name' to kill EVERY process whose executable is exactly that name (\"notepad\" or \"notepad.exe\"; no substring matching — check with list_processes first). Refuses system-critical processes (csrss, wininit, winlogon, services, lsass, smss, svchost, dwm, System, …), aglink's own processes and the session running this server; explorer.exe and any process that has open windows only with force=true (one process can own several windows — Windows 11 Notepad keeps all of its windows in one — and they all close; the refusal lists them, so close the one you mean with close_window instead). Reports each process killed or refused."),
 			mcp.WithNumber("pid", mcp.Description("Process id to kill (from list_processes).")),
 			mcp.WithString("name", mcp.Description("Exact executable name to kill instead of a pid; all instances are killed.")),
-			mcp.WithBoolean("force", mcp.Description("Allow killing explorer.exe (the shell; Windows restarts it). Never overrides the other protections. Default false.")),
+			mcp.WithBoolean("force", mcp.Description("Allow killing explorer.exe (the shell; Windows restarts it) or a process with open windows (all of them close). Never overrides the other protections. Default false.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			pid := req.GetInt("pid", 0)

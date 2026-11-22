@@ -47,13 +47,11 @@ func listProcesses() ([]procInfo, error) {
 	}
 	defer windows.CloseHandle(snap)
 
-	titles := map[uint32]string{}
+	titles := map[uint32][]string{}
 	for _, w := range enumWindows() {
 		var pid uint32
 		procGetWindowThreadPID.Call(w.HWND, uintptr(unsafe.Pointer(&pid)))
-		if _, seen := titles[pid]; !seen {
-			titles[pid] = w.Title
-		}
+		titles[pid] = append(titles[pid], w.Title)
 	}
 
 	var out []procInfo
@@ -63,8 +61,11 @@ func listProcesses() ([]procInfo, error) {
 		p := procInfo{
 			PID:   pe.ProcessID,
 			PPID:  pe.ParentProcessID,
-			Name:  windows.UTF16ToString(pe.ExeFile[:]),
-			Title: titles[pe.ProcessID],
+			Name:    windows.UTF16ToString(pe.ExeFile[:]),
+			Windows: titles[pe.ProcessID],
+		}
+		if len(p.Windows) > 0 {
+			p.Title = p.Windows[0]
 		}
 		p.MemMB = processMemMB(p.PID)
 		out = append(out, p)

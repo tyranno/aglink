@@ -65,6 +65,15 @@ func TestKillRefusal(t *testing.T) {
 	if why := killRefusal(procInfo{PID: 7000, Name: "notepad.exe"}, self, parent, false); why != "" {
 		t.Errorf("an ordinary process was refused: %s", why)
 	}
+	// A process with open windows (Windows 11 Notepad hosts all of its windows
+	// in one process) needs force, since every window would close with it.
+	np := procInfo{PID: 7001, Name: "Notepad.exe", Windows: []string{"제목 없음 - 메모장", "a.txt - 메모장"}}
+	if why := killRefusal(np, self, parent, false); !strings.Contains(why, "2 open window") || !strings.Contains(why, "a.txt - 메모장") {
+		t.Errorf("windowed process: got %q", why)
+	}
+	if why := killRefusal(np, self, parent, true); why != "" {
+		t.Errorf("windowed process with force refused: %s", why)
+	}
 }
 
 func TestFilterSortProcs(t *testing.T) {

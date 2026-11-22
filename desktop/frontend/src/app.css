@@ -696,13 +696,24 @@ html.compact.dark .msg-group-start {
 html.compact .bubble {
   box-shadow: none !important;
   --tw-ring-shadow: 0 0 #0000;
-  border-radius: 0 !important;
-  padding-inline: 0.15rem;
+  border-radius: 6px !important;
+  padding-inline: 0.55rem;
 }
 
-html.compact .bubble-ai,
+html.compact .bubble-ai {
+  background: #f1f3f6 !important;
+}
+
 html.compact .bubble-user {
-  background: transparent !important;
+  background: #e4edff !important;
+}
+
+html.compact.dark .bubble-ai {
+  background: #2a2a2e !important;
+}
+
+html.compact.dark .bubble-user {
+  background: #22314d !important;
 }
 
 html.compact .bubble-system {

@@ -716,6 +716,14 @@ html.compact.dark .bubble-user {
   background: #22314d !important;
 }
 
+html.compact .bubble .markdown-body :not(pre) > code {
+  background: #e1e5eb;
+}
+
+html.compact.dark .bubble .markdown-body :not(pre) > code {
+  background: #3a3a40;
+}
+
 html.compact .bubble-system {
   background: #fff8e1 !important;
   --tw-ring-shadow: 0 0 0 1px #f2dfa7;

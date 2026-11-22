@@ -481,25 +481,39 @@
       wrap.className = "md-code-wrap";
       pre.replaceWith(wrap);
       wrap.appendChild(pre);
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "md-code-copy";
-      btn.textContent = "복사";
-      btn.title = "코드 복사";
-      btn.setAttribute("aria-label", "코드 복사");
-      btn.addEventListener("click", (event) => {
-        event.stopPropagation();
-        navigator.clipboard?.writeText(text || "").then(() => {
-          btn.textContent = "복사됨";
-          btn.classList.add("md-code-copy-done");
-          setTimeout(() => {
-            btn.textContent = "복사";
-            btn.classList.remove("md-code-copy-done");
-          }, 1200);
-        }).catch(() => {});
-      });
-      wrap.appendChild(btn);
+      wrap.appendChild(codeCopyButton("md-code-copy", "복사", "코드 복사", text));
     });
+    // A one-line command in `backticks` (anything with a space, e.g. `npm run build`).
+    root.querySelectorAll("code").forEach((code) => {
+      if (code.closest("pre")) return;
+      const text = code.textContent || "";
+      if (!/\S\s+\S/.test(text)) return;
+      code.after(codeCopyButton("md-inline-copy", "", "명령 복사", text));
+    });
+  }
+
+  function codeCopyButton(className, label, title, text) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = className;
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+    const icon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    const check = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+    const show = (svg, text) => { btn.innerHTML = svg + (text ? `<span>${text}</span>` : ""); };
+    show(icon, label);
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navigator.clipboard?.writeText(text).then(() => {
+        show(check, label ? "복사됨" : "");
+        btn.classList.add("md-copy-done");
+        setTimeout(() => {
+          show(icon, label);
+          btn.classList.remove("md-copy-done");
+        }, 1200);
+      }).catch(() => {});
+    });
+    return btn;
   }
 
   function renderMarkdownInto(el, text) {
@@ -1787,8 +1801,15 @@
     line-height: 1.4;
     color: #cbd5e1;
     cursor: pointer;
-    opacity: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0.8;
     transition: opacity 0.15s, background-color 0.15s;
+  }
+  :global(.md-code-copy svg) {
+    width: 12px;
+    height: 12px;
   }
   :global(.md-code-wrap:hover .md-code-copy) {
     opacity: 1;
@@ -1796,10 +1817,39 @@
   :global(.md-code-copy:hover) {
     background: rgba(255, 255, 255, 0.16);
   }
-  :global(.md-code-copy-done) {
-    opacity: 1 !important;
+  :global(.md-code-copy.md-copy-done) {
+    opacity: 1;
     color: #6ee7b7;
     border-color: rgba(110, 231, 183, 0.4);
+  }
+  :global(.md-inline-copy) {
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin-left: 2px;
+    border-radius: 4px;
+    vertical-align: -3px;
+    color: #64748b;
+    cursor: pointer;
+  }
+  :global(.md-inline-copy svg) {
+    width: 12px;
+    height: 12px;
+  }
+  :global(.md-inline-copy:hover) {
+    background: rgba(15, 23, 42, 0.08);
+    color: #1d4ed8;
+  }
+  :global(.dark .md-inline-copy) {
+    color: #94a3b8;
+  }
+  :global(.dark .md-inline-copy:hover) {
+    background: rgba(255, 255, 255, 0.1);
+    color: #93c5fd;
+  }
+  :global(.md-inline-copy.md-copy-done) {
+    color: #059669;
   }
   /* VS Code Dark+ token colors — the code box itself is always dark (see
      .markdown-body pre above), so these apply the same in light/dark mode. */

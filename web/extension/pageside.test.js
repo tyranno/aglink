@@ -158,3 +158,125 @@ test("network-capture.js counts fetch and XHR in flight", async () => {
   await new Promise((r) => setTimeout(r, 10));
   assert.strictEqual(st.pending.size, 0);
 });
+
+// ---- honest results: ambiguity notes, near misses ----------------------------
+
+test("text= counts distinct elements, not every ancestor, and notes an ambiguous pick", () => {
+  const sb = loadPage(h("div", {}, h("button", { id: "a" }, "Save")), h("div", {}, h("button", { id: "b" }, "Save")));
+  const info = sb.__aglink.resolveInfo("text=Save");
+  assert.strictEqual(info.count, 2, "the two buttons, not their divs, <body> and <html>");
+  assert.strictEqual(info.el.getAttribute("id"), "a");
+  assert.match(info.note, /^matched 2 elements, used the first: 1\) button#a "Save" 2\) button#b "Save"/);
+  const one = sb.__aglink.resolveInfo("#b");
+  assert.strictEqual(one.note, "");
+  const r = sb.__aglinkPage.getValue("button");
+  assert.match(r.note, /matched 2 elements/);
+});
+
+test("a selector that matches nothing names what nearly matched", () => {
+  const sb = loadPage(h("button", { id: "save-draft" }, "Save draft"), h("a", { href: "/x" }, "Help"));
+  const r = sb.__aglinkPage.getAttribute('text="Save"', "id");
+  assert.strictEqual(r.found, false);
+  assert.match(r.hint, /^similar elements: button#save-draft "Save draft"/);
+  assert.match(sb.__aglink.nearMiss("#save-draft-btn") || "", /^$/, "no needle matches: nothing to say");
+  assert.match(sb.__aglink.nearMiss("ref=e99"), /take a new page_snapshot/);
+});
+
+// ---- click actionability ------------------------------------------------------
+
+test("click waits for a disabled button and then says why it gave up", async () => {
+  const btn = h("button", { id: "pay" }, "Pay");
+  btn.disabled = true;
+  const sb = loadPage(btn);
+  const r = await sb.__aglinkPage.click("#pay", "left", { timeout: 150 });
+  assert.strictEqual(btn.clicks, undefined, "a disabled button is not clicked");
+  assert.match(r.blocked, /^cannot click button#pay "Pay" matched by #pay: it is disabled \(waited 150ms\)/);
+  // It is clicked as soon as it becomes enabled within the wait.
+  setTimeout(() => { btn.disabled = false; }, 120);
+  const ok = await sb.__aglinkPage.click("#pay", "left", { timeout: 1000 });
+  assert.strictEqual(ok.found, true);
+  assert.strictEqual(ok.blocked, undefined);
+  assert.strictEqual(btn.clicks, 1);
+  // force clicks at once, checks or not.
+  btn.disabled = true;
+  await sb.__aglinkPage.click("#pay", "left", { force: true });
+  assert.strictEqual(btn.clicks, 2);
+});
+
+test("click reports what covers the element, and a hidden one as not visible", async () => {
+  const btn = h("button", { id: "go" }, "Go");
+  const overlay = h("div", { class: "modal-backdrop" });
+  const hidden = h("button", { id: "later" }, "Later");
+  hidden.hidden = true;
+  const sb = loadPage(btn, overlay, hidden);
+  sb.innerWidth = 1000;
+  sb.innerHeight = 800;
+  sb.document.elementFromPoint = () => overlay;
+  const r = await sb.__aglinkPage.click("#go", "left", { timeout: 50 });
+  assert.match(r.blocked, /it is covered by div\.modal-backdrop/);
+  sb.document.elementFromPoint = () => btn.childNodes[0].parentNode; // the button itself
+  assert.strictEqual((await sb.__aglinkPage.click("#go", "left", { timeout: 50 })).blocked, undefined);
+  const h2 = await sb.__aglinkPage.click("#later", "left", { timeout: 50 });
+  assert.match(h2.blocked, /it is not visible/);
+  const miss = await sb.__aglinkPage.click("#nope", "left", { timeout: 50 });
+  assert.strictEqual(miss.found, false);
+});
+
+// ---- type modes -----------------------------------------------------------------
+
+test("type into a contenteditable goes through insertText, append keeps the text", () => {
+  const ed = h("div", { contenteditable: "true" }, "old");
+  ed.isContentEditable = true;
+  const input = h("input", { id: "q", value: "ab" });
+  const sb = loadPage(ed, input);
+  const cmds = [];
+  sb.document.execCommand = (cmd, ui, v) => { cmds.push([cmd, v]); return true; };
+  const r = sb.__aglinkPage.typeText("div", "new", "set");
+  assert.strictEqual(r.via, "insertText");
+  assert.deepStrictEqual(cmds, [["insertText", "new"]]);
+  // An input appends through its value.
+  sb.HTMLInputElement = undefined;
+  sb.__aglinkPage.typeText("#q", "c", "append");
+  assert.strictEqual(input.value, "abc");
+  sb.__aglinkPage.typeText("#q", "z", "set");
+  assert.strictEqual(input.value, "z");
+  // An editor that refuses insertText falls back to setting the text.
+  sb.document.execCommand = () => false;
+  assert.strictEqual(sb.__aglinkPage.typeText("div", "x", "set").via, "textContent");
+});
+
+test("focusForKeys focuses the element for real typing", () => {
+  const ta = h("textarea", { id: "m" });
+  const sb = loadPage(ta);
+  const r = sb.__aglinkPage.focusForKeys("#m");
+  assert.strictEqual(r.found, true);
+  assert.strictEqual(r.focused, true);
+  assert.strictEqual(sb.document.activeElement, ta);
+});
+
+// ---- iframes --------------------------------------------------------------------
+
+test("frame= reaches into a same-origin iframe; snapshot and page text include it", () => {
+  const { makeDoc } = require("./fakedom.js");
+  const frame = h("iframe", { src: "/inner.html", id: "f" });
+  const sb = loadPage(h("h1", {}, "Top"), frame);
+  const inner = makeDoc(sb, h("button", { id: "pay" }, "결제"));
+  frame.contentDocument = inner;
+  const el = sb.__aglink.resolve("frame=#f >> #pay");
+  assert.strictEqual(el && el.getAttribute("id"), "pay");
+  assert.strictEqual(sb.__aglink.resolve("#pay"), null, "the top document does not see inside");
+  const snap = sb.__aglinkPage.snapshot(100);
+  assert.match(snap, /- iframe "\/inner\.html" \[ref=e1\]:\n  - button "결제" \[ref=e2\]/);
+  assert.strictEqual(sb.__aglink.resolve("ref=e2"), el, "refs inside a same-origin iframe resolve from the top");
+  const text = sb.__aglinkPage.getPageText(null).text;
+  assert.match(text, /\[iframe \/inner\.html\]\n결제/);
+  // A cross-origin frame (no readable document) is named, and listed for the extension.
+  frame.contentDocument = null;
+  const x = sb.__aglinkPage.snapshot(100, { frames: true });
+  assert.match(x.text, /iframe "\/inner\.html" \[ref=e1, cross-origin/);
+  assert.strictEqual(x.xframes[0].ref, "e1");
+  assert.match(sb.__aglink.nearMiss("frame=#f >> #pay"), /cross-origin/);
+  const info = sb.__aglinkPage.frameInfo("#f");
+  assert.strictEqual(info.isFrame, true);
+  assert.strictEqual(info.sameOrigin, false);
+});

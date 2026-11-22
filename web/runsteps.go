@@ -39,10 +39,14 @@ type runStep struct {
 	Args   map[string]any
 	WaitMs int  // pause after this step
 	Full   bool // keep this step's whole output instead of a one-line summary
+	// FollowPopup moves the rest of the batch to a tab this step opened (a
+	// click on a target=_blank link, a window.open) — the extension reports
+	// it as "opened new tab id=N".
+	FollowPopup bool
 }
 
 // Step keys that steer run_steps itself rather than being passed to the tool.
-var stepControlKeys = map[string]bool{"tool": true, "wait_ms": true, "full": true}
+var stepControlKeys = map[string]bool{"tool": true, "wait_ms": true, "full": true, "follow_popup": true}
 
 // parseSteps accepts the steps as a JSON string (how MCP clients pass them) or
 // an already-decoded array (a /call body).
@@ -87,6 +91,12 @@ func parseSteps(v any) ([]runStep, error) {
 		}
 		st := runStep{Tool: tool, Args: map[string]any{}, WaitMs: intp(m, "wait_ms", 0)}
 		st.Full, _ = m["full"].(bool)
+		switch v := m["follow_popup"].(type) {
+		case bool:
+			st.FollowPopup = v
+		case string:
+			st.FollowPopup = isTrue(v)
+		}
 		for k, v := range m {
 			if !stepControlKeys[k] {
 				st.Args[k] = v
@@ -100,6 +110,7 @@ func parseSteps(v any) ([]runStep, error) {
 var (
 	navigatedTabRE = regexp.MustCompile(`^ok: navigated tab (\d+)`)
 	activatedTabRE = regexp.MustCompile(`^ok: activated tab (\d+)`)
+	openedTabRE    = regexp.MustCompile(`(?m)^opened new tab id=(\d+)`)
 )
 
 // runSteps executes the batch. params: steps (required), tabId, snapshot
@@ -145,11 +156,20 @@ func (d *Daemon) runSteps(sess callSession, params map[string]any, profile strin
 			} else if m := activatedTabRE.FindStringSubmatch(text); m != nil {
 				tab, _ = strconv.Atoi(m[1])
 			}
+			follow := ""
+			if m := openedTabRE.FindStringSubmatch(text); m != nil {
+				if st.FollowPopup {
+					tab, _ = strconv.Atoi(m[1])
+					follow = " → following tab " + m[1]
+				} else {
+					follow = " (add \"follow_popup\": true to this step to continue in tab " + m[1] + ")"
+				}
+			}
 			detail := oneLine(text, stepDetailMax)
 			if st.Full {
 				detail = clip(text, stepDetailFullMax)
 			}
-			lines = append(lines, fmt.Sprintf("%d %s ✓ %s", i+1, st.Tool, detail))
+			lines = append(lines, fmt.Sprintf("%d %s ✓ %s%s", i+1, st.Tool, detail, follow))
 		}
 		if st.WaitMs > 0 {
 			time.Sleep(capWait(time.Duration(st.WaitMs) * time.Millisecond))

@@ -392,15 +392,120 @@ async function dispatch(method, params) {
 // re-injecting just re-defines the global. Injection failures (e.g. a
 // chrome:// page that forbids scripting) are swallowed: the action func falls
 // back to document.querySelector, preserving the old behavior.
-async function ensureHelpers(tabId) {
+// Takes a tab id or a full executeScript target (a frame, see locate).
+async function ensureHelpers(tabOrTarget) {
+  const target = typeof tabOrTarget === "object" ? tabOrTarget : { tabId: tabOrTarget };
   try {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       files: ["aglink-inject.js", "page-actions.js"],
     });
   } catch (e) {
     // Non-fatal — see comment above.
   }
+}
+
+// ---- frames -------------------------------------------------------------------
+//
+// A selector "frame=<frame selector> >> <selector>" acts inside an iframe.
+// The in-page resolver can reach a same-origin frame's document itself, but a
+// cross-origin one only by running in that frame — executeScript with its
+// frameId. locate walks the frame= hops: each is resolved in the frame found
+// so far (page-actions.js P.frameInfo), its Chrome frame id taken from
+// runtime.getFrameId (or, failing that, matched by URL in
+// webNavigation.getAllFrames), and the rest of the selector then runs there.
+
+function frameTarget(tabId, frameId) {
+  return frameId ? { tabId, frameIds: [frameId] } : { tabId };
+}
+
+function splitFrameSelector(sel) {
+  const m = /^\s*frame=([\s\S]+?)\s*>>\s*([\s\S]+)$/.exec(sel || "");
+  return m ? { frame: m[1].trim(), inner: m[2].trim() } : null;
+}
+
+// frameIdByUrl finds a child frame of parentFrameId whose URL is src.
+async function frameIdByUrl(tabId, parentFrameId, src) {
+  if (!src || !chrome.webNavigation || !chrome.webNavigation.getAllFrames) return null;
+  try {
+    const frames = (await chrome.webNavigation.getAllFrames({ tabId })) || [];
+    const kids = frames.filter((f) => f.parentFrameId === (parentFrameId || 0));
+    const hit = kids.find((f) => f.url === src) || kids.find((f) => f.url && (f.url.startsWith(src) || src.startsWith(f.url)));
+    return hit ? hit.frameId : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// locate returns where a selector runs: {target, selector, frameId}, with
+// the frame= hops taken off. A frame that cannot be found throws, with a hint.
+// When every hop is same-origin, sameOrigin is set: the full selector also
+// works from the top frame (runPage's fallback if the frame itself refuses
+// scripting, e.g. some about:blank frames).
+async function locate(tabId, selector) {
+  let frameId = 0;
+  let rest = selector;
+  let sameOrigin = true;
+  for (let hop = 0; hop < 5; hop++) {
+    const fs = splitFrameSelector(rest);
+    if (!fs) break;
+    const target = frameTarget(tabId, frameId);
+    await ensureHelpers(target);
+    const results = await chrome.scripting.executeScript({
+      target,
+      func: (name, args) => globalThis.__aglinkPage[name](...args),
+      args: ["frameInfo", [fs.frame]],
+    });
+    const r = results && results[0] && results[0].result;
+    if (!r || !r.found) throw new Error(`no frame matched selector: ${fs.frame}${r && r.hint ? ` — ${r.hint}` : ""}`);
+    if (!r.isFrame) throw new Error(`frame=${fs.frame} matched ${r.desc || "<" + r.tag + ">"}, which is not an <iframe>`);
+    sameOrigin = sameOrigin && !!r.sameOrigin;
+    let id = typeof r.frameId === "number" ? r.frameId : await frameIdByUrl(tabId, frameId, r.src);
+    if (id == null) {
+      if (sameOrigin) return { target: { tabId }, selector, frameId: 0, sameOrigin };
+      throw new Error(`could not find the browser frame for ${fs.frame} (src ${r.src || "none"})`);
+    }
+    frameId = id;
+    rest = fs.inner;
+  }
+  return { target: frameTarget(tabId, frameId), selector: rest, frameId, sameOrigin };
+}
+
+// runPage runs a shared page function (page-actions.js) for selector:
+// argsFor(sel) builds its arguments from the selector as it applies in the
+// frame it runs in. Returns the function's result.
+async function runPage(tabId, selector, name, argsFor) {
+  const exec = async (target, sel) => {
+    await ensureHelpers(target);
+    const results = await chrome.scripting.executeScript({
+      target,
+      func: (n, args) => globalThis.__aglinkPage[n](...args),
+      args: [name, argsFor(sel)],
+    });
+    return results && results[0] && results[0].result;
+  };
+  if (!splitFrameSelector(selector)) return exec({ tabId }, selector);
+  const loc = await locate(tabId, selector);
+  if (!loc.frameId) return exec(loc.target, loc.selector);
+  try {
+    const r = await exec(loc.target, loc.selector);
+    if (r != null || !loc.sameOrigin) return r;
+  } catch (e) {
+    if (!loc.sameOrigin) throw e;
+  }
+  return exec({ tabId }, selector);
+}
+
+// notFound is the error for a selector that matched nothing, with the page's
+// hint at what nearly matched (aglink-inject.js nearMiss).
+function notFound(selector, r) {
+  return new Error(`no element matched selector: ${selector}${r && r.hint ? ` — ${r.hint}` : ""}`);
+}
+
+// withNote appends a page result's ambiguity note ("matched 3 elements, used
+// the first: …") to a tool's reply.
+function withNote(text, r) {
+  return r && r.note ? `${text}\nnote: ${r.note}` : text;
 }
 
 // activeTabId returns params.tabId or the active tab of the focused window,
@@ -448,9 +553,13 @@ async function navigate(params) {
     // which may be the user's own.
     if (params.group) await addToSessionGroup(tab.id, String(params.group), String(params.groupTitle || ""));
   }
-  await waitForComplete(tab.id);
+  const loadMs = navigateLoadTimeoutMs();
+  const loaded = await waitForComplete(tab.id, loadMs);
   const updated = await chrome.tabs.get(tab.id);
-  const ok = `ok: navigated tab ${updated.id} — ${updated.title || ""} — ${updated.url || ""}`;
+  // A page that is still loading is reported as such, not as done: its
+  // content may not be there yet.
+  const still = loaded ? "" : ` (still loading after ${Math.round(loadMs / 1000)}s)`;
+  const ok = `ok: navigated tab ${updated.id} — ${updated.title || ""} — ${updated.url || ""}${still}`;
   // A certificate problem does not fail the navigation: Chrome shows its own
   // warning page in the tab, and every later tool would fail on it with an
   // opaque "showing error page". Say so here, with the way past it.
@@ -509,15 +618,22 @@ async function getPageText(params) {
   const cursor = hasCursor ? Math.floor(params.cursor) : -1;
   const offset = Number.isFinite(params.offset) ? Math.floor(params.offset) : 0;
 
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["getPageText", [selector]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (selector && (!r || !r.found)) throw new Error(`no element matched selector: ${selector}`);
-  const full = (r && r.text) || "";
+  let r;
+  if (selector) {
+    r = await runPage(tabId, selector, "getPageText", (sel) => [sel]);
+  } else {
+    await ensureHelpers(tabId);
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (name, args) => globalThis.__aglinkPage[name](...args),
+      args: ["getPageText", [selector, { frames: true }]],
+    });
+    r = results && results[0] && results[0].result;
+  }
+  if (selector && (!r || !r.found)) throw notFound(selector, r);
+  let full = (r && r.text) || "";
+  // Same-origin iframes are already in; read the cross-origin ones in place.
+  if (r && Array.isArray(r.xframes)) full += await crossFrameText(tabId, 0, r.xframes, 0);
   const total = full.length;
 
   // Incremental (cursor) mode: return only what was appended since `cursor`.
@@ -550,6 +666,33 @@ async function getPageText(params) {
   return `${text}\n[cursor:${total}${trunc}]`;
 }
 
+// crossFrameText reads the text of cross-origin iframes (P.getPageText's
+// xframes) by running in each frame, nested ones too, under an
+// "[iframe src]" header like the same-origin ones get.
+async function crossFrameText(tabId, parentFrameId, xframes, depth) {
+  let out = "";
+  for (const xf of xframes.slice(0, 10)) {
+    const id = typeof xf.frameId === "number" ? xf.frameId : await frameIdByUrl(tabId, parentFrameId, xf.src);
+    if (id == null) continue;
+    try {
+      const target = frameTarget(tabId, id);
+      await ensureHelpers(target);
+      const results = await chrome.scripting.executeScript({
+        target,
+        func: (name, args) => globalThis.__aglinkPage[name](...args),
+        args: ["getPageText", [null, { frames: true }]],
+      });
+      const r = results && results[0] && results[0].result;
+      if (!r) continue;
+      if (r.text && r.text.trim()) out += `\n\n[iframe ${xf.src}]\n${r.text}`;
+      if (depth < 2 && Array.isArray(r.xframes)) out += await crossFrameText(tabId, id, r.xframes, depth + 1);
+    } catch (e) {
+      // a frame the extension may not script (chrome-extension://, a PDF viewer)
+    }
+  }
+  return out;
+}
+
 // elementExists cheaply reports whether a selector matches, with NO page text —
 // the low-cost primitive for polling a boolean condition (e.g. "is the app busy",
 // keyed off a working/stop indicator's presence) instead of get_page_text/query_all.
@@ -557,14 +700,14 @@ async function elementExists(params) {
   const selector = params.selector;
   if (!selector) throw new Error("element_exists requires 'selector'");
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["elementExists", [selector]],
-  });
-  const r = (results && results[0] && results[0].result) || { exists: false, visible: false, count: 0 };
-  return JSON.stringify(r);
+  let r = null;
+  try {
+    r = await runPage(tabId, selector, "elementExists", (sel) => [sel]);
+  } catch (e) {
+    // A frame= that does not resolve (yet) just means "not there".
+    if (!/^no frame matched|could not find the browser frame/.test(String(e && e.message))) throw e;
+  }
+  return JSON.stringify(r || { exists: false, visible: false, count: 0 });
 }
 
 // click left-clicks by default via the real .click() DOM method (a trusted
@@ -585,15 +728,23 @@ async function click(params) {
     throw new Error(`click: unknown button ${JSON.stringify(params.button)} (want left/right/middle)`);
   }
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["click", [selector, button]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
-  return `ok: ${button}-clicked <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`;
+  const since = Date.now();
+  const r = await runPage(tabId, selector, "click", (sel) => [sel, button, actionOpts(params)]);
+  if (!r || !r.found) throw notFound(selector, r);
+  if (r.blocked) throw new Error(r.blocked);
+  const out = `ok: ${button}-clicked <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`;
+  return withNote(out + (await openedTabsText(tabId, since)), r);
+}
+
+// actionOpts is the {timeout, force} a click / double-click page function
+// takes: wait up to timeout ms for the element to be clickable, or with force
+// skip that check.
+function actionOpts(params) {
+  const o = {};
+  const t = Number(params.timeout);
+  if (Number.isFinite(t) && t > 0) o.timeout = t;
+  if (params.force === true || /^(true|yes|1|on)$/i.test(String(params.force || ""))) o.force = true;
+  return o;
 }
 
 // hover moves the "pointer" onto an element by dispatching the mouseover /
@@ -607,15 +758,9 @@ async function hover(params) {
   const selector = params.selector;
   if (!selector) throw new Error("hover requires 'selector'");
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["hover", [selector]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
-  return `ok: hovered <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`;
+  const r = await runPage(tabId, selector, "hover", (sel) => [sel]);
+  if (!r || !r.found) throw notFound(selector, r);
+  return withNote(`ok: hovered <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`, r);
 }
 
 // doubleClick fires the full mousedown/mouseup/click ×2 + dblclick sequence a
@@ -627,15 +772,12 @@ async function doubleClick(params) {
   const selector = params.selector;
   if (!selector) throw new Error("double_click requires 'selector'");
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["doubleClick", [selector]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
-  return `ok: double-clicked <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`;
+  const since = Date.now();
+  const r = await runPage(tabId, selector, "doubleClick", (sel) => [sel, actionOpts(params)]);
+  if (!r || !r.found) throw notFound(selector, r);
+  if (r.blocked) throw new Error(r.blocked);
+  const out = `ok: double-clicked <${r.tag}>${r.text ? " " + JSON.stringify(r.text) : ""}`;
+  return withNote(out + (await openedTabsText(tabId, since)), r);
 }
 
 // drag drags a source element onto a target (Playwright dragTo). It fires BOTH
@@ -652,15 +794,16 @@ async function drag(params) {
   if (!selector) throw new Error("drag requires 'selector' (the source)");
   if (!target) throw new Error("drag requires 'target' (the destination)");
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["drag", [selector, target]],
-  });
-  const r = results && results[0] && results[0].result;
+  // Both ends run in one frame: the source's. A target in another frame is
+  // out of reach of one in-page drag.
+  const fs = splitFrameSelector(selector);
+  const ft = splitFrameSelector(target);
+  if ((fs || ft) && !(fs && ft && fs.frame === ft.frame)) {
+    throw new Error("drag: the source and the target must be in the same frame (give both the same frame=… prefix)");
+  }
+  const r = await runPage(tabId, selector, "drag", (sel) => [sel, ft ? ft.inner : target]);
   if (!r) throw new Error("drag failed");
-  if (!r.found) throw new Error(`no element matched ${r.which} selector: ${r.sel}`);
+  if (!r.found) throw new Error(`no element matched ${r.which} selector: ${r.sel}${r.hint ? ` — ${r.hint}` : ""}`);
   return `ok: dragged <${r.srcTag}> onto <${r.dstTag}>`;
 }
 
@@ -675,16 +818,10 @@ async function getAttribute(params) {
   if (!selector) throw new Error("get_attribute requires 'selector'");
   if (!name) throw new Error("get_attribute requires 'name' (an attribute name, or 'text' for textContent)");
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["getAttribute", [selector, name]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
-  if (!r.present) return `${name} = (not present) on <${r.tag}>`;
-  return `${name} = ${JSON.stringify(r.value)}`;
+  const r = await runPage(tabId, selector, "getAttribute", (sel) => [sel, name]);
+  if (!r || !r.found) throw notFound(selector, r);
+  if (!r.present) return withNote(`${name} = (not present) on <${r.tag}>`, r);
+  return withNote(`${name} = ${JSON.stringify(r.value)}`, r);
 }
 
 // getHtml returns raw outerHTML — of the whole document (no selector) or of one
@@ -695,14 +832,8 @@ async function getHtml(params) {
   const tabId = await activeTabId(params);
   const maxChars = params.maxChars || DEFAULT_MAX_CHARS;
   const selector = params.selector || null;
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["getHtml", [selector]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
+  const r = await runPage(tabId, selector, "getHtml", (sel) => [sel]);
+  if (!r || !r.found) throw notFound(selector, r);
   let html = r.html || "";
   if (html.length > maxChars) {
     html = html.slice(0, maxChars) + `\n… [truncated at ${maxChars} chars]`;
@@ -721,26 +852,16 @@ async function queryAll(params) {
   const selector = params.selector;
   if (!selector) throw new Error("query_all requires 'selector'");
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
   const max = params.max || 200;
   if (params.fields) {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (name, args) => globalThis.__aglinkPage[name](...args),
-      args: ["extract", [selector, params.fields, max]],
-    });
-    return formatExtract((results && results[0] && results[0].result) || {}, selector);
+    const r = await runPage(tabId, selector, "extract", (sel) => [sel, params.fields, max]);
+    return formatExtract(r || {}, selector);
   }
   const attrs = (params.attrs || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["queryAll", [selector, attrs, max]],
-  });
-  const els = (results && results[0] && results[0].result) || [];
+  const els = (await runPage(tabId, selector, "queryAll", (sel) => [sel, attrs, max])) || [];
   if (els.lines) return els.lines.join("\n");
   if (els.length === 0) return `(no elements matched selector: ${selector})`;
   return els
@@ -885,13 +1006,13 @@ async function waitForElement(params) {
     let elOk = true;
     let tag = "";
     if (selector) {
-      await ensureHelpers(tabId);
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: (name, args) => globalThis.__aglinkPage[name](...args),
-        args: ["waitForElement", [selector]],
-      });
-      const r = results && results[0] && results[0].result;
+      let r = null;
+      try {
+        r = await runPage(tabId, selector, "waitForElement", (sel) => [sel]);
+      } catch (e) {
+        // A frame that has not appeared yet is waited for like the element.
+        if (!/^no frame matched|could not find the browser frame/.test(String(e && e.message))) throw e;
+      }
       const shown = !!(r && r.found && r.visible);
       elOk = gone ? !shown : shown;
       if (shown) tag = r.tag;
@@ -966,6 +1087,9 @@ async function screenshot(params) {
   }
   let rect = null;
   if (params.selector) {
+    if (splitFrameSelector(params.selector)) {
+      throw new Error("screenshot: a frame= selector is not supported here — screenshot the iframe element itself (frame=X without >>, or its CSS selector)");
+    }
     await ensureHelpers(tabId);
     const results = await chrome.scripting.executeScript({
       target: { tabId },
@@ -973,7 +1097,7 @@ async function screenshot(params) {
       args: ["rectOf", [params.selector]],
     });
     rect = results && results[0] && results[0].result;
-    if (!rect || !rect.found) throw new Error(`no element matched selector: ${params.selector}`);
+    if (!rect || !rect.found) throw notFound(params.selector, rect);
     if (!rect.width || !rect.height) throw new Error(`element matching ${params.selector} is not visible (zero size)`);
     await new Promise((r) => setTimeout(r, 100)); // let the scroll paint
   }
@@ -1007,22 +1131,70 @@ async function cropPng(dataUrl, r) {
 // any framework-overridden instance setter) — the standard trick to make React see
 // a programmatic value change: React's onChange reads the DOM value after the
 // 'input' event, so as long as the DOM value is actually set via the native setter
-// first, the event dispatch below is what triggers it.
+// first, the event dispatch below is what triggers it. A contenteditable gets
+// execCommand("insertText") instead, so rich editors stay in sync (see
+// page-actions.js P.typeText).
+//
+// mode: "set" (default, replace), "append", or "keys" — real typing through
+// the debugger's Input.insertText (an Enter key per newline), for editors and
+// widgets that only react to genuine input.
+const TYPE_MODES = ["set", "append", "keys"];
+
 async function typeText(params) {
   const selector = params.selector;
   const text = params.text;
   if (!selector) throw new Error("type requires 'selector'");
   if (text === undefined || text === null) throw new Error("type requires 'text'");
+  const mode = String(params.mode || "set").toLowerCase();
+  if (!TYPE_MODES.includes(mode)) throw new Error(`type: unknown mode ${JSON.stringify(params.mode)} (want set, append or keys)`);
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["typeText", [selector, text]],
+  if (mode === "keys") return await typeKeys(tabId, selector, String(text));
+  const r = await runPage(tabId, selector, "typeText", (sel) => [sel, text, mode]);
+  if (!r || !r.found) throw notFound(selector, r);
+  return withNote(`ok: ${mode === "append" ? "appended to" : "typed into"} <${r.tag}>${r.via === "textContent" ? " (the editor refused insertText; set its text directly)" : ""}`, r);
+}
+
+// typeKeys focuses the element (caret at the end) and types text as real
+// input: Input.insertText per line, Enter between lines — so a newline in a
+// chat box sends, as it would for a person. Focus emulation makes a
+// background tab accept the input as if it were in front.
+async function typeKeys(tabId, selector, text) {
+  const loc = await locate(tabId, selector);
+  const focus = async () => {
+    await ensureHelpers(loc.target);
+    const results = await chrome.scripting.executeScript({
+      target: loc.target,
+      func: (name, args) => globalThis.__aglinkPage[name](...args),
+      args: ["focusForKeys", [loc.selector]],
+    });
+    return results && results[0] && results[0].result;
+  };
+  const r = await focus();
+  if (!r || !r.found) throw notFound(selector, r);
+  if (!chrome.debugger) throw new Error('type mode "keys" needs the debugger permission — reload the aglink-web extension, or use mode "set"');
+  await withDebugger(tabId, async (target) => {
+    try {
+      await chrome.debugger.sendCommand(target, "Emulation.setFocusEmulationEnabled", { enabled: true });
+    } catch (e) {
+      // older Chrome: typing still works in the front tab
+    }
+    await focus(); // focus again now that the page counts as focused
+    await sendKeys(target, text);
   });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
-  return `ok: typed into <${r.tag}>`;
+  return withNote(`ok: typed ${text.length} chars as keystrokes into <${r.tag}>`, r);
+}
+
+// sendKeys types text into whatever has focus in the debugged tab.
+async function sendKeys(target, text) {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      const enter = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", { type: "keyDown", text: "\r", unmodifiedText: "\r", ...enter });
+      await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", { type: "keyUp", ...enter });
+    }
+    if (lines[i]) await chrome.debugger.sendCommand(target, "Input.insertText", { text: lines[i] });
+  }
 }
 
 // getValue reads an element's CURRENT value/text — the read-side counterpart
@@ -1034,15 +1206,9 @@ async function getValue(params) {
   const selector = params.selector;
   if (!selector) throw new Error("get_value requires 'selector'");
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["getValue", [selector]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
-  return `${selector} = ${JSON.stringify(r.value)}`;
+  const r = await runPage(tabId, selector, "getValue", (sel) => [sel]);
+  if (!r || !r.found) throw notFound(selector, r);
+  return withNote(`${selector} = ${JSON.stringify(r.value)}`, r);
 }
 
 // KEY_SPECS maps a key token to the {key, code, keyCode} triple a
@@ -1136,14 +1302,19 @@ async function scroll(params) {
   if (dx === 0 && dy === 0) throw new Error("scroll requires a non-zero dx or dy");
   const tabId = await activeTabId(params);
   const selector = params.selector || null;
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["scroll", [selector, dx, dy]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
+  let r;
+  if (selector) {
+    r = await runPage(tabId, selector, "scroll", (sel) => [sel, dx, dy]);
+  } else {
+    await ensureHelpers(tabId);
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (name, args) => globalThis.__aglinkPage[name](...args),
+      args: ["scroll", [selector, dx, dy]],
+    });
+    r = results && results[0] && results[0].result;
+  }
+  if (!r || !r.found) throw notFound(selector, r);
   return `ok: scrolled dx=${dx} dy=${dy}${selector ? ` on ${selector}` : ""}`;
 }
 
@@ -1159,17 +1330,11 @@ async function selectOption(params) {
     throw new Error("select_option requires 'value' or 'label'");
   }
   const tabId = await activeTabId(params);
-  await ensureHelpers(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["selectOption", [selector, value === undefined ? null : value, label === undefined ? null : label]],
-  });
-  const r = results && results[0] && results[0].result;
-  if (!r || !r.found) throw new Error(`no element matched selector: ${selector}`);
+  const r = await runPage(tabId, selector, "selectOption", (sel) => [sel, value === undefined ? null : value, label === undefined ? null : label]);
+  if (!r || !r.found) throw notFound(selector, r);
   if (r.isSelect === false) throw new Error(`element <${r.tag}> matched by ${selector} is not a <select>`);
   if (!r.matched) throw new Error(`no <option> matching value=${JSON.stringify(value)} label=${JSON.stringify(label)}`);
-  return `ok: selected "${r.selected}"`;
+  return withNote(`ok: selected "${r.selected}"`, r);
 }
 
 // activateTab makes an existing tab the active tab of its window (and brings
@@ -1218,6 +1383,10 @@ async function getConsoleLogs(params) {
 // app's own AJAX API — what endpoint a button actually calls, with what
 // payload, and what it returns — which get_page_text/get_html/eval can't see
 // since it never touches the rendered DOM.
+//
+// full="true" switches the tab to the debugger's Network domain instead
+// (startNetCapture): every request, response headers and bodies, until
+// full="false" or NET_CAPTURE_IDLE_MS without a read.
 async function getNetworkRequests(params) {
   let tabId = params.tabId;
   if (!tabId) {
@@ -1227,6 +1396,19 @@ async function getNetworkRequests(params) {
   }
   const max = params.max || 50;
   const filter = (params.filter || "").toLowerCase();
+  const full = params.full === undefined || params.full === null || params.full === "" ? null : String(params.full).toLowerCase();
+  if (full !== null && /^(false|no|0|off)$/.test(full)) {
+    return (await stopNetCapture(tabId))
+      ? `ok: stopped full network capture on tab ${tabId} (debugger detached)`
+      : `ok: no full network capture was running on tab ${tabId}`;
+  }
+  let started = false;
+  if (full !== null && /^(true|yes|1|on)$/.test(full)) started = await startNetCapture(tabId);
+  if (netCaptures.has(tabId)) {
+    const body = await netCaptureText(tabId, max, filter);
+    if (!started) return body;
+    return `ok: full network capture started on tab ${tabId} — the debugger stays attached (Chrome shows its "started debugging" bar) until get_network_requests full="false", or ${NET_CAPTURE_IDLE_MS / 60000} minutes without a read. Reproduce the action, then call get_network_requests again (no need to repeat full).\n${body}`;
+  }
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
@@ -1248,6 +1430,179 @@ async function getNetworkRequests(params) {
       return parts.join(" | ");
     })
     .join("\n");
+}
+
+// ---- full network capture (get_network_requests full) ----------------------
+//
+// The page-script capture (network-capture.js) sees only fetch/XHR, and only
+// bodies the page itself reads. The debugger's Network domain sees every
+// request — documents, scripts, beacons, redirects, failures — with response
+// headers, and can fetch any response body after the fact. It costs an
+// attached debugger (and Chrome's bar), so it is opt-in and lets go by itself.
+
+const netCaptures = new Map(); // tabId → { entries, byId, timer }
+const NET_CAPTURE_KEEP = 500;
+const NET_CAPTURE_IDLE_MS = 5 * 60 * 1000;
+const NET_BODY_MAX = 4000;
+const NET_HEADERS_MAX = 800;
+
+async function startNetCapture(tabId) {
+  if (netCaptures.has(tabId)) return false;
+  if (!chrome.debugger) throw new Error("full network capture needs the debugger permission — reload the aglink-web extension");
+  const target = { tabId };
+  await attachDebugger(target);
+  // Registered before Network.enable, so the first events are not lost.
+  netCaptures.set(tabId, { entries: [], byId: new Map(), timer: null });
+  try {
+    await chrome.debugger.sendCommand(target, "Network.enable", { maxPostDataSize: 65536 });
+  } catch (e) {
+    netCaptures.delete(tabId);
+    await detachDebugger(target);
+    throw e;
+  }
+  touchNetCapture(tabId);
+  return true;
+}
+
+// touchNetCapture re-arms the idle stop.
+function touchNetCapture(tabId) {
+  const c = netCaptures.get(tabId);
+  if (!c) return;
+  clearTimeout(c.timer);
+  c.timer = setTimeout(() => stopNetCapture(tabId), NET_CAPTURE_IDLE_MS);
+}
+
+async function stopNetCapture(tabId) {
+  const c = netCaptures.get(tabId);
+  if (!c) return false;
+  clearTimeout(c.timer);
+  netCaptures.delete(tabId);
+  const target = { tabId };
+  try {
+    await chrome.debugger.sendCommand(target, "Network.disable");
+  } catch (e) {
+    // tab gone or already detached
+  }
+  // A certificate bypass that needs the debugger keeps it.
+  if (!overrideCertTabs.has(tabId)) await detachDebugger(target);
+  return true;
+}
+
+function onNetworkEvent(source, method, params) {
+  const c = source && netCaptures.get(source.tabId);
+  if (!c || !params) return;
+  switch (method) {
+    case "Network.requestWillBeSent": {
+      const rq = params.request || {};
+      if (/^data:/.test(rq.url || "")) return;
+      const e = {
+        id: params.requestId, type: params.type || "", method: rq.method || "", url: rq.url || "",
+        postData: rq.postData || "", status: 0, headers: null, error: "", start: params.timestamp || 0, end: 0,
+      };
+      c.entries.push(e);
+      c.byId.set(params.requestId, e); // a redirect reuses the id: the newest hop wins
+      if (c.entries.length > NET_CAPTURE_KEEP) {
+        const drop = c.entries.shift();
+        if (c.byId.get(drop.id) === drop) c.byId.delete(drop.id);
+      }
+      return;
+    }
+    case "Network.responseReceived": {
+      const e = c.byId.get(params.requestId);
+      if (!e) return;
+      const rs = params.response || {};
+      e.status = rs.status || 0;
+      e.headers = rs.headers || null;
+      e.mime = rs.mimeType || "";
+      if (params.type) e.type = params.type;
+      return;
+    }
+    case "Network.loadingFinished":
+    case "Network.loadingFailed": {
+      const e = c.byId.get(params.requestId);
+      if (!e) return;
+      e.end = params.timestamp || 0;
+      if (method === "Network.loadingFailed") e.error = params.canceled ? "canceled" : params.errorText || "failed";
+      return;
+    }
+  }
+}
+
+// netCaptureText renders the capture in the same line format as an app
+// window's get_network_requests (applogs.go networkText), plus response
+// headers; bodies are fetched for finished text responses.
+async function netCaptureText(tabId, max, filter) {
+  const c = netCaptures.get(tabId);
+  touchNetCapture(tabId);
+  const all = c ? c.entries : [];
+  const entries = (filter ? all.filter((e) => e.url.toLowerCase().includes(filter)) : all).slice(-max);
+  if (entries.length === 0) return "(no requests captured yet — capture runs from when full network capture started; reproduce the action now)";
+  const clip = (s, n) => (s.length > n ? s.slice(0, n) + "…" : s);
+  const lines = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const parts = [`${i} | ${e.type.toLowerCase()} | ${e.method} ${e.url}`];
+    if (e.error) parts.push(`ERROR: ${e.error}`);
+    else if (!e.status) parts.push("-> (pending)");
+    else parts.push(`-> ${e.status}${e.end && e.start ? ` (${Math.round((e.end - e.start) * 1000)}ms)` : ""}`);
+    if (e.postData) parts.push(`req=${JSON.stringify(clip(e.postData, NET_BODY_MAX))}`);
+    if (e.headers) parts.push(`headers=${clip(JSON.stringify(e.headers), NET_HEADERS_MAX)}`);
+    const textual = !/^(image|font|video|audio)\//.test(e.mime || "") && !/^(Image|Font|Media|Stylesheet|Script)$/.test(e.type);
+    if (e.end && !e.error && e.status && textual) {
+      try {
+        const b = await chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId: e.id });
+        if (b && b.base64Encoded) parts.push(`resp=(binary, ${Math.floor(((b.body || "").length * 3) / 4)} bytes)`);
+        else if (b && b.body) parts.push(`resp=${JSON.stringify(clip(b.body, NET_BODY_MAX))}`);
+      } catch (err) {
+        // evicted from the browser's cache, or a redirect / preflight without a body
+      }
+    }
+    lines.push(parts.join(" | "));
+  }
+  return lines.join("\n");
+}
+
+// ---- popups (tabs a page opens) -----------------------------------------------
+//
+// A click that opens a new tab (target=_blank, window.open) leaves the agent
+// on the old one without knowing. Tabs record their opener; click reports
+// those that appeared while it ran, so the caller (or run_steps with
+// follow_popup) can move to the new tab.
+
+const openedTabs = []; // { id, opener, at }
+
+function onTabCreated(tab) {
+  if (!tab || !tab.openerTabId || openedTabs.some((t) => t.id === tab.id)) return;
+  openedTabs.push({ id: tab.id, opener: tab.openerTabId, at: Date.now() });
+  if (openedTabs.length > 50) openedTabs.shift();
+}
+
+// POPUP_SETTLE_MS is how long a click waits for a tab it opened to show up.
+function popupSettleMs() {
+  return 100;
+}
+
+// openedTabsText is the line(s) a click appends for tabs its tab opened
+// since `since`; "" when there are none.
+async function openedTabsText(tabId, since) {
+  const pick = () => openedTabs.filter((t) => t.opener === tabId && t.at >= since);
+  let got = pick();
+  if (!got.length) {
+    await new Promise((r) => setTimeout(r, popupSettleMs()));
+    got = pick();
+  }
+  let out = "";
+  for (const t of got) {
+    let url = "";
+    try {
+      const tab = await chrome.tabs.get(t.id);
+      url = (tab && (tab.pendingUrl || tab.url)) || "";
+    } catch (e) {
+      continue; // closed again already
+    }
+    out += `\nopened new tab id=${t.id} url=${url} — pass tabId=${t.id} to work in it`;
+  }
+  return out;
 }
 
 // reloadExtension restarts the extension itself (chrome.runtime.reload()) —
@@ -1411,6 +1766,9 @@ async function attachDebugger(target) {
 }
 
 async function detachDebugger(target) {
+  // A full network capture holds the debugger until it is stopped; a
+  // borrowed attach (dialog check, upload, typing) must not end it.
+  if (netCaptures.has(target.tabId)) return;
   debuggerTabs.delete(target.tabId);
   overrideCertTabs.delete(target.tabId);
   // Detached, the tab's dialog events stop arriving; what we knew goes stale.
@@ -1594,17 +1952,44 @@ async function proceedInsecure(params) {
 
 // pageSnapshot runs the shared outline (page-actions.js P.snapshot): visible
 // structure and controls, each control numbered for "ref=eN" selectors.
+// Same-origin iframes are outlined inline by the page itself; each
+// cross-origin one is outlined here by running in that frame, appended as its
+// own section — its refs are the frame's own, reached with
+// "frame=ref=<iframe ref> >> ref=eN".
 async function pageSnapshot(params) {
   const tabId = await activeTabId(params);
+  const maxLines = params.maxLines || 200;
   await ensureHelpers(tabId);
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: (name, args) => globalThis.__aglinkPage[name](...args),
-    args: ["snapshot", [params.maxLines || 200]],
+    args: ["snapshot", [maxLines, { frames: true }]],
   });
   const r = results && results[0] && results[0].result;
-  if (typeof r !== "string") throw new Error("page_snapshot returned no result (the page may block script injection)");
-  return r;
+  const text = r && typeof r === "object" ? r.text : r;
+  if (typeof text !== "string") throw new Error("page_snapshot returned no result (the page may block script injection)");
+  const xframes = r && typeof r === "object" && Array.isArray(r.xframes) ? r.xframes : [];
+  let out = text;
+  for (const xf of xframes.slice(0, 5)) {
+    const id = typeof xf.frameId === "number" ? xf.frameId : await frameIdByUrl(tabId, 0, xf.src);
+    if (id == null) continue;
+    try {
+      const target = frameTarget(tabId, id);
+      await ensureHelpers(target);
+      const fr = await chrome.scripting.executeScript({
+        target,
+        func: (name, args) => globalThis.__aglinkPage[name](...args),
+        args: ["snapshot", [Math.min(maxLines, 100)]],
+      });
+      const s = fr && fr[0] && fr[0].result;
+      if (typeof s !== "string") continue;
+      const body = s.split("\n").slice(1).join("\n");
+      out += `\n[iframe ref=${xf.ref} ${xf.src} — its controls: selector "frame=ref=${xf.ref} >> ref=eN"]\n${body || "(nothing visible)"}`;
+    } catch (e) {
+      // a frame the extension may not script
+    }
+  }
+  return out;
 }
 
 // ---- file upload -------------------------------------------------------------
@@ -1628,7 +2013,7 @@ async function uploadFile(params) {
     func: (sel, m) => {
       const r = globalThis.__aglink;
       const el = r && r.resolve ? r.resolve(sel) : document.querySelector(sel);
-      if (!el) return { found: false };
+      if (!el) return { found: false, hint: r && r.nearMiss ? r.nearMiss(sel) : "" };
       const ok = el.tagName === "INPUT" && el.type === "file";
       if (ok) el.setAttribute("data-aglink-upload", m);
       return { found: true, ok, tag: el.tagName.toLowerCase(), multiple: !!el.multiple };
@@ -1636,7 +2021,7 @@ async function uploadFile(params) {
     args: [selector, mark],
   });
   const r = (results && results[0] && results[0].result) || { found: false };
-  if (!r.found) throw new Error(`no element matched selector: ${selector}`);
+  if (!r.found) throw notFound(selector, r);
   if (!r.ok) {
     throw new Error(`element <${r.tag}> matched by ${selector} is not an <input type="file"> — target the file input itself (often hidden), e.g. input[type=file]`);
   }
@@ -1835,8 +2220,15 @@ async function handleDialog(params) {
   }
 }
 
-// waitForComplete resolves when the tab finishes loading, or after a timeout so
-// a slow/hung page never blocks the command indefinitely.
+// navigateLoadTimeoutMs is how long navigate waits for the page to load. A
+// function so tests can shorten it.
+function navigateLoadTimeoutMs() {
+  return 15000;
+}
+
+// waitForComplete resolves true when the tab finishes loading, or false after
+// a timeout — so a slow/hung page never blocks the command indefinitely, and
+// the caller can say the page is still loading.
 //
 // A fast page can reach "complete" before onUpdated is even attached, so the
 // event alone would be missed and we'd wait out the whole timeout. To catch
@@ -1847,21 +2239,21 @@ function waitForComplete(tabId, timeoutMs = 15000) {
   return new Promise((resolve) => {
     let done = false;
     let timer;
-    const finish = () => {
+    const finish = (loaded) => {
       if (done) return;
       done = true;
       chrome.tabs.onUpdated.removeListener(listener);
       clearTimeout(timer);
-      resolve();
+      resolve(loaded);
     };
     const listener = (id, info) => {
-      if (id === tabId && info.status === "complete") finish();
+      if (id === tabId && info.status === "complete") finish(true);
     };
     chrome.tabs.onUpdated.addListener(listener);
-    timer = setTimeout(finish, timeoutMs);
+    timer = setTimeout(() => finish(false), timeoutMs);
     // Guard against the load finishing before the listener was attached.
     chrome.tabs.get(tabId).then((tab) => {
-      if (tab && tab.status === "complete") finish();
+      if (tab && tab.status === "complete") finish(true);
     }).catch(() => {});
   });
 }
@@ -1924,7 +2316,15 @@ if (chrome.webNavigation) {
   });
 }
 if (chrome.tabs.onRemoved) {
-  chrome.tabs.onRemoved.addListener((tabId) => rememberNavError(tabId, null));
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    rememberNavError(tabId, null);
+    const c = netCaptures.get(tabId);
+    if (c) clearTimeout(c.timer);
+    netCaptures.delete(tabId);
+  });
+}
+if (chrome.tabs.onCreated && chrome.tabs.onCreated.addListener) {
+  chrome.tabs.onCreated.addListener(onTabCreated);
 }
 if (chrome.debugger) {
   chrome.debugger.onDetach.addListener((source) => {
@@ -1932,11 +2332,16 @@ if (chrome.debugger) {
       debuggerTabs.delete(source.tabId);
       overrideCertTabs.delete(source.tabId);
       openDialogs.delete(source.tabId);
+      // Detached from outside (the user cancelled Chrome's bar, tab closed).
+      const c = netCaptures.get(source.tabId);
+      if (c) clearTimeout(c.timer);
+      netCaptures.delete(source.tabId);
     }
   });
   if (chrome.debugger.onEvent) {
     chrome.debugger.onEvent.addListener(onCertificateError);
     chrome.debugger.onEvent.addListener(onDialogEvent);
+    chrome.debugger.onEvent.addListener(onNetworkEvent);
   }
 }
 

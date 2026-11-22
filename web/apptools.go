@@ -42,9 +42,12 @@ const (
 	defaultWaitTimeoutMs  = 8000
 	waitForElementPoll    = 150 * time.Millisecond
 	aglinkIDAttr          = "data-aglink-id"
-	navigateLoadTimeout   = 10 * time.Second
 	navigateLoadPollDelay = 100 * time.Millisecond
 )
+
+// navigateLoadTimeout is how long navigate waits for an app window to load. A
+// variable so tests can shorten it.
+var navigateLoadTimeout = 10 * time.Second
 
 func appCall(ctx context.Context, p appPage, pages []cdpTarget, method string, params map[string]any) CallResult {
 	if params == nil {
@@ -65,7 +68,7 @@ func appCall(ctx context.Context, p appPage, pages []cdpTarget, method string, p
 
 func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method string, params map[string]any) (string, error) {
 	sel := str(params, "selector")
-	notFound := func() error { return fmt.Errorf("no element matched selector: %s", sel) }
+	notFound := func() error { return missErr(sel, "") }
 
 	switch method {
 	case "list_tabs":
@@ -102,11 +105,11 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		if _, err := p.Raw(ctx, "Page.navigate", map[string]any{"url": url}); err != nil {
 			return "", err
 		}
-		title, href, err := waitLoaded(ctx, p)
+		title, href, loaded, err := waitLoadedState(ctx, p)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("ok: navigated — %s — %s", title, href), nil
+		return fmt.Sprintf("ok: navigated — %s — %s%s", title, href, stillLoading(loaded)), nil
 
 	case "proceed_insecure":
 		// WebView2 and Electron put up their own error page for a bad
@@ -134,7 +137,8 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 			return "", err
 		}
 		if found, _ := box["found"].(bool); !found {
-			return "", notFound()
+			hint, _ := box["hint"].(string)
+			return "", missErr(sel, hint)
 		}
 		n := func(k string) float64 { v, _ := box[k].(float64); return v }
 		// Clip to the part inside the viewport, then to page coordinates,
@@ -166,12 +170,13 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		var r struct {
 			Found bool   `json:"found"`
 			Text  string `json:"text"`
+			Hint  string `json:"hint"`
 		}
 		if err := callInto(ctx, p, "getPageText", []any{nullable(sel)}, &r); err != nil {
 			return "", err
 		}
 		if sel != "" && !r.Found {
-			return "", notFound()
+			return "", missErr(sel, r.Hint)
 		}
 		return formatPageText(r.Text, params), nil
 
@@ -206,30 +211,30 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 			return "", fmt.Errorf("click: unknown button %s (want left/right/middle)", jsQuote(str(params, "button")))
 		}
 		var r tagText
-		if err := callInto(ctx, p, "click", []any{sel, button}, &r); err != nil {
+		if err := callInto(ctx, p, "click", []any{sel, button, actionOpts(params)}, &r); err != nil {
 			return "", err
 		}
-		if !r.Found {
-			return "", notFound()
+		if err := r.err(sel); err != nil {
+			return "", err
 		}
-		return fmt.Sprintf("ok: %s-clicked <%s>%s", button, r.Tag, r.suffix()), nil
+		return r.noted(fmt.Sprintf("ok: %s-clicked <%s>%s", button, r.Tag, r.suffix())), nil
 
 	case "hover", "double_click":
 		if sel == "" {
 			return "", fmt.Errorf("%s requires 'selector'", method)
 		}
-		fn, verb := "hover", "hovered"
+		fn, verb, args := "hover", "hovered", []any{sel}
 		if method == "double_click" {
-			fn, verb = "doubleClick", "double-clicked"
+			fn, verb, args = "doubleClick", "double-clicked", []any{sel, actionOpts(params)}
 		}
 		var r tagText
-		if err := callInto(ctx, p, fn, []any{sel}, &r); err != nil {
+		if err := callInto(ctx, p, fn, args, &r); err != nil {
 			return "", err
 		}
-		if !r.Found {
-			return "", notFound()
+		if err := r.err(sel); err != nil {
+			return "", err
 		}
-		return fmt.Sprintf("ok: %s <%s>%s", verb, r.Tag, r.suffix()), nil
+		return r.noted(fmt.Sprintf("ok: %s <%s>%s", verb, r.Tag, r.suffix())), nil
 
 	case "drag":
 		target := str(params, "target")
@@ -243,6 +248,7 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 			Found          bool
 			Which, Sel     string
 			SrcTag, DstTag string
+			Hint           string
 		}
 		raw, err := p.CallPage(ctx, "drag", []any{sel, target})
 		if err != nil {
@@ -252,7 +258,7 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 			return "", errors.New("drag failed")
 		}
 		if !r.Found {
-			return "", fmt.Errorf("no element matched %s selector: %s", r.Which, r.Sel)
+			return "", fmt.Errorf("no element matched %s selector: %s%s", r.Which, r.Sel, hintSuffix(r.Hint))
 		}
 		return fmt.Sprintf("ok: dragged <%s> onto <%s>", r.SrcTag, r.DstTag), nil
 
@@ -260,12 +266,13 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		var r struct {
 			Found bool   `json:"found"`
 			HTML  string `json:"html"`
+			Hint  string `json:"hint"`
 		}
 		if err := callInto(ctx, p, "getHtml", []any{nullable(sel)}, &r); err != nil {
 			return "", err
 		}
 		if !r.Found {
-			return "", notFound()
+			return "", missErr(sel, r.Hint)
 		}
 		maxChars := intp(params, "maxChars", defaultMaxChars)
 		html := r.HTML
@@ -343,17 +350,19 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 			Tag     string          `json:"tag"`
 			Present bool            `json:"present"`
 			Value   json.RawMessage `json:"value"`
+			Hint    string          `json:"hint"`
+			Note    string          `json:"note"`
 		}
 		if err := callInto(ctx, p, "getAttribute", []any{sel, name}, &r); err != nil {
 			return "", err
 		}
 		if !r.Found {
-			return "", notFound()
+			return "", missErr(sel, r.Hint)
 		}
 		if !r.Present {
-			return fmt.Sprintf("%s = (not present) on <%s>", name, r.Tag), nil
+			return withNote(fmt.Sprintf("%s = (not present) on <%s>", name, r.Tag), r.Note), nil
 		}
-		return fmt.Sprintf("%s = %s", name, compactJSON(r.Value)), nil
+		return withNote(fmt.Sprintf("%s = %s", name, compactJSON(r.Value)), r.Note), nil
 
 	case "list_elements":
 		var els []struct {
@@ -462,14 +471,31 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		if !hasText || text == nil {
 			return "", errors.New("type requires 'text'")
 		}
+		mode := strings.ToLower(str(params, "mode"))
+		if mode == "" {
+			mode = "set"
+		}
+		if mode != "set" && mode != "append" && mode != "keys" {
+			return "", fmt.Errorf("type: unknown mode %s (want set, append or keys)", jsQuote(str(params, "mode")))
+		}
+		if mode == "keys" {
+			return appTypeKeys(ctx, p, sel, fmt.Sprint(text))
+		}
 		var r tagText
-		if err := callInto(ctx, p, "typeText", []any{sel, fmt.Sprint(text)}, &r); err != nil {
+		if err := callInto(ctx, p, "typeText", []any{sel, fmt.Sprint(text), mode}, &r); err != nil {
 			return "", err
 		}
-		if !r.Found {
-			return "", notFound()
+		if err := r.err(sel); err != nil {
+			return "", err
 		}
-		return fmt.Sprintf("ok: typed into <%s>", r.Tag), nil
+		verb, via := "typed into", ""
+		if mode == "append" {
+			verb = "appended to"
+		}
+		if r.Via == "textContent" {
+			via = " (the editor refused insertText; set its text directly)"
+		}
+		return r.noted(fmt.Sprintf("ok: %s <%s>%s", verb, r.Tag, via)), nil
 
 	case "get_value":
 		if sel == "" {
@@ -478,14 +504,16 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		var r struct {
 			Found bool            `json:"found"`
 			Value json.RawMessage `json:"value"`
+			Hint  string          `json:"hint"`
+			Note  string          `json:"note"`
 		}
 		if err := callInto(ctx, p, "getValue", []any{sel}, &r); err != nil {
 			return "", err
 		}
 		if !r.Found {
-			return "", notFound()
+			return "", missErr(sel, r.Hint)
 		}
-		return fmt.Sprintf("%s = %s", sel, compactJSON(r.Value)), nil
+		return withNote(fmt.Sprintf("%s = %s", sel, compactJSON(r.Value)), r.Note), nil
 
 	case "key":
 		combo := str(params, "combo")
@@ -514,13 +542,14 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 			return "", errors.New("scroll requires a non-zero dx or dy")
 		}
 		var r struct {
-			Found bool `json:"found"`
+			Found bool   `json:"found"`
+			Hint  string `json:"hint"`
 		}
 		if err := callInto(ctx, p, "scroll", []any{nullable(sel), dx, dy}, &r); err != nil {
 			return "", err
 		}
 		if !r.Found {
-			return "", notFound()
+			return "", missErr(sel, r.Hint)
 		}
 		on := ""
 		if sel != "" {
@@ -550,12 +579,14 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 			Tag      string `json:"tag"`
 			Matched  bool   `json:"matched"`
 			Selected string `json:"selected"`
+			Hint     string `json:"hint"`
+			Note     string `json:"note"`
 		}
 		if err := callInto(ctx, p, "selectOption", []any{sel, v, l}, &r); err != nil {
 			return "", err
 		}
 		if !r.Found {
-			return "", notFound()
+			return "", missErr(sel, r.Hint)
 		}
 		if r.IsSelect != nil && !*r.IsSelect {
 			return "", fmt.Errorf("element <%s> matched by %s is not a <select>", r.Tag, sel)
@@ -563,7 +594,7 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		if !r.Matched {
 			return "", fmt.Errorf("no <option> matching value=%s label=%s", jsAny(v), jsAny(l))
 		}
-		return fmt.Sprintf("ok: selected \"%s\"", r.Selected), nil
+		return withNote(fmt.Sprintf("ok: selected \"%s\"", r.Selected), r.Note), nil
 
 	case "eval":
 		expr := str(params, "expression")
@@ -713,21 +744,74 @@ func (r extractResult) format(sel string) (string, error) {
 // waitLoaded polls until the window's document is complete (or the load
 // timeout passes) and returns its title and URL.
 func waitLoaded(ctx context.Context, p appPage) (title, href string, err error) {
+	title, href, _, err = waitLoadedState(ctx, p)
+	return title, href, err
+}
+
+// waitLoadedState is waitLoaded that also says whether the load finished
+// (false: the timeout passed with the document still loading).
+func waitLoadedState(ctx context.Context, p appPage) (title, href string, loaded bool, err error) {
 	deadline := time.Now().Add(navigateLoadTimeout)
 	for time.Now().Before(deadline) {
 		raw, err := p.Eval(ctx, "document.readyState")
 		if err == nil && string(raw) == `"complete"` {
+			loaded = true
 			break
 		}
 		time.Sleep(navigateLoadPollDelay)
 	}
 	raw, err := p.Eval(ctx, "[document.title, location.href]")
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	var tu [2]string
 	_ = json.Unmarshal(raw, &tu)
-	return tu[0], tu[1], nil
+	return tu[0], tu[1], loaded, nil
+}
+
+// stillLoading is what navigate appends when the page had not finished
+// loading by the timeout, as the extension does.
+func stillLoading(loaded bool) string {
+	if loaded {
+		return ""
+	}
+	return fmt.Sprintf(" (still loading after %ds)", int(navigateLoadTimeout/time.Second))
+}
+
+// appTypeKeys is type mode "keys" in an app window: focus the element (caret at
+// the end), then type through Input.insertText — Enter between lines — so
+// the page sees real input. Mirrors background.js typeKeys.
+func appTypeKeys(ctx context.Context, p appPage, sel, text string) (string, error) {
+	var r tagText
+	if err := callInto(ctx, p, "focusForKeys", []any{sel}, &r); err != nil {
+		return "", err
+	}
+	if err := r.err(sel); err != nil {
+		return "", err
+	}
+	enter := map[string]any{"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		if i > 0 {
+			down := map[string]any{"type": "keyDown", "text": "\r", "unmodifiedText": "\r"}
+			up := map[string]any{"type": "keyUp"}
+			for k, v := range enter {
+				down[k], up[k] = v, v
+			}
+			if _, err := p.Raw(ctx, "Input.dispatchKeyEvent", down); err != nil {
+				return "", err
+			}
+			if _, err := p.Raw(ctx, "Input.dispatchKeyEvent", up); err != nil {
+				return "", err
+			}
+		}
+		if line != "" {
+			if _, err := p.Raw(ctx, "Input.insertText", map[string]any{"text": line}); err != nil {
+				return "", err
+			}
+		}
+	}
+	return r.noted(fmt.Sprintf("ok: typed %d chars as keystrokes into <%s>", jsLen(text), r.Tag)), nil
 }
 
 // formatEvalValue renders an evaluation the way the extension's eval does:
@@ -747,11 +831,71 @@ func formatEvalValue(r *evalResult) string {
 	return r.Result.Description
 }
 
-// tagText is the {found, tag, text} shape several page functions return.
+// tagText is the {found, tag, text} shape several page functions return,
+// with what the page adds: a hint when nothing matched, a note when several
+// did, and why a click could not happen (page-actions.js actionable).
 type tagText struct {
-	Found bool   `json:"found"`
-	Tag   string `json:"tag"`
-	Text  string `json:"text"`
+	Found   bool   `json:"found"`
+	Tag     string `json:"tag"`
+	Text    string `json:"text"`
+	Hint    string `json:"hint"`
+	Note    string `json:"note"`
+	Blocked string `json:"blocked"`
+	Via     string `json:"via"`
+}
+
+// err is the error a not-found or blocked result means, or nil.
+func (r tagText) err(sel string) error {
+	if !r.Found {
+		return missErr(sel, r.Hint)
+	}
+	if r.Blocked != "" {
+		return errors.New(r.Blocked)
+	}
+	return nil
+}
+
+func (r tagText) noted(text string) string { return withNote(text, r.Note) }
+
+// missErr is "no element matched selector", with the page's hint at what
+// nearly matched — background.js notFound.
+func missErr(sel, hint string) error {
+	return fmt.Errorf("no element matched selector: %s%s", sel, hintSuffix(hint))
+}
+
+func hintSuffix(hint string) string {
+	if hint == "" {
+		return ""
+	}
+	return " — " + hint
+}
+
+// withNote appends a page result's ambiguity note — background.js withNote.
+func withNote(text, note string) string {
+	if note == "" {
+		return text
+	}
+	return text + "\nnote: " + note
+}
+
+// actionOpts is the {timeout, force} click and double-click take — see
+// background.js actionOpts.
+func actionOpts(params map[string]any) map[string]any {
+	o := map[string]any{}
+	if t := intp(params, "timeout", 0); t > 0 {
+		o["timeout"] = t
+	}
+	switch v := params["force"].(type) {
+	case bool:
+		if v {
+			o["force"] = true
+		}
+	case string:
+		if isTrue(v) {
+			o["force"] = true
+		}
+	}
+	return o
 }
 
 func (r tagText) suffix() string {

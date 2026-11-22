@@ -16,9 +16,10 @@ import (
 // call and answers from a small script.
 type stepsExtension struct {
 	mu      sync.Mutex
-	calls   []string       // "method {params}"
-	visible map[string]int // selector → how many element_exists polls before it shows
-	failOn  string         // method that fails
+	calls   []string          // "method {params}"
+	visible map[string]int    // selector → how many element_exists polls before it shows
+	failOn  string            // method that fails
+	replies map[string]string // method → reply text, overriding the defaults
 }
 
 func (x *stepsExtension) run(conn *websocket.Conn) {
@@ -38,6 +39,8 @@ func (x *stepsExtension) run(conn *websocket.Conn) {
 		switch {
 		case req.Method == x.failOn:
 			reply.OK, reply.Error = false, "no element matched selector: #missing"
+		case x.replies[req.Method] != "":
+			reply.Text = x.replies[req.Method]
 		case req.Method == "navigate":
 			reply.Text = "ok: navigated tab 42 — 설정 — https://app.example/settings"
 		case req.Method == "element_exists":
@@ -147,6 +150,43 @@ func TestRunStepsFollowsTheTabANavigateOpened(t *testing.T) {
 	x.mu.Unlock()
 	if !strings.Contains(last, `"tabId":42`) {
 		t.Fatalf("the click must go to the tab navigate opened: %s", last)
+	}
+}
+
+// A click that opened a tab moves the batch there only when the step asks.
+func TestRunStepsFollowsAPopupWhenAsked(t *testing.T) {
+	x := &stepsExtension{replies: map[string]string{"click": "ok: left-clicked <a> \"열기\"\nopened new tab id=77 url=https://pay.example/ — pass tabId=77 to work in it"}}
+	d := newStepsDaemon(t, x)
+	res := d.call("run_steps", map[string]any{
+		"steps": `[{"tool":"click","selector":"#open","follow_popup":true},{"tool":"get_value","selector":"#amount"}]`,
+		"tabId": 5,
+	}, "")
+	if !res.OK || !strings.Contains(res.Text, "→ following tab 77") {
+		t.Fatalf("got %+v", res)
+	}
+	x.mu.Lock()
+	last := x.calls[len(x.calls)-1]
+	x.mu.Unlock()
+	if !strings.Contains(last, `"tabId":77`) {
+		t.Fatalf("the next step must run in the new tab: %s", last)
+	}
+	if strings.Contains(last, "follow_popup") {
+		t.Fatalf("follow_popup steers run_steps and is not passed to the tool: %s", last)
+	}
+
+	// Without follow_popup the batch stays, and says how to follow.
+	res = d.call("run_steps", map[string]any{
+		"steps": `[{"tool":"click","selector":"#open"},{"tool":"get_value","selector":"#amount"}]`,
+		"tabId": 5,
+	}, "")
+	if !res.OK || !strings.Contains(res.Text, `add "follow_popup": true`) {
+		t.Fatalf("got %+v", res)
+	}
+	x.mu.Lock()
+	last = x.calls[len(x.calls)-1]
+	x.mu.Unlock()
+	if !strings.Contains(last, `"tabId":5`) {
+		t.Fatalf("without follow_popup the batch keeps its tab: %s", last)
 	}
 }
 

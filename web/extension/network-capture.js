@@ -11,8 +11,8 @@
 // returns.
 (function () {
   if (window.__aglinkNetwork) return; // already installed (re-injection guard)
-  const MAX_ENTRIES = 200;
-  const MAX_BODY_CHARS = 4000;
+  const MAX_ENTRIES = 300;
+  const MAX_BODY_CHARS = 6000;
   const buf = [];
   window.__aglinkNetwork = buf;
   // In-flight requests, for wait_for_element's idleMs: id -> url, and when

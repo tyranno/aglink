@@ -30,6 +30,8 @@ type fakePage struct {
 
 	rawResults map[string]string // CDP method -> JSON Raw returns (default {})
 	rawParams  map[string]any    // last params each CDP method was sent
+
+	loading bool // document.readyState never reaches "complete"
 }
 
 func (f *fakePage) CallPage(ctx context.Context, name string, args []any) (json.RawMessage, error) {
@@ -47,6 +49,9 @@ func (f *fakePage) CallPage(ctx context.Context, name string, args []any) (json.
 func (f *fakePage) Eval(ctx context.Context, expr string) (json.RawMessage, error) {
 	f.evals = append(f.evals, expr)
 	if strings.Contains(expr, "readyState") {
+		if f.loading {
+			return json.RawMessage(`"loading"`), nil
+		}
 		return json.RawMessage(`"complete"`), nil
 	}
 	return json.RawMessage(`["제목","http://wails.localhost/next"]`), nil
@@ -140,7 +145,7 @@ func TestAppClickAndFriends(t *testing.T) {
 	if r := run(t, f, "click", map[string]any{"selector": "text=저장"}); r.Text != `ok: left-clicked <button> "저장 <지금>"` {
 		t.Fatalf("click: %q (JSON must not escape < >)", r.Text)
 	}
-	if f.calls[0] != `click["text=저장","left"]` {
+	if f.calls[0] != `click["text=저장","left",{}]` {
 		t.Fatalf("default button: %s", f.calls[0])
 	}
 	if r := run(t, f, "click", map[string]any{"selector": "x", "button": "sideways"}); !strings.Contains(r.Error, `unknown button "sideways"`) {

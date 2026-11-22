@@ -897,8 +897,8 @@ test("shared handlers call through __aglinkPage with the original args", async (
   await sb.getPageText({});
   const run = calls.find((c) => typeof c.func === "function");
   assert.strictEqual(run.args[0], "getPageText");
-  assert.strictEqual(run.args[1].length, 1);
   assert.strictEqual(run.args[1][0], null, "no selector is passed through as null, as before");
+  assert.strictEqual(run.args[1][1].frames, true, "the whole-page read asks for cross-origin frames");
   assert.ok(calls.some((c) => c.files), "selectorless calls must still inject page-actions.js");
 });
 
@@ -1355,4 +1355,183 @@ test("a link that drops is retried at once, then on the backoff", async () => {
   opened[2].onclose();
   await tick();
   assert.strictEqual(opened.length, 3, "a failed attempt waits for the backoff");
+});
+
+// ---- honest results, actionability, typing, frames, popups, network ---------
+
+test("waitForComplete reports a timeout, and navigate says the page is still loading", async () => {
+  const chrome = makeChrome({
+    tabs: {
+      create: async () => ({ id: 8 }),
+      get: async () => ({ id: 8, status: "loading", title: "Slow", url: "https://slow.example/" }),
+    },
+  });
+  const sb = loadBackground(chrome);
+  assert.strictEqual(await sb.waitForComplete(8, 30), false);
+  sb.navigateLoadTimeoutMs = () => 40;
+  const out = await sb.navigate({ url: "https://slow.example/" });
+  assert.strictEqual(out, "ok: navigated tab 8 — Slow — https://slow.example/ (still loading after 0s)");
+});
+
+test("a miss carries the page's hint, a pick among several its note", async () => {
+  let result = { found: false, hint: 'similar elements: button "Save draft"' };
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 1, active: true }] },
+    scripting: { executeScript: async () => [{ result }] },
+  }));
+  await assert.rejects(() => sb.click({ selector: "text=Save" }), /^Error: no element matched selector: text=Save — similar elements: button "Save draft"$/);
+  result = { found: true, tag: "button", text: "Save", note: "matched 2 elements, used the first: 1) button#a 2) button#b" };
+  sb.popupSettleMs = () => 0;
+  assert.strictEqual(await sb.click({ selector: "text=Save" }), 'ok: left-clicked <button> "Save"\nnote: matched 2 elements, used the first: 1) button#a 2) button#b');
+  result = { found: true, tag: "button", blocked: 'cannot click button#a matched by #a: it is disabled (waited 3000ms) — pass force="true" to click it anyway' };
+  await assert.rejects(() => sb.click({ selector: "#a" }), /it is disabled \(waited 3000ms\)/);
+});
+
+test("click passes timeout and force to the page", async () => {
+  const calls = [];
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 1, active: true }] },
+    scripting: { executeScript: async (o) => { if (o.func) calls.push(o.args); return [{ result: { found: true, tag: "a", text: "" } }]; } },
+  }));
+  sb.popupSettleMs = () => 0;
+  await sb.click({ selector: "#x", timeout: 500, force: "true" });
+  assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify(["click", ["#x", "left", { timeout: 500, force: true }]]));
+  await sb.doubleClick({ selector: "#x" });
+  assert.strictEqual(JSON.stringify(calls[1]), JSON.stringify(["doubleClick", ["#x", {}]]));
+});
+
+test("a click that opens a tab says which, with its url", async () => {
+  let created;
+  const sb = loadBackground(makeChrome({
+    tabs: {
+      query: async () => [{ id: 3, active: true }],
+      get: async (id) => ({ id, pendingUrl: "https://pay.example/checkout" }),
+      onCreated: { addListener: (fn) => { if (fn.name === "onTabCreated") created = fn; } },
+    },
+    scripting: {
+      executeScript: async () => {
+        created({ id: 91, openerTabId: 3 });
+        created({ id: 92, openerTabId: 4 }); // another tab's popup: not ours
+        return [{ result: { found: true, tag: "a", text: "결제" } }];
+      },
+    },
+  }));
+  const out = await sb.click({ selector: "text=결제" });
+  assert.strictEqual(out, 'ok: left-clicked <a> "결제"\nopened new tab id=91 url=https://pay.example/checkout — pass tabId=91 to work in it');
+});
+
+test("type modes: set and append through the page, keys through the debugger", async () => {
+  const calls = [];
+  const cmds = [];
+  let attached = 0;
+  let detached = 0;
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 6, active: true }] },
+    scripting: {
+      executeScript: async (o) => {
+        if (o.func) calls.push(o.args);
+        if (o.args && o.args[0] === "focusForKeys") return [{ result: { found: true, tag: "textarea", focused: true } }];
+        return [{ result: { found: true, tag: "div", via: "insertText" } }];
+      },
+    },
+    debugger: {
+      attach: async () => { attached++; },
+      detach: async () => { detached++; },
+      sendCommand: async (t, method, params) => { cmds.push([method, (params && (params.text || params.type)) || ""]); return {}; },
+      onDetach: { addListener: () => {} },
+      onEvent: { addListener: () => {} },
+    },
+  }));
+  assert.strictEqual(await sb.typeText({ selector: "#ed", text: "hi", mode: "append" }), "ok: appended to <div>");
+  assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify(["typeText", ["#ed", "hi", "append"]]));
+  assert.strictEqual(await sb.typeText({ selector: "#m", text: "a\nb", mode: "keys" }), "ok: typed 3 chars as keystrokes into <textarea>");
+  assert.deepStrictEqual(cmds.map((c) => c.join(":")), [
+    "Emulation.setFocusEmulationEnabled:", "Input.insertText:a",
+    "Input.dispatchKeyEvent:\r", "Input.dispatchKeyEvent:keyUp", "Input.insertText:b",
+  ]);
+  assert.strictEqual(attached, 1);
+  assert.strictEqual(detached, 1, "the debugger is only borrowed for the typing");
+  await assert.rejects(() => sb.typeText({ selector: "#m", text: "x", mode: "paste" }), /unknown mode "paste"/);
+});
+
+test("a frame= selector runs its inner part in that frame", async () => {
+  const runs = [];
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 2, active: true }] },
+    scripting: {
+      executeScript: async (o) => {
+        if (!o.func) return [{}];
+        runs.push({ frames: o.target.frameIds, args: o.args });
+        if (o.args[0] === "frameInfo") return [{ result: { found: true, isFrame: true, tag: "iframe", src: "https://pay.example/", sameOrigin: false, frameId: 7 } }];
+        return [{ result: { found: true, tag: "button", text: "Pay" } }];
+      },
+    },
+  }));
+  sb.popupSettleMs = () => 0;
+  const out = await sb.click({ selector: "frame=iframe#pay >> text=Pay" });
+  assert.match(out, /^ok: left-clicked <button> "Pay"/);
+  assert.strictEqual(runs[0].frames, undefined, "the frame is found from the top frame");
+  assert.strictEqual(JSON.stringify(runs[0].args), JSON.stringify(["frameInfo", ["iframe#pay"]]));
+  assert.strictEqual(JSON.stringify(runs[1].frames), "[7]");
+  assert.strictEqual(runs[1].args[1][0], "text=Pay", "only the inner selector runs in the frame");
+});
+
+test("a frame= that matches nothing fails with the page's hint, and element_exists just says no", async () => {
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 2, active: true }] },
+    scripting: { executeScript: async (o) => [{ result: o.func ? { found: false, hint: "similar elements: iframe#checkout" } : {} }] },
+  }));
+  await assert.rejects(() => sb.getValue({ selector: "frame=#pay >> #amount" }), /no frame matched selector: #pay — similar elements: iframe#checkout/);
+  assert.strictEqual(await sb.elementExists({ selector: "frame=#pay >> #amount" }), '{"exists":false,"visible":false,"count":0}');
+});
+
+test("full network capture attaches the debugger, reports headers and bodies, and stops", async () => {
+  const st = { attached: 0, detached: 0, cmds: [] };
+  let onEvent = null;
+  const chrome = makeChrome({
+    tabs: { query: async () => [{ id: 4, active: true }] },
+    scripting: { executeScript: async () => [{ result: [] }] },
+    debugger: {
+      attach: async () => { st.attached++; },
+      detach: async () => { st.detached++; },
+      sendCommand: async (t, method) => {
+        st.cmds.push(method);
+        if (method === "Network.getResponseBody") return { body: '{"ok":true}', base64Encoded: false };
+        return {};
+      },
+      onDetach: { addListener: () => {} },
+      onEvent: { addListener: (fn) => { if (fn.name === "onNetworkEvent") onEvent = fn; } },
+    },
+  });
+  const sb = loadBackground(chrome);
+  const first = await sb.getNetworkRequests({ full: "true" });
+  assert.match(first, /^ok: full network capture started on tab 4/);
+  assert.ok(st.cmds.includes("Network.enable"));
+  const src = { tabId: 4 };
+  onEvent(src, "Network.requestWillBeSent", { requestId: "r1", type: "Fetch", timestamp: 1, request: { url: "https://a/api/x", method: "POST", postData: "q=1" } });
+  onEvent(src, "Network.responseReceived", { requestId: "r1", type: "Fetch", response: { status: 201, mimeType: "application/json", headers: { "content-type": "application/json" } } });
+  onEvent(src, "Network.loadingFinished", { requestId: "r1", timestamp: 1.25 });
+  const out = await sb.getNetworkRequests({});
+  assert.strictEqual(out, '0 | fetch | POST https://a/api/x | -> 201 (250ms) | req="q=1" | headers={"content-type":"application/json"} | resp="{\\"ok\\":true}"');
+  // A borrowed debugger (a dialog check, typing) does not end the capture.
+  await sb.detachDebugger({ tabId: 4 });
+  assert.strictEqual(st.detached, 0);
+  assert.match(await sb.getNetworkRequests({ full: "false" }), /^ok: stopped full network capture on tab 4/);
+  assert.strictEqual(st.detached, 1);
+  assert.match(await sb.getNetworkRequests({ full: "false" }), /no full network capture was running/);
+});
+
+test("page_snapshot appends a cross-origin iframe's own outline", async () => {
+  const sb = loadBackground(makeChrome({
+    tabs: { query: async () => [{ id: 5, active: true }] },
+    scripting: {
+      executeScript: async (o) => {
+        if (!o.func) return [{}];
+        if (o.target.frameIds) return [{ result: '[snapshot 1 lines, 1 refs — act on one with selector "ref=eN"]\n- button "Pay" [ref=e1]' }];
+        return [{ result: { text: '[snapshot 1 lines, 1 refs]\n- iframe "https://pay/" [ref=e3, cross-origin — …]', xframes: [{ ref: "e3", src: "https://pay/", frameId: 9 }] } }];
+      },
+    },
+  }));
+  const out = await sb.pageSnapshot({});
+  assert.match(out, /\n\[iframe ref=e3 https:\/\/pay\/ — its controls: selector "frame=ref=e3 >> ref=eN"\]\n- button "Pay" \[ref=e1\]$/);
 });

@@ -49,6 +49,9 @@ class El {
     return h ? { left: 0, top: 0, width: 0, height: 0 } : { left: 10, top: 20, width: 100, height: 30 };
   }
   scrollIntoView() {}
+  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
+  click() { this.clicks = (this.clicks || 0) + 1; }
+  dispatchEvent(ev) { (this.events = this.events || []).push(ev.type); return true; }
   descendants() {
     const out = [];
     const walk = (n) => { for (const c of n.children) { out.push(c); walk(c); } };
@@ -61,9 +64,11 @@ class El {
 
 function matchSimple(el, part) {
   if (part === "*") return true;
-  const m = /^([a-zA-Z0-9]+)?((?:\[[^\]]+\])*)((?:\.[\w-]+)*)$/.exec(part);
+  const m = /^([a-zA-Z0-9]+)?(?:#([\w-]+))?((?:\[[^\]]+\])*)((?:\.[\w-]+)*)$/.exec(part);
   if (!m) throw new Error("fakedom: unsupported selector " + part);
   if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
+  if (m[2] && el.getAttribute("id") !== m[2]) return false;
+  m.splice(2, 1);
   for (const a of m[2].match(/\[[^\]]+\]/g) || []) {
     const am = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(a);
     if (!am) throw new Error("fakedom: unsupported attribute selector " + a);
@@ -92,22 +97,30 @@ function matches(el, sel, scope) {
 
 const h = (tag, attrs, ...children) => new El(tag, attrs || {}, children.flat());
 
-// loadPage builds a sandbox whose document body holds the given children and
-// runs the shared page scripts in it, returning the sandbox.
-function loadPage(...children) {
+// makeDoc wraps children in an <html><body> document of its own; for an
+// iframe's same-origin document, set it as the iframe's contentDocument.
+function makeDoc(view, ...children) {
   const body = h("body", {}, ...children);
   const doc = h("html", {}, body);
   doc.body = body;
   doc.documentElement = doc;
   doc.getElementById = (id) => doc.querySelector(`[id="${id}"]`);
-  const style = () => ({ display: "", visibility: "" });
-  const sb = { Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 }, getComputedStyle: style, JSON, Math, Array, Set, Map, String, Object };
-  sb.window = sb;
-  sb.document = doc;
-  doc.defaultView = sb;
+  doc.defaultView = view;
   const setOwner = (n) => { n.ownerDocument = doc; for (const c of n.children || []) setOwner(c); };
   setOwner(doc);
-  sb.adopt = setOwner;
+  doc.adopt = setOwner;
+  return doc;
+}
+
+// loadPage builds a sandbox whose document body holds the given children and
+// runs the shared page scripts in it, returning the sandbox.
+function loadPage(...children) {
+  const style = () => ({ display: "", visibility: "" });
+  const sb = { Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 }, getComputedStyle: style, JSON, Math, Array, Set, Map, String, Object, setTimeout, Event: class { constructor(t) { this.type = t; } }, MouseEvent: class { constructor(t) { this.type = t; } } };
+  sb.window = sb;
+  const doc = makeDoc(sb, ...children);
+  sb.document = doc;
+  sb.adopt = doc.adopt;
   vm.createContext(sb);
   for (const f of ["aglink-inject.js", "page-actions.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, f), "utf8"), sb);
@@ -115,4 +128,4 @@ function loadPage(...children) {
   return sb;
 }
 
-module.exports = { El, h, loadPage };
+module.exports = { El, h, loadPage, makeDoc };

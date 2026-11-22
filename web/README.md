@@ -457,6 +457,37 @@ wait_for_element  selector="#list"  idleMs=500           ← 요소가 보인 �
 확장에서 잘라 내고(`OffscreenCanvas`), 앱 창은 CDP `Page.captureScreenshot` 의
 `clip` 을 쓴다. 화면보다 큰 요소는 화면 안에 들어온 부분만 찍힌다.
 
+## 클릭·입력·iframe·네트워크 — 정직한 결과와 새 옵션
+
+- **결과가 숨기지 않는다.** 선택자가 여러 요소에 맞으면 첫 번째를 쓰되 답에
+  `note: matched 3 elements, used the first: 1) button#a "Save" …` 를 붙인다. 하나도
+  안 맞으면 `no element matched selector: … — similar elements: …` 로 비슷한 요소
+  (글자·라벨·id 에 찾던 말이 든 것) 최대 3개, 잘못된 CSS, 낡은 `ref=` 를 알려 준다.
+  `navigate` 가 시간 안에 다 안 뜨면 `(still loading after 15s)` 를 붙인다(앱 창 10s).
+- **`click` / `double_click` 은 누를 수 있을 때까지 기다린다.** 화면 안으로 스크롤하고,
+  보이는지·`disabled`/`aria-disabled` 가 아닌지·가운데 점에 다른 요소가 덮여 있지
+  않은지(`elementFromPoint`) 를 `timeout`(기본 3000ms, 최대 20000) 동안 100ms 마다
+  확인한다. 끝내 안 되면 `it is disabled` / `not visible` / `covered by div.modal …` 로
+  실패한다. `force="true"` 는 확인 없이 바로 누른다.
+- **새 탭.** 클릭이 새 탭(target=_blank, window.open)을 열면
+  `opened new tab id=N url=…` 줄이 붙는다(크롬). `run_steps` 에서는 그 단계에
+  `"follow_popup": true` 를 주면 다음 단계들이 새 탭에서 이어진다.
+- **`type` 의 `mode`.** `set`(기본, 바꾸기) · `append`(끝에 덧붙이기) ·
+  `keys`(진짜 키 입력 — 포커스 후 커서를 끝에 두고 디버거 `Input.insertText` 로
+  입력, 줄바꿈은 Enter 키라 채팅창이면 전송된다). contenteditable(ProseMirror·Lexical·
+  Slate) 은 `set`/`append` 도 이제 `textContent` 를 덮어쓰지 않고 선택 →
+  `execCommand("insertText")` 로 넣어 에디터 상태가 어긋나지 않는다.
+- **iframe.** 모든 선택자 도구에 `frame=<iframe 선택자> >> <선택자>` 를 쓸 수 있다
+  (여러 번 이어도 된다). 같은 출처는 페이지 안에서 바로, 다른 출처는 크롬이 그
+  프레임에서 직접 실행한다(`runtime.getFrameId` / `webNavigation.getAllFrames`). 앱 창은
+  같은 출처만. `page_snapshot` 과 `get_page_text` 는 같은 출처 iframe 내용을
+  `[iframe src]` 아래 함께 보여 주고, 크롬에서는 다른 출처 iframe 도 따로 읽어 붙인다
+  (그 안 컨트롤은 `frame=ref=<iframe ref> >> ref=eN`).
+- **`get_network_requests full="true"`(크롬).** 디버거 `Network` 도메인으로 모든 요청
+  (문서·스크립트·리다이렉트·실패 포함)을 응답 헤더·본문과 함께 잡는다. 이후 호출은
+  `full` 없이도 그 기록을 읽고, `full="false"` 또는 5분 동안 읽지 않으면 멈춘다. 그동안
+  크롬의 "디버깅 중" 막대가 보인다. 출력 형식은 앱 창의 것과 같다.
+
 ## 구조화 추출 — `query_all` 의 `fields` 와 표
 
 목록·카드·표를 한 번에 JSON 으로 뽑는다. 모델이 HTML 을 읽고 해석할 필요가 없다.

@@ -23,7 +23,7 @@ import (
 const (
 	appConsoleKeep = 300
 	appNetworkKeep = 300
-	appBodyMax     = 1500 // chars of a request/response body shown per entry
+	appBodyMax     = 3000 // chars of a request/response body shown per entry
 )
 
 type appConsoleEntry struct {

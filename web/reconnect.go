@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,12 +38,51 @@ const (
 	vscodeWaitHint = "check that the VS Code window is open and the aglink-vscode extension is enabled"
 )
 
+var errChromeNotFound = errors.New("chrome.exe not found in its usual install locations")
+
+var (
+	chromeLaunchMu sync.Mutex
+	chromeLaunchAt time.Time
+)
+
+// chromeLaunchQuiet is how long after one automatic Chrome start no other is
+// tried: long enough for the window to open and the extension to connect.
+const chromeLaunchQuiet = 30 * time.Second
+
+// maybeLaunchChrome runs once at the start of a Chrome call that found no
+// extension connected. Chrome restarting its MV3 worker, or the daemon itself
+// just starting, both look identical from here — a bare "not connected" — so
+// this only acts when Chrome's process is not even running: starting a second
+// Chrome window while one is already open (just mid-reconnect) would be a
+// disruptive false positive. Returns a replacement hint naming what it found
+// and did, or "" to leave the default hint alone (nothing to add, e.g. on a
+// platform without this support).
+func maybeLaunchChrome() string {
+	// Several calls waiting at once each get here; the lock and the timestamp
+	// let only the first in a while start Chrome, or one outage would open a
+	// Chrome window per waiting call.
+	chromeLaunchMu.Lock()
+	defer chromeLaunchMu.Unlock()
+	if time.Since(chromeLaunchAt) < chromeLaunchQuiet {
+		return chromeWaitHint + " — Chrome was just started for an earlier call; give it a few seconds to load the extension and retry"
+	}
+	if anyChromeWindowRunning() {
+		return chromeWaitHint + " — Chrome is running but the extension isn't reaching this daemon; open chrome://extensions and check aglink-web is enabled and not showing an error, and that you're signed into a Chrome profile (service worker 'Inspect' view there shows console errors)"
+	}
+	if err := launchChrome(); err != nil {
+		return "Chrome does not appear to be running, and starting it automatically failed (" + err.Error() + ") — open Chrome yourself"
+	}
+	chromeLaunchAt = time.Now()
+	return chromeWaitHint + " — Chrome was not running, so it was just started; give it a few seconds to load the extension and retry"
+}
+
 // waitConn runs pick (under d.mu) until it yields a connection, waking on every
 // registration (d.connected — no polling), for at most budget. Only a
 // notConnectedError is waited on; the last one is returned with how long it
 // waited and hint.
 func (d *Daemon) waitConn(pick func() (*extConn, error), budget time.Duration, hint string) (*extConn, error) {
 	deadline := time.Now().Add(budget)
+	launchTried := false
 	d.mu.Lock()
 	for {
 		ec, err := pick()
@@ -50,6 +90,15 @@ func (d *Daemon) waitConn(pick func() (*extConn, error), budget time.Duration, h
 		if err == nil || !errors.As(err, &nc) {
 			d.mu.Unlock()
 			return ec, err
+		}
+		if hint == chromeWaitHint && !launchTried {
+			launchTried = true
+			d.mu.Unlock()
+			if note := maybeLaunchChrome(); note != "" {
+				hint = note
+			}
+			d.mu.Lock()
+			continue // re-pick: a window opened just now cannot have connected yet, but keeps this one check path
 		}
 		left := time.Until(deadline)
 		if left <= 0 {

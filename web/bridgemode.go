@@ -49,7 +49,16 @@ func clientPort() (int, error) {
 		return p, nil
 	}
 	if v == "" {
-		return 0, fmt.Errorf("aglink-web: %s is not set — this session reaches the browser through the VS Code aglink bridge (or an SSH tunnel), which needs this window's port. Start Claude Code from a Remote-SSH window with aglink-bridge 0.2+ (reload the window after it installs), or set %s explicitly for a tunnel. Not falling back to %d: on a shared server that port can lead to another PC", portEnv, portEnv, defaultPort)
+		return 0, withBridgeError(fmt.Errorf("aglink-web: %s is not set — this session reaches the browser through the VS Code aglink bridge (or an SSH tunnel), which needs this window's port. Start Claude Code from a Remote-SSH window with aglink-bridge 0.2+ (reload the window after it installs), or set %s explicitly for a tunnel. Not falling back to %d: on a shared server that port can lead to another PC", portEnv, portEnv, defaultPort))
 	}
 	return 0, fmt.Errorf("aglink-web: %s=%q is not a valid port", portEnv, v)
+}
+
+// withBridgeError adds the reason aglink-bridge gave for not opening a port
+// (AGLINK_BRIDGE_ERROR), which is the real cause behind "port is not set".
+func withBridgeError(err error) error {
+	if v := strings.TrimSpace(os.Getenv("AGLINK_BRIDGE_ERROR")); v != "" {
+		return fmt.Errorf("%w (aglink-bridge could not open its port: %s — reload the VS Code window)", err, v)
+	}
+	return err
 }

@@ -128,6 +128,12 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		return fmt.Sprintf("ok: certificate errors are ignored in this window while aglink-web stays attached; reloaded — %s — %s", title, href), nil
 
 	case "screenshot":
+		if str(params, "fullPage") == "true" {
+			if sel != "" {
+				return "", errors.New("screenshot: fullPage is not combinable with selector — capture the element on its own, or the full page, not both")
+			}
+			return appFullPageScreenshot(ctx, p)
+		}
 		if sel == "" {
 			return p.Screenshot(ctx)
 		}
@@ -166,19 +172,55 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		}
 		return img.Data, nil
 
+	case "cookies":
+		return appCookies(ctx, p, params)
+
+	case "print_pdf":
+		raw, err := p.Raw(ctx, "Page.printToPDF", map[string]any{})
+		if err != nil {
+			return "", err
+		}
+		var pdf struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &pdf); err != nil || pdf.Data == "" {
+			return "", errors.New("print_pdf: no PDF data")
+		}
+		return pdf.Data, nil
+
 	case "get_page_text":
 		var r struct {
-			Found bool   `json:"found"`
-			Text  string `json:"text"`
-			Hint  string `json:"hint"`
+			Found   bool   `json:"found"`
+			Text    string `json:"text"`
+			Hint    string `json:"hint"`
+			XFrames []struct {
+				Src string `json:"src"`
+			} `json:"xframes"`
 		}
-		if err := callInto(ctx, p, "getPageText", []any{nullable(sel)}, &r); err != nil {
+		// {"frames": true} asks the page for cross-origin iframes it cannot
+		// read itself (xframes) when reading the whole page — mirrors
+		// background.js's getPageText, which passes the same option so Chrome
+		// profiles get this. Only meaningful without a selector (xframes is
+		// about the whole document).
+		opts := map[string]any{}
+		if sel == "" {
+			opts["frames"] = true
+		}
+		if err := callInto(ctx, p, "getPageText", []any{nullable(sel), opts}, &r); err != nil {
 			return "", err
 		}
 		if sel != "" && !r.Found {
 			return "", missErr(sel, r.Hint)
 		}
-		return formatPageText(r.Text, params), nil
+		text := r.Text
+		if sel == "" && len(r.XFrames) > 0 {
+			srcs := make([]string, len(r.XFrames))
+			for i, xf := range r.XFrames {
+				srcs[i] = xf.Src
+			}
+			text += appCrossFrameText(ctx, p, srcs)
+		}
+		return formatPageText(text, params), nil
 
 	case "element_exists":
 		if sel == "" {
@@ -715,6 +757,8 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 
 	case "close_tab", "reload_extension":
 		return "", fmt.Errorf("not supported for app profiles: %s", method)
+	case "wait_download":
+		return "", errors.New("wait_download is not supported for app profiles — Electron/Wails apps handle downloads their own way, not through a generic CDP hook; use eval to check the app's own download state/folder instead")
 	}
 	return "", fmt.Errorf("unknown method: %s", method)
 }
@@ -776,6 +820,258 @@ func stillLoading(loaded bool) string {
 		return ""
 	}
 	return fmt.Sprintf(" (still loading after %ds)", int(navigateLoadTimeout/time.Second))
+}
+
+// appCrossFrameText reads the text of an app window's cross-origin iframes —
+// the ones P.getPageText (page-actions.js) could see but not read itself,
+// listed by src in xframes. A content script can reach a cross-origin frame
+// by frameId (background.js's crossFrameText); an app window is not a content
+// script, so this resolves each src to a frameId via Page.getFrameTree
+// instead, then reads it through a CDP isolated world (Page.createIsolatedWorld
+// + Runtime.evaluate with that contextId) — DevTools reaching into the frame
+// from outside, not page script reaching across origins. One level deep only
+// (a cross-origin frame's own nested cross-origin frames are not followed);
+// background.js goes two deep, but this covers the common case — an embedded
+// login/payment widget — without the extra isolated-world bookkeeping nesting
+// would need.
+func appCrossFrameText(ctx context.Context, p appPage, srcs []string) string {
+	if len(srcs) == 0 {
+		return ""
+	}
+	raw, err := p.Raw(ctx, "Page.getFrameTree", nil)
+	if err != nil {
+		return "" // best effort: same-origin text already returned above
+	}
+	type frameNode struct {
+		Frame struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		} `json:"frame"`
+		ChildFrames []frameNode `json:"childFrames"`
+	}
+	var tree struct {
+		FrameTree frameNode `json:"frameTree"`
+	}
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return ""
+	}
+	var all []frameNode
+	var walk func(n frameNode)
+	walk = func(n frameNode) {
+		all = append(all, n)
+		for _, c := range n.ChildFrames {
+			walk(c)
+		}
+	}
+	walk(tree.FrameTree)
+
+	var out strings.Builder
+	for _, src := range srcs[:min(len(srcs), 10)] {
+		var frameID string
+		for _, n := range all {
+			if n.Frame.URL == src || strings.HasPrefix(n.Frame.URL, src) || strings.HasPrefix(src, n.Frame.URL) {
+				frameID = n.Frame.ID
+				break
+			}
+		}
+		if frameID == "" {
+			continue
+		}
+		worldRaw, err := p.Raw(ctx, "Page.createIsolatedWorld", map[string]any{
+			"frameId": frameID, "worldName": "aglink-xframe", "grantUniveralAccess": true,
+		})
+		if err != nil {
+			continue
+		}
+		var world struct {
+			ExecutionContextID int `json:"executionContextId"`
+		}
+		if json.Unmarshal(worldRaw, &world) != nil || world.ExecutionContextID == 0 {
+			continue
+		}
+		evalRaw, err := p.Raw(ctx, "Runtime.evaluate", map[string]any{
+			"expression":    "document.body ? document.body.innerText : ''",
+			"contextId":     world.ExecutionContextID,
+			"returnByValue": true,
+			"awaitPromise":  true,
+		})
+		if err != nil {
+			continue
+		}
+		var r evalResult
+		if json.Unmarshal(evalRaw, &r) != nil || r.ExceptionDetails != nil {
+			continue
+		}
+		var text string
+		_ = json.Unmarshal(r.Result.Value, &text)
+		if strings.TrimSpace(text) != "" {
+			fmt.Fprintf(&out, "\n\n[iframe %s]\n%s", src, text)
+		}
+	}
+	return out.String()
+}
+
+// appCookie is one cookie as CDP's Network.getCookies/setCookie shape it.
+// Mirrored in background.js's formatCookies (chrome.cookies uses the same
+// field names already, so no translation is needed there).
+type appCookie struct {
+	Name     string  `json:"name"`
+	Value    string  `json:"value"`
+	Domain   string  `json:"domain"`
+	Path     string  `json:"path"`
+	Secure   bool    `json:"secure"`
+	HTTPOnly bool    `json:"httpOnly"`
+	Expires  float64 `json:"expires"` // Unix seconds; -1 means session cookie
+}
+
+// formatCookies renders a cookie list the same way for both profiles.
+func formatCookies(url string, cookies []appCookie) string {
+	if len(cookies) == 0 {
+		return fmt.Sprintf("(no cookies visible to %s)", url)
+	}
+	var b strings.Builder
+	for i, c := range cookies {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		exp := "session"
+		if c.Expires > 0 {
+			exp = time.Unix(int64(c.Expires), 0).UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(&b, "%s=%s | domain=%s | path=%s | secure=%v | httpOnly=%v | expires=%s", c.Name, c.Value, c.Domain, c.Path, c.Secure, c.HTTPOnly, exp)
+	}
+	return b.String()
+}
+
+// appCookies is the "cookies" command for an app window, via CDP's Network
+// domain (Network.getCookies/setCookie/deleteCookies — these work without
+// Network.enable, unlike request/response inspection).
+func appCookies(ctx context.Context, p appPage, params map[string]any) (string, error) {
+	url := str(params, "url")
+	if url == "" {
+		return "", errors.New("cookies requires 'url'")
+	}
+	action := strings.ToLower(str(params, "action"))
+	if action == "" {
+		action = "get"
+	}
+	name := str(params, "name")
+	switch action {
+	case "get":
+		raw, err := p.Raw(ctx, "Network.getCookies", map[string]any{"urls": []string{url}})
+		if err != nil {
+			return "", err
+		}
+		var r struct {
+			Cookies []appCookie `json:"cookies"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return "", err
+		}
+		cookies := r.Cookies
+		if name != "" {
+			filtered := cookies[:0]
+			for _, c := range r.Cookies {
+				if c.Name == name {
+					filtered = append(filtered, c)
+				}
+			}
+			cookies = filtered
+		}
+		return formatCookies(url, cookies), nil
+
+	case "set":
+		if name == "" {
+			return "", errors.New("cookies action=set requires 'name'")
+		}
+		value := str(params, "value")
+		if value == "" {
+			return "", errors.New("cookies action=set requires 'value'")
+		}
+		p2 := map[string]any{"url": url, "name": name, "value": value}
+		if d := str(params, "domain"); d != "" {
+			p2["domain"] = d
+		}
+		if pth := str(params, "path"); pth != "" {
+			p2["path"] = pth
+		}
+		if str(params, "secure") == "true" {
+			p2["secure"] = true
+		}
+		if str(params, "httpOnly") == "true" {
+			p2["httpOnly"] = true
+		}
+		if exp := intp(params, "expires", 0); exp != 0 {
+			p2["expires"] = exp
+		}
+		raw, err := p.Raw(ctx, "Network.setCookie", p2)
+		if err != nil {
+			return "", err
+		}
+		var r struct {
+			Success bool `json:"success"`
+		}
+		_ = json.Unmarshal(raw, &r)
+		if !r.Success {
+			return "", fmt.Errorf("cookies: setting %q for %s was rejected (check domain/path/secure match the URL)", name, url)
+		}
+		return fmt.Sprintf("ok: set cookie %s for %s", name, url), nil
+
+	case "delete":
+		if name == "" {
+			return "", errors.New("cookies action=delete requires 'name'")
+		}
+		if _, err := p.Raw(ctx, "Network.deleteCookies", map[string]any{"url": url, "name": name}); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("ok: deleted cookie %s for %s", name, url), nil
+
+	default:
+		return "", fmt.Errorf(`cookies: unknown action %q (want "get", "set", or "delete")`, action)
+	}
+}
+
+// appFullPageScreenshot captures the entire scrollable page, not just the
+// viewport: Page.getLayoutMetrics' cssContentSize is the full document size,
+// and captureBeyondViewport only has an effect when paired with an explicit
+// clip of that full size (passing captureBeyondViewport alone still crops to
+// the viewport).
+func appFullPageScreenshot(ctx context.Context, p appPage) (string, error) {
+	raw, err := p.Raw(ctx, "Page.getLayoutMetrics", nil)
+	if err != nil {
+		return "", err
+	}
+	var metrics struct {
+		CSSContentSize struct {
+			Width  float64 `json:"width"`
+			Height float64 `json:"height"`
+		} `json:"cssContentSize"`
+	}
+	if err := json.Unmarshal(raw, &metrics); err != nil {
+		return "", err
+	}
+	if metrics.CSSContentSize.Width <= 0 || metrics.CSSContentSize.Height <= 0 {
+		return "", errors.New("screenshot: could not measure the full page size")
+	}
+	shot, err := p.Raw(ctx, "Page.captureScreenshot", map[string]any{
+		"format":              "png",
+		"captureBeyondViewport": true,
+		"clip": map[string]any{
+			"x": 0, "y": 0,
+			"width": metrics.CSSContentSize.Width, "height": metrics.CSSContentSize.Height,
+			"scale": 1,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	var img struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(shot, &img); err != nil || img.Data == "" {
+		return "", errors.New("screenshot: no image data")
+	}
+	return img.Data, nil
 }
 
 // appTypeKeys is type mode "keys" in an app window: focus the element (caret at

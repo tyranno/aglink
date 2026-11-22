@@ -215,7 +215,9 @@ func (d *Daemon) handler() http.Handler {
 // default profile; name the profile in the call to target another.
 func (d *Daemon) mcpHandler() http.Handler {
 	return server.NewStreamableHTTPServer(
-		newMCPServer(d.call),
+		newMCPServer(func(_ context.Context, method string, params map[string]any, profile string) CallResult {
+			return d.call(method, params, profile)
+		}),
 		server.WithStateLess(true),
 	)
 }
@@ -258,6 +260,18 @@ func (d *Daemon) handleExt(w http.ResponseWriter, r *http.Request) {
 	conn, err := d.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return // upgrader already wrote the error
+	}
+
+	// ext carries the extension's build commit (manifest.json version_name).
+	// A mismatch with this daemon's own build means Chrome is still running a
+	// cached service worker from an older install — tell it to reload itself
+	// rather than serve it with half-updated tools.
+	if ext := r.URL.Query().Get("ext"); buildCommit != "" && ext != "" && ext != buildCommit {
+		msg, _ := json.Marshal(map[string]string{"type": "reload"})
+		_ = conn.WriteMessage(websocket.TextMessage, msg)
+		_ = conn.Close()
+		log.Printf("aglink-web: extension %s reported stale build %q (daemon %q) — told it to reload", account, ext, buildCommit)
+		return
 	}
 
 	ec := &extConn{
@@ -399,6 +413,18 @@ func (d *Daemon) call(method string, params map[string]any, profile string) Call
 // updates is that session's own, and navigate files its new tab under the
 // session's tab group.
 func (d *Daemon) callAs(sess callSession, method string, params map[string]any, profile string) CallResult {
+	res := d.callAsRoute(sess, method, params, profile)
+	if method == "print_pdf" && res.Error == "" {
+		res = savePDFResult(res)
+	}
+	return res
+}
+
+// callAsRoute does the actual routing; split out so callAs can post-process
+// print_pdf's result (both profiles hand back raw base64 PDF data, same as
+// screenshot does for images — see apptools.go and background.js) into a
+// saved file and a path, which is what the caller actually wants back.
+func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]any, profile string) CallResult {
 	if method == listProfilesMethod {
 		return d.listProfiles()
 	}
@@ -593,5 +619,10 @@ func runDaemon() error {
 	d := newDaemon(expectedExtID())
 	d.reconnectWait = defaultReconnectWait
 	log.Printf("aglink-web daemon listening on %s", addr)
-	return http.Serve(ln, d.handler())
+	// ReadHeaderTimeout drops a connection that opens and never finishes its
+	// request line (a dead tunnel, a port scanner on the network address)
+	// instead of holding it for ever. No overall timeout: calls, the extension
+	// WebSocket and long waits are legitimately long.
+	srv := &http.Server{Handler: d.handler(), ReadHeaderTimeout: 20 * time.Second}
+	return srv.Serve(ln)
 }

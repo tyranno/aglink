@@ -98,6 +98,54 @@ function linkBusy() {
   return !!(ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN));
 }
 
+// extBuildTag reports which build of background.js is actually running, so
+// the daemon can tell a cached-stale service worker (files on disk changed
+// since Chrome last loaded this extension) from a current one and tell it to
+// reload. Stamped into manifest.json's version_name at install-build time;
+// "dev" (the repo default, never stamped) always matches nothing specific —
+// the daemon only acts on a real mismatch, never on an unstamped dev build.
+function extBuildTag() {
+  if (staleAck) return "";
+  try {
+    const v = chrome.runtime.getManifest().version_name || "";
+    return v === "dev" ? "" : v; // "dev" = unstamped repo checkout, not a real build to compare
+  } catch (e) {
+    return "";
+  }
+}
+
+// staleAck is set when reloading for a build mismatch did not help: Chrome
+// loads this extension from a folder the install did not update, so the files
+// on disk are still the old build. Reloading again would loop for ever with the
+// extension never connected; instead it connects without its build tag (the
+// daemon then does not compare) and warns.
+let staleAck = false;
+const STALE_KEY = "aglinkStaleReload";
+const STALE_WINDOW_MS = 60 * 60 * 1000;
+
+async function onReloadRequest() {
+  const me = (chrome.runtime.getManifest() || {}).version_name || "";
+  let last = {};
+  try {
+    last = (await chrome.storage.local.get(STALE_KEY))[STALE_KEY] || {};
+  } catch (e) {
+    // no storage: fall through to one reload
+  }
+  if (last.ext === me && Date.now() - (last.at || 0) < STALE_WINDOW_MS) {
+    staleAck = true;
+    console.warn(
+      `aglink-web: still build ${me} after reloading — Chrome loads this extension from a folder that was not updated. Connecting anyway; load the installed extension folder (or rebuild this one) to get the current tools.`
+    );
+    return; // the link closes next and reconnects without the tag
+  }
+  try {
+    await chrome.storage.local.set({ [STALE_KEY]: { ext: me, at: Date.now() } });
+  } catch (e) {
+    // best effort
+  }
+  reloadExtension();
+}
+
 async function connect() {
   // Idempotent: never open a second transport while one is connecting/open.
   // onInstalled, onStartup, the keepalive alarm, storage changes, tab/network
@@ -137,7 +185,7 @@ async function connect() {
   let socket;
   try {
     socket = new WebSocket(
-      `ws://127.0.0.1:${port}/ext?account=${encodeURIComponent(account)}&boot=${encodeURIComponent(boot)}`
+      `ws://127.0.0.1:${port}/ext?account=${encodeURIComponent(account)}&boot=${encodeURIComponent(boot)}&ext=${encodeURIComponent(extBuildTag())}`
     );
   } catch (e) {
     connecting = false;
@@ -158,6 +206,10 @@ async function connect() {
     try {
       req = JSON.parse(event.data);
     } catch (e) {
+      return;
+    }
+    if (req && req.type === "reload") {
+      onReloadRequest();
       return;
     }
     handleRequest(req, (reply) => send(socket, reply));
@@ -202,6 +254,10 @@ function connectNativeLink(account, boot) {
       console.warn("aglink-web: native host: " + msg.error);
       return; // the host exits next; onDisconnect follows
     }
+    if (msg.type === "reload") {
+      onReloadRequest();
+      return;
+    }
     handleRequest(msg, (reply) => {
       if (nmPort !== p) return;
       try {
@@ -226,7 +282,7 @@ function connectNativeLink(account, boot) {
     onLinkLost();
   });
   try {
-    p.postMessage({ type: "hello", account, boot });
+    p.postMessage({ type: "hello", account, boot, ext: extBuildTag() });
   } catch (e) {
     nmPort = null;
     nativeUnavailableUntil = Date.now() + NATIVE_RETRY_MS;
@@ -349,6 +405,12 @@ async function dispatch(method, params) {
       return await waitForElement(params);
     case "screenshot":
       return await screenshot(params);
+    case "print_pdf":
+      return await printPDF(params);
+    case "cookies":
+      return await cookiesCmd(params);
+    case "wait_download":
+      return await waitDownload(params);
     case "type":
       return await typeText(params);
     case "get_value":
@@ -896,11 +958,15 @@ async function evalExpression(params) {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (expr) => {
+    func: async (expr) => {
       try {
         // Indirect eval so the expression evaluates in global scope; supports a
         // bare expression or an IIFE.
-        const val = (0, eval)(expr);
+        let val = (0, eval)(expr);
+        // Await Promise-returning expressions (e.g. `async () => {...}()`,
+        // fetch().then(...)) so the stringified result is the resolved value,
+        // not the opaque Promise object (which JSON.stringify's to "{}").
+        if (val && typeof val.then === "function") val = await val;
         let json;
         if (val === undefined) {
           json = "undefined";
@@ -1085,6 +1151,12 @@ async function screenshot(params) {
     windowId = active.windowId;
     tabId = active.id;
   }
+  if (params.fullPage === true || params.fullPage === "true") {
+    if (params.selector) {
+      throw new Error("screenshot: fullPage is not combinable with selector — capture the element on its own, or the full page, not both");
+    }
+    return await fullPageScreenshot(tabId);
+  }
   let rect = null;
   if (params.selector) {
     if (splitFrameSelector(params.selector)) {
@@ -1104,6 +1176,142 @@ async function screenshot(params) {
   const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
   if (rect) return await cropPng(dataUrl, rect);
   return dataUrl.replace(/^data:image\/png;base64,/, "");
+}
+
+// fullPageScreenshot captures the entire scrollable page via the debugger
+// (captureVisibleTab cannot go beyond the viewport). Borrows the debugger
+// attach/detach pair that network capture and typing already use — see
+// attachDebugger's comment on why a borrowed attach never ends an active
+// network capture.
+async function fullPageScreenshot(tabId) {
+  const target = { tabId };
+  await attachDebugger(target);
+  try {
+    const metrics = await chrome.debugger.sendCommand(target, "Page.getLayoutMetrics");
+    const { width, height } = metrics.cssContentSize;
+    if (!width || !height) throw new Error("screenshot: could not measure the full page size");
+    const shot = await chrome.debugger.sendCommand(target, "Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width, height, scale: 1 },
+    });
+    return shot.data;
+  } finally {
+    await detachDebugger(target);
+  }
+}
+
+// formatCookies renders a cookie list the same way apptools.go's formatCookies
+// does for an app window. chrome.cookies.Cookie already uses the field names
+// (name/value/domain/path/secure/httpOnly/expirationDate) this just reads.
+function formatCookies(url, cookies) {
+  if (!cookies.length) return `(no cookies visible to ${url})`;
+  return cookies
+    .map((c) => {
+      const exp = c.session || !c.expirationDate ? "session" : new Date(c.expirationDate * 1000).toISOString();
+      return `${c.name}=${c.value} | domain=${c.domain} | path=${c.path} | secure=${!!c.secure} | httpOnly=${!!c.httpOnly} | expires=${exp}`;
+    })
+    .join("\n");
+}
+
+// cookiesCmd is the "cookies" command for a Chrome tab, via chrome.cookies
+// (the "cookies" manifest permission). Mirrors apptools.go's appCookies.
+async function cookiesCmd(params) {
+  const url = params.url;
+  if (!url) throw new Error("cookies requires 'url'");
+  const action = String(params.action || "get").toLowerCase();
+  const name = params.name;
+  if (action === "get") {
+    const cookies = await chrome.cookies.getAll(name ? { url, name } : { url });
+    return formatCookies(url, cookies);
+  }
+  if (action === "set") {
+    if (!name) throw new Error("cookies action=set requires 'name'");
+    if (params.value === undefined || params.value === null) throw new Error("cookies action=set requires 'value'");
+    const opts = { url, name, value: String(params.value) };
+    if (params.domain) opts.domain = params.domain;
+    if (params.path) opts.path = params.path;
+    if (params.secure === true || params.secure === "true") opts.secure = true;
+    if (params.httpOnly === true || params.httpOnly === "true") opts.httpOnly = true;
+    if (params.expires) opts.expirationDate = Number(params.expires);
+    const got = await chrome.cookies.set(opts);
+    if (!got) throw new Error(`cookies: setting ${name} for ${url} was rejected (check domain/path/secure match the URL)`);
+    return `ok: set cookie ${name} for ${url}`;
+  }
+  if (action === "delete") {
+    if (!name) throw new Error("cookies action=delete requires 'name'");
+    const removed = await chrome.cookies.remove({ url, name });
+    if (!removed) throw new Error(`cookies: no cookie named ${name} for ${url}`);
+    return `ok: deleted cookie ${name} for ${url}`;
+  }
+  throw new Error(`cookies: unknown action ${JSON.stringify(params.action)} (want "get", "set", or "delete")`);
+}
+
+// waitDownload waits for the next browser download (started after this call)
+// to finish, and reports where Chrome saved it. Event-driven (onCreated +
+// onChanged), not polled: chrome.downloads.search would also see downloads
+// that finished before the call, so only the first download this listener
+// itself sees counts as "the one being waited for".
+async function waitDownload(params) {
+  const timeoutMs = Number(params.timeoutMs) || 30000;
+  return await new Promise((resolve, reject) => {
+    let targetId = null;
+    let timer;
+    const cleanup = () => {
+      chrome.downloads.onCreated.removeListener(onCreated);
+      chrome.downloads.onChanged.removeListener(onChanged);
+      clearTimeout(timer);
+    };
+    const settle = (state, error) => {
+      cleanup();
+      if (state === "complete") {
+        chrome.downloads.search({ id: targetId }, (results) => {
+          const d = results && results[0];
+          resolve(`ok: download complete — ${(d && d.filename) || "(path unknown)"}`);
+        });
+      } else {
+        reject(new Error(`download was interrupted${error ? ": " + error : ""}`));
+      }
+    };
+    const onCreated = (item) => {
+      if (targetId !== null) return; // the first download after this call is the one we wait for
+      targetId = item.id;
+      if (item.state === "complete") settle("complete");
+      else if (item.state === "interrupted") settle("interrupted");
+    };
+    const onChanged = (delta) => {
+      if (targetId === null || delta.id !== targetId || !delta.state) return;
+      if (delta.state.current === "complete" || delta.state.current === "interrupted") {
+        settle(delta.state.current, delta.error && delta.error.current);
+      }
+    };
+    chrome.downloads.onCreated.addListener(onCreated);
+    chrome.downloads.onChanged.addListener(onChanged);
+    timer = setTimeout(() => {
+      cleanup();
+      if (targetId === null) {
+        reject(new Error(`timed out after ${timeoutMs}ms: no download started — trigger it (e.g. click the download link) before calling wait_download`));
+      } else {
+        reject(new Error(`timed out after ${timeoutMs}ms waiting for the download to finish`));
+      }
+    }, timeoutMs);
+  });
+}
+
+// printPDF prints the tab to a PDF and returns it as base64 — the daemon
+// decodes it and saves it to disk, same as it does for the app-window profile
+// (see apptools.go's "print_pdf" case and daemon.go's savePDFResult).
+async function printPDF(params) {
+  const tabId = await activeTabId(params);
+  const target = { tabId };
+  await attachDebugger(target);
+  try {
+    const pdf = await chrome.debugger.sendCommand(target, "Page.printToPDF", {});
+    if (!pdf || !pdf.data) throw new Error("print_pdf: no PDF data");
+    return pdf.data;
+  } finally {
+    await detachDebugger(target);
+  }
 }
 
 // cropPng cuts an element's box (CSS px, viewport-relative, from

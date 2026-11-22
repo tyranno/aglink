@@ -3,8 +3,9 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx+c6DdfbLhKSldo8YvzqD9xEVeXelgKXJid9eUoLOslZeXiSo5oXL8ATktGIULNhinIb1uPINpr2EAr3EyuEPllRr6aGx/h13cRroe15qknMjl+3FXjzdWsskg1cbV8dw02Ri7ZqEh2pON/qIM0gE4rMlAu9Yhzw30anzaqGbXDFIvN4hyxXGvVVoKYSgr8KwfDejOLWiFZqQ+krR6doyuI/Ow3hsHSHvZHk0SmTVVDlnBsN9domR2fOYCttLycTtoDm1RY6FyNf6LFj+LB96dqWaR1mggLW6SM5bHzZWihws20rVAgToOrIdGw0ku5AIgDcK/A4rksQ8sigI6sqZwIDAQAB",
   "name": "aglink-web",
   "version": "0.1.0",
+  "version_name": "dev",
   "description": "Bridges the user's Chrome browser to teleclaude (aglink-web) over native messaging or a local WebSocket, so a worker can list tabs, navigate, and read page text.",
-  "permissions": ["tabs", "scripting", "alarms", "storage", "identity", "identity.email", "webNavigation", "debugger", "nativeMessaging", "tabGroups"],
+  "permissions": ["tabs", "scripting", "alarms", "storage", "identity", "identity.email", "webNavigation", "debugger", "nativeMessaging", "tabGroups", "cookies", "downloads"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

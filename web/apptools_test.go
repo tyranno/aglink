@@ -112,8 +112,8 @@ func TestAppGetPageText(t *testing.T) {
 	if r.Text != "안녕하세요 세계\n[cursor:8]" {
 		t.Fatalf("got %q", r.Text)
 	}
-	if f.calls[0] != `getPageText[null]` {
-		t.Fatalf("selector must pass through as null: %s", f.calls[0])
+	if f.calls[0] != `getPageText[null,{"frames":true}]` {
+		t.Fatalf("selector must pass through as null, with frames:true so cross-origin iframes come back: %s", f.calls[0])
 	}
 	// Truncation counts UTF-16 units like the extension, so cursors agree.
 	r = run(t, f, "get_page_text", map[string]any{"maxChars": 3})

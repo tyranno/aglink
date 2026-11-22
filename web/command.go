@@ -212,11 +212,41 @@ var commands = []command{
 	},
 	{
 		name:  "screenshot",
-		desc:  "Capture the visible viewport of a Chrome tab or app window as a PNG image, so it can be looked at directly instead of read as text. Prefer get_page_text for reading content — use this only when the visual layout itself matters (e.g. verifying a rendered page, a chart, a CAPTCHA). If 'tabId' is given and it isn't the active tab of its window, it is switched to first (mirrors aglink-screen's focus-before-capture). If omitted, the active tab of the focused window is used. Give 'selector' to capture just one element (scrolled into view; the part inside the viewport) — a much smaller image than the whole viewport.",
+		desc:  "Capture the visible viewport of a Chrome tab or app window as a PNG image, so it can be looked at directly instead of read as text. Prefer get_page_text for reading content — use this only when the visual layout itself matters (e.g. verifying a rendered page, a chart, a CAPTCHA). If 'tabId' is given and it isn't the active tab of its window, it is switched to first (mirrors aglink-screen's focus-before-capture). If omitted, the active tab of the focused window is used. Give 'selector' to capture just one element (scrolled into view; the part inside the viewport) — a much smaller image than the whole viewport. Give fullPage=true to capture the entire scrollable page instead of just what's visible (not combinable with selector).",
 		image: true,
 		args: []argSpec{
 			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 			{name: "selector", typ: argString, desc: "Optional CSS selector or semantic locator (role=/text=/ref=…) of one element to capture instead of the viewport."},
+			{name: "fullPage", typ: argString, desc: `"true" captures the entire scrollable page, not just the visible viewport. Not combinable with 'selector'.`},
+		},
+	},
+	{
+		name: "cookies",
+		desc: "Read, set, or delete a Chrome tab's or app window's cookies for a URL — the escape hatch for auth/session state the structured tools don't cover (checking a session cookie landed, seeding one before navigating, logging a user out by clearing one). action=get (default) lists cookies visible to 'url' (optionally filtered by 'name'); action=set requires 'name' and 'value'; action=delete requires 'name'.",
+		args: []argSpec{
+			{name: "url", typ: argString, required: true, desc: "URL whose cookies to read or write, e.g. https://example.com/path."},
+			{name: "action", typ: argString, desc: `"get" (default), "set", or "delete".`},
+			{name: "name", typ: argString, desc: "Cookie name. Required for set/delete; optional filter for get."},
+			{name: "value", typ: argString, desc: "Cookie value. Required for action=set."},
+			{name: "domain", typ: argString, desc: "Optional cookie domain for action=set (default: url's host)."},
+			{name: "path", typ: argString, desc: "Optional cookie path for action=set (default: /)."},
+			{name: "secure", typ: argString, desc: `"true" marks the cookie Secure (action=set).`},
+			{name: "httpOnly", typ: argString, desc: `"true" marks the cookie HttpOnly (action=set).`},
+			{name: "expires", typ: argInt, desc: "Optional expiry as Unix seconds (action=set). Omit for a session cookie."},
+		},
+	},
+	{
+		name: "wait_download",
+		desc: "Wait for a browser download to finish and report where it was saved — call this right after triggering one (e.g. clicking a download link), not before. Chrome tabs only; not supported for app windows, which handle downloads their own way.",
+		args: []argSpec{
+			{name: "timeoutMs", typ: argInt, desc: "Max time to wait in milliseconds (default 30000)."},
+		},
+	},
+	{
+		name: "print_pdf",
+		desc: "Print a Chrome tab or app window to a PDF file and save it to disk — for 'save this page as PDF', not for reading it (get_page_text is far cheaper for that). Returns the saved file's absolute path, not the PDF content itself.",
+		args: []argSpec{
+			{name: "tabId", typ: argInt, desc: "Optional tab id from list_tabs — for an app profile, the window number. Omit for the active tab (an app's first window)."},
 		},
 	},
 	{
@@ -635,7 +665,9 @@ func (c command) mcpParams(req mcp.CallToolRequest) (map[string]any, error) {
 // bridge passes callDaemon (HTTP over to the daemon); the daemon's own MCP
 // endpoint passes its router directly, so a call that originates inside the
 // daemon never loops back out over HTTP to reach itself.
-type dispatchFunc func(method string, params map[string]any, profile string) CallResult
+// ctx is the MCP request's: a cancelled call (or the agent going away) stops
+// waiting for the daemon instead of holding one of the stdio server's workers.
+type dispatchFunc func(ctx context.Context, method string, params map[string]any, profile string) CallResult
 
 // mcpHandler returns the tool handler: extract params, dispatch the command,
 // and shape the result (image for screenshot, text otherwise).
@@ -645,7 +677,7 @@ func (c command) mcpHandler(dispatch dispatchFunc) func(context.Context, mcp.Cal
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		r := dispatch(c.name, params, req.GetString(profileArg, ""))
+		r := dispatch(ctx, c.name, params, req.GetString(profileArg, ""))
 		if c.image {
 			if r.Error != "" {
 				return mcp.NewToolResultError(r.Error), nil

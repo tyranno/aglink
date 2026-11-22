@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -91,5 +91,6 @@ func readPort() int {
 // daemonHost/SSH_CONNECTION) so a remote worker reaches the daemon on the PC
 // it is driven from, with no configuration.
 func daemonBaseURL(port int) string {
-	return fmt.Sprintf("http://%s:%d", daemonHost(), port)
+	// JoinHostPort brackets an IPv6 client address from SSH_CONNECTION.
+	return "http://" + net.JoinHostPort(daemonHost(), strconv.Itoa(port))
 }

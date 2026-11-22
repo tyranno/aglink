@@ -18,7 +18,7 @@ import (
 // design pass.
 func RunMCPWeb() error {
 	bridgeSession = newBridgeSession()
-	return server.ServeStdio(newMCPServer(callDaemon))
+	return serveStdio(newMCPServer(callDaemonCtx))
 }
 
 // newMCPServer builds the "web" MCP server, registering every entry of the

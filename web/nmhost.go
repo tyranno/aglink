@@ -73,6 +73,7 @@ type nmHello struct {
 	Type    string `json:"type"`
 	Account string `json:"account"`
 	Boot    string `json:"boot"`
+	Ext     string `json:"ext"` // extension's build commit (manifest.json version_name)
 }
 
 // nmDialer opens the daemon connection for an extension that said hello.
@@ -91,6 +92,11 @@ func relayNM(in io.Reader, out io.Writer, dial nmDialer) error {
 		msg, _ := json.Marshal(map[string]string{"type": "error", "error": "expected hello with account"})
 		_ = writeNMMessage(out, msg)
 		return fmt.Errorf("bad hello: %q", first)
+	}
+	if buildCommit != "" && hello.Ext != "" && hello.Ext != buildCommit {
+		msg, _ := json.Marshal(map[string]string{"type": "reload"})
+		_ = writeNMMessage(out, msg)
+		return fmt.Errorf("extension build %q != daemon build %q; told it to reload", hello.Ext, buildCommit)
 	}
 	conn, err := dial(hello.Account, hello.Boot)
 	if err != nil {

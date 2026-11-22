@@ -656,28 +656,14 @@ html.compact .side-tab[class*="bg-white/80"] {
   background: transparent;
 }
 
-/* Chat messages: a single left-aligned list separated by thin divider
-   lines (Outlook/Teams style) — no card, no background color; the sender
-   name (shown once per turn) is the only thing that tells rows apart.
+/* Chat messages: still a normal chat layout (my message on the right, the
+   AI's on the left) so the two sides stay easy to tell apart at a glance —
+   just with the card/background/tail/avatar stripped off, divider lines
+   between turns, and a small sender name instead of the avatar circle.
    Only in the Windows-style theme — the classic web-style bubble chat
-   (html without .compact) keeps its avatar and card look untouched. */
+   (html without .compact) is untouched. */
 .msg-sender-label {
   display: none;
-}
-
-html.compact .msg-enter.flex-row-reverse {
-  flex-direction: row !important;
-}
-
-html.compact .msg-col {
-  max-width: 100% !important;
-  align-items: flex-start !important;
-  flex: 1 1 auto;
-}
-
-html.compact .msg-meta.flex-row-reverse,
-html.compact .msg-actions.flex-row-reverse {
-  flex-direction: row !important;
 }
 
 html.compact .msg-row-spacer,

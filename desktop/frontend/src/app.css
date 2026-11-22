@@ -656,30 +656,72 @@ html.compact .side-tab[class*="bg-white/80"] {
   background: transparent;
 }
 
-/* Chat messages: AI replies read as plain text on the page; the user's own
-   message sits in a flat grey block. No gradients, rings, shadows or tails. */
+/* Chat messages: a single left-aligned list separated by thin divider
+   lines (Outlook/Teams style) — no card, no background color; the sender
+   name (shown once per turn) is the only thing that tells rows apart.
+   Only in the Windows-style theme — the classic web-style bubble chat
+   (html without .compact) keeps its avatar and card look untouched. */
+.msg-sender-label {
+  display: none;
+}
+
+html.compact .msg-enter.flex-row-reverse {
+  flex-direction: row !important;
+}
+
+html.compact .msg-col {
+  max-width: 100% !important;
+  align-items: flex-start !important;
+  flex: 1 1 auto;
+}
+
+html.compact .msg-meta.flex-row-reverse,
+html.compact .msg-actions.flex-row-reverse {
+  flex-direction: row !important;
+}
+
+html.compact .msg-row-spacer,
+html.compact .msg-avatar {
+  display: none;
+}
+
+html.compact .msg-sender-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #475569;
+}
+
+html.compact.dark .msg-sender-label {
+  color: #94a3b8;
+}
+
+html.compact .msg-group-start {
+  margin-top: 0.85rem !important;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.09);
+}
+
+html.compact.dark .msg-group-start {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
 html.compact .bubble {
   box-shadow: none !important;
   --tw-ring-shadow: 0 0 #0000;
-  border-radius: 4px !important;
-}
-
-html.compact .bubble-ai {
-  background: transparent !important;
+  border-radius: 0 !important;
   padding-inline: 0.15rem;
 }
 
+html.compact .bubble-ai,
 html.compact .bubble-user {
-  background: #ebebeb !important;
+  background: transparent !important;
 }
 
 html.compact .bubble-system {
   background: #fff8e1 !important;
   --tw-ring-shadow: 0 0 0 1px #f2dfa7;
-}
-
-html.compact.dark .bubble-user {
-  background: #2d2d2d !important;
 }
 
 html.compact.dark .bubble-system {
@@ -690,9 +732,9 @@ html.compact .bubble-tail {
   display: none;
 }
 
-html.compact .msg-avatar {
-  border-radius: 4px;
-  box-shadow: none;
+html.compact .msg-image {
+  border-radius: 2px !important;
+  border-color: transparent !important;
 }
 
 /* Composer row (attach/mic/voice-conv/speak-toggle/send): these use fixed

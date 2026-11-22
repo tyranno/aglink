@@ -1138,18 +1138,19 @@
               {@const startsGroup = msgGroupStart(messagesForPane(p.target), mIndex)}
               <div
                 data-msg-index={mIndex}
-                class={`msg-enter group/msg flex w-full ${side === "user" ? "flex-row-reverse" : "flex-row"} ${side === "system" ? "justify-center" : "items-start gap-2"} ${startsGroup && mIndex > 0 ? "mt-1.5" : ""} ${chat.flashMessage?.paneId === p.id && chat.flashMessage.index === mIndex ? "msg-flash" : ""}`}
+                class={`msg-enter msg-group group/msg flex w-full ${side === "user" ? "flex-row-reverse" : "flex-row"} ${side === "system" ? "justify-center" : "items-start gap-2"} ${startsGroup && mIndex > 0 ? "mt-1.5 msg-group-start" : ""} ${chat.flashMessage?.paneId === p.id && chat.flashMessage.index === mIndex ? "msg-flash" : ""}`}
               >
                 {#if side !== "system"}
                   {#if startsGroup && message.role !== "narration"}
                     {@render avatar(side)}
                   {:else}
-                    <span class="w-6 shrink-0" aria-hidden="true"></span>
+                    <span class="w-6 shrink-0 msg-row-spacer" aria-hidden="true"></span>
                   {/if}
                 {/if}
-                <div class={`relative flex min-w-0 max-w-[88%] flex-col ${side === "user" ? "items-end" : side === "system" ? "items-center" : "items-start"}`}>
+                <div class={`msg-col relative flex min-w-0 max-w-[88%] flex-col ${side === "user" ? "items-end" : side === "system" ? "items-center" : "items-start"}`}>
                   {#if startsGroup && message.role !== "narration" && side !== "system"}
                     <span class={`bubble-tail ${side === "user" ? "bubble-tail-user" : "bubble-tail-ai"}`} aria-hidden="true"></span>
+                    <span class="msg-sender-label">{side === "user" ? "나" : backendModelLabel(paneConversationMeta(p.target).backend) || backendLabel(paneConversationMeta(p.target).backend)}</span>
                   {/if}
                   <div class={`${message.role === "narration"
                     ? "relative min-w-0 max-w-full overflow-hidden border-l-2 border-blue-300 dark:border-blue-700 py-0.5 pl-2.5 pr-2 italic text-slate-500 dark:text-slate-400"
@@ -1182,7 +1183,7 @@
                     {#if message.image}
                       <img
                         alt=""
-                        class="mt-2 max-h-[420px] w-auto max-w-full cursor-zoom-in rounded-lg border border-slate-200 dark:border-slate-700 transition hover:brightness-95"
+                        class="msg-image mt-2 max-h-[420px] w-auto max-w-full cursor-zoom-in rounded-lg border border-slate-200 dark:border-slate-700 transition hover:brightness-95"
                         src={`data:image/png;base64,${message.image}`}
                         title="클릭하면 창으로 크게 봅니다 (이동·크기조절 가능)"
                         onclick={() => openLightbox(`data:image/png;base64,${message.image}`)}
@@ -1191,7 +1192,7 @@
                   </div>
                   {#if message.changes}<ChangesCard changes={message.changes} />{/if}
                   {#if message.role !== "narration" && (message.text || message.at)}
-                    <div class={`mt-0.5 flex h-5 items-center gap-1 px-1 text-[10.5px] text-slate-500 dark:text-slate-500 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
+                    <div class={`msg-meta mt-0.5 flex h-5 items-center gap-1 px-1 text-[10.5px] text-slate-500 dark:text-slate-500 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
                       {#if message.at}
                         <span class="tabular-nums" title={new Date(message.at).toLocaleString("ko-KR")}>{messageTime(message.at)}</span>
                       {/if}

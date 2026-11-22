@@ -1677,7 +1677,7 @@
         </div>
       </div>
     {:else}
-      <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div class="settings-view flex min-h-0 flex-1 flex-col overflow-hidden">
         <div class="flex h-11 shrink-0 items-center gap-3 border-b border-slate-200/80 dark:border-slate-700/80 bg-white/75 dark:bg-slate-900/75 px-4 backdrop-blur">
           <button
             class="grid h-8 w-8 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
@@ -1928,14 +1928,17 @@
                   <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">위 항목으로 안 되는 세부 설정(예: SSH 호스트 목록)만 여기서 직접 고칩니다. 형식이 틀리면 저장되지 않으니 익숙하지 않으면 건드리지 마세요.</div>
                 </div>
                 <textarea
-                  class="min-h-[320px] w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-950 px-4 py-3 font-mono text-[12px] leading-6 text-slate-100 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30"
+                  class="raw-config-editor min-h-[320px] w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-[#1e1e1e] px-4 py-3 font-mono text-[12px] leading-6 text-slate-800 dark:text-slate-200 outline-none focus:border-blue-500"
                   spellcheck="false"
                   value={configText}
                   oninput={(event) => (configText = event.currentTarget.value)}
                 ></textarea>
                 <div class="mt-4 flex items-center gap-3">
-                  <button class="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800" onclick={saveRawConfig}>
-                    파일 저장
+                  <button class="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-default disabled:opacity-50" disabled={!rawConfigChanged} onclick={saveRawConfig}>
+                    변경 저장
+                  </button>
+                  <button type="button" class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:cursor-default disabled:opacity-50" disabled={!rawConfigChanged} onclick={() => (configText = configOriginal)}>
+                    되돌리기
                   </button>
                   {#if rawConfigChanged}
                     <span class="inline-flex items-center gap-1.5 rounded-full bg-amber-100 dark:bg-amber-900/40 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:text-amber-300">

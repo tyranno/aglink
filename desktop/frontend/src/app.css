@@ -243,36 +243,75 @@ html.compact .conv-row-backend {
    category list on the left, label/control rows split by hairlines instead
    of one boxed card per field, and the save bar pinned to the bottom. */
 html.compact .set-tabs {
-  gap: 0;
   align-self: stretch;
+  gap: 0.15rem;
+  margin-left: 1rem;
+  padding-left: 1rem;
+  border-left: 1px solid #e5e5e5;
 }
 
 html.compact .set-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
   border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
+  border-radius: 4px 4px 0 0;
   background: transparent;
-  color: #475569;
-  padding-inline: 0.9rem;
+  color: #5c5c5c;
+  padding: 0 0.85rem;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+html.compact .set-tab::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: #0f6cbd;
+  transform: translateX(-50%);
+  transition: width 160ms ease;
 }
 
 html.compact .set-tab:hover {
   background: rgb(0 0 0 / 0.04);
+  color: #242424;
 }
 
 html.compact .set-tab.set-tab-active {
-  border-bottom-color: #2563eb;
   background: transparent;
-  color: #1d4ed8;
+  color: #242424;
+  font-weight: 600;
+}
+
+html.compact .set-tab.set-tab-active::after {
+  width: calc(100% - 1.5rem);
+}
+
+html.compact.dark .set-tabs {
+  border-left-color: #3c3c3c;
 }
 
 html.compact.dark .set-tab {
-  color: #9d9d9d;
+  color: #a6a6a6;
+}
+
+html.compact.dark .set-tab:hover {
+  background: rgb(255 255 255 / 0.06);
+  color: #f0f0f0;
 }
 
 html.compact.dark .set-tab.set-tab-active {
-  border-bottom-color: #3794ff;
-  color: #e0e0e0;
+  color: #f0f0f0;
+}
+
+html.compact.dark .set-tab::after {
+  background: #479ef5;
 }
 
 html.compact .set-card {
@@ -381,6 +420,110 @@ html.compact.dark .set-savebar {
   background: #252526;
 }
 
+/* Settings controls: one height for text buttons, inputs and selects so a
+   field and its button line up; Fluent-style flat primary / outlined
+   secondary. Tabs, nav items, icon and link buttons are left alone. */
+html.compact .settings-view .set-card :is(button[class*="px-2"], button[class*="px-3"], button[class*="px-4"]):not(.set-group-nav > button):not([role="switch"]):not([class*="underline"]) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 2rem;
+  padding-block: 0;
+  padding-inline: 0.9rem;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+html.compact .settings-view .set-card :is(button[class*="px-2"], button[class*="px-3"])[class*="text-xs"] {
+  min-height: 1.75rem;
+  padding-inline: 0.65rem;
+  font-size: 12px;
+}
+
+html.compact .settings-view .set-card :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
+  min-height: 2rem;
+  padding-block: 0;
+  border-radius: 4px;
+  border-bottom-color: #8a8a8a;
+  font-size: 13px;
+}
+
+html.compact .settings-view .set-card button[class*="bg-blue-600"] {
+  border: 1px solid transparent;
+  background: #0f6cbd;
+  color: #fff;
+  font-weight: 600;
+}
+
+html.compact .settings-view .set-card button[class*="bg-blue-600"]:hover:not(:disabled) {
+  background: #115ea3;
+}
+
+html.compact .settings-view .set-card button[class*="bg-blue-600"]:active:not(:disabled) {
+  background: #0c3b5e;
+}
+
+html.compact .settings-view .set-card button[class*="border-slate-300"]:not([class*="bg-blue"]) {
+  border-color: #d1d1d1;
+  border-bottom-color: #b3b3b3;
+  background: #ffffff;
+  color: #242424;
+  font-weight: 500;
+}
+
+html.compact .settings-view .set-card button[class*="border-slate-300"]:not([class*="bg-blue"]):hover:not(:disabled) {
+  background: #f5f5f5;
+}
+
+html.compact.dark .settings-view .set-card :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
+  border-bottom-color: #9a9a9a;
+}
+
+html.compact.dark .settings-view .set-card button[class*="bg-blue-600"] {
+  background: #479ef5;
+  color: #111;
+}
+
+html.compact.dark .settings-view .set-card button[class*="bg-blue-600"]:hover:not(:disabled) {
+  background: #62abf5;
+}
+
+html.compact.dark .settings-view .set-card button[class*="border-slate-300"]:not([class*="bg-blue"]) {
+  border-color: #3d3d3d;
+  border-bottom-color: #4a4a4a;
+  background: #2d2d2d;
+  color: #e0e0e0;
+}
+
+html.compact.dark .settings-view .set-card button[class*="border-slate-300"]:not([class*="bg-blue"]):hover:not(:disabled) {
+  background: #383838;
+}
+
+.raw-config-editor {
+  field-sizing: fixed;
+  height: 26rem;
+  resize: vertical;
+  font-family: "Cascadia Mono", Consolas, "D2Coding", "Malgun Gothic", monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+
+html.compact .settings-view .raw-config-editor {
+  border-radius: 4px;
+  background: #fbfbfb;
+}
+
+html.compact.dark .settings-view .raw-config-editor {
+  background: #1e1e1e;
+}
+
 /* Thin native-style focus outline instead of the wide web glow ring. */
 html.compact :is(input, select, textarea):focus {
   --tw-ring-shadow: 0 0 0 1px #3b82f6;
@@ -416,17 +559,18 @@ html.compact .rounded-full:not(.animate-spin):not([role="switch"]):not([role="sw
   border-radius: 4px;
 }
 
-/* Title/command bar: light, thin, borderless controls that tint on hover. */
+/* Title/command bar: thin deep-indigo bar with white text. Popovers inside
+   it keep their own white surface, so bar-only rules skip .absolute. */
 html.compact .app-header {
   height: 2.6rem;
-  background: #f3f3f3;
-  color: #1a1a1a;
-  border-bottom: 1px solid #e5e5e5;
-  box-shadow: none;
+  background: linear-gradient(90deg, #2e3160 0%, #3d4078 55%, #464a86 100%);
+  color: #ffffff;
+  border-bottom: 1px solid #262850;
+  box-shadow: 0 1px 2px rgb(20 22 60 / 0.18);
 }
 
-html.compact .app-header [class*="text-slate-100"] {
-  color: #1a1a1a;
+html.compact .app-header [class*="text-slate-100"]:not(.absolute *) {
+  color: #f4f5ff;
 }
 
 html.compact .app-header [class*="border-white"] {
@@ -437,13 +581,13 @@ html.compact .app-header [class*="bg-white/"] {
   background: transparent;
 }
 
-html.compact .app-header button:hover {
-  background-color: rgb(0 0 0 / 0.06);
+html.compact .app-header button:not(.absolute *):hover {
+  background-color: rgb(255 255 255 / 0.12);
 }
 
 html.compact .app-header .conn-btn {
   background: transparent;
-  color: #0f7b0f;
+  color: #9ff0a0;
 }
 
 html.compact .app-header .conn-btn::before {
@@ -455,25 +599,25 @@ html.compact .app-header .conn-btn::before {
 }
 
 html.compact .app-header .conn-btn.bg-rose-500 {
-  color: #c42b1c;
+  color: #ffb3ba;
 }
 
 html.compact.dark .app-header {
-  background: #202020;
-  color: #e0e0e0;
-  border-bottom-color: #2b2b2b;
+  background: linear-gradient(90deg, #1d1f3a 0%, #262849 60%, #2c2f55 100%);
+  color: #e6e7f5;
+  border-bottom-color: #15162b;
 }
 
-html.compact.dark .app-header [class*="text-slate-100"] {
-  color: #e0e0e0;
+html.compact.dark .app-header [class*="text-slate-100"]:not(.absolute *) {
+  color: #e6e7f5;
 }
 
-html.compact.dark .app-header button:hover {
-  background-color: rgb(255 255 255 / 0.07);
+html.compact.dark .app-header button:not(.absolute *):hover {
+  background-color: rgb(255 255 255 / 0.09);
 }
 
 html.compact.dark .app-header .conn-btn {
-  color: #6ccb5f;
+  color: #7fdc80;
 }
 
 html.compact.dark .app-header .conn-btn.bg-rose-500 {

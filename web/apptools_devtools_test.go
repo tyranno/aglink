@@ -84,3 +84,22 @@ func TestAppSnapshotWithPageLine(t *testing.T) {
 		t.Fatalf("no page line unless asked: %q", r.Text)
 	}
 }
+
+// Clearing the viewport of a hidden window says why it still reads the old
+// size; a visible window, or a call that leaves the viewport alone, does not.
+func TestAppEmulateHiddenWindowNote(t *testing.T) {
+	f := &fakePage{rawResults: map[string]string{"Runtime.evaluate": `{"result":{"value":"hidden"}}`}}
+	if r := run(t, f, "emulate", map[string]any{"reset": "true"}); !strings.Contains(r.Text, "this window is hidden") {
+		t.Fatalf("hidden reset: %+v", r)
+	}
+	if r := run(t, f, "emulate", map[string]any{"device": "none"}); !strings.Contains(r.Text, "this window is hidden") {
+		t.Fatalf("hidden device=none: %+v", r)
+	}
+	if r := run(t, f, "emulate", map[string]any{"colorScheme": "dark"}); strings.Contains(r.Text, "hidden") {
+		t.Fatalf("no viewport change, no note: %+v", r)
+	}
+	f.rawResults["Runtime.evaluate"] = `{"result":{"value":"visible"}}`
+	if r := run(t, f, "emulate", map[string]any{"reset": "true"}); strings.Contains(r.Text, "hidden") {
+		t.Fatalf("visible reset: %+v", r)
+	}
+}

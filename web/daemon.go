@@ -86,7 +86,10 @@ type navKey struct{ account, session string }
 
 // callSession identifies the MCP client conversation a call comes from. key is
 // stable for the conversation; label is a short human name for its tab group.
-type callSession struct{ key, label string }
+type callSession struct {
+	key, label string
+	env        callEnv // the settings this call carried (settings.go)
+}
 
 // navTargetMethods are the Chrome page tools that act on a single tab and
 // default to the active one. For these, a call that omits tabId is redirected to
@@ -436,7 +439,7 @@ func (d *Daemon) callAs(sess callSession, method string, params map[string]any, 
 // saved file and a path, which is what the caller actually wants back.
 func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]any, profile string) CallResult {
 	if method == listProfilesMethod {
-		return d.listProfiles()
+		return d.listProfiles(sess.env)
 	}
 	if method == "run_steps" {
 		return d.runSteps(sess, params, profile)
@@ -463,7 +466,7 @@ func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]
 		return d.listFlows()
 	}
 	if strings.HasPrefix(method, "vscode_") {
-		return d.callVSCode(method, params, profile)
+		return d.callVSCode(sess, method, params, profile)
 	}
 	if isVSCodeProfile(profile) {
 		return CallResult{Error: fmt.Sprintf("%s works on web pages; for a VS Code window use the vscode_* tools", method)}
@@ -475,7 +478,7 @@ func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]
 		return CallResult{Error: err.Error()}
 	}
 	if isAppProfile(profile) {
-		return d.callApp(method, params, profile)
+		return d.callApp(sess, method, params, profile)
 	}
 	// The extension runs the CDP commands the daemon works out for emulate.
 	if method == "emulate" {
@@ -484,7 +487,7 @@ func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]
 		}
 	}
 
-	wait := d.reconnectBudget()
+	wait := d.reconnectBudget(sess.env)
 	ec, err := d.waitConn(func() (*extConn, error) { return d.resolve(profile) }, wait, chromeWaitHint)
 	if err != nil {
 		return CallResult{Error: err.Error()}
@@ -522,7 +525,7 @@ func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]
 	default:
 		ec, res = d.sendChrome(ec, method, params, wait)
 		if method == "navigate" && res.OK {
-			res = d.autoProceed(ec, params, res)
+			res = d.autoProceed(sess.env, ec, params, res)
 		}
 	}
 
@@ -559,9 +562,9 @@ func (d *Daemon) rememberNavTab(key navKey, method string, res CallResult) {
 // App windows with a DevTools port follow the Chrome profiles. Discovery runs
 // after d.mu is released: it waits on the network, and holding the lock would
 // stall every Chrome call meanwhile.
-func (d *Daemon) listProfiles() CallResult {
+func (d *Daemon) listProfiles(env callEnv) CallResult {
 	lines := d.chromeProfileLines()
-	lines = append(lines, d.appProfileLines()...)
+	lines = append(lines, d.appProfileLines(env)...)
 	lines = append(lines, d.vscodeProfileLines()...)
 	return CallResult{OK: true, Text: strings.Join(lines, "\n")}
 }
@@ -605,7 +608,6 @@ func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, CallResult{Error: "missing method"})
 		return
 	}
-	setClientEnv(body.Env)
 	// Risky tools wait for the user's OK first (approvalgate.go), judged by
 	// this request's own settings.
 	if hits := gatedHits(body.Method, body.Params, body.Env); len(hits) > 0 {
@@ -614,7 +616,7 @@ func (d *Daemon) handleCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, d.callAs(callSession{body.Session, body.SessionLabel}, body.Method, body.Params, body.Profile))
+	writeJSON(w, d.callAs(callSession{key: body.Session, label: body.SessionLabel, env: body.Env}, body.Method, body.Params, body.Profile))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

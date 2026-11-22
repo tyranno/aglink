@@ -197,13 +197,13 @@ var vscodeDefaultTimeoutSec = map[string]int{"vscode_task_run": 60}
 // callVSCode runs one vscode_* tool in the named window. The extension gets
 // the method without its "vscode_" prefix — "read", "terminal_run" — since the
 // namespace only matters on the MCP side.
-func (d *Daemon) callVSCode(method string, params map[string]any, profile string) CallResult {
+func (d *Daemon) callVSCode(sess callSession, method string, params map[string]any, profile string) CallResult {
 	if !isVSCodeProfile(profile) {
 		return CallResult{Error: fmt.Sprintf("%s needs a VS Code window: pass profile=\"vscode:<name>\" (see list_profiles)", method)}
 	}
 	// A window reloading (or VS Code starting after the agent) is a gap, not
 	// an error: wait for it like a Chrome call waits for the extension.
-	ec, err := d.waitConn(func() (*extConn, error) { return d.resolveVSCode(profile) }, d.reconnectBudget(), vscodeWaitHint)
+	ec, err := d.waitConn(func() (*extConn, error) { return d.resolveVSCode(profile) }, d.reconnectBudget(sess.env), vscodeWaitHint)
 	if err != nil {
 		return CallResult{Error: err.Error()}
 	}

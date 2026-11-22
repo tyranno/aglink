@@ -35,9 +35,9 @@ const (
 
 // insecureHostPatterns reads both sources on every call: the file is tiny, a
 // navigate is rare, and an edit takes effect without restarting the daemon.
-func insecureHostPatterns() []string {
+func insecureHostPatterns(env callEnv) []string {
 	var out []string
-	for _, f := range strings.FieldsFunc(webGetenv(insecureHostsEnv), func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
+	for _, f := range strings.FieldsFunc(env.get(insecureHostsEnv), func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
 		out = append(out, f)
 	}
 	if dir, err := dataDir(); err == nil {
@@ -103,8 +103,8 @@ func urlHost(raw string) string {
 }
 
 // insecureAllowed reports whether the user listed the host of rawURL.
-func insecureAllowed(hostport string) bool {
-	return hostMatches(hostport, insecureHostPatterns())
+func insecureAllowed(env callEnv, hostport string) bool {
+	return hostMatches(hostport, insecureHostPatterns(env))
 }
 
 var (
@@ -166,7 +166,7 @@ func (d *Daemon) proceedChrome(ec *extConn, params map[string]any) CallResult {
 // proceed_insecure, but only for a host the user listed. The host judged is
 // the one the warning names — after redirects, that is where the bad
 // certificate actually is — falling back to the requested URL's.
-func (d *Daemon) autoProceed(ec *extConn, params map[string]any, res CallResult) CallResult {
+func (d *Daemon) autoProceed(env callEnv, ec *extConn, params map[string]any, res CallResult) CallResult {
 	m := proceedHintRE.FindStringSubmatch(res.Text)
 	if m == nil {
 		return res
@@ -175,7 +175,7 @@ func (d *Daemon) autoProceed(ec *extConn, params map[string]any, res CallResult)
 	if h := warnHostRE.FindStringSubmatch(res.Text); h != nil {
 		host = h[1]
 	}
-	if !insecureAllowed(host) {
+	if !insecureAllowed(env, host) {
 		return res
 	}
 	tabID, _ := strconv.Atoi(m[1])

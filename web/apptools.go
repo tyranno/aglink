@@ -98,7 +98,7 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 		}
 		// A host the user listed as trusted-despite-its-certificate loads
 		// without the warning, as the extension does for Chrome.
-		if insecureAllowed(urlHost(url)) {
+		if insecureAllowed(envFrom(ctx), urlHost(url)) {
 			if _, err := p.Raw(ctx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}); err != nil {
 				return "", fmt.Errorf("ignore certificate errors for %s: %w", urlHost(url), err)
 			}
@@ -726,10 +726,11 @@ func appDispatch(ctx context.Context, p appPage, pages []cdpTarget, method strin
 				return "", fmt.Errorf("emulate: Emulation.setEmulatedMedia: %w", err)
 			}
 		}
+		note := hiddenViewportNote(ctx, p, plan)
 		if plan.Reset {
-			return "ok: emulation cleared — viewport, user agent, media features, network and geolocation are the window's own again", nil
+			return "ok: emulation cleared — viewport, user agent, media features, network and geolocation are the window's own again" + note, nil
 		}
-		return fmt.Sprintf("ok: emulating %s in window %d — lasts while aglink-web stays attached to the window (until the app or the daemon restarts); emulate reset=\"true\" clears it", strings.Join(plan.Summary, ", "), intp(params, "tabId", 1)), nil
+		return fmt.Sprintf("ok: emulating %s in window %d — lasts while aglink-web stays attached to the window (until the app or the daemon restarts); emulate reset=\"true\" clears it", strings.Join(plan.Summary, ", "), intp(params, "tabId", 1)) + note, nil
 
 	case "upload_file":
 		paths := toStrings(params["paths"])
@@ -1442,4 +1443,33 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+// hiddenViewportNote warns when a viewport override was cleared on a hidden
+// window. WebView2 does not lay a hidden window out again, so the page keeps
+// the emulated size until the window is shown or resized — innerWidth and a
+// snapshot still read the old size, which looks like the reset failed.
+func hiddenViewportNote(ctx context.Context, p appPage, plan emulatePlan) string {
+	cleared := false
+	for _, c := range plan.Cmds {
+		if c.Method == "Emulation.clearDeviceMetricsOverride" {
+			cleared = true
+		}
+	}
+	if !cleared {
+		return ""
+	}
+	raw, err := p.Raw(ctx, "Runtime.evaluate", map[string]any{"expression": "document.visibilityState", "returnByValue": true})
+	if err != nil {
+		return ""
+	}
+	var ev struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &ev) != nil || ev.Result.Value != "hidden" {
+		return ""
+	}
+	return " — note: this window is hidden, so it keeps the last emulated size until it is shown or resized; to give it its real size now, set width/height to the window's own size instead"
 }

@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"os"
-	"sync"
 )
 
 // Settings that shape the daemon's behavior — which ports to search for app
@@ -12,7 +12,9 @@ import (
 // installers do. But that environment reaches only the bridge process Claude
 // starts; the daemon is usually already running, started at logon, and never
 // sees it. So the bridge forwards these keys with every call, and the daemon
-// reads them through webGetenv.
+// reads them from the call that carried them (callEnv) — never from a copy
+// shared between calls, so two sessions registered with different values
+// calling at the same moment each get their own.
 var webSettingKeys = []string{
 	"AGLINK_WEB_CDP_PORTS",
 	"AGLINK_WEB_INSECURE_HOSTS",
@@ -38,28 +40,28 @@ func bridgeEnv() map[string]string {
 	return m
 }
 
-var clientEnv struct {
-	sync.RWMutex
-	m map[string]string
-}
+// callEnv is the settings one call carried. A key the call did not set
+// falls back to the daemon's own environment.
+type callEnv map[string]string
 
-// setClientEnv records the settings the latest call carried. Each call
-// replaces the whole set, so a key removed from the registration stops
-// applying with the next call instead of lingering.
-func setClientEnv(m map[string]string) {
-	clientEnv.Lock()
-	clientEnv.m = m
-	clientEnv.Unlock()
-}
-
-// webGetenv reads a setting: what the caller's MCP registration says, else
-// the daemon's own environment.
-func webGetenv(key string) string {
-	clientEnv.RLock()
-	v := clientEnv.m[key]
-	clientEnv.RUnlock()
-	if v != "" {
+func (e callEnv) get(key string) string {
+	if v := e[key]; v != "" {
 		return v
 	}
 	return os.Getenv(key)
+}
+
+type callEnvKey struct{}
+
+// withCallEnv hands a call's settings down through ctx to code (app
+// discovery, app tools) that only sees the context.
+func withCallEnv(ctx context.Context, e callEnv) context.Context {
+	return context.WithValue(ctx, callEnvKey{}, e)
+}
+
+// envFrom is the settings of the call ctx belongs to; nil (the daemon's own
+// environment) when it carries none.
+func envFrom(ctx context.Context) callEnv {
+	e, _ := ctx.Value(callEnvKey{}).(callEnv)
+	return e
 }

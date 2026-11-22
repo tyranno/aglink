@@ -22,8 +22,8 @@ func (e notConnectedError) Error() string { return string(e) }
 
 // reconnectBudget is how long a call may wait for the extension: the caller's
 // AGLINK_WEB_RECONNECT_WAIT_MS when set, else the daemon's default.
-func (d *Daemon) reconnectBudget() time.Duration {
-	if v := strings.TrimSpace(webGetenv(reconnectWaitEnv)); v != "" {
+func (d *Daemon) reconnectBudget(env callEnv) time.Duration {
+	if v := strings.TrimSpace(env.get(reconnectWaitEnv)); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil && ms >= 0 {
 			return time.Duration(ms) * time.Millisecond
 		}

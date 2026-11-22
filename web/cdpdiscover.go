@@ -51,8 +51,8 @@ const defaultCDPPorts = "9222-9240,9333"
 
 // cdpPorts reads AGLINK_WEB_CDP_PORTS ("9222-9240", "9333", or a comma list of
 // either), defaulting to defaultCDPPorts.
-func cdpPorts() []int {
-	spec := strings.TrimSpace(webGetenv("AGLINK_WEB_CDP_PORTS"))
+func cdpPorts(env callEnv) []int {
+	spec := strings.TrimSpace(env.get("AGLINK_WEB_CDP_PORTS"))
 	if spec == "" {
 		spec = defaultCDPPorts
 	}
@@ -197,7 +197,7 @@ func isAppProfile(name string) bool {
 func resolveApp(apps []appInfo, name string) (appInfo, error) {
 	n := strings.ToLower(strings.TrimSpace(name))
 	if len(apps) == 0 {
-		return appInfo{}, fmt.Errorf("no app with a DevTools port found on %s — launch it with a debugging port (see README: app targets)", portSpecLabel())
+		return appInfo{}, fmt.Errorf("no app with a DevTools port found on %s — launch it with a debugging port (see README: app targets)", portSpecLabel(nil))
 	}
 	if rest, ok := strings.CutPrefix(n, "cdp:"); ok {
 		port, err := strconv.Atoi(rest)
@@ -238,8 +238,8 @@ func appNames(apps []appInfo) string {
 	return strings.Join(names, ", ")
 }
 
-func portSpecLabel() string {
-	if s := strings.TrimSpace(webGetenv("AGLINK_WEB_CDP_PORTS")); s != "" {
+func portSpecLabel(env callEnv) string {
+	if s := strings.TrimSpace(env.get("AGLINK_WEB_CDP_PORTS")); s != "" {
 		return "ports " + s
 	}
 	return "ports " + defaultCDPPorts

@@ -133,7 +133,7 @@ func (d *Daemon) runSteps(sess callSession, params map[string]any, profile strin
 		return CallResult{Error: fmt.Sprintf("snapshot must be tree, diff, text, elements or none, not %q", snapshot)}
 	}
 	keepGoing := isTrue(str(params, "continue_on_error"))
-	delay := time.Duration(intp(params, "step_delay_ms", defaultStepDelayMs())) * time.Millisecond
+	delay := time.Duration(intp(params, "step_delay_ms", defaultStepDelayMs(sess.env))) * time.Millisecond
 	tab := intp(params, "tabId", 0)
 
 	var lines []string
@@ -328,8 +328,8 @@ func (d *Daemon) stepsSnapshot(sess callSession, kind string, tab int, profile s
 	return ""
 }
 
-func defaultStepDelayMs() int {
-	n, _ := strconv.Atoi(strings.TrimSpace(webGetenv("AGLINK_WEB_STEP_DELAY_MS")))
+func defaultStepDelayMs(env callEnv) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(env.get("AGLINK_WEB_STEP_DELAY_MS")))
 	if n < 0 {
 		return 0
 	}

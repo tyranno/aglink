@@ -15,6 +15,7 @@ type appState struct {
 	conns    map[string]*appTarget // CDP target id → live connection
 	cache    []appInfo
 	cachedAt time.Time
+	cacheFor string // the port setting the cache was found with
 }
 
 // appCacheTTL keeps back-to-back tool calls from re-knocking on every port.
@@ -22,11 +23,14 @@ type appState struct {
 // hidden by a stale cache.
 const appCacheTTL = 5 * time.Second
 
-func defaultDiscover(ctx context.Context) []appInfo { return discoverApps(ctx, cdpPorts()) }
+func defaultDiscover(ctx context.Context) []appInfo { return discoverApps(ctx, cdpPorts(envFrom(ctx))) }
 
 func (d *Daemon) appList(ctx context.Context, fresh bool) []appInfo {
+	// A session searching other ports than the cache was found on gets its
+	// own search, not the other session's list.
+	spec := envFrom(ctx).get("AGLINK_WEB_CDP_PORTS")
 	d.apps.mu.Lock()
-	if !fresh && d.apps.cache != nil && time.Since(d.apps.cachedAt) < appCacheTTL {
+	if !fresh && d.apps.cache != nil && d.apps.cacheFor == spec && time.Since(d.apps.cachedAt) < appCacheTTL {
 		out := d.apps.cache
 		d.apps.mu.Unlock()
 		return out
@@ -35,26 +39,30 @@ func (d *Daemon) appList(ctx context.Context, fresh bool) []appInfo {
 
 	found := d.discover(ctx)
 	d.apps.mu.Lock()
-	d.apps.cache, d.apps.cachedAt = found, time.Now()
+	d.apps.cache, d.apps.cachedAt, d.apps.cacheFor = found, time.Now(), spec
 	d.apps.mu.Unlock()
 	return found
 }
 
 // callApp runs one tool against an Electron/Wails window.
-func (d *Daemon) callApp(method string, params map[string]any, profile string) CallResult {
+func (d *Daemon) callApp(sess callSession, method string, params map[string]any, profile string) CallResult {
 	timeout := callTimeout
 	if method == "wait_for_element" {
 		if ms := intp(params, "timeoutMs", defaultWaitTimeoutMs); time.Duration(ms)*time.Millisecond+5*time.Second > timeout {
 			timeout = time.Duration(ms)*time.Millisecond + 5*time.Second
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(withCallEnv(context.Background(), sess.env), timeout)
 	defer cancel()
 
 	app, err := resolveApp(d.appList(ctx, false), profile)
 	if err != nil {
 		// The cache may predate the app; look once more before giving up.
-		if app, err = resolveApp(d.appList(ctx, true), profile); err != nil {
+		apps := d.appList(ctx, true)
+		if len(apps) == 0 {
+			return CallResult{Error: fmt.Sprintf("no app with a DevTools port found on %s — launch it with a debugging port (see README: app targets)", portSpecLabel(sess.env))}
+		}
+		if app, err = resolveApp(apps, profile); err != nil {
 			return CallResult{Error: err.Error()}
 		}
 	}
@@ -102,8 +110,8 @@ func (d *Daemon) attach(page cdpTarget, port int) (*appTarget, error) {
 }
 
 // appProfileLines renders the discovered apps for list_profiles.
-func (d *Daemon) appProfileLines() []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*probeTimeout)
+func (d *Daemon) appProfileLines(env callEnv) []string {
+	ctx, cancel := context.WithTimeout(withCallEnv(context.Background(), env), 2*probeTimeout)
 	defer cancel()
 	var lines []string
 	for _, a := range d.appList(ctx, true) {

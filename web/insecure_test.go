@@ -48,7 +48,7 @@ func TestInsecureHostPatternsReadsFileAndEnv(t *testing.T) {
 	t.Setenv("AGLINK_HOME", home)
 	t.Setenv(insecureHostsEnv, "a.local, b.local")
 	os.WriteFile(filepath.Join(home, insecureHostsFile), []byte("# internal\nnas.local  # the NAS\n\n*.lab\n"), 0o600)
-	got := strings.Join(insecureHostPatterns(), " ")
+	got := strings.Join(insecureHostPatterns(nil), " ")
 	if got != "a.local b.local nas.local *.lab" {
 		t.Fatalf("patterns = %q", got)
 	}

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,29 +240,58 @@ func TestParseStepsRejectsBadBatches(t *testing.T) {
 	}
 }
 
-// The MCP registration's settings reach the daemon through the bridge's call.
+// The MCP registration's settings reach the daemon through the bridge's call,
+// and stay that call's own: a call without them does not inherit them, and
+// two sessions with different values calling at once each see their own.
 func TestCallCarriesTheBridgeSettings(t *testing.T) {
-	defer setClientEnv(nil)
 	d := newDaemon("")
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	d.discover = func(ctx context.Context) []appInfo {
+		mu.Lock()
+		seen[fmt.Sprint(cdpPorts(envFrom(ctx)))] = true
+		mu.Unlock()
+		return nil
+	}
 	srv := httptest.NewServer(d.handler())
 	defer srv.Close()
-
 	t.Setenv("AGLINK_WEB_CDP_PORTS", "") // the daemon's own environment says nothing
-	body, _ := json.Marshal(callRequest{Method: "list_tabs", Env: map[string]string{"AGLINK_WEB_CDP_PORTS": "9555"}})
-	resp, err := http.Post(srv.URL+"/call", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+
+	post := func(env map[string]string) {
+		body, _ := json.Marshal(callRequest{Method: listProfilesMethod, Env: env})
+		resp, err := http.Post(srv.URL+"/call", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		resp.Body.Close()
 	}
-	resp.Body.Close()
-	if p := cdpPorts(); len(p) != 1 || p[0] != 9555 {
-		t.Fatalf("cdpPorts = %v, want the forwarded 9555", p)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); post(map[string]string{"AGLINK_WEB_CDP_PORTS": "9555"}) }()
+		go func() { defer wg.Done(); post(map[string]string{"AGLINK_WEB_CDP_PORTS": "9666"}) }()
 	}
-	// The next call without it drops it again.
-	body, _ = json.Marshal(callRequest{Method: "list_tabs"})
-	resp, _ = http.Post(srv.URL+"/call", "application/json", bytes.NewReader(body))
-	resp.Body.Close()
-	if p := cdpPorts(); len(p) == 1 && p[0] == 9555 {
-		t.Fatal("a setting removed from the registration must stop applying")
+	wg.Wait()
+	post(nil)
+	want := map[string]bool{"[9555]": true, "[9666]": true, fmt.Sprint(cdpPorts(nil)): true}
+	if len(seen) != len(want) {
+		t.Fatalf("ports searched = %v, want exactly %v", seen, want)
+	}
+	for k := range want {
+		if !seen[k] {
+			t.Fatalf("ports searched = %v, missing %s", seen, k)
+		}
+	}
+}
+
+func TestCallEnvFallsBackToTheDaemonsOwn(t *testing.T) {
+	t.Setenv("AGLINK_WEB_STEP_DELAY_MS", "70")
+	if n := defaultStepDelayMs(nil); n != 70 {
+		t.Fatalf("no call setting: %d, want the daemon's 70", n)
+	}
+	if n := defaultStepDelayMs(callEnv{"AGLINK_WEB_STEP_DELAY_MS": "5"}); n != 5 {
+		t.Fatalf("call setting: %d, want 5", n)
 	}
 }
 

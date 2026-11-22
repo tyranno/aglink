@@ -126,15 +126,15 @@ func TestResolveApp(t *testing.T) {
 func TestCDPPortsFromEnv(t *testing.T) {
 	t.Setenv("AGLINK_WEB_CDP_PORTS", "")
 	// 9222-9240 plus 9333, the port the Wails docs use.
-	if p := cdpPorts(); len(p) != 20 || p[0] != 9222 || p[18] != 9240 || p[19] != 9333 {
+	if p := cdpPorts(nil); len(p) != 20 || p[0] != 9222 || p[18] != 9240 || p[19] != 9333 {
 		t.Errorf("default range: %v", p)
 	}
 	t.Setenv("AGLINK_WEB_CDP_PORTS", "9333")
-	if p := cdpPorts(); len(p) != 1 || p[0] != 9333 {
+	if p := cdpPorts(nil); len(p) != 1 || p[0] != 9333 {
 		t.Errorf("single: %v", p)
 	}
 	t.Setenv("AGLINK_WEB_CDP_PORTS", "9300-9302, 9400")
-	if p := cdpPorts(); len(p) != 4 || p[3] != 9400 {
+	if p := cdpPorts(nil); len(p) != 4 || p[3] != 9400 {
 		t.Errorf("range+list: %v", p)
 	}
 }

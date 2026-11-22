@@ -553,7 +553,9 @@ func confirmDialogs(appTitle string, accept []string, maxN int) ([]string, error
 	return handled, nil
 }
 
-// clickControl finds the nth (0-based) VISIBLE control in window whose label
+// clickControl finds the nth (1-based — 0 also accepted as the first match,
+// for callers written before this was unified with the rest of the by-name
+// tools' nth) VISIBLE control in window whose label
 // contains text (case-insensitive) and clicks it. With background=true a
 // button/checkbox/radio gets BM_CLICK (or another control a UIA invoke)
 // without focusing the window or moving the cursor; otherwise, or when that is
@@ -588,7 +590,7 @@ func clickControl(window, text string, nth int, background bool) (string, error)
 	}
 	c, n, idx, found := matchControl(enumControls(top, false), needle, nth)
 	if !found {
-		return "", fmt.Errorf("no visible control with text containing %q in %q", text, window)
+		return "", fmt.Errorf("no visible control with text containing %q in %q — list what's actually there with win_controls", text, window)
 	}
 	if err := mouseClick(c.CenterX(), c.CenterY(), "left"); err != nil {
 		return "", err
@@ -597,8 +599,11 @@ func clickControl(window, text string, nth int, background bool) (string, error)
 		c.Class, c.Text, c.CenterX(), c.CenterY(), n, idx, fallback, uipiWarning(top, "click")), nil
 }
 
-// matchControl returns the nth (0-based; out of range = 0) control whose label
-// contains needle (already lower-cased), the match count and the index used.
+// matchControl returns the control at nth (1-based, matching invoke/set_value/
+// wait_for_control's nth; 0, negative or out-of-range all clamp to 1 — the
+// first match — so a caller still passing the old 0-based default of 0 keeps
+// getting the first match, unchanged) whose label contains needle (already
+// lower-cased), the match count, and the 1-based index actually used.
 func matchControl(ctrls []control, needle string, nth int) (control, int, int, bool) {
 	var matches []control
 	for _, c := range ctrls {
@@ -609,10 +614,10 @@ func matchControl(ctrls []control, needle string, nth int) (control, int, int, b
 	if len(matches) == 0 {
 		return control{}, 0, 0, false
 	}
-	if nth < 0 || nth >= len(matches) {
-		nth = 0
+	if nth <= 0 || nth > len(matches) {
+		nth = 1
 	}
-	return matches[nth], len(matches), nth, true
+	return matches[nth-1], len(matches), nth, true
 }
 
 // forceForeground brings target to the foreground, working around the Windows

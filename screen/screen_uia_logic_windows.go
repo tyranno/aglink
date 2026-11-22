@@ -475,6 +475,7 @@ type uiaProbeResult struct {
 	Value    string
 	HasValue bool     // Value was readable (Value or Text pattern)
 	Hints    []string // closest names, filled only when asked and not Found
+	Note     string   // "matched N; used 1st (...)" when sel matched more than one — see pickCandidate
 }
 
 // met reports whether observation p satisfies the condition.

@@ -162,7 +162,28 @@ const (
 	// (they have no Value pattern), so it's the read path for "what does this say".
 	textPatternGetDocumentRange = 7  // get_DocumentRange(out **IUIAutomationTextRange)
 	textRangeGetText            = 12 // GetText(int maxLength, out *BSTR)
+
+	// IUIAutomationTextRange's vtable order continues: Clone, Compare,
+	// CompareEndpoints, ExpandToEnclosingUnit, FindAttribute, FindText,
+	// GetAttributeValue, GetBoundingRectangles, GetEnclosingElement, GetText(12),
+	// Move(13), MoveEndpointByUnit(14), … — used by elemTextTail to read the
+	// true end of a document without first fetching the whole thing (GetText's
+	// maxLength only ever returns from the *start*).
+	textRangeMove               = 13 // Move(TextUnit unit, int count, out int *moved)
+	textRangeMoveEndpointByUnit = 14 // MoveEndpointByUnit(endpoint, unit, int count, out int *moved)
+
+	textUnitCharacter             = 0 // TextUnit_Character
+	textPatternRangeEndpointStart = 0 // TextPatternRangeEndpoint_Start
 )
+
+// uiaWalkToEndCount is Move's count when the only goal is "collapse this range
+// to a degenerate point at the document's end": per the Text pattern spec, Move
+// first normalizes a non-degenerate range to a degenerate point at its own
+// start, then walks it forward by `count` units, clamped at the document's end.
+// Starting from a whole-document range (start = doc start), any count this much
+// larger than any real document walks it all the way to the end — and Move's
+// own "actually moved" out-param then equals the document's exact length.
+const uiaWalkToEndCount = 1 << 30
 
 // controlTypeName maps a UIA control-type id to a short readable label.
 func controlTypeName(id int32) string {
@@ -1279,6 +1300,62 @@ func elemText(el *ole.IUnknown, maxLen int) (string, bool) {
 	return s, true
 }
 
+// elemTextTail reads the true LAST maxLen characters of el's Text-pattern
+// content, plus the document's exact total length — without ever fetching the
+// whole document. elemText's GetText(maxLength) only ever returns from the
+// document's *start*, so asking it for the tail of a document bigger than its
+// ceiling silently returns a slice of the wrong end; this walks the Text
+// range's endpoints instead:
+//  1. a fresh document range, Move()'d forward by an effectively unbounded
+//     count — collapses to a degenerate point at the document's end, and the
+//     "actually moved" count IS the document's exact length (one cheap call,
+//     no text crosses the wire);
+//  2. a second fresh range, collapsed the same way, then its Start endpoint
+//     pulled back by maxLen characters (MoveEndpointByUnit, clamped at the
+//     document's start if it is shorter) — now spanning exactly the tail;
+//  3. GetText(-1) on that now-bounded range.
+func elemTextTail(el *ole.IUnknown, maxLen int) (text string, total int, ok bool) {
+	tp := getPattern(el, uiaTextPatternId)
+	if tp == nil {
+		return "", 0, false
+	}
+	defer release(tp)
+
+	var totalRng *ole.IUnknown
+	if hr := vcall(tp, textPatternGetDocumentRange, uintptr(unsafe.Pointer(&totalRng))); failed(hr) || totalRng == nil {
+		return "", 0, false
+	}
+	var moved int32
+	vcall(totalRng, textRangeMove, uintptr(textUnitCharacter), uintptr(int32(uiaWalkToEndCount)), uintptr(unsafe.Pointer(&moved)))
+	release(totalRng)
+	total = int(moved)
+
+	var rng *ole.IUnknown
+	if hr := vcall(tp, textPatternGetDocumentRange, uintptr(unsafe.Pointer(&rng))); failed(hr) || rng == nil {
+		return "", total, false
+	}
+	defer release(rng)
+	var m2 int32
+	vcall(rng, textRangeMove, uintptr(textUnitCharacter), uintptr(int32(uiaWalkToEndCount)), uintptr(unsafe.Pointer(&m2)))
+	if maxLen <= 0 {
+		maxLen = 1
+	}
+	var m3 int32
+	vcall(rng, textRangeMoveEndpointByUnit, uintptr(textPatternRangeEndpointStart), uintptr(textUnitCharacter), uintptr(int32(-maxLen)), uintptr(unsafe.Pointer(&m3)))
+
+	noLimit := int32(-1) // not a constant expression: a negative uintptr literal is a compile error
+	var bstr2 *uint16
+	if hr := vcall(rng, textRangeGetText, uintptr(noLimit), uintptr(unsafe.Pointer(&bstr2))); failed(hr) {
+		return "", total, false
+	}
+	if bstr2 == nil {
+		return "", total, true
+	}
+	s2 := ole.BstrToString(bstr2)
+	ole.SysFreeString((*int16)(unsafe.Pointer(bstr2)))
+	return s2, total, true
+}
+
 // uiaInvoke finds an element by Name (or AutomationId) and activates it via the
 // most appropriate pattern (Invoke → SelectionItem → Toggle → ExpandCollapse).
 func uiaInvoke(name string) error {
@@ -1489,6 +1566,49 @@ func uiaGetTextIn(hwnd uintptr, sel uiaSelector, offset, maxChars int) (string, 
 			}
 			defer release(found)
 			target, note = found, n
+		} else if !textCapable(target) && !valueCapable(target) {
+			// A window whose own root carries no Text/Value pattern — common
+			// for a Chrome/Electron/WebView2 host, where the HWND itself is a
+			// shallow Pane and the actual document lives a few levels down —
+			// used to fail outright here. Walk the subtree for the first
+			// Document/Pane/etc. descendant that does expose one, same as
+			// naming it by hand from snapshot would, instead of making the
+			// caller go find and name it first.
+			if found, ok := findTextCapableDescendant(uia, root); ok {
+				defer release(found)
+				target = found
+			}
+		}
+
+		if offset < 0 {
+			if textCapable(target) {
+				tail := maxChars
+				if tail <= 0 {
+					tail = defaultTextMaxChars
+				}
+				if tail > ceilingTextMaxChars {
+					tail = ceilingTextMaxChars
+				}
+				n := -offset
+				if n > tail {
+					n = tail
+				}
+				// +32: UTF-16 surrogate pairs and any off-by-one in the UIA
+				// provider's own unit boundaries must never leave us short of
+				// the n runes runeWindow below is about to ask for.
+				if s, total, got := elemTextTail(target, n+32); got {
+					r := []rune(s)
+					if len(r) > n {
+						r = r[len(r)-n:]
+					}
+					body := string(r)
+					tnote := tailOnlyNote(total-len(r), total)
+					if note != "" {
+						tnote += "\n[" + note + "]"
+					}
+					return body + tnote, nil
+				}
+			}
 		}
 
 		full, totalKnown, ok := "", true, false
@@ -1500,7 +1620,7 @@ func uiaGetTextIn(hwnd uintptr, sel uiaSelector, offset, maxChars int) (string, 
 		}
 		if !ok {
 			if strings.TrimSpace(sel.Name) == "" {
-				return "", fmt.Errorf("the %s exposes no Text pattern at its root; name a specific element from snapshot, or use capture_window as a last resort", uiaTargetLabel(hwnd))
+				return "", fmt.Errorf("the %s exposes no Text pattern at its root or in its descendants; name a specific element from snapshot, or use capture_window as a last resort", uiaTargetLabel(hwnd))
 			}
 			return "", fmt.Errorf("%s supports neither the Text nor Value pattern", sel.describe())
 		}
@@ -1513,6 +1633,46 @@ func uiaGetTextIn(hwnd uintptr, sel uiaSelector, offset, maxChars int) (string, 
 		}
 		return body + tnote, nil
 	})
+}
+
+// tailOnlyNote is runeWindow's "reached the end" note (English+Korean,
+// identical wording), for the elemTextTail path: a tail fetch always ends
+// exactly at the document's end with the true total known, so only that one
+// of runeWindow's cases ever applies — start==0 means the whole document fit
+// and needs no note at all.
+func tailOnlyNote(start, total int) string {
+	if start <= 0 {
+		return ""
+	}
+	totalStr := fmt.Sprintf("%d자", total)
+	totalEn := fmt.Sprintf("%d chars", total)
+	return fmt.Sprintf("\n…[전체 %s 중 %d–%d 표시(끝까지). 앞부분은 offset=0 부터 / showing %d–%d of %s (to the end); earlier text from offset=0]",
+		totalStr, start, total, start, total, totalEn)
+}
+
+// findTextCapableDescendant returns the first descendant of root (document
+// order) that supports the Text or Value pattern, for a root whose own
+// element does not — see uiaGetTextIn. Caller must release the result.
+func findTextCapableDescendant(uia, root *ole.IUnknown) (*ole.IUnknown, bool) {
+	arr, n, err := findAllCached(uia, root, 0, nil)
+	if err != nil {
+		return nil, false
+	}
+	defer release(arr)
+	if n > maxSelectorCandidates {
+		n = maxSelectorCandidates
+	}
+	for i := int32(0); i < n; i++ {
+		var el *ole.IUnknown
+		if hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&el))); failed(hr) || el == nil {
+			continue
+		}
+		if textCapable(el) || valueCapable(el) {
+			return el, true
+		}
+		release(el)
+	}
+	return nil, false
 }
 
 // ---- wait_for_control ----
@@ -1555,12 +1715,13 @@ var uiaControlProbe = func(hwnd uintptr, sel uiaSelector, opts probeOpts) (uiaPr
 		if opts.Value {
 			pred = readableCapable
 		}
-		el, _, err := pickCandidate(cands, sel, pred)
+		el, note, err := pickCandidate(cands, sel, pred)
 		if err != nil {
 			return "", err
 		}
 		defer release(el)
 		res.Found = true
+		res.Note = note
 		res.Enabled = elemInt32(el, elemGetCurrentIsEnabled) != 0
 		if opts.Value {
 			if s, ok := elemValue(el); ok {
@@ -1611,7 +1772,7 @@ func uiaWaitForControlIn(window string, sel uiaSelector, cond waitCond, timeoutM
 			if err == nil { // a failed probe (window closing mid-query) proves nothing either way
 				last = p
 				if cond.met(p) {
-					return waitSuccess(sel, cond, p), nil
+					return withNote(waitSuccess(sel, cond, p), p.Note), nil
 				}
 			}
 		} else if cond.Until == untilDisappear {
@@ -1624,7 +1785,7 @@ func uiaWaitForControlIn(window string, sel uiaSelector, cond waitCond, timeoutM
 			case cond.Until == untilAppear:
 				return "", fmt.Errorf("timed out after %dms: %v", timeoutMs, notFoundError(sel, last.Hints))
 			}
-			return "", fmt.Errorf("timed out after %dms waiting for %s %s (last: %s)", timeoutMs, sel.describe(), cond.describe(), cond.observed(last))
+			return "", fmt.Errorf("timed out after %dms waiting for %s %s (last: %s) — if this might be the wrong element (e.g. another one shares its name), check with snapshot or add nth/control_type", timeoutMs, sel.describe(), cond.describe(), cond.observed(last))
 		}
 		time.Sleep(uiaWaitForControlPollEvery)
 	}

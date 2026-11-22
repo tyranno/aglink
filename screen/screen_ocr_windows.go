@@ -30,8 +30,10 @@ var ocrScript string
 // for a window; the bound is for a wedged WinRT call).
 var ocrTimeout = 20 * time.Second
 
-// ocrRunner runs the script and returns its stdout; a var for tests.
-var ocrRunner = runOCRScript
+// ocrRunner runs the script and returns its stdout; a var for tests. Defaults
+// to the warm-server path (screen_ocr_server_windows.go), which falls back to
+// runOCRScript itself whenever the server cannot start or answer.
+var ocrRunner = runOCRScriptFast
 
 // psQuote makes s safe inside a single-quoted PowerShell string literal.
 func psQuote(s string) string { return strings.ReplaceAll(s, "'", "''") }
@@ -218,12 +220,15 @@ func clickText(text string, r ocrRegion, nth int, double bool, lang string) (str
 			}
 			seen = append(seen, onelinePreview(l.Text, 60))
 		}
-		return "", fmt.Errorf("no text matching %q found by OCR in %s (%d line(s) read: %s)", text, label, len(res.Lines), strings.Join(seen, " | "))
+		return "", fmt.Errorf("no text matching %q found by OCR in %s (%d line(s) read: %s) — try a shorter or different substring, or invoke/click_control/snapshot if the window exposes UI Automation", text, label, len(res.Lines), strings.Join(seen, " | "))
 	}
-	if nth < 0 || nth >= len(ms) {
-		nth = 0
+	// nth is 1-based (matching invoke/set_value/wait_for_control's nth); 0,
+	// negative or out-of-range all clamp to 1 — the first match — so an old
+	// caller still passing the pre-unification default of 0 is unaffected.
+	if nth <= 0 || nth > len(ms) {
+		nth = 1
 	}
-	m := ms[nth]
+	m := ms[nth-1]
 	x, y := m.Rect.CX(), m.Rect.CY()
 	how := "left-clicked"
 	if double {

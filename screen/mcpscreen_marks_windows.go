@@ -111,10 +111,10 @@ func registerMarkOCRTools(s *server.MCPServer) {
 
 	s.AddTool(
 		mcp.NewTool("click_text",
-			mcp.WithDescription("OCR a window (default foreground; or a region) and click the centre of the text matching 'text' — case- and space-insensitive substring, whole-word matches preferred, 'nth' (0-based, reading order) for duplicates. For windows UI Automation can't see into (games, remote desktop, canvases); prefer invoke/click_control/click_number where they work. A real mouse click: a named window is brought to the front first. The result reports the matched text and the count of matches."),
+			mcp.WithDescription("OCR a window (default foreground; or a region) and click the centre of the text matching 'text' — case- and space-insensitive substring, whole-word matches preferred, 'nth' (1-based, reading order; 0 also means the first) for duplicates. For windows UI Automation can't see into (games, remote desktop, canvases); prefer invoke/click_control/click_number where they work. A real mouse click: a named window is brought to the front first. The result reports the matched text and the count of matches."),
 			mcp.WithString("text", mcp.Description("Text to find, e.g. '확인', 'Sign in'."), mcp.Required()),
 			mcp.WithString("window", mcp.Description("Target window (title substring or hwnd). Default: the foreground window.")),
-			mcp.WithNumber("nth", mcp.Description("0-based index when several places match (default 0).")),
+			mcp.WithNumber("nth", mcp.Description("1-based index when several places match (default: the first; 0 also means the first).")),
 			mcp.WithBoolean("double", mcp.Description("Double-click instead of a single click.")),
 			mcp.WithNumber("x", mcp.Description("Optional region left (absolute, or window-relative when window is set).")),
 			mcp.WithNumber("y", mcp.Description("Optional region top.")),

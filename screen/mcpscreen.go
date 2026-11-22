@@ -141,7 +141,7 @@ func RunMCPScreen() error {
 		}
 	}()
 
-	return server.ServeStdio(newScreenMCPServer())
+	return serveStdio(newScreenMCPServer())
 }
 
 // newScreenMCPServer builds the MCP server with every screen tool registered.
@@ -667,6 +667,43 @@ func newScreenMCPServer() *server.MCPServer {
 		},
 	)
 
+	// click_menu — right-click to open a context menu, then invoke one item
+	// from it by name, in one call (a real OS context menu cannot be
+	// synthesized any other way — see click's own description).
+	s.AddTool(
+		mcp.NewTool("click_menu", withSelectorParams(
+			mcp.WithDescription("Right-click at absolute screen pixel (x,y) to open a context menu, then find an item in it by Name (or AutomationId) and invoke it — the one-call replacement for right-click, screenshot, guess-the-coordinate. Narrow with control_type/nth/match when several items share a name (e.g. submenus repeating 'Open'). If no menu appears, the error says so rather than invoking something in the wrong window."),
+			mcp.WithNumber("x", mcp.Description("Absolute X pixel to right-click."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Absolute Y pixel to right-click."), mcp.Required()),
+			mcp.WithString("item", mcp.Description("The menu item's Name or AutomationId to invoke."), mcp.Required()),
+			mcp.WithNumber("timeout_ms", mcp.Description("Max time to wait for the menu to appear, in milliseconds (default 2000).")),
+		)...),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			item, err := req.RequireString("item")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'item'"), nil
+			}
+			sel, err := selectorFrom(req, item)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			timeoutMs := req.GetInt("timeout_ms", 2000)
+			text, err := clickMenu(x, y, sel, time.Duration(timeoutMs)*time.Millisecond)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("click_menu failed", err), nil
+			}
+			return mcp.NewToolResultText(text), nil
+		},
+	)
+
 	// drag — press at (x1,y1), move to (x2,y2), release (rubber-band/slider/drag-drop).
 	s.AddTool(
 		mcp.NewTool("drag",
@@ -989,10 +1026,10 @@ func newScreenMCPServer() *server.MCPServer {
 	// click_control — click a child control by its label (exact coords, no vision).
 	s.AddTool(
 		mcp.NewTool("click_control",
-			mcp.WithDescription("Find a visible Win32 child control by its label text (case-insensitive substring) in the given window and click it. By default it works in the BACKGROUND: a button/checkbox/radio gets BM_CLICK (other controls a UI Automation invoke) without focusing the window or moving the user's mouse; only when that is not possible is the window focused and its center left-clicked. The result says which path was used — after a background click the window is NOT focused, so focus_window before typing into it. If multiple controls share the label, use 'nth' (0-based) to pick which one — list them first with win_controls. Preferred over click(x,y) for native apps."),
+			mcp.WithDescription("Find a visible Win32 child control by its label text (case-insensitive substring) in the given window and click it. By default it works in the BACKGROUND: a button/checkbox/radio gets BM_CLICK (other controls a UI Automation invoke) without focusing the window or moving the user's mouse; only when that is not possible is the window focused and its center left-clicked. The result says which path was used — after a background click the window is NOT focused, so focus_window before typing into it. If multiple controls share the label, use 'nth' (1-based, like invoke/set_value/wait_for_control's nth; 0 also means the first) to pick which one — list them first with win_controls. Preferred over click(x,y) for native apps."),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
 			mcp.WithString("text", mcp.Description("Control label to match (e.g. '로컬장치 검색', 'File')."), mcp.Required()),
-			mcp.WithNumber("nth", mcp.Description("0-based index when several controls share the label (default 0).")),
+			mcp.WithNumber("nth", mcp.Description("1-based index when several controls share the label (default: the first; 0 also means the first).")),
 			mcp.WithBoolean("background", mcp.Description("Try the no-focus path first (default true). false = always focus the window and click with the real mouse.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1391,7 +1428,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// or may not appear) belong outside the batch, split at that point.
 	s.AddTool(
 		mcp.NewTool("run_sequence",
-			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, set_state{name,checked?,expanded?,selected?,value?,scroll_into_view?,select_item?,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,until?,value?,contains?,timeout_ms?,window?}, wait_for_window{window,timeout_ms?}, clipboard_set{text}, clipboard_get{}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?,hold_ms?,steps?}, wait{ms}, note{text} (no-op placeholder). invoke/set_value/set_state/wait_for_control also take control_type/nth (1-based)/match like their tools; click_control's nth stays 0-based. Giving "window" to invoke/set_value/set_state/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
+			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, set_state{name,checked?,expanded?,selected?,value?,scroll_into_view?,select_item?,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,until?,value?,contains?,timeout_ms?,window?}, wait_for_window{window,timeout_ms?}, clipboard_set{text}, clipboard_get{}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?,hold_ms?,steps?}, wait{ms}, note{text} (no-op placeholder). invoke/set_value/set_state/wait_for_control also take control_type/nth (1-based)/match like their tools; click_control's nth is 1-based too (0 also accepted, meaning the first). Giving "window" to invoke/set_value/set_state/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
 			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200,"wait_ms":300},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
 			mcp.WithNumber("step_delay_ms", mcp.Description("Pause between every two steps, in ms (default from AGLINK_SCREEN_STEP_DELAY_MS, else 0).")),
 			mcp.WithString("save_as", mcp.Description("Optional flow name: once every step succeeded, store these steps under it for flow_run (letters, digits, - _ .).")),

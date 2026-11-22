@@ -174,14 +174,21 @@ func TestMatchControl(t *testing.T) {
 		{Class: "Static", Text: "Save location"},
 		{Class: "Button", Text: "Cancel"},
 	}
-	c, n, idx, ok := matchControl(ctrls, "save", 1)
-	if !ok || n != 2 || idx != 1 || c.Text != "Save location" {
-		t.Fatalf("matchControl nth=1 = %+v %d %d %v", c, n, idx, ok)
+	// nth is 1-based (matching invoke/set_value/wait_for_control's nth): 1 is
+	// the first match, 2 the second.
+	c, n, idx, ok := matchControl(ctrls, "save", 2)
+	if !ok || n != 2 || idx != 2 || c.Text != "Save location" {
+		t.Fatalf("matchControl nth=2 = %+v %d %d %v", c, n, idx, ok)
 	}
-	if c, _, idx, _ := matchControl(ctrls, "save", 9); idx != 0 || c.Text != "&Save" {
+	// 0 is still accepted (old callers' pre-unification default) and, like an
+	// out-of-range nth, clamps to 1 — the first match.
+	if c, _, idx, _ := matchControl(ctrls, "save", 0); idx != 1 || c.Text != "&Save" {
+		t.Errorf("nth=0 should pick the first match (old-callers compat), got %q idx %d", c.Text, idx)
+	}
+	if c, _, idx, _ := matchControl(ctrls, "save", 9); idx != 1 || c.Text != "&Save" {
 		t.Errorf("out-of-range nth should pick the first, got %q idx %d", c.Text, idx)
 	}
-	if _, _, _, ok := matchControl(ctrls, "ok", 0); ok {
+	if _, _, _, ok := matchControl(ctrls, "ok", 1); ok {
 		t.Error("no match should report false")
 	}
 }

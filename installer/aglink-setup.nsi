@@ -129,6 +129,12 @@ Section "Install"
     !insertmacro MoveAside "aglink-web"
     File "stage\aglink-screen.exe"
     File "stage\aglink-web.exe"
+    ; Chrome (or a Claude session's MCP client) can relaunch aglink-web from the
+    ; old exe in the moment between the stop above and MoveAside; that copy then
+    ; keeps serving the old daemon, renamed to .old.exe, until the next reboot.
+    ; Stop whatever still runs from this folder (any aglink-web*/aglink-screen*
+    ; image) now that the new exes are in place, so the next launch is new.
+    nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath($$env:AGLINK_SETUP_DIR).TrimEnd('\'); Get-CimInstance Win32_Process | Where-Object { ($$_.Name -like 'aglink-screen*.exe' -or $$_.Name -like 'aglink-web*.exe') -and $$_.ExecutablePath -and ([IO.Path]::GetDirectoryName($$_.ExecutablePath).TrimEnd('\') -ieq $$d) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`
     File "stage\AI-SETUP.md"
     File "stage\rnnoise.dll"
     RMDir /r "$INSTDIR\chrome-extension"

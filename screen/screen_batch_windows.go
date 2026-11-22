@@ -36,6 +36,7 @@ type seqStep struct {
 	// Background is click_control's opt-out (nil = default true).
 	Background *bool `json:"background,omitempty"`
 	Steps      int   `json:"steps,omitempty"` // drag: interpolated moves
+	Gone       bool  `json:"gone,omitempty"`  // wait_for_window: wait for it to disappear
 
 	// UIA selector extras (invoke / set_value / wait_for_control / set_state).
 	// Nth above is 1-based for these, 0-based for click_control (its own tool's
@@ -289,6 +290,9 @@ func runOneStep(st seqStep) (string, error) {
 		// A placeholder left by record_workflow (e.g. a skipped password); no-op.
 		return "note: " + st.Text, nil
 	case "wait_for_window":
+		if st.Gone {
+			return waitForWindowGone(st.Window, st.TimeoutMs)
+		}
 		return waitForWindow(st.Window, st.TimeoutMs)
 	case "scroll":
 		if st.Dx == 0 && st.Dy == 0 {

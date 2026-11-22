@@ -297,6 +297,37 @@ func waitForWindow(titleOrHwnd string, timeoutMs int) (string, error) {
 	}
 }
 
+// windowShownProbe reports whether hwnd still exists and is visible — an hwnd
+// argument always "resolves", so waitForWindowGone checks the handle itself.
+// A package var so tests can fake it.
+var windowShownProbe = func(hwnd uintptr) bool {
+	if ok, _, _ := procIsWindowM.Call(hwnd); ok == 0 {
+		return false
+	}
+	visible, _, _ := procIsWindowVisible.Call(hwnd)
+	return visible != 0
+}
+
+// waitForWindowGone is waitForWindow's inverse (wait_for_window gone=true):
+// it polls until no shown window matches titleOrHwnd — a dialog closed, an
+// app exited — or timeoutMs elapses.
+func waitForWindowGone(titleOrHwnd string, timeoutMs int) (string, error) {
+	if timeoutMs <= 0 {
+		timeoutMs = 8000
+	}
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for {
+		hwnd, ok := findTopWindowProbe(titleOrHwnd)
+		if !ok || !windowShownProbe(hwnd) {
+			return fmt.Sprintf("no window matching %q any more", titleOrHwnd), nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("timed out after %dms: %q is still open (%s | hwnd=0x%x)", timeoutMs, titleOrHwnd, getWindowText(hwnd), hwnd)
+		}
+		time.Sleep(waitForWindowPollEvery)
+	}
+}
+
 // matchWindowTitle returns the handle of the window whose title matches needle
 // (case-insensitive); an exact title wins over a substring match. Logic-only
 // (no Win32), so it is unit-testable with a fabricated window list.

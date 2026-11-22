@@ -258,7 +258,8 @@ func captureRegion(srcX, srcY int32, width, height int) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// downscaleNearest returns a dw×dh nearest-neighbor-scaled copy of src. Shared by
+// downscaleNearest returns a dw×dh nearest-neighbor-scaled copy of src (also used
+// to magnify, by zoomPNG). Shared by
 // the screenshot downscale paths (captureScreenScaled / captureScreenCapped).
 // Nearest-neighbor keeps it dependency-free and fast; Claude's vision reads the
 // result fine for "what's on screen" purposes.
@@ -415,6 +416,52 @@ func cappedDims(w, h, maxLong int) (dw, dh int, doScale bool) {
 		return w, h, false
 	}
 	return dw, dh, true
+}
+
+// maxCaptureZoom is the largest magnification capture_region's zoom accepts.
+const maxCaptureZoom = 4
+
+// zoomDims computes the size of a w×h image magnified by zoom (1–maxCaptureZoom),
+// lowering the factor so the longer edge stays within maxLong (the vision layer
+// would shrink anything bigger right back). eff is the factor actually applied;
+// eff<=1 means "no magnification possible", leave the image as-is. Pure, so the
+// policy is unit-testable without a real screen.
+func zoomDims(w, h int, zoom float64, maxLong int) (dw, dh int, eff float64) {
+	if w <= 0 || h <= 0 || zoom <= 1 {
+		return w, h, 1
+	}
+	if zoom > maxCaptureZoom {
+		zoom = maxCaptureZoom
+	}
+	longEdge := max(w, h)
+	if maxLong > 0 && float64(longEdge)*zoom > float64(maxLong) {
+		zoom = float64(maxLong) / float64(longEdge)
+	}
+	if zoom <= 1 {
+		return w, h, 1
+	}
+	return int(float64(w) * zoom), int(float64(h) * zoom), zoom
+}
+
+// zoomPNG magnifies a PNG by zoom (see zoomDims) with nearest-neighbor
+// sampling, which keeps glyph and icon edges crisp instead of blurring them —
+// for reading tiny text the raw grab renders too small for the vision layer.
+// Returns the input unchanged (eff=1) when no magnification fits.
+func zoomPNG(pngBytes []byte, zoom float64) (out []byte, w, h int, eff float64, err error) {
+	src, derr := png.Decode(bytes.NewReader(pngBytes))
+	if derr != nil {
+		return nil, 0, 0, 0, fmt.Errorf("zoomPNG: decode: %w", derr)
+	}
+	sb := src.Bounds()
+	dw, dh, eff := zoomDims(sb.Dx(), sb.Dy(), zoom, visionLongEdgeCap)
+	if eff <= 1 {
+		return pngBytes, sb.Dx(), sb.Dy(), 1, nil
+	}
+	enc, eerr := encodePNG(downscaleNearest(src, dw, dh))
+	if eerr != nil {
+		return nil, 0, 0, 0, eerr
+	}
+	return enc, dw, dh, eff, nil
 }
 
 // captureRectImage captures the w×h screen rectangle at (x,y) with

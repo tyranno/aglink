@@ -160,6 +160,44 @@ func TestWaitForWindowTimesOut(t *testing.T) {
 	}
 }
 
+// TestWaitForWindowGone covers wait_for_window gone=true: it returns once the
+// title stops matching or the handle is no longer shown, and times out while
+// the window stays.
+func TestWaitForWindowGone(t *testing.T) {
+	origProbe, origShown, origPoll := findTopWindowProbe, windowShownProbe, waitForWindowPollEvery
+	t.Cleanup(func() {
+		findTopWindowProbe, windowShownProbe, waitForWindowPollEvery = origProbe, origShown, origPoll
+	})
+	waitForWindowPollEvery = 10 * time.Millisecond
+	windowShownProbe = func(uintptr) bool { return true }
+
+	calls := 0
+	findTopWindowProbe = func(string) (uintptr, bool) {
+		calls++
+		return 0xCAFE, calls < 3
+	}
+	if _, err := waitForWindowGone("Saving", 2000); err != nil || calls < 3 {
+		t.Errorf("title gone: err=%v after %d polls", err, calls)
+	}
+
+	// An hwnd always resolves; the handle's own state decides.
+	findTopWindowProbe = func(string) (uintptr, bool) { return 0xCAFE, true }
+	shown := 0
+	windowShownProbe = func(uintptr) bool { shown++; return shown < 3 }
+	if _, err := waitForWindowGone("0xCAFE", 2000); err != nil || shown < 3 {
+		t.Errorf("hwnd gone: err=%v after %d polls", err, shown)
+	}
+
+	windowShownProbe = func(uintptr) bool { return true }
+	start := time.Now()
+	if _, err := waitForWindowGone("Stays", 100); err == nil {
+		t.Error("expected a timeout while the window stays open")
+	}
+	if elapsed := time.Since(start); elapsed < 100*time.Millisecond || elapsed > time.Second {
+		t.Errorf("timeout not honored: %v", elapsed)
+	}
+}
+
 // TestFindStartMenuShortcutExactBeatsSubstring guards a live-found bug:
 // launch_app("Word") opened WordPad instead of Microsoft Word. Root cause was
 // a naive first-hit substring search over a filepath.Walk — "Accessories"

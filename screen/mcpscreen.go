@@ -265,17 +265,26 @@ func newScreenMCPServer() *server.MCPServer {
 	// caller polling list_windows in a loop.
 	s.AddTool(
 		mcp.NewTool("wait_for_window",
-			mcp.WithDescription("Block until a window whose title contains the given substring (or an hwnd) appears, instead of calling list_windows in a manual polling loop. Returns 'TITLE | hwnd=0x..' once found. Fails with a timeout error after 'timeout_ms' (default 8000) if it never appears."),
+			mcp.WithDescription("Block until a window whose title contains the given substring (or an hwnd) appears, instead of calling list_windows in a manual polling loop. Returns 'TITLE | hwnd=0x..' once found. Fails with a timeout error after 'timeout_ms' (default 8000) if it never appears. With gone=true it waits for the window to DISAPPEAR instead (a progress/save dialog closed, an app exited)."),
 			mcp.WithString("window", mcp.Description("Window title substring or hwnd to wait for."), mcp.Required()),
 			mcp.WithNumber("timeout_ms", mcp.Description("Max time to wait in milliseconds (default 8000).")),
+			mcp.WithBoolean("gone", mcp.Description("Wait until no window matches (closed or hidden) instead of until one appears. Default false.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			window, err := req.RequireString("window")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'window'"), nil
 			}
+			gone, _, err := optBool(req.GetArguments(), "gone")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			timeoutMs := req.GetInt("timeout_ms", 8000)
-			result, err := waitForWindow(window, timeoutMs)
+			wait := waitForWindow
+			if gone {
+				wait = waitForWindowGone
+			}
+			result, err := wait(window, timeoutMs)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("wait_for_window failed", err), nil
 			}
@@ -435,6 +444,60 @@ func newScreenMCPServer() *server.MCPServer {
 		},
 	)
 
+	// list_processes — running processes with memory and window title, from
+	// the Toolhelp snapshot (no tasklist/PowerShell spawn).
+	s.AddTool(
+		mcp.NewTool("list_processes",
+			mcp.WithDescription(fmt.Sprintf("List running processes as 'pid | name | working set MB | \"window title\"' (title only when the process has a visible window). Sorted by memory (largest first) by default; at most 'limit' (default %d, max %d) lines. Use it to find a hung app or a pid for kill_process; for windows alone, list_windows is shorter.", defaultProcessLimit, ceilingProcessLimit)),
+			mcp.WithString("filter", mcp.Description("Optional case-insensitive substring of the process name or window title, or an exact pid.")),
+			mcp.WithString("sort", mcp.Description("memory (default) | name | pid."), mcp.Enum("memory", "name", "pid")),
+			mcp.WithNumber("limit", mcp.Description(fmt.Sprintf("Max processes to show (default %d, max %d).", defaultProcessLimit, ceilingProcessLimit))),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			all, err := listProcesses()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("list_processes failed", err), nil
+			}
+			sortBy := req.GetString("sort", "")
+			ps, matched, err := filterSortProcs(all, req.GetString("filter", ""), sortBy, req.GetInt("limit", 0))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(formatProcs(ps, matched, len(all), strings.ToLower(sortBy))), nil
+		},
+	)
+
+	// kill_process — terminate a process by pid or exact name, refusing
+	// system-critical and aglink's own processes (killRefusal).
+	s.AddTool(
+		mcp.NewTool("kill_process",
+			mcp.WithDescription("Forcefully terminate a process (TerminateProcess — unsaved work in it is LOST; prefer close_window for an app that still responds). Give 'pid', or 'name' to kill EVERY process whose executable is exactly that name (\"notepad\" or \"notepad.exe\"; no substring matching — check with list_processes first). Refuses system-critical processes (csrss, wininit, winlogon, services, lsass, smss, svchost, dwm, System, …), aglink's own processes and the session running this server; explorer.exe only with force=true. Reports each process killed or refused."),
+			mcp.WithNumber("pid", mcp.Description("Process id to kill (from list_processes).")),
+			mcp.WithString("name", mcp.Description("Exact executable name to kill instead of a pid; all instances are killed.")),
+			mcp.WithBoolean("force", mcp.Description("Allow killing explorer.exe (the shell; Windows restarts it). Never overrides the other protections. Default false.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			pid := req.GetInt("pid", 0)
+			name := strings.TrimSpace(req.GetString("name", ""))
+			if (pid > 0) == (name != "") {
+				return mcp.NewToolResultError("give exactly one of 'pid' or 'name'"), nil
+			}
+			force, _, err := optBool(req.GetArguments(), "force")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			killed, refused, err := killProcesses(pid, name, force)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("kill_process failed", err), nil
+			}
+			out := fmt.Sprintf("ok: killed %d process(es): %s", len(killed), strings.Join(killed, ", "))
+			if len(refused) > 0 {
+				out += "\nnot killed:\n" + strings.Join(refused, "\n")
+			}
+			return mcp.NewToolResultText(out), nil
+		},
+	)
+
 	// return_desktop — switch back to the virtual desktop that was active before
 	// the screen tools first jumped to another desktop to operate a window there.
 	s.AddTool(
@@ -554,13 +617,14 @@ func newScreenMCPServer() *server.MCPServer {
 	// given (which also switches to that window's virtual desktop first).
 	s.AddTool(
 		mcp.NewTool("capture_region",
-			mcp.WithDescription(fmt.Sprintf("Capture an arbitrary rectangle as a PNG — the cheapest way to look at just the part you need. (x,y) is the top-left; width/height the size. (x,y) are ABSOLUTE screen pixels, or RELATIVE to 'window' when given (switches to its desktop first). A rectangle under %dpx on its longer edge is returned untouched, so image pixel (ix,iy) maps to click(x=origin_x+ix, y=origin_y+iy); a bigger one is capped to %dpx. The caption always gives origin, size and scale (screen_x = origin_x + img_x/scale). Pass scale (0.1–1.0) to downscale further for reading, or scale=1.0 to force the raw grab.", visionLongEdgeCap, visionLongEdgeCap)),
+			mcp.WithDescription(fmt.Sprintf("Capture an arbitrary rectangle as a PNG — the cheapest way to look at just the part you need. (x,y) is the top-left; width/height the size. (x,y) are ABSOLUTE screen pixels, or RELATIVE to 'window' when given (switches to its desktop first). A rectangle under %dpx on its longer edge is returned untouched, so image pixel (ix,iy) maps to click(x=origin_x+ix, y=origin_y+iy); a bigger one is capped to %dpx. The caption always gives origin, size and scale (screen_x = origin_x + img_x/scale). Pass scale (0.1–1.0) to downscale further for reading, or scale=1.0 to force the raw grab. To READ tiny text or icons, capture a small rectangle with zoom (up to %d) — it is magnified instead.", visionLongEdgeCap, visionLongEdgeCap, maxCaptureZoom)),
 			mcp.WithNumber("x", mcp.Description("Left of the rectangle: absolute screen X, or window-relative X if 'window' is set."), mcp.Required()),
 			mcp.WithNumber("y", mcp.Description("Top of the rectangle: absolute screen Y, or window-relative Y if 'window' is set."), mcp.Required()),
 			mcp.WithNumber("width", mcp.Description("Rectangle width in pixels (>0)."), mcp.Required()),
 			mcp.WithNumber("height", mcp.Description("Rectangle height in pixels (>0)."), mcp.Required()),
 			mcp.WithString("window", mcp.Description("Optional target window (title substring or hwnd). When set, x/y are relative to this window's top-left.")),
 			mcp.WithNumber("scale", mcp.Description(fmt.Sprintf("Optional downscale factor 0.1–1.0 for READING only (fewer vision tokens). Omit for the default %dpx long-edge cap; pass 1.0 to force the raw grab with exact click mapping.", visionLongEdgeCap))),
+			mcp.WithNumber("zoom", mcp.Description(fmt.Sprintf("Optional magnification 1–%d (nearest-neighbor, edges stay crisp) for reading small text/icons in a small rectangle. Lowered automatically so the image stays within %dpx. Not combinable with scale.", maxCaptureZoom, visionLongEdgeCap))),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			x, err := req.RequireInt("x")
@@ -584,6 +648,13 @@ func newScreenMCPServer() *server.MCPServer {
 			if scale != 0 && (scale < 0.1 || scale > 1.0) {
 				return mcp.NewToolResultError("scale must be between 0.1 and 1.0"), nil
 			}
+			zoom := req.GetFloat("zoom", 0)
+			if zoom != 0 && (zoom < 1 || zoom > maxCaptureZoom) {
+				return mcp.NewToolResultError(fmt.Sprintf("zoom must be between 1 and %d", maxCaptureZoom)), nil
+			}
+			if zoom > 1 && scale != 0 {
+				return mcp.NewToolResultError("pass either zoom (magnify) or scale (downscale), not both"), nil
+			}
 			png, absX, absY, err := captureRegionAt(window, x, y, w, h)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("capture_region failed", err), nil
@@ -594,6 +665,24 @@ func newScreenMCPServer() *server.MCPServer {
 				label = fmt.Sprintf("Region of window %q at window-relative (%d,%d).", window, x, y)
 			}
 			switch {
+			case zoom > 1:
+				var eff float64
+				png, m.ImgW, m.ImgH, eff, err = zoomPNG(png, zoom)
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("capture_region zoom failed", err), nil
+				}
+				switch {
+				case eff <= 1:
+					// Too big to magnify: fall back to the default long-edge cap.
+					if png, m.ImgW, m.ImgH, _, err = capVisionLongEdge(png); err != nil {
+						return mcp.NewToolResultErrorFromErr("capture_region cap failed", err), nil
+					}
+					label += fmt.Sprintf(" Not zoomed: the rectangle is already %dpx or more on its long edge — capture a smaller one to magnify.", visionLongEdgeCap)
+				case eff < zoom:
+					label += fmt.Sprintf(" Zoomed %.3gx (lowered from %.3gx to stay within %dpx).", eff, zoom, visionLongEdgeCap)
+				default:
+					label += fmt.Sprintf(" Zoomed %.3gx for reading.", eff)
+				}
 			case scale != 0 && scale < 1.0:
 				png, m.ImgW, m.ImgH, err = scaleReadingPNG(png, scale)
 				if err != nil {
@@ -1085,7 +1174,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot — read the foreground window's UIA element tree as text.
 	s.AddTool(
 		mcp.NewTool("snapshot",
-			mcp.WithDescription(fmt.Sprintf("Read the foreground window's (or, with 'window', any window's — no focus change) UI Automation element tree as compact text in document order, indented by containment: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), state ([checked]/[unchecked]/[mixed], [expanded]/[collapsed], [selected], [value=N] for sliders), the screen rectangle @x,y,w×h, and a short inlined content preview (= \"…\") for fields/editors that carry text. Change a state with set_state. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page. "+screenToolPreference, defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
+			mcp.WithDescription(fmt.Sprintf("Read the foreground window's (or, with 'window', any window's — no focus change) UI Automation element tree as compact text in document order, indented by containment: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), state ([checked]/[unchecked]/[mixed], [expanded]/[collapsed], [selected], [value=N] for sliders), the screen rectangle @x,y,w×h, and a short inlined content preview (= \"…\") for fields/editors that carry text. Change a state with set_state. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). After an action, verify its effect cheaply with diff=true — only the added/removed/changed elements come back instead of the whole tree. Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page. "+screenToolPreference, defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
 			mcp.WithNumber("max_elements",
 				mcp.Description(fmt.Sprintf("Max elements to show (default %d, max %d).", defaultSnapshotMaxElements, ceilingSnapshotMaxElements)),
 			),
@@ -1096,17 +1185,33 @@ func newScreenMCPServer() *server.MCPServer {
 				mcp.Description("Element index to start from — pass the offset=N from a previous truncated reply to continue. Default 0."),
 			),
 			mcp.WithString("window", mcp.Description(windowParamDesc)),
+			mcp.WithBoolean("diff", mcp.Description("Return only what changed since the previous snapshot of the same window and page: a summary line ('3 added, 1 removed, 2 changed') then +added / -removed / ~changed element lines. The first call for a window (or another offset) returns the full snapshot with a note. Default false.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("snapshot failed", err), nil
 			}
+			diff, _, err := optBool(req.GetArguments(), "diff")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			// The cache is per window, so the foreground case is keyed by the
+			// window that is foreground now.
+			key := hwnd
+			if key == 0 {
+				key, _, _ = procGetForegroundWindow.Call()
+			}
+			offset := req.GetInt("offset", 0)
 			// 'max' is the pre-paging name of max_elements; still honored.
 			maxElems := req.GetInt("max_elements", req.GetInt("max", 0))
-			text, err := uiaSnapshotIn(hwnd, req.GetInt("offset", 0), maxElems, req.GetInt("max_chars", 0))
+			text, err := uiaSnapshotIn(hwnd, offset, maxElems, req.GetInt("max_chars", 0))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("snapshot failed", err), nil
+			}
+			prev, had := lastSnapshots.swap(key, offset, text)
+			if diff {
+				text = snapshotDiffReply(prev, had, text)
 			}
 			return mcp.NewToolResultText(text), nil
 		},
@@ -1428,7 +1533,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// or may not appear) belong outside the batch, split at that point.
 	s.AddTool(
 		mcp.NewTool("run_sequence",
-			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, set_state{name,checked?,expanded?,selected?,value?,scroll_into_view?,select_item?,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,until?,value?,contains?,timeout_ms?,window?}, wait_for_window{window,timeout_ms?}, clipboard_set{text}, clipboard_get{}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?,hold_ms?,steps?}, wait{ms}, note{text} (no-op placeholder). invoke/set_value/set_state/wait_for_control also take control_type/nth (1-based)/match like their tools; click_control's nth is 1-based too (0 also accepted, meaning the first). Giving "window" to invoke/set_value/set_state/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
+			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, set_state{name,checked?,expanded?,selected?,value?,scroll_into_view?,select_item?,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,until?,value?,contains?,timeout_ms?,window?}, wait_for_window{window,timeout_ms?,gone?}, clipboard_set{text}, clipboard_get{}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?,hold_ms?,steps?}, wait{ms}, note{text} (no-op placeholder). invoke/set_value/set_state/wait_for_control also take control_type/nth (1-based)/match like their tools; click_control's nth is 1-based too (0 also accepted, meaning the first). Giving "window" to invoke/set_value/set_state/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
 			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200,"wait_ms":300},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
 			mcp.WithNumber("step_delay_ms", mcp.Description("Pause between every two steps, in ms (default from AGLINK_SCREEN_STEP_DELAY_MS, else 0).")),
 			mcp.WithString("save_as", mcp.Description("Optional flow name: once every step succeeded, store these steps under it for flow_run (letters, digits, - _ .).")),

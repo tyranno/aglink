@@ -28,15 +28,7 @@ func setupTray(app *application.App, win *application.WebviewWindow) {
 		voiceIndicator.setMainHidden(app, true)
 		app.Event.Emit("window:tray", map[string]bool{"hidden": true})
 	}
-	show := func() {
-		voiceIndicator.setMainHidden(app, false)
-		setWindowHidden(false)
-		win.Show()
-		if win.IsMinimised() {
-			win.Restore()
-		}
-		win.Focus()
-	}
+	show := func() { showMainWindow(app, win) }
 
 	// Started hidden because it was left in the tray: the indicator has to know.
 	if winState.Hidden {

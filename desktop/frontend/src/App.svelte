@@ -55,6 +55,8 @@
     convLabel,
     setConversationLabel,
     rememberRecentTarget,
+    targetKey,
+    paneConversationMeta,
     rootWebGroups,
     groupPathLabel,
     handleGroupDragOver,
@@ -68,13 +70,17 @@
     closePaneWorkDirMenu,
     setTargetWorkDir,
   } from "./paneStore.svelte.js";
-  import { theme, setTheme } from "./themeStore.svelte.js";
-  import { voice, startMeeting, stopMeeting, wakeNameLabel } from "./voice.svelte.js";
+  import { theme, setTheme, density, toggleDensity } from "./themeStore.svelte.js";
+  import { voice, startMeeting, stopMeeting, wakeNameLabel, focusVoiceGroup } from "./voice.svelte.js";
   import SnippetManager from "./SnippetManager.svelte";
   import { snippets, openSnippetManager } from "./snippets.svelte.js";
   import SearchPanel from "./SearchPanel.svelte";
   import RecentSwitcher from "./RecentSwitcher.svelte";
   import { searchPanel, openSearchPanel } from "./search.svelte.js";
+  import QuickAsk from "./QuickAsk.svelte";
+  import TemplateFill from "./TemplateFill.svelte";
+  import { quickAsk, openQuickAsk } from "./quickask.svelte.js";
+  import { templateFill } from "./snippets.svelte.js";
 
   // The conversation voice chat is talking to, marked in the list.
   function isVoiceConv(id) {
@@ -102,12 +108,13 @@
   // 탭은 아이콘 아래 짧은 이름(short)을 작게 — 긴 이름은 툴팁으로. 한 줄을 넘지
   // 않도록 short 는 2~3글자로 둔다.
   const SIDEBAR_TABS = [
-    { id: "chat", icon: "💬", label: "대화", short: "대화" },
-    { id: "playbook", icon: "📋", label: "업무 관리", short: "업무" },
-    { id: "reservation", icon: "⏰", label: "예약", short: "예약" },
-    { id: "meeting", icon: "🎤", label: "회의", short: "회의" },
-    { id: "mcp", icon: "🧩", label: "MCP", short: "MCP" },
-    { id: "usage", icon: "📊", label: "사용량", short: "사용량" },
+    // svg: 윈도우 스타일(html.compact)에서 이모지 대신 쓰는 단색 선 아이콘(24px 좌표).
+    { id: "chat", icon: "💬", label: "대화", short: "대화", svg: ["M4 5h16v11H9l-5 4z"] },
+    { id: "playbook", icon: "📋", label: "업무 관리", short: "업무", svg: ["M8 4h8v3H8z", "M6 5H5v16h14V5h-1", "M9 12h6", "M9 16h4"] },
+    { id: "reservation", icon: "⏰", label: "예약", short: "예약", svg: ["M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16z", "M12 9v4l2.5 2"] },
+    { id: "meeting", icon: "🎤", label: "회의", short: "회의", svg: ["M9 3h6v10H9z", "M5 11a7 7 0 0 0 14 0", "M12 18v3"] },
+    { id: "mcp", icon: "🧩", label: "MCP", short: "MCP", svg: ["M4 4h7v7H4z", "M13 4h7v7h-7z", "M4 13h7v7H4z", "M13 13h7v7h-7z"] },
+    { id: "usage", icon: "📊", label: "사용량", short: "사용량", svg: ["M4 20h16", "M7 16v-5", "M12 16V6", "M17 16v-8"] },
   ];
   let sidebarTab = $state(
     SIDEBAR_TABS.some((t) => t.id === sidebarPrefs.tab) ? sidebarPrefs.tab : "chat",
@@ -500,6 +507,56 @@
     return out;
   });
 
+  // The 음성 tab's settings (VoicePanel.svelte labels) for 설정 찾기. Each entry
+  // is the label as shown there plus words people search it by.
+  const VOICE_SETTINGS_INDEX = [
+    ["읽어 주는 목소리", "TTS 목소리 음색 남자 여자 Supertonic"],
+    ["읽는 빠르기", "속도 빠르게 느리게 TTS"],
+    ["다른 사람 목소리로 읽기", "목소리 복제 녹음 클론"],
+    ["긴 답변은 요약만 읽기", "요약 읽기 길이"],
+    ["답변은 글로만 보여 주기", "글로만 소리 끄기 텍스트"],
+    ["읽는 중 끼어들기", "끼어들기 barge 중단"],
+    ["앱 안에서 읽기 (에코 제거)", "에코 제거 스피커 재생"],
+    ["듣는 방식", "호출어 항상 듣기 수동 마이크 wake"],
+    ["부르는 이름", "호출어 이름 아글링크 wake"],
+    ["말이 없으면 대기로", "대기 시간 호출어 분"],
+    ["녹음", "녹음 테이프 정리"],
+    ["회의 모드", "회의 받아쓰기 조언"],
+    ["아침 브리핑 · 저녁 정리", "브리핑 아침 저녁 정리 알림"],
+    ["메모 · 할 일", "메모 할일 todo"],
+    ["내 목소리만 듣기", "화자 인식 목소리 등록 다른 사람"],
+    ["음성 인식 위치", "whisper 서버 GPU 인식 STT"],
+    ["마이크 소리 정리", "잡음 제거 노이즈 마이크"],
+    ["받아쓰기 모델", "whisper 모델 STT 인식"],
+    ["최근 들린 말", "기록 로그 들린 말"],
+  ];
+  const voiceSearchHits = $derived.by(() => {
+    const q = settingsQuery.trim().toLowerCase();
+    if (!q) return [];
+    if (q.length >= 2 && "음성 voice 마이크 말하기 듣기".includes(q)) return VOICE_SETTINGS_INDEX.map(([label]) => label);
+    return VOICE_SETTINGS_INDEX.filter(([label, words]) => `${label} ${words}`.toLowerCase().includes(q)).map(([label]) => label);
+  });
+
+  // Opens the 음성 tab and scrolls to / flashes the first matching setting.
+  async function openVoiceSetting(label) {
+    await loadSettingsTab("voice");
+    focusVoiceGroup(label);
+    await tick();
+    requestAnimationFrame(() => {
+      const panel = document.querySelector("[data-voice-panel]");
+      if (!panel || !label) return;
+      const leaves = [...panel.querySelectorAll("div")].filter((node) => node.childElementCount === 0);
+      const el = leaves.find((node) => node.textContent.trim() === label) || leaves.find((node) => node.textContent.trim().startsWith(label));
+      const row = el?.parentElement || el;
+      if (!row) return;
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+      row.classList.remove("setting-flash");
+      void row.offsetWidth;
+      row.classList.add("setting-flash");
+      setTimeout(() => row.classList.remove("setting-flash"), 2400);
+    });
+  }
+
   // Keep the active tab valid: if it vanishes (e.g. leaving opencode hides the
   // "무료·로컬 AI" tab), fall back to the first remaining tab.
   $effect(() => {
@@ -825,6 +882,29 @@
 
   let helpOpen = $state(false);
 
+  // "답변이 끝났어요" when coming back: a turn that finished while the window
+  // was in the background (paneStore flashes the taskbar and records it) gets
+  // a small card with 열기, unless that conversation is already on screen.
+  let awayNotice = $state(null); // { key, target, title }
+  let awayTimer = 0;
+  function noteFinishedAway() {
+    const fa = chat.finishedAway;
+    if (!fa) return;
+    chat.finishedAway = null;
+    if (Date.now() - fa.at > 30 * 60000) return;
+    if (chat.panes.some((p) => p.target && targetKey(p.target) === fa.key)) return;
+    awayNotice = { ...fa, title: paneConversationMeta(fa.target)?.title || "대화" };
+    clearTimeout(awayTimer);
+    awayTimer = setTimeout(() => (awayNotice = null), 20000);
+  }
+  async function openAwayNotice() {
+    const notice = awayNotice;
+    awayNotice = null;
+    if (!notice) return;
+    if (view !== "chat" && !(await backToChat())) return;
+    selectTargetFromSidebar(notice.target);
+  }
+
   // Ctrl+K palette commands (QuickSwitcher lists them after the conversations).
   const paletteActions = [
     { id: "new", icon: "＋", label: "새 로컬 대화 만들기", keys: "Ctrl+N", run: newConversationFromAnywhere },
@@ -833,6 +913,7 @@
     { id: "connection", icon: "🔌", label: "연결 상태 / aglink 정보", run: () => openSettings("connection") },
     { id: "sidebar", icon: "◧", label: "사이드바 숨기기/보이기", keys: "Ctrl+\\", run: toggleSidebar },
     { id: "unread", icon: "●", label: "다음 읽지 않은 대화로 이동", keys: "Alt+↓", run: openNextUnread },
+    { id: "quick-ask", icon: "✦", label: "빠른 질문", keys: "Ctrl+Alt+Space", run: () => openQuickAsk() },
     { id: "search-all", icon: "⌕", label: "모든 대화에서 메시지 찾기", keys: "Ctrl+Shift+F", run: () => openSearchPanel("search") },
     { id: "bookmarks", icon: "★", label: "북마크 보기", run: () => openSearchPanel("bookmarks") },
     { id: "split", icon: "⊞", label: "화면 분할 추가", run: () => { if (chat.panes.length < MAX_PANES) addPane(); } },
@@ -840,6 +921,7 @@
     { id: "snippets", icon: "/", label: "상용구 관리", run: () => openSnippetManager() },
     { id: "meeting", icon: "🗂", label: "회의 목록 보기", run: showMeetings },
     { id: "theme", icon: "◐", label: "테마 전환 (시스템 → 라이트 → 다크)", run: cycleTheme },
+    { id: "density", icon: "▤", label: "화면 스타일 전환 (윈도우 ↔ 웹)", run: toggleDensity },
     { id: "help", icon: "?", label: "단축키 모음", keys: "Ctrl+/", run: () => (helpOpen = true) },
   ];
 
@@ -909,6 +991,7 @@
     const onNewConversationRequest = () => void newConversationFromAnywhere();
     const onShowChatRequest = () => { if (view !== "chat") void backToChat(); };
     window.addEventListener("aglink:show-chat", onShowChatRequest);
+    window.addEventListener("focus", noteFinishedAway);
     window.addEventListener("aglink:open-settings", onOpenSettingsRequest);
     window.addEventListener("aglink:new-conversation", onNewConversationRequest);
 
@@ -916,7 +999,7 @@
     // Ctrl+B in BoardView, Ctrl+F / Ctrl+M in PaneNode — none of these overlap.
     const onShortcut = (event) => {
       if (event.defaultPrevented || event.metaKey || event.isComposing) return;
-      if (promptState || confirmState || snippets.managerOpen || searchPanel.open) return; // a dialog is asking something
+      if (promptState || confirmState || snippets.managerOpen || searchPanel.open || quickAsk.open || templateFill.open) return; // a dialog is asking something
       if (event.altKey && !event.ctrlKey && !event.shiftKey && event.key === "ArrowDown") {
         if (event.target instanceof HTMLSelectElement) return; // Alt+↓ opens a dropdown
         if (view !== "chat") return;
@@ -993,6 +1076,7 @@
       window.removeEventListener("aglink:open-settings", onOpenSettingsRequest);
       window.removeEventListener("aglink:new-conversation", onNewConversationRequest);
       window.removeEventListener("aglink:show-chat", onShowChatRequest);
+      window.removeEventListener("focus", noteFinishedAway);
       document.removeEventListener("keydown", onShortcut);
       window.clearInterval(tickTimer);
       window.clearInterval(workerTimer);
@@ -1004,11 +1088,11 @@
 
 <div class="flex h-full min-h-0 w-full overflow-hidden text-[13px] text-slate-900 dark:text-slate-100">
   <div class="flex h-full w-full flex-col overflow-hidden">
-    <header class="flex h-12 shrink-0 items-center gap-2 border-b border-slate-800 bg-slate-900 px-3 text-white shadow-sm">
+    <header class="app-header flex h-12 shrink-0 items-center gap-2 border-b border-slate-800 bg-slate-900 px-3 text-white shadow-sm">
       <div class="relative shrink-0" data-conn-info>
         <button
           type="button"
-          class={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-white transition-colors ${chat.connected ? "bg-emerald-500 hover:bg-emerald-600" : "bg-rose-500 hover:bg-rose-600"}`}
+          class={`conn-btn inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-white transition-colors ${chat.connected ? "bg-emerald-500 hover:bg-emerald-600" : "bg-rose-500 hover:bg-rose-600"}`}
           onclick={() => { connInfoOpen = !connInfoOpen; connCheckMsg = ""; }}
           title={chat.connected ? "aglink 본체와 연결되어 있습니다 (클릭하면 자세히)" : "aglink 본체와 연결이 끊겼습니다 (클릭하면 원인과 대처)"}
           aria-haspopup="dialog"
@@ -1146,6 +1230,17 @@
                 <span class="min-w-0 flex-1 truncate">테마 전환</span>
                 <span class="text-[11px] text-slate-400 dark:text-slate-500">{themeLabel()}</span>
               </button>
+              <button
+                role="menuitem"
+                class="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs font-medium outline-none hover:bg-slate-100 focus-visible:bg-slate-100 dark:hover:bg-slate-800 dark:focus-visible:bg-slate-800"
+                onclick={toggleDensity}
+                title="화면 스타일: 윈도우(일반 프로그램처럼) ↔ 웹(둥글고 여백 많게)"
+                aria-label="화면 스타일 전환"
+              >
+                <span class="w-4 shrink-0 text-center">▤</span>
+                <span class="min-w-0 flex-1 truncate">화면 스타일</span>
+                <span class="text-[11px] text-slate-400 dark:text-slate-500">{density.mode === "compact" ? "윈도우" : "웹"}</span>
+              </button>
             </div>
           {/if}
         </div>
@@ -1180,22 +1275,23 @@
     {#if view === "chat"}
       <div class="flex min-h-0 flex-1 overflow-hidden">
         {#if !sidebarCollapsed}
-          <aside class="flex h-full w-[296px] shrink-0 flex-col border-r border-slate-200 dark:border-slate-700 bg-slate-50/90 dark:bg-slate-800/90 backdrop-blur">
+          <aside class="app-sidebar flex h-full w-[296px] shrink-0 flex-col border-r border-slate-200 dark:border-slate-700 bg-slate-50/90 dark:bg-slate-800/90 backdrop-blur">
             <div class="flex h-11 shrink-0 items-center border-b border-slate-200 dark:border-slate-700 bg-slate-100/60 dark:bg-slate-800/60">
               <button
                 class="grid h-full w-8 shrink-0 place-items-center text-sm text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600"
                 onclick={() => (sidebarCollapsed = true)}
-                title="사이드바 숨기기"
+                title="사이드바 숨기기 (Ctrl+\)"
                 aria-label="사이드바 숨기기"
               >«</button>
               {#each SIDEBAR_TABS as t (t.id)}
                 <button
-                  class={`relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-0.5 border-b-2 transition ${sidebarTab === t.id ? "border-blue-600 bg-white/80 text-blue-700 dark:border-blue-400 dark:bg-slate-700/70 dark:text-blue-300" : "border-transparent text-slate-500 hover:bg-slate-200/70 dark:text-slate-400 dark:hover:bg-slate-700/50"}`}
+                  class={`side-tab relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-0.5 border-b-2 transition ${sidebarTab === t.id ? "border-blue-600 bg-white/80 text-blue-700 dark:border-blue-400 dark:bg-slate-700/70 dark:text-blue-300" : "border-transparent text-slate-500 hover:bg-slate-200/70 dark:text-slate-400 dark:hover:bg-slate-700/50"}`}
                   onclick={() => (sidebarTab = t.id)}
                   title={t.id === "chat" && unreadCount ? `${t.label} · 읽지 않은 대화 ${unreadCount}개` : t.label}
                   aria-label={t.label}
                 >
-                  <span class="text-[17px] leading-none">{t.icon}</span>
+                  <span class="tab-emoji text-[17px] leading-none">{t.icon}</span>
+                  <svg class="tab-svg h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{#each t.svg as d}<path {d} />{/each}</svg>
                   <span class="max-w-full truncate px-0.5 text-[10px] font-semibold leading-none">{t.short}</span>
                   {#if t.id === "chat" && unreadCount > 0}
                     <span class="absolute right-1 top-1 min-w-[15px] rounded-full bg-blue-600 px-1 text-center text-[9px] font-bold leading-[15px] text-white" aria-label={`읽지 않은 대화 ${unreadCount}개`}>{unreadCount > 99 ? "99+" : unreadCount}</span>
@@ -1205,14 +1301,6 @@
             </div>
             {#if sidebarTab === "chat"}
             <div class="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 dark:border-slate-700 px-3">
-              <button
-                class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
-                onclick={() => (sidebarCollapsed = true)}
-                title="대화 목록 숨기기"
-                aria-label="대화 목록 숨기기"
-              >
-                «
-              </button>
               <div class="min-w-0 flex-1">
                 <div class="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">대화 목록</div>
               </div>
@@ -1335,7 +1423,7 @@
               <div>
                 {#snippet webConvRow(conv)}
                   <div
-                    class={`relative flex h-10 items-center gap-1 rounded-md border px-1.5 shadow-sm ${isFocusedTarget({ kind: "web", id: conv.id }) ? "border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-200" : "border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-900/85 text-slate-900 dark:text-slate-100"}`}
+                    class={`conv-row group relative flex h-10 items-center gap-1 rounded-md border px-1.5 shadow-sm ${isFocusedTarget({ kind: "web", id: conv.id }) ? "conv-row-active border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-200" : "border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-900/85 text-slate-900 dark:text-slate-100"}`}
                     data-conv-menu
                     title={conv.workDir ? `${conversationLabel(conv)} · ${conv.workDir}` : conversationLabel(conv)}
                   >
@@ -1357,7 +1445,7 @@
                         {/if}
                         <span class="min-w-0 flex-1 truncate text-sm font-semibold">{conversationLabel(conv)}</span>
                         <span class="shrink-0 font-mono text-[11px] text-slate-400 dark:text-slate-500">#{conv.id}</span>
-                        <span class="shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:text-slate-300">{backendLabel(conv.backend)}</span>
+                        <span class="conv-row-backend shrink-0 rounded-full bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:text-slate-300">{backendLabel(conv.backend)}</span>
                         {#if isVoiceConv(conv.id)}
                           <span class="shrink-0 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white" title="음성 대화 중인 대화">🎤 음성</span>
                         {/if}
@@ -1370,7 +1458,7 @@
                       </button>
 
                       <button
-                        class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 text-base leading-none text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
+                        class="conv-row-menu grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 text-base leading-none text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
                         onclick={() => (openMenuId = openMenuId === conv.id ? "" : conv.id)}
                         title="대화 관리"
                         aria-label="대화 관리"
@@ -1600,21 +1688,21 @@
             ←
           </button>
           <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">설정</div>
-          <div class="ml-auto flex gap-2">
+          <div class="set-tabs ml-auto flex gap-2">
             <button
-              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "settings" ? "bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
+              class={`set-tab rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "settings" ? "set-tab-active bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
               onclick={() => loadSettingsTab("settings")}
             >
               설정{#if settingsDirty}<span class="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400 align-middle" title="저장하지 않은 변경"></span>{/if}
             </button>
             <button
-              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "connection" ? "bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
+              class={`set-tab rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "connection" ? "set-tab-active bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
               onclick={() => loadSettingsTab("connection")}
             >
               연결 / aglink
             </button>
             <button
-              class={`rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "voice" ? "bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
+              class={`set-tab rounded-full px-3 py-2 text-xs font-semibold ${settingsTab === "voice" ? "set-tab-active bg-blue-600 text-white" : "border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300"}`}
               onclick={() => loadSettingsTab("voice")}
             >
               음성
@@ -1623,7 +1711,7 @@
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-          <div class="mx-auto flex w-full max-w-5xl flex-col gap-5">
+          <div class="mx-auto flex w-full max-w-[1400px] flex-col gap-5">
             {#if settingsTab === "settings"}
               {#snippet settingSection(section)}
                 <div>
@@ -1631,9 +1719,9 @@
                   {#if section.desc}
                     <div class="mb-3 max-w-3xl whitespace-pre-wrap break-words text-xs leading-5 text-slate-500 dark:text-slate-400">{section.desc}</div>
                   {/if}
-                  <div class="space-y-3">
+                  <div class="set-fields space-y-3">
                     {#each section.fields || [] as field}
-                      <div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4">
+                      <div class="set-field rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4">
                         <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                           <div class="min-w-0 md:max-w-[60%]">
                             <div class="flex items-center gap-1.5 text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -1684,14 +1772,14 @@
                                   />
                                   <button
                                     type="button"
-                                    class="shrink-0 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                    class="shrink-0 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
                                     disabled={!listItems(listDrafts[field.key]).length}
                                     onclick={() => addListItems(field.key)}
                                   >추가</button>
                                 </div>
                               </div>
                             {:else if field.type === "bool"}
-                              <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+                              <label class="flex h-9 items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
                                 <input
                                   class="h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 dark:text-blue-400 focus:ring-blue-500"
                                   type="checkbox"
@@ -1736,7 +1824,7 @@
 
               <ClaudeAuthPanel />
 
-              <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
+              <section class="set-card rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">
                   <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">설정</div>
                   <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">번호(①②③) 순서대로 채우면 AI가 연결됩니다. 잘 모르는 칸은 비워두거나 기본값 그대로 두세요.</div>
@@ -1763,25 +1851,42 @@
                       onkeydown={(event) => { if (event.key === "Escape" && settingsQuery) { event.stopPropagation(); settingsQuery = ""; } }}
                     />
                     {#if settingsQuery}
-                      <span class="shrink-0 text-[11px] text-slate-400 dark:text-slate-500">{(settingsSearchResults || []).reduce((n, section) => n + section.fields.length, 0)}개</span>
+                      <span class="shrink-0 text-[11px] text-slate-400 dark:text-slate-500">{(settingsSearchResults || []).reduce((n, section) => n + section.fields.length, 0) + voiceSearchHits.length}개</span>
                       <button type="button" class="shrink-0 text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" onclick={() => (settingsQuery = "")} aria-label="찾기 지우기">✕</button>
                     {/if}
                   </div>
                   {#if settingsSearchResults}
                     <div class="space-y-6">
+                      {#if voiceSearchHits.length}
+                        <div class="rounded-lg border border-blue-200 bg-blue-50/70 px-4 py-3 dark:border-blue-900/60 dark:bg-blue-950/30">
+                          <div class="flex items-center gap-2">
+                            <span class="text-sm font-semibold text-slate-900 dark:text-slate-100">음성 탭에서 {voiceSearchHits.length}개</span>
+                            <button type="button" class="ml-auto ui-btn ui-btn-primary" onclick={() => openVoiceSetting(voiceSearchHits[0])}>음성 탭 열기 →</button>
+                          </div>
+                          <div class="mt-2 flex flex-wrap gap-1.5">
+                            {#each voiceSearchHits as label (label)}
+                              <button type="button" class="rounded-full border border-blue-200 bg-white px-2.5 py-0.5 text-[12px] text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-slate-900 dark:text-blue-300 dark:hover:bg-blue-950/60" onclick={() => openVoiceSetting(label)}>{label}</button>
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
                       {#each settingsSearchResults as section}
                         <div>
                           <div class="mb-1 inline-flex rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10.5px] font-semibold text-slate-500 dark:text-slate-400">{section.group || "기타"}</div>
                           {@render settingSection(section)}
                         </div>
                       {:else}
-                        <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 px-4 py-5 text-sm text-slate-500 dark:text-slate-400">“{settingsQuery.trim()}”에 맞는 설정이 없습니다.</div>
+                        {#if !voiceSearchHits.length}
+                          <div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 px-4 py-5 text-sm text-slate-500 dark:text-slate-400">“{settingsQuery.trim()}”에 맞는 설정이 없습니다.</div>
+                        {/if}
                       {/each}
                     </div>
                   {:else}
-                  <div class="mb-5 flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-700">
+                  <div class="set-group-layout">
+                  <div class="set-group-nav mb-5 flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-700">
                     {#each settingsGroups as group}
                       <button
+                        class:set-group-active={activeSettingsGroup === group}
                         class="-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition-colors {activeSettingsGroup ===
                         group
                           ? 'border-blue-600 dark:border-blue-400 text-blue-700 dark:text-blue-300'
@@ -1792,15 +1897,16 @@
                       </button>
                     {/each}
                   </div>
-                  <div class="space-y-6">
+                  <div class="set-group-body space-y-6">
                     {#each sectionsInGroup(activeSettingsGroup) as section}
                       {@render settingSection(section)}
                     {/each}
                   </div>
+                  </div>
                   {/if}
                 {/if}
 
-                <div class="mt-5 flex items-center gap-3">
+                <div class="set-savebar mt-5 flex items-center gap-3">
                   <button class="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700" onclick={saveSettings}>
                     설정 저장
                   </button>
@@ -1816,7 +1922,7 @@
                 </div>
               </section>
 
-              <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
+              <section class="set-card rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">
                   <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">전문가용: 설정 파일 직접 편집</div>
                   <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">위 항목으로 안 되는 세부 설정(예: SSH 호스트 목록)만 여기서 직접 고칩니다. 형식이 틀리면 저장되지 않으니 익숙하지 않으면 건드리지 마세요.</div>
@@ -1844,7 +1950,7 @@
             {:else if settingsTab === "voice"}
               <!-- VoicePanel is kept mounted below (avoids re-mount lag on tab switch) -->
             {:else}
-              <section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
+              <section class="set-card rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
                 <div class="mb-5">
                   <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">버전 / 백엔드</div>
                   <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">aglink 본체의 버전·사용 중인 AI와, 이 앱의 연결 상태, 보조 기능이 잘 돌고 있는지를 한눈에 봅니다.</div>
@@ -1952,7 +2058,7 @@
               </section>
             {/if}
             {#if voiceLoaded}
-              <div class:hidden={settingsTab !== "voice"}><VoicePanel /></div>
+              <div class:hidden={settingsTab !== "voice"} data-voice-panel><VoicePanel /></div>
             {/if}
           </div>
         </div>
@@ -2043,3 +2149,26 @@
 <SnippetManager />
 <SearchPanel />
 <RecentSwitcher />
+<QuickAsk />
+<TemplateFill />
+
+{#if awayNotice}
+  <div class="fixed bottom-4 left-1/2 z-[55] flex max-w-md -translate-x-1/2 items-center gap-3 rounded-xl border border-blue-200 bg-white px-4 py-2.5 shadow-2xl dark:border-blue-900/60 dark:bg-slate-900" role="status">
+    <span class="h-2 w-2 shrink-0 rounded-full bg-emerald-500"></span>
+    <span class="min-w-0 flex-1 truncate text-[13px] text-slate-700 dark:text-slate-200"><b class="font-semibold">{awayNotice.title}</b> 답변이 끝났어요</span>
+    <button type="button" class="ui-btn ui-btn-primary shrink-0" onclick={openAwayNotice}>열기</button>
+    <button type="button" class="shrink-0 rounded px-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" onclick={() => (awayNotice = null)} aria-label="닫기">✕</button>
+  </div>
+{/if}
+
+<style>
+  /* A setting opened from 설정 찾기 (음성 tab): a soft ring that fades. */
+  :global(.setting-flash) {
+    border-radius: 0.5rem;
+    animation: setting-flash 2.2s ease-out;
+  }
+  @keyframes setting-flash {
+    0%, 40% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.55); }
+    100% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0); }
+  }
+</style>

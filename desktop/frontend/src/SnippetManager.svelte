@@ -77,7 +77,7 @@
       <div class="flex items-center gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
         <div class="min-w-0 flex-1">
           <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">상용구 관리</div>
-          <div class="mt-0.5 text-[11.5px] text-slate-500 dark:text-slate-400">입력창 맨 앞에 <kbd class="rounded border border-slate-200 px-1 font-mono text-[10.5px] dark:border-slate-700">/</kbd>와 이름 일부를 치면 골라 넣을 수 있어요.</div>
+          <div class="mt-0.5 text-[11.5px] text-slate-500 dark:text-slate-400">입력창 맨 앞에 <kbd class="rounded border border-slate-200 px-1 font-mono text-[10.5px] dark:border-slate-700">/</kbd>와 이름 일부를 치면 골라 넣을 수 있어요. <span class="font-mono">{"{{날짜}}"}</span> <span class="font-mono">{"{{시간}}"}</span> <span class="font-mono">{"{{클립보드}}"}</span> <span class="font-mono">{"{{선택}}"}</span>은 저절로 채워지고, <span class="font-mono">{"{{이름}}"}</span>처럼 다른 칸은 넣을 때 물어봐요.</div>
         </div>
         <button type="button" class="rounded px-2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" onclick={close} aria-label="닫기">✕</button>
       </div>

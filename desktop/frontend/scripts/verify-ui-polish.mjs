@@ -280,6 +280,23 @@ assert(app.includes("<QuickSwitcher actions={paletteActions} bind:helpOpen />"),
   assert(pane.includes("ControlService.SaveMarkdownFile"), "a conversation must be savable as a .md file");
   assert(![search, panel, recent].some((src) => /\b(?:window\.)?(?:confirm|alert|prompt)\(/.test(src)), "no browser dialogs in the round-2 components");
 }
+
+// Round 3: quick ask hotkey, templates, ask another AI, summary note, home card, finished-away notice.
+{
+  const quick = readFileSync(join(root, "src", "QuickAsk.svelte"), "utf8");
+  const fill = readFileSync(join(root, "src", "TemplateFill.svelte"), "utf8");
+  const snip = readFileSync(join(root, "src", "snippets.svelte.js"), "utf8");
+  const goQuick = readFileSync(join(root, "..", "quickask.go"), "utf8");
+  assert(goQuick.includes('app.Event.Emit("hotkey:quickask"') && quick.includes('Events.On("hotkey:quickask"'), "the global quick-ask hotkey must open the 빠른 질문 box");
+  assert(quick.includes("sendTextToTarget(target, message)") && store.includes("export async function sendTextToTarget"), "quick ask must send without clobbering a pane's composer draft");
+  assert(snip.includes("export function templateFields") && snip.includes('"클립보드"') && pane.includes("askTemplate(p.id"), "snippets must support {{변수}} templates");
+  assert(fill.includes("expandTemplate("), "the template form must expand the snippet");
+  assert(store.includes("export async function askAnotherBackend") && pane.includes("runCompare(p, message, choice.id)"), "a question must be askable of another AI side by side");
+  assert(store.includes("export async function requestSummary") && pane.includes("convNote(p.target)") && pane.includes('setConvNote(p.target, message.text, "pinned")'), "summary / pinned note must show on top of the conversation");
+  assert(pane.includes("homeItems()") && pane.includes("openQuickAsk()"), "an empty pane must show the home card");
+  assert(store.includes("chat.finishedAway = { key, target, at: Date.now() }") && app.includes("noteFinishedAway"), "a turn finished in the background must offer to open it on return");
+  assert(![quick, fill].some((src) => /\b(?:window\.)?(?:confirm|alert|prompt)\(/.test(src)), "no browser dialogs in the round-3 components");
+}
 assert(app.includes('if (!target.closest("[data-more-menu]")) closeMoreMenu();') && app.includes("closeMoreMenu(true)"), "더보기 menu must close on outside click and return focus on Esc");
 
 // "list" settings fields (approvals.allow / approvals.tools) render as chips + add input,
@@ -314,6 +331,15 @@ for (const name of readdirSync(join(here, "..", "src")).filter((n) => n.endsWith
   const src = readFileSync(join(here, "..", "src", name), "utf8");
   assert(!/^\s*\{\s+[A-Za-z_$][\w$]*\s*=[^=]/m.test(src), `${name}: a template tag looks like "{@const …}" without "@const"`);
 }
+
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+
+// Live-test fixes: one sidebar collapse button; 설정 찾기 also finds the 음성 tab.
+assert((app.match(/onclick=\{\(\) => \(sidebarCollapsed = true\)\}/g) || []).length === 1, "the sidebar must have exactly one collapse («) button");
+assert(app.includes("VOICE_SETTINGS_INDEX") && app.includes("voiceSearchHits.length") && app.includes('loadSettingsTab("voice")'), "settings search must surface the 음성 tab's settings and open that tab");
+assert(app.includes('onclick={() => openSettings("voice")}'), "the header voice chip must open the 음성 settings tab");
 
 if (process.exitCode) {
   process.exit(process.exitCode);

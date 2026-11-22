@@ -100,6 +100,7 @@ func main() {
 	setupIndicator(app)
 	setupVSCodeVoice(app)
 	setupTray(app, win)
+	setupQuickAsk(app, win)
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		keepWindowOnScreen(app, win)
 	})

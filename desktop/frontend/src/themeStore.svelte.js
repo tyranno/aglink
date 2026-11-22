@@ -36,3 +36,36 @@ media.addEventListener("change", () => {
 });
 
 applyTheme();
+
+// Screen density: "compact" (default) sizes the UI like a desktop program —
+// smaller type, tighter rows, flat list items — while "comfortable" keeps the
+// roomier web-style layout. app.css keys everything off html.compact.
+const DENSITY_KEY = "aglink-desktop:density";
+
+function loadInitialDensity() {
+  try {
+    const raw = localStorage.getItem(DENSITY_KEY);
+    if (raw === "compact" || raw === "comfortable") return raw;
+  } catch {}
+  return "compact";
+}
+
+export const density = $state({ mode: loadInitialDensity() });
+
+function applyDensity() {
+  document.documentElement.classList.toggle("compact", density.mode === "compact");
+}
+
+export function setDensity(mode) {
+  density.mode = mode;
+  try {
+    localStorage.setItem(DENSITY_KEY, mode);
+  } catch {}
+  applyDensity();
+}
+
+export function toggleDensity() {
+  setDensity(density.mode === "compact" ? "comfortable" : "compact");
+}
+
+applyDensity();

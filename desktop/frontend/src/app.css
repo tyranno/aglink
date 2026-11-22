@@ -136,3 +136,437 @@ textarea {
 .btn-gloss:not(:disabled) {
   background-image: linear-gradient(180deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0) 60%);
 }
+
+/* ── Compact density (default; themeStore toggles html.compact) ──────────────
+   Makes the window read like a desktop program rather than a web page.
+   Tailwind v4 sizes text and spacing in rem, so a 14px root shrinks every
+   padding/gap/font together; the radius/shadow tokens are flattened so cards
+   and buttons stop looking like floating web tiles. */
+html.compact {
+  font-size: 14px;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 5px;
+  --radius-2xl: 6px;
+  --radius-3xl: 8px;
+  --shadow-sm: 0 1px 1px rgb(0 0 0 / 0.04);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-md: 0 1px 3px rgb(0 0 0 / 0.08);
+  --shadow-lg: 0 4px 12px rgb(0 0 0 / 0.12);
+  --shadow-xl: 0 6px 18px rgb(0 0 0 / 0.14);
+  --shadow-2xl: 0 10px 28px rgb(0 0 0 / 0.18);
+}
+
+html.compact body {
+  background: #f3f4f6;
+  -webkit-font-smoothing: antialiased;
+}
+
+html.compact.dark body {
+  background: #1e1e1e;
+}
+
+/* Native buttons don't shrink when pressed. */
+html.compact button:active:not(:disabled) {
+  transform: none;
+}
+
+html.compact ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+/* Conversation list: flat rows like Explorer/Outlook instead of a stack of
+   bordered cards — hover tint, a selected highlight, menu shown on hover. */
+html.compact .conv-row {
+  height: 2rem;
+  margin-block: 0 !important;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+html.compact .conv-row:hover {
+  background: rgb(0 0 0 / 0.045);
+}
+
+html.compact.dark .conv-row:hover {
+  background: rgb(255 255 255 / 0.06);
+}
+
+html.compact .conv-row.conv-row-active {
+  background: rgb(37 99 235 / 0.12);
+  border-color: transparent;
+  box-shadow: inset 2px 0 0 #2563eb;
+}
+
+html.compact.dark .conv-row.conv-row-active {
+  background: rgb(55 148 255 / 0.18);
+  box-shadow: inset 2px 0 0 #3794ff;
+}
+
+html.compact .conv-row > button:first-child:hover {
+  background: transparent;
+}
+
+html.compact .conv-row-menu {
+  height: 1.5rem;
+  width: 1.5rem;
+  border-color: transparent;
+  background: transparent;
+  opacity: 0;
+}
+
+html.compact .conv-row:hover .conv-row-menu,
+html.compact .conv-row-menu:focus-visible,
+html.compact .conv-row-active .conv-row-menu {
+  opacity: 1;
+}
+
+html.compact .conv-row-menu:hover {
+  background: rgb(0 0 0 / 0.08);
+}
+
+html.compact.dark .conv-row-menu:hover {
+  background: rgb(255 255 255 / 0.1);
+}
+
+html.compact .conv-row-backend {
+  background: transparent;
+  padding-inline: 0;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+/* Settings: a Windows-style options window — flat underlined tabs, a
+   category list on the left, label/control rows split by hairlines instead
+   of one boxed card per field, and the save bar pinned to the bottom. */
+html.compact .set-tabs {
+  gap: 0;
+  align-self: stretch;
+}
+
+html.compact .set-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #475569;
+  padding-inline: 0.9rem;
+}
+
+html.compact .set-tab:hover {
+  background: rgb(0 0 0 / 0.04);
+}
+
+html.compact .set-tab.set-tab-active {
+  border-bottom-color: #2563eb;
+  background: transparent;
+  color: #1d4ed8;
+}
+
+html.compact.dark .set-tab {
+  color: #9d9d9d;
+}
+
+html.compact.dark .set-tab.set-tab-active {
+  border-bottom-color: #3794ff;
+  color: #e0e0e0;
+}
+
+html.compact .set-card {
+  padding: 1rem 1.15rem;
+  box-shadow: none;
+}
+
+html.compact .set-group-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.25rem;
+}
+
+html.compact .set-group-nav {
+  position: sticky;
+  top: 0;
+  flex: 0 0 9.5rem;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 1px;
+  margin-bottom: 0;
+  border-bottom: 0;
+  border-right: 1px solid #e2e8f0;
+  padding-right: 0.5rem;
+}
+
+html.compact.dark .set-group-nav {
+  border-right-color: #3c3c3c;
+}
+
+html.compact .set-group-nav > button {
+  margin: 0;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  font-weight: 500;
+}
+
+html.compact .set-group-nav > button:hover {
+  background: rgb(0 0 0 / 0.045);
+}
+
+html.compact .set-group-nav > button.set-group-active {
+  border-left-color: #2563eb;
+  background: rgb(37 99 235 / 0.1);
+  font-weight: 600;
+}
+
+html.compact.dark .set-group-nav > button:hover {
+  background: rgb(255 255 255 / 0.06);
+}
+
+html.compact.dark .set-group-nav > button.set-group-active {
+  border-left-color: #3794ff;
+  background: rgb(55 148 255 / 0.16);
+}
+
+html.compact .set-group-body {
+  min-width: 0;
+  flex: 1;
+}
+
+html.compact .set-fields {
+  border-top: 1px solid #e2e8f0;
+}
+
+html.compact .set-fields > * {
+  margin-block: 0 !important;
+}
+
+html.compact .set-field {
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.6rem 0.25rem;
+}
+
+html.compact .set-field:hover {
+  background: rgb(0 0 0 / 0.02);
+}
+
+html.compact.dark .set-fields,
+html.compact.dark .set-field {
+  border-color: #3c3c3c;
+}
+
+html.compact.dark .set-field:hover {
+  background: rgb(255 255 255 / 0.03);
+}
+
+html.compact .set-savebar {
+  position: sticky;
+  bottom: 0;
+  margin-inline: -1.15rem;
+  margin-bottom: -1rem;
+  padding: 0.6rem 1.15rem;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+html.compact.dark .set-savebar {
+  border-top-color: #3c3c3c;
+  background: #252526;
+}
+
+/* Thin native-style focus outline instead of the wide web glow ring. */
+html.compact :is(input, select, textarea):focus {
+  --tw-ring-shadow: 0 0 0 1px #3b82f6;
+}
+
+/* ── Windows style (html.compact) ───────────────────────────────────────────
+   Windows 11 look: Segoe UI / 맑은 고딕, the system accent blue, a light
+   Mica-grey title/nav area instead of the dark web header, square-ish
+   corners everywhere (no pill badges), monochrome line icons and plain
+   chat messages instead of gradient bubbles with tails. */
+html.compact {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", "맑은 고딕", sans-serif;
+  font-family: var(--font-sans);
+  --color-blue-50: #f0f6fc;
+  --color-blue-100: #e0eefa;
+  --color-blue-200: #c5dcf2;
+  --color-blue-500: #0f6cbd;
+  --color-blue-600: #005fb8;
+  --color-blue-700: #004e98;
+}
+
+html.compact body {
+  background: #f9f9f9;
+}
+
+html.compact .btn-gloss:not(:disabled) {
+  background-image: none;
+}
+
+/* Pills → 4px corners (tiny dots stay round; spinners and switches keep
+   their shape). */
+html.compact .rounded-full:not(.animate-spin):not([role="switch"]):not([role="switch"] *) {
+  border-radius: 4px;
+}
+
+/* Title/command bar: light, thin, borderless controls that tint on hover. */
+html.compact .app-header {
+  height: 2.6rem;
+  background: #f3f3f3;
+  color: #1a1a1a;
+  border-bottom: 1px solid #e5e5e5;
+  box-shadow: none;
+}
+
+html.compact .app-header [class*="text-slate-100"] {
+  color: #1a1a1a;
+}
+
+html.compact .app-header [class*="border-white"] {
+  border-color: transparent;
+}
+
+html.compact .app-header [class*="bg-white/"] {
+  background: transparent;
+}
+
+html.compact .app-header button:hover {
+  background-color: rgb(0 0 0 / 0.06);
+}
+
+html.compact .app-header .conn-btn {
+  background: transparent;
+  color: #0f7b0f;
+}
+
+html.compact .app-header .conn-btn::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+html.compact .app-header .conn-btn.bg-rose-500 {
+  color: #c42b1c;
+}
+
+html.compact.dark .app-header {
+  background: #202020;
+  color: #e0e0e0;
+  border-bottom-color: #2b2b2b;
+}
+
+html.compact.dark .app-header [class*="text-slate-100"] {
+  color: #e0e0e0;
+}
+
+html.compact.dark .app-header button:hover {
+  background-color: rgb(255 255 255 / 0.07);
+}
+
+html.compact.dark .app-header .conn-btn {
+  color: #6ccb5f;
+}
+
+html.compact.dark .app-header .conn-btn.bg-rose-500 {
+  color: #ff99a4;
+}
+
+/* Navigation pane. */
+html.compact .app-sidebar {
+  background: #f3f3f3;
+  backdrop-filter: none;
+  border-right-color: #e5e5e5;
+}
+
+html.compact.dark .app-sidebar {
+  background: #202020;
+  border-right-color: #2b2b2b;
+}
+
+.tab-svg {
+  display: none;
+}
+
+html.compact .tab-svg {
+  display: block;
+}
+
+html.compact .tab-emoji {
+  display: none;
+}
+
+html.compact .side-tab {
+  font-weight: 400;
+}
+
+html.compact .side-tab[class*="bg-white/80"] {
+  background: transparent;
+}
+
+/* Chat messages: AI replies read as plain text on the page; the user's own
+   message sits in a flat grey block. No gradients, rings, shadows or tails. */
+html.compact .bubble {
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 #0000;
+  border-radius: 4px !important;
+}
+
+html.compact .bubble-ai {
+  background: transparent !important;
+  padding-inline: 0.15rem;
+}
+
+html.compact .bubble-user {
+  background: #ebebeb !important;
+}
+
+html.compact .bubble-system {
+  background: #fff8e1 !important;
+  --tw-ring-shadow: 0 0 0 1px #f2dfa7;
+}
+
+html.compact.dark .bubble-user {
+  background: #2d2d2d !important;
+}
+
+html.compact.dark .bubble-system {
+  background: rgb(120 53 15 / 0.3) !important;
+}
+
+html.compact .bubble-tail {
+  display: none;
+}
+
+html.compact .msg-avatar {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+/* Composer row (attach/mic/voice-conv/speak-toggle/send): these use fixed
+   px sizes (h-[34px] etc.) so they don't shrink with the rem-based compact
+   scale above. 34px next to 14px toolbar text reads oversized/"web app";
+   24.5px matches the button scale used elsewhere in compact mode. */
+html.compact .composer-row [class~="h-[34px]"] {
+  height: 1.75rem;
+}
+
+html.compact .composer-row [class~="w-[34px]"] {
+  width: 1.75rem;
+}
+
+html.compact .composer-row [class~="w-[40px]"] {
+  width: 2rem;
+}
+
+html.compact .composer-row [class~="min-h-[34px]"] {
+  min-height: 1.75rem;
+}

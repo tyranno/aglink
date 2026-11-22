@@ -211,6 +211,38 @@ function loadBargeEnabled() {
   }
 }
 
+// VoicePanel.svelte groups its ~17 cards into tabs so the settings page isn't
+// one long scroll. App.svelte's 설정 찾기 search needs to flip to the right
+// group before it can find/scroll to a label, so the grouping lives here
+// (shared module state) rather than as local component state.
+export const VOICE_GROUPS = ["목소리", "듣기", "녹음 · 회의", "비서"];
+const VOICE_GROUP_BY_LABEL = {
+  "읽어 주는 목소리": "목소리",
+  "읽는 빠르기": "목소리",
+  "다른 사람 목소리로 읽기": "목소리",
+  "긴 답변은 요약만 읽기": "목소리",
+  "답변은 글로만 보여 주기": "목소리",
+  "읽는 중 끼어들기": "목소리",
+  "앱 안에서 읽기 (에코 제거)": "목소리",
+  "듣는 방식": "듣기",
+  "부르는 이름": "듣기",
+  "말이 없으면 대기로": "듣기",
+  "내 목소리만 듣기": "듣기",
+  "음성 인식 위치": "듣기",
+  "마이크 소리 정리": "듣기",
+  "받아쓰기 모델": "듣기",
+  "개인 단어장": "듣기",
+  "최근 들린 말": "듣기",
+  "녹음": "녹음 · 회의",
+  "회의 모드": "녹음 · 회의",
+  "아침 브리핑 · 저녁 정리": "비서",
+  "메모 · 할 일": "비서",
+};
+export const voicePanelUI = $state({ group: VOICE_GROUPS[0] });
+export function focusVoiceGroup(label) {
+  voicePanelUI.group = VOICE_GROUP_BY_LABEL[label] || VOICE_GROUPS[0];
+}
+
 export const voice = $state({
   status: "unknown", // unknown | missing | installing | ready | unsupported
   installPercent: 0,

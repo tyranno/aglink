@@ -93,7 +93,7 @@
   const input = "w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30";
 </script>
 
-<section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
+<section class="set-card rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
   <div class="mb-3 flex flex-wrap items-center gap-2">
     <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Claude 로그인</div>
     {#if st}

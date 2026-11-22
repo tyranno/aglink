@@ -7,6 +7,8 @@
   import VocabCard from "./VocabCard.svelte";
   import {
     voice,
+    VOICE_GROUPS,
+    voicePanelUI,
     TTS_VOICES,
     VOICE_DEFAULTS,
     SPEED_RANGE,
@@ -52,6 +54,7 @@
   let micCleanup = $state("off");
   let busy = $state(false);
   let previewing = $state(false);
+
 
   // 미리 듣기: synthesis takes a couple of seconds, so show "준비 중…" and
   // block re-clicks (queued synths were what made it feel stuck).
@@ -168,15 +171,17 @@
     return new Date(at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
-  const card = "rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4";
+  const card = "set-field rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 p-4";
   const label = "text-sm font-semibold text-slate-900 dark:text-slate-100";
   const desc = "mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400";
-  const field = "rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300";
+  const field = "rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-700 dark:text-slate-300";
   const button =
-    "rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50";
+    "shrink-0 whitespace-nowrap rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50";
+  const checkbox = "h-4 w-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 dark:text-blue-400 focus:ring-blue-500";
+  const radio = "h-4 w-4 border-slate-300 dark:border-slate-600 text-blue-600 dark:text-blue-400 focus:ring-blue-500";
 </script>
 
-<section class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
+<section class="set-card rounded-lg border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 p-5 shadow-sm">
   <div class="mb-5">
     <div class="text-sm font-semibold text-slate-900 dark:text-slate-100">음성</div>
     <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -184,7 +189,22 @@
     </div>
   </div>
 
-  <div class="space-y-3">
+  <div class="set-group-layout">
+  <div class="set-group-nav mb-5 flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-700">
+    {#each VOICE_GROUPS as group}
+      <button
+        class:set-group-active={voicePanelUI.group === group}
+        class="-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition-colors {voicePanelUI.group === group
+          ? 'border-blue-600 dark:border-blue-400 text-blue-700 dark:text-blue-300'
+          : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800'}"
+        onclick={() => (voicePanelUI.group = group)}
+      >
+        {group}
+      </button>
+    {/each}
+  </div>
+  <div class="set-group-body set-fields">
+    {#if voicePanelUI.group === "목소리"}
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
@@ -230,11 +250,11 @@
 
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
+        <div class="min-w-0">
           <div class={label}>다른 사람 목소리로 읽기 {clone.on ? "— 녹음 있음" : ""}</div>
           <div class={desc}>허락한 분이 화면에 뜬 글을 25초 동안 읽으면, “녹음한 목소리”를 고르면 그 목소리로 읽어요. 다른 목소리는 그대로예요. 말로 “아내 목소리 녹음해 줘”, “아내 목소리로 바꿔 줘”, “원래 목소리로 돌려 줘”라고 하셔도 돼요.{clone.available === false ? " (목소리 바꾸기 기능이 설치되어 있지 않아요)" : ""}</div>
         </div>
-        <div class="flex gap-2">
+        <div class="flex shrink-0 gap-2">
           <button class={button} disabled={busy || clone.available === false} onclick={recordClone}>녹음하기</button>
           {#if clone.on}<button class={button} disabled={busy} onclick={dropClone}>녹음 지우기</button>{/if}
         </div>
@@ -247,8 +267,8 @@
           <div class={label}>긴 답변은 요약만 읽기</div>
           <div class={desc}>켜면 답변의 핵심 두세 문장만 읽어요. “자세히 읽어 줘”라고 하시면 방금 답변을 처음부터 끝까지 읽어요. 끄면 조금 더 길게 읽어요.</div>
         </div>
-        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-          <input type="checkbox" checked={voice.summary} onchange={(e) => setVoiceSettings({ summary: e.currentTarget.checked })} />
+        <label class="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input class={checkbox} type="checkbox" checked={voice.summary} onchange={(e) => setVoiceSettings({ summary: e.currentTarget.checked })} />
           사용
         </label>
       </div>
@@ -260,8 +280,8 @@
           <div class={label}>답변은 글로만 보여 주기</div>
           <div class={desc}>켜면 말로 시키신 일의 답변을 읽지 않고 글로만 띄워요. 창을 트레이에 두면 오른쪽 아래에 답변 창이 떠서 닫을 때까지 남아요. “글로만 보여 줘”, “다시 말로 해 줘”라고 말해서 바꿀 수도 있고, 부탁 끝에 “글로만 보여 줘”를 붙이면 그 답변만 글로 보여요.</div>
         </div>
-        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-          <input type="checkbox" checked={voice.textOnly} onchange={(e) => setVoiceSettings({ textOnly: e.currentTarget.checked })} />
+        <label class="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input class={checkbox} type="checkbox" checked={voice.textOnly} onchange={(e) => setVoiceSettings({ textOnly: e.currentTarget.checked })} />
           사용
         </label>
       </div>
@@ -273,8 +293,8 @@
           <div class={label}>읽는 중 끼어들기</div>
           <div class={desc}>켜면 제가 읽는 중에 말씀하실 때 읽기를 멈추고 들어요. 끄면 다 읽은 뒤에 마이크가 켜져요.</div>
         </div>
-        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-          <input type="checkbox" checked={voice.bargeEnabled} onchange={(e) => setBargeEnabled(e.currentTarget.checked)} />
+        <label class="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input class={checkbox} type="checkbox" checked={voice.bargeEnabled} onchange={(e) => setBargeEnabled(e.currentTarget.checked)} />
           사용
         </label>
       </div>
@@ -286,13 +306,15 @@
           <div class={label}>앱 안에서 읽기 (에코 제거)</div>
           <div class={desc}>켜면 답변을 앱 안에서 재생해서, 마이크가 제 목소리를 지우고 끼어드는 말씀만 들어요. 앱 안에서 재생할 수 없을 때는 저절로 Windows로 재생해요. 트레이에 둘 때 소리가 나지 않으면 꺼 주세요.</div>
         </div>
-        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-          <input type="checkbox" checked={voice.pagePlayback} onchange={(e) => setVoiceSettings({ pagePlayback: e.currentTarget.checked })} />
+        <label class="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-slate-700 dark:text-slate-300">
+          <input class={checkbox} type="checkbox" checked={voice.pagePlayback} onchange={(e) => setVoiceSettings({ pagePlayback: e.currentTarget.checked })} />
           사용
         </label>
       </div>
     </div>
+    {/if}
 
+    {#if voicePanelUI.group === "듣기"}
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
@@ -311,7 +333,7 @@
         <div class="flex shrink-0 gap-3 text-sm font-medium text-slate-700 dark:text-slate-300">
           {#each [["wake", "부르면 듣기"], ["always", "항상 듣기"], ["manual", "버튼으로만"]] as [mode, name] (mode)}
             <label class="inline-flex items-center gap-1.5">
-              <input type="radio" name="listenMode" checked={voice.listenMode === mode} onchange={() => setVoiceSettings({ listenMode: mode })} />
+              <input class={radio} type="radio" name="listenMode" checked={voice.listenMode === mode} onchange={() => setVoiceSettings({ listenMode: mode })} />
               {name}
             </label>
           {/each}
@@ -327,13 +349,14 @@
         </div>
         <div class="flex shrink-0 flex-col items-end gap-2">
           <input
-            class="w-56 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300"
+            class="w-56 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-700 dark:text-slate-300"
             placeholder="예: 아그라, 자비스"
             value={voice.wakeNames.join(", ")}
             onchange={(e) => setVoiceSettings({ wakeNames: e.currentTarget.value.split(/[,，]/) })}
           />
-          <label class="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">
+          <label class="inline-flex items-center gap-1.5 whitespace-nowrap text-sm font-medium text-slate-700 dark:text-slate-300">
             <input
+              class={checkbox}
               type="checkbox"
               checked={voice.wakeDefault}
               disabled={!voice.wakeNames.length}
@@ -349,7 +372,7 @@
           <div class={desc}>“부르면 듣기”일 때, 음성 대화에서 이 시간 동안 아무 말이 없으면 대화를 끝내고 다시 부르기를 기다려요. “매번 부르기”는 대답을 읽고 나면 바로 기다리기로 돌아가서, 말할 때마다 “아글링크”라고 불러야 해요.</div>
         </div>
         <select
-          class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-slate-700 dark:text-slate-300"
+          class="rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-700 dark:text-slate-300"
           value={voice.wakeIdleMin}
           disabled={voice.listenMode !== "wake"}
           onchange={(e) => setVoiceSettings({ wakeIdleMin: Number(e.currentTarget.value) })}
@@ -360,7 +383,9 @@
         </select>
       </div>
     </div>
+    {/if}
 
+    {#if voicePanelUI.group === "녹음 · 회의"}
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
@@ -396,7 +421,9 @@
         </div>
       </div>
     </div>
+    {/if}
 
+    {#if voicePanelUI.group === "비서"}
     <div class={card}>
       <div class={label}>아침 브리핑 · 저녁 정리</div>
       <div class={desc}>
@@ -405,13 +432,13 @@
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-700 dark:text-slate-300">
         <label class="inline-flex items-center gap-1.5">
-          <input type="checkbox" checked={assist.briefing.on} onchange={(e) => setDaily("briefing", { on: e.currentTarget.checked })} />
+          <input class={checkbox} type="checkbox" checked={assist.briefing.on} onchange={(e) => setDaily("briefing", { on: e.currentTarget.checked })} />
           아침 브리핑
         </label>
         <input type="time" class={field} value={hhmm(assist.briefing)} onchange={(e) => setTime("briefing", e.currentTarget.value)} />
         <input class={`${field} w-24`} placeholder="지역" value={assist.briefing.region} onchange={(e) => setDaily("briefing", { region: e.currentTarget.value.trim() || "서울" })} />
         <label class="inline-flex items-center gap-1.5 md:ml-4">
-          <input type="checkbox" checked={assist.evening.on} onchange={(e) => setDaily("evening", { on: e.currentTarget.checked })} />
+          <input class={checkbox} type="checkbox" checked={assist.evening.on} onchange={(e) => setDaily("evening", { on: e.currentTarget.checked })} />
           저녁 정리
         </label>
         <input type="time" class={field} value={hhmm(assist.evening)} onchange={(e) => setTime("evening", e.currentTarget.value)} />
@@ -441,7 +468,9 @@
         </ul>
       {/if}
     </div>
+    {/if}
 
+    {#if voicePanelUI.group === "듣기"}
     <div class={card}>
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
@@ -573,5 +602,7 @@
         </table>
       {/if}
     </div>
+    {/if}
+  </div>
   </div>
 </section>

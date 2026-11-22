@@ -60,6 +60,9 @@ export const chat = $state({
   convLabels: new Map(), // conversation id → color label id (CONV_LABELS)
   flashMessage: null, // { paneId, index }: a message just jumped to (search / bookmark), briefly highlighted
   recentTargets: [], // most-recently focused conversations (targets), newest first, for Ctrl+Tab
+  convNotes: new Map(), // conversation key → { text, at, kind: "summary" | "pinned" } shown atop the pane
+  summaryPending: new Map(), // conversation key → index from which the summary reply is awaited
+  finishedAway: null, // { key, target, at }: a turn finished while the window was in the background
   dragOverGroupId: "",
   draggingGroupId: null,
   dragOverGroupReorder: null,
@@ -1651,6 +1654,143 @@ export async function sendFromPane(paneId, { voice = false } = {}) {
   }
 }
 
+// sendTextToTarget sends a text turn to a conversation without touching any
+// pane's composer (빠른 질문, 다른 AI에게 묻기, 요약). Same bookkeeping as a
+// typed send: the bubble, the working indicator and the ↑ history.
+export async function sendTextToTarget(rawTarget, text) {
+  const target = normalizeTarget(rawTarget);
+  const body = String(text || "").trim();
+  if (!body || !chat.connected) return false;
+  const key = targetKey(target);
+  pushMessageToKey(key, { role: "user", text: body, image: "" });
+  startWorking(key);
+  rememberSentHistory(key, body);
+  try {
+    await ControlService.SendText(body, target.kind, target.id || "");
+    void loadConversations();
+    return true;
+  } catch (error) {
+    pushMessageToKey(key, { role: "system", text: `전송 실패: ${error}` });
+    stopWorking(key);
+    return false;
+  }
+}
+
+// waitForHistory resolves once a conversation's history has loaded into the
+// store (selectTargetInPane resets it while loading), or after timeoutMs.
+export async function waitForHistory(key, timeoutMs = 6000) {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    if (chat.messagesByKey.has(key) && !chat.loadingBuffers.has(key)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+  return false;
+}
+
+// ---- conversation notes: a summary (요약 요청) or any reply pinned to the
+// top of its conversation. Local only, one per conversation. ----
+
+const NOTES_STORAGE_KEY = "aglink-desktop:convNotes";
+const MAX_NOTE_CHARS = 8000;
+export const SUMMARY_PROMPT =
+  "지금까지 이 대화의 내용을 한국어로 간결하게 요약해 줘. 형식: ① 목표/주제 한 줄 ② 결정된 것·끝난 일 (불릿) ③ 남은 일·열린 질문 (불릿). 새 작업은 하지 말고 요약만 해 줘.";
+
+try {
+  const saved = JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY) || "{}");
+  if (saved && typeof saved === "object") {
+    chat.convNotes = new Map(Object.entries(saved).filter(([, v]) => v && typeof v.text === "string"));
+  }
+} catch {
+  // start without notes
+}
+
+function persistNotes() {
+  try {
+    localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(Object.fromEntries(chat.convNotes)));
+  } catch {
+    // memory only
+  }
+}
+
+export function convNote(target) {
+  return target ? chat.convNotes.get(targetKey(target)) || null : null;
+}
+
+export function setConvNote(target, text, kind = "pinned") {
+  const key = targetKey(normalizeTarget(target));
+  const next = new Map(chat.convNotes);
+  if (text && String(text).trim()) next.set(key, { text: String(text).slice(0, MAX_NOTE_CHARS), at: Date.now(), kind });
+  else next.delete(key);
+  chat.convNotes = next;
+  persistNotes();
+}
+
+// requestSummary asks the conversation's AI for a summary; the reply that
+// comes back is pinned on top as the conversation's note (settleSummary).
+export async function requestSummary(rawTarget) {
+  const target = normalizeTarget(rawTarget);
+  const key = targetKey(target);
+  const from = (chat.messagesByKey.get(key) || []).length;
+  const pending = new Map(chat.summaryPending);
+  pending.set(key, from);
+  chat.summaryPending = pending;
+  const ok = await sendTextToTarget(target, SUMMARY_PROMPT);
+  if (!ok) settleSummary(key, true);
+  return ok;
+}
+
+function settleSummary(key, cancel = false) {
+  if (!chat.summaryPending.has(key)) return;
+  const from = chat.summaryPending.get(key);
+  const pending = new Map(chat.summaryPending);
+  pending.delete(key);
+  chat.summaryPending = pending;
+  if (cancel) return;
+  const messages = chat.messagesByKey.get(key) || [];
+  const replies = messages.slice(from).filter((m) => m.role === "assistant" && m.text);
+  if (!replies.length) {
+    showToast("요약을 받지 못했습니다");
+    return;
+  }
+  const next = new Map(chat.convNotes);
+  next.set(key, { text: replies.map((m) => m.text).join("\n\n").slice(0, MAX_NOTE_CHARS), at: Date.now(), kind: "summary" });
+  chat.convNotes = next;
+  persistNotes();
+  showToast("요약을 대화 맨 위에 고정했습니다");
+}
+
+// askAnotherBackend: the same question to a different AI, side by side. A new
+// local conversation (same work folder) is made on that backend, docked to
+// the right of the source pane, and the question is sent there. Returns an
+// error message, or "".
+export async function askAnotherBackend(sourceTarget, text, backend) {
+  const meta = paneConversationMeta(sourceTarget);
+  const label = backend === "opencode" ? "OpenCode" : backend === "codex" ? "Codex" : "Claude";
+  const before = new Set(chat.webConvs.map((c) => String(c.id)));
+  try {
+    await ControlService.WebNew(`${meta?.title || "대화"} · ${label} 비교`.slice(0, 80));
+    await loadConversations();
+    const created = chat.webConvs.find((c) => !before.has(String(c.id)));
+    if (!created) return "새 대화를 찾지 못했습니다";
+    const target = { kind: "web", id: created.id };
+    if (meta?.workDir) {
+      try {
+        await ControlService.WebSetDir(created.id, meta.workDir);
+      } catch {
+        // the comparison still works in the default folder
+      }
+    }
+    if (!(await setTargetBackend(target, backend))) return "AI를 바꾸지 못했습니다";
+    const source = chat.panes.find((p) => p.target && targetKey(p.target) === targetKey(normalizeTarget(sourceTarget))) || focusedPane();
+    if (source) dockConversation(target, source.id, "right");
+    await waitForHistory(targetKey(target));
+    if (!(await sendTextToTarget(target, text))) return "보내지 못했습니다";
+    return "";
+  } catch (error) {
+    return String(error);
+  }
+}
+
 // Puts an earlier message back in the composer so it can be edited and sent again.
 export async function editIntoComposer(paneId, text) {
   setPaneComposerValue(paneId, text || "");
@@ -2059,7 +2199,13 @@ export function handleFrame(frame) {
     turnDoneListener?.(key);
     // Working in another app: blink the taskbar button until aglink is
     // brought forward (no-op when the window already has focus).
-    void ControlService.FlashIfUnfocused?.().catch(() => {});
+    void ControlService.FlashIfUnfocused?.()
+      .then((flashed) => {
+        if (flashed) chat.finishedAway = { key, target, at: Date.now() };
+      })
+      .catch(() => {});
+    // A reply may land just after "done": look for the summary a moment later.
+    if (chat.summaryPending.has(key)) setTimeout(() => settleSummary(key), 400);
   }
   if (frame.type === "status") {
     // In-place progress: updates the working indicator, never a message.

@@ -56,9 +56,18 @@
     forkConversationAt,
     targetKey,
     appendPaneAttachment,
+    convNote,
+    setConvNote,
+    requestSummary,
+    askAnotherBackend,
+    selectTargetFromSidebar,
+    isConversationPinned,
+    pinnedWebConvs,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
-  import { snippets, snippetQuery, snippetCandidates, openSnippetManager } from "./snippets.svelte.js";
+  import { snippets, snippetQuery, snippetCandidates, openSnippetManager, templateFields, autoValues, expandTemplate, askTemplate } from "./snippets.svelte.js";
+  import { openSearchPanel } from "./search.svelte.js";
+  import { openQuickAsk } from "./quickask.svelte.js";
   import { isBookmarked, toggleBookmark } from "./search.svelte.js";
   import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
   import { voice, sendNow, skipReading, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
@@ -101,11 +110,70 @@
     return null;
   }
 
-  function insertSnippet(p, item) {
+  // A snippet with {{변수}} slots is a template: the automatic ones fill
+  // themselves, the rest are asked in TemplateFill before it goes in.
+  async function insertSnippet(p, item) {
     if (!item) return;
     snippetIndex = 0;
     snippetHiddenFor = null;
-    void editIntoComposer(p.id, item.text);
+    const fields = templateFields(item.text);
+    if (!fields.length) {
+      void editIntoComposer(p.id, item.text);
+      return;
+    }
+    const values = await autoValues(fields);
+    const missing = fields.filter((name) => !(name in values));
+    if (!missing.length) {
+      void editIntoComposer(p.id, expandTemplate(item.text, values));
+      return;
+    }
+    setPaneComposerValue(p.id, "");
+    askTemplate(p.id, item.text, missing, values, (text) => void editIntoComposer(p.id, text));
+  }
+
+  // --- 요약 / pinned note on top of the conversation ---
+  let noteOpen = $state(true);
+
+  // --- "다른 AI에게 같은 질문": the small backend menu on a user message ---
+  let compareAsk = $state(null); // { index, busy, error }
+  function otherBackends(target) {
+    const current = backendChoice(paneConversationMeta(target)?.backend);
+    return BACKEND_CHOICES.filter((choice) => choice.id !== "default" && choice.id !== current);
+  }
+  async function runCompare(p, message, backend) {
+    if (!compareAsk || compareAsk.busy) return;
+    compareAsk = { ...compareAsk, busy: true, error: "" };
+    const error = await askAnotherBackend(p.target, message.text, backend);
+    if (error) compareAsk = compareAsk ? { ...compareAsk, busy: false, error } : null;
+    else compareAsk = null;
+  }
+
+  // "다시 생성": the user message that started this answer's turn, sent again.
+  function promptBefore(messages, index) {
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].text || "";
+    }
+    return "";
+  }
+
+  // Home card for a pane with nothing open: what is running, unread, recent.
+  function homeItems() {
+    const seen = new Set();
+    const pick = (target) => {
+      if (!target) return null;
+      const key = targetKey(target);
+      if (seen.has(key)) return null;
+      if (target.kind === "web" && !chat.webConvs.some((c) => String(c.id) === String(target.id))) return null;
+      if (target.kind === "telegram" && !chat.telegram) return null;
+      seen.add(key);
+      return { key, target, title: paneConversationMeta(target)?.title || "대화" };
+    };
+    const fromKey = (key) => (key === "telegram" ? { kind: "telegram" } : key.startsWith("web:") ? { kind: "web", id: key.slice(4) } : null);
+    const working = [...chat.working.keys()].map((key) => pick(fromKey(key))).filter(Boolean);
+    const unread = [...chat.unread].map((key) => pick(fromKey(key))).filter(Boolean);
+    const pinned = pinnedWebConvs().map((conv) => pick({ kind: "web", id: conv.id })).filter(Boolean);
+    const recent = chat.recentTargets.map((t) => pick(t)).filter(Boolean).slice(0, 6);
+    return { working, unread, pinned, recent };
   }
 
   // Returns true when the key was the picker's.
@@ -562,8 +630,9 @@
 
   function handleWindowKeydown(event) {
     if (node.type !== "leaf") return;
-    if (forkAsk && event.key === "Escape") {
+    if ((forkAsk || compareAsk) && event.key === "Escape") {
       forkAsk = null;
+      compareAsk = null;
       return;
     }
     if (chat.focusedPaneId !== node.paneId) return;
@@ -859,6 +928,15 @@
           <button
             type="button"
             draggable="false"
+            class="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 transition-colors hover:bg-slate-100 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={!chat.connected || chat.summaryPending.has(targetKey(p.target))}
+            onclick={(event) => { event.stopPropagation(); noteOpen = true; void requestSummary(p.target); }}
+            title="지금까지 대화를 AI에게 요약시키고, 그 요약을 대화 맨 위에 고정합니다"
+            aria-label="대화 요약"
+          >{chat.summaryPending.has(targetKey(p.target)) ? "요약 중…" : "요약"}</button>
+          <button
+            type="button"
+            draggable="false"
             class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-500 dark:text-slate-400 transition-colors hover:bg-slate-100 dark:hover:bg-slate-700"
             onclick={(event) => { event.stopPropagation(); exportConversation(p.target); }}
             title="대화 전체를 마크다운으로 복사"
@@ -925,6 +1003,27 @@
         </div>
       {/if}
 
+      {#if convNote(p.target)}
+        {@const note = convNote(p.target)}
+        <div class="relative z-10 shrink-0 border-b border-amber-200 bg-amber-50/80 px-4 py-1.5 dark:border-amber-900/60 dark:bg-amber-950/30">
+          <div class="flex items-center gap-2">
+            <button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold text-amber-800 dark:text-amber-300" onclick={() => (noteOpen = !noteOpen)} aria-expanded={noteOpen}>
+              <span aria-hidden="true">📌</span>
+              <span class="truncate">{note.kind === "summary" ? "대화 요약" : "고정한 메시지"}</span>
+              <span class="shrink-0 font-normal text-amber-700/70 dark:text-amber-300/60">· {new Date(note.at).toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+              <span class="shrink-0 text-[10px]" aria-hidden="true">{noteOpen ? "▾" : "▸"}</span>
+            </button>
+            {#if note.kind === "summary"}
+              <button type="button" class="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100 disabled:opacity-40 dark:text-amber-300 dark:hover:bg-amber-900/40" disabled={!chat.connected || chat.summaryPending.has(targetKey(p.target))} onclick={() => requestSummary(p.target)}>다시 요약</button>
+            {/if}
+            <button type="button" class="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-900/40" onclick={() => setConvNote(p.target, "")} title="고정 해제" aria-label="고정 해제">✕</button>
+          </div>
+          {#if noteOpen}
+            <div class="msg-text markdown-body mt-1 max-h-40 overflow-y-auto pr-1 text-slate-700 dark:text-slate-200" use:renderMarkdownInto={note.text}></div>
+          {/if}
+        </div>
+      {/if}
+
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden" onmouseup={handleLogMouseUp}>
         {#if quoteSel}
@@ -957,6 +1056,35 @@
                   <div class="mt-1 flex gap-2">
                     <button type="button" class="ui-btn ui-btn-primary" onclick={(event) => { event.stopPropagation(); requestSettings("connection"); }}>연결 상태 보기</button>
                   </div>
+                {:else if !p.target}
+                  {@const home = homeItems()}
+                  <div class="text-sm font-semibold text-slate-800 dark:text-slate-100">무엇을 이어서 할까요?</div>
+                  <div class="w-full space-y-2 text-left">
+                    {#each [["진행 중", home.working], ["읽지 않음", home.unread], ["고정됨", home.pinned], ["최근", home.recent]] as [heading, list] (heading)}
+                      {#if list.length}
+                        <div>
+                          <div class="mb-0.5 text-[10.5px] font-bold tracking-[0.04em] text-slate-400 dark:text-slate-500">{heading}</div>
+                          {#each list.slice(0, 5) as item (item.key)}
+                            <button
+                              type="button"
+                              class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                              onclick={(event) => { event.stopPropagation(); focusPane(p.id); selectTargetFromSidebar(item.target); }}
+                            >
+                              <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${chat.working.has(item.key) ? "animate-pulse bg-blue-500" : chat.unread.has(item.key) ? "bg-blue-600" : "bg-slate-300 dark:bg-slate-600"}`}></span>
+                              <span class="min-w-0 flex-1 truncate">{item.title}</span>
+                              {#if item.target.kind === "web" && isConversationPinned(item.target.id)}<span class="text-[10px] text-amber-500">★</span>{/if}
+                            </button>
+                          {/each}
+                        </div>
+                      {/if}
+                    {/each}
+                  </div>
+                  <div class="mt-1 flex flex-wrap justify-center gap-2">
+                    <button type="button" class="ui-btn ui-btn-primary" onclick={(event) => { event.stopPropagation(); focusPane(p.id); openQuickAsk(); }}>빠른 질문</button>
+                    <button type="button" class="ui-btn ui-btn-ghost" onclick={(event) => { event.stopPropagation(); requestNewConversation(); }}>새 대화</button>
+                    <button type="button" class="ui-btn ui-btn-ghost" onclick={(event) => { event.stopPropagation(); openSearchPanel("search"); }}>모든 대화에서 찾기</button>
+                  </div>
+                  <button type="button" class="text-[11.5px] text-slate-400 hover:text-blue-600 hover:underline dark:text-slate-500 dark:hover:text-blue-300" onclick={(event) => { event.stopPropagation(); requestSettings("settings"); }}>AI가 아직 연결되지 않았다면 → 설정 열기</button>
                 {:else}
                   <div class="text-sm font-semibold text-slate-800 dark:text-slate-100">AI 연결하기</div>
                   <div class="text-[12.5px] leading-5 text-slate-500 dark:text-slate-400">왼쪽 목록에서 대화를 고르거나 새로 만들어 시작하세요. AI를 아직 연결하지 않았다면 설정에서 ①②③ 순서대로 채우면 됩니다.</div>
@@ -1112,6 +1240,35 @@
                               title="이 메시지를 그대로 다시 보내기"
                               aria-label="다시 보내기"
                             >{@render iconRetry()}</button>
+                            {#if p.target}
+                              <button
+                                type="button"
+                                class={`msg-action-btn disabled:cursor-not-allowed disabled:opacity-40 ${compareAsk?.index === mIndex ? "msg-action-btn-on" : ""}`}
+                                disabled={!chat.connected}
+                                onclick={(event) => { event.stopPropagation(); compareAsk = compareAsk?.index === mIndex ? null : { index: mIndex, busy: false, error: "" }; }}
+                                title="다른 AI에게 같은 질문 — 옆 화면에 새 대화로 열어 답을 비교합니다"
+                                aria-label="다른 AI에게 같은 질문"
+                                aria-expanded={compareAsk?.index === mIndex}
+                              ><span class="text-[12px] font-bold leading-none" aria-hidden="true">⇄</span></button>
+                            {/if}
+                          {:else if message.role === "assistant" && p.target}
+                            {#if promptBefore(messagesForPane(p.target), mIndex)}
+                              <button
+                                type="button"
+                                class="msg-action-btn disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={!chat.connected || p.attachments.length > 0 || paneWorking(p.target)}
+                                onclick={(event) => { event.stopPropagation(); void resendFromPane(p.id, promptBefore(messagesForPane(p.target), mIndex)); }}
+                                title="다시 생성 — 이 답의 질문을 한 번 더 보냅니다"
+                                aria-label="다시 생성"
+                              >{@render iconRetry()}</button>
+                            {/if}
+                            <button
+                              type="button"
+                              class="msg-action-btn"
+                              onclick={(event) => { event.stopPropagation(); noteOpen = true; setConvNote(p.target, message.text, "pinned"); showToast("대화 맨 위에 고정했습니다"); }}
+                              title="이 답을 대화 맨 위에 고정"
+                              aria-label="맨 위에 고정"
+                            ><span class="text-[11px] leading-none" aria-hidden="true">📌</span></button>
                           {/if}
                           {#if canForkMessage(message) && p.target}
                             <button
@@ -1126,6 +1283,19 @@
                           {/if}
                         </span>
                       {/if}
+                    </div>
+                  {/if}
+                  {#if compareAsk?.index === mIndex && message.role === "user"}
+                    <div class="fork-confirm mt-1 w-72 max-w-full rounded-lg border border-blue-200 px-3 py-2 text-[12px] text-blue-950 shadow-sm dark:border-blue-900/70 dark:text-blue-100" role="dialog" aria-label="다른 AI에게 같은 질문">
+                      <p class="font-semibold">어느 AI에게 물어볼까요?</p>
+                      <p class="mt-0.5 text-[11.5px] text-blue-900/80 dark:text-blue-200/80">같은 작업 폴더로 새 대화를 만들어 옆 화면에 열고 이 질문을 보냅니다.</p>
+                      {#if compareAsk.error}<p class="mt-1 text-rose-700 dark:text-rose-300">보내지 못했습니다: {compareAsk.error}</p>{/if}
+                      <div class="mt-2 flex flex-wrap justify-end gap-1.5">
+                        <button type="button" class="ui-btn ui-btn-ghost" onclick={(event) => { event.stopPropagation(); compareAsk = null; }}>취소</button>
+                        {#each otherBackends(p.target) as choice (choice.id)}
+                          <button type="button" class="ui-btn ui-btn-primary" disabled={compareAsk.busy || !chat.connected} onclick={(event) => { event.stopPropagation(); void runCompare(p, message, choice.id); }}>{compareAsk.busy ? "여는 중…" : choice.label}</button>
+                        {/each}
+                      </div>
                     </div>
                   {/if}
                   {#if isForkAsk(mIndex, message)}
@@ -1358,7 +1528,7 @@
           </div>
         {/if}
 
-        <div class="flex w-full items-end gap-2">
+        <div class="composer-row flex w-full items-end gap-2">
           <button
             class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 transition-colors hover:bg-slate-100 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
             onclick={() => pickAttachment(p.id)}

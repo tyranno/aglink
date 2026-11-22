@@ -92,3 +92,70 @@ export function snippetCandidates(text) {
   }
   return [...starts, ...contains].slice(0, 12);
 }
+
+// ---- templates: a snippet may hold {{변수}} slots. {{날짜}}, {{시간}},
+// {{클립보드}} and {{선택}} (the text last selected in a conversation) fill
+// themselves; any other name is asked for in a small form (TemplateFill). ----
+
+export const AUTO_FIELDS = ["날짜", "시간", "클립보드", "선택"];
+const FIELD_RE = /\{\{\s*([^{}]{1,30}?)\s*\}\}/g;
+
+export function templateFields(text) {
+  const names = [];
+  for (const match of String(text || "").matchAll(FIELD_RE)) {
+    if (!names.includes(match[1])) names.push(match[1]);
+  }
+  return names;
+}
+
+export function expandTemplate(text, values) {
+  return String(text || "").replace(FIELD_RE, (whole, name) => (Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : whole));
+}
+
+// The last text selected outside an input, for {{선택}}.
+let lastSelection = "";
+if (typeof document !== "undefined") {
+  document.addEventListener("selectionchange", () => {
+    const sel = document.getSelection();
+    const text = sel ? sel.toString().trim() : "";
+    if (!text) return;
+    const node = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode?.parentElement;
+    if (node?.closest?.("textarea, input")) return;
+    lastSelection = text.slice(0, 8000);
+  });
+}
+
+function pad(n) {
+  return String(n).padStart(2, "0");
+}
+
+// autoValues fills the automatic fields the template uses; the clipboard is
+// read only when asked for (WebView2 may refuse — then it is asked in the form).
+export async function autoValues(fields) {
+  const now = new Date();
+  const values = {};
+  if (fields.includes("날짜")) values["날짜"] = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  if (fields.includes("시간")) values["시간"] = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  if (fields.includes("선택") && lastSelection) values["선택"] = lastSelection;
+  if (fields.includes("클립보드")) {
+    try {
+      const clip = await navigator.clipboard?.readText?.();
+      if (clip) values["클립보드"] = clip;
+    } catch {
+      // asked in the form instead
+    }
+  }
+  return values;
+}
+
+// The form's state: { paneId, text, fields: [names still to ask], values }.
+export const templateFill = $state({ open: false, paneId: "", text: "", fields: [], values: {}, onDone: null });
+
+export function askTemplate(paneId, text, fields, values, onDone) {
+  templateFill.paneId = paneId;
+  templateFill.text = text;
+  templateFill.fields = fields;
+  templateFill.values = { ...values };
+  templateFill.onDone = onDone;
+  templateFill.open = true;
+}

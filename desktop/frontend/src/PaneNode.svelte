@@ -54,11 +54,84 @@
     showToast,
     canForkMessage,
     forkConversationAt,
+    targetKey,
+    appendPaneAttachment,
   } from "./paneStore.svelte.js";
   import { renderMarkdown } from "./markdown.js";
+  import { snippets, snippetQuery, snippetCandidates, openSnippetManager } from "./snippets.svelte.js";
+  import { isBookmarked, toggleBookmark } from "./search.svelte.js";
+  import { ControlService } from "../bindings/github.com/tyranno/aglink-desktop";
   import { voice, sendNow, skipReading, toggleVoiceInput, setSpeakEnabled, stopSpeaking, clearVoiceNote, installVoice, cancelInstallVoice, toggleConversation, isTypedCommand, runTypedCommand } from "./voice.svelte.js";
 
   let { node } = $props();
+
+  // App.svelte owns the settings screen and the "새 대화" prompt; panes ask
+  // for them through window events so this component needs no callbacks
+  // threaded through the recursive split tree.
+  function requestSettings(tab = "settings") {
+    window.dispatchEvent(new CustomEvent("aglink:open-settings", { detail: { tab } }));
+  }
+  function requestNewConversation() {
+    window.dispatchEvent(new CustomEvent("aglink:new-conversation"));
+  }
+
+  // The current backend choice of a conversation, as the menus name it.
+  function backendChoice(backend) {
+    const value = String(backend || "").toLowerCase();
+    return ["claude", "codex", "opencode"].includes(value) ? value : "default";
+  }
+  const BACKEND_CHOICES = [
+    { id: "default", label: "기본값" },
+    { id: "claude", label: "Claude" },
+    { id: "codex", label: "Codex" },
+    { id: "opencode", label: "OpenCode" },
+  ];
+
+  // "/" snippet picker above the composer (snippets.svelte.js). Its highlight
+  // and dismissal are this pane's own; Esc hides it until the text changes.
+  let snippetIndex = $state(0);
+  let snippetHiddenFor = $state(null); // composer text the picker was dismissed on
+
+  function snippetMenuFor(p) {
+    if (!p?.target || snippetQuery(p.composerText) === null || snippetHiddenFor === p.composerText) return null;
+    const list = snippetCandidates(p.composerText);
+    if (list.length) return { list };
+    // A bare "/" with nothing saved yet: a hint how to make one.
+    if (p.composerText === "/" && snippets.list.length === 0) return { list: [] };
+    return null;
+  }
+
+  function insertSnippet(p, item) {
+    if (!item) return;
+    snippetIndex = 0;
+    snippetHiddenFor = null;
+    void editIntoComposer(p.id, item.text);
+  }
+
+  // Returns true when the key was the picker's.
+  function handleSnippetKeydown(p, event) {
+    const menu = snippetMenuFor(p);
+    if (!menu || event.isComposing) return false;
+    const n = menu.list.length;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      snippetHiddenFor = p.composerText;
+      return true;
+    }
+    if (!n) return false;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      snippetIndex = (Math.min(snippetIndex, n - 1) + (event.key === "ArrowDown" ? 1 : -1) + n) % n;
+      return true;
+    }
+    if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+      event.preventDefault();
+      insertSnippet(p, menu.list[Math.min(snippetIndex, n - 1)]);
+      return true;
+    }
+    return false;
+  }
 
   // Drives the "jump to latest" FAB: hidden while the log is already near
   // its bottom, shown once the user scrolls up to read earlier messages.
@@ -187,6 +260,66 @@
     navigator.clipboard?.writeText(conversationMarkdown(target))
       .then(() => showToast("대화 전체를 마크다운으로 복사했습니다"))
       .catch(() => showToast("복사하지 못했습니다"));
+  }
+
+  // 대화를 .md 파일로 저장: the native save dialog (desktop SaveMarkdownFile).
+  async function saveConversationFile(target) {
+    try {
+      const path = await ControlService.SaveMarkdownFile(paneConversationMeta(target)?.title || "대화", conversationMarkdown(target));
+      if (path) showToast(`저장했습니다: ${path.split(/[\\/]/).pop()}`);
+    } catch (error) {
+      showToast(`저장하지 못했습니다: ${error}`);
+    }
+  }
+
+  // --- Long paste: past LONG_PASTE_CHARS / LONG_PASTE_LINES the text is held
+  // and a small card asks whether to attach it as a .txt file or put it in
+  // the composer as usual. ---
+  const LONG_PASTE_CHARS = 4000;
+  const LONG_PASTE_LINES = 80;
+  let longPaste = $state(null); // { text, chars, lines, start, end, busy }
+
+  function handlePaste(p, event) {
+    const types = Array.from(event.clipboardData?.types || []);
+    if (!types.includes("Files")) {
+      const text = event.clipboardData?.getData("text/plain") || "";
+      const lines = text ? text.split("\n").length : 0;
+      if (text.length > LONG_PASTE_CHARS || lines > LONG_PASTE_LINES) {
+        event.preventDefault();
+        const el = event.currentTarget;
+        longPaste = { paneId: p.id, text, chars: text.length, lines, start: el.selectionStart ?? p.composerText.length, end: el.selectionEnd ?? p.composerText.length, busy: false };
+        return;
+      }
+    }
+    handleComposerPaste(p.id, event);
+  }
+
+  function pasteInline(p) {
+    if (!longPaste) return;
+    const { text, start, end } = longPaste;
+    longPaste = null;
+    const value = p.composerText;
+    void editIntoComposer(p.id, value.slice(0, start) + text + value.slice(end));
+  }
+
+  async function pasteAsFile(p) {
+    if (!longPaste || longPaste.busy) return;
+    longPaste = { ...longPaste, busy: true };
+    try {
+      const path = await ControlService.SaveTextAttachment(longPaste.text);
+      const stamp = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }).replace(/\s/g, "");
+      appendPaneAttachment(p.id, { path, name: `붙여넣은 텍스트 ${stamp}.txt` });
+      longPaste = null;
+    } catch (error) {
+      longPaste = longPaste ? { ...longPaste, busy: false } : null;
+      showToast(`파일로 첨부하지 못했습니다: ${error}`);
+    }
+  }
+
+  function composerStats(text) {
+    const chars = text.length;
+    const lines = text ? text.split("\n").length : 0;
+    return chars >= 500 || lines >= 8 ? `${chars.toLocaleString("ko-KR")}자 · ${lines}줄` : "";
   }
 
   // User bubbles stay verbatim (typed text shown as typed); assistant/system
@@ -658,11 +791,19 @@
                 {backendLabel(paneConversationMeta(p.target).backend)}
               </button>
               {#if chat.backendMenuPaneId === p.id}
-                <div class="absolute left-0 top-6 z-40 w-32 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 shadow-xl">
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "default"); }}>Default</button>
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "claude"); }}>Claude</button>
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "codex"); }}>Codex</button>
-                  <button class="block w-full rounded-md px-3 py-2 text-left text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700" onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, "opencode"); }}>OpenCode</button>
+                {@const currentBackend = backendChoice(paneConversationMeta(p.target).backend)}
+                <div class="absolute left-0 top-6 z-40 w-36 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 shadow-xl" role="menu" aria-label="사용할 AI">
+                  {#each BACKEND_CHOICES as choice (choice.id)}
+                    <button
+                      role="menuitemradio"
+                      aria-checked={currentBackend === choice.id}
+                      class={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium hover:bg-slate-100 dark:hover:bg-slate-700 ${currentBackend === choice.id ? "text-blue-700 dark:text-blue-300" : "text-slate-700 dark:text-slate-300"}`}
+                      onclick={(event) => { event.stopPropagation(); void setTargetBackend(p.target, choice.id); }}
+                    >
+                      <span class="w-3 shrink-0 text-center" aria-hidden="true">{currentBackend === choice.id ? "✓" : ""}</span>
+                      <span class="min-w-0 flex-1 truncate">{choice.label}</span>
+                    </button>
+                  {/each}
                 </div>
               {/if}
             </div>
@@ -723,6 +864,14 @@
             title="대화 전체를 마크다운으로 복사"
             aria-label="대화 내보내기"
           >{@render iconExport()}</button>
+          <button
+            type="button"
+            draggable="false"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-500 dark:text-slate-400 transition-colors hover:bg-slate-100 dark:hover:bg-slate-700"
+            onclick={(event) => { event.stopPropagation(); void saveConversationFile(p.target); }}
+            title="대화를 마크다운(.md) 파일로 저장"
+            aria-label="대화를 파일로 저장"
+          ><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
         {/if}
         {#if p.target}
           <button
@@ -791,7 +940,38 @@
         {/if}
         <div use:registerPaneLog={p.id} onscroll={handleLogScroll} class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
           <div class="flex min-h-full w-full flex-col gap-1">
-            {#if messagesForPane(p.target).length === 0}
+            {#if !p.target && chat.connected && !chat.convsLoaded}
+              <div class="mt-6 flex items-center justify-center gap-2 text-sm text-slate-500 dark:text-slate-400" role="status">
+                <span class="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-blue-500 dark:border-slate-600 dark:border-t-blue-400"></span>
+                불러오는 중…
+              </div>
+            {:else if messagesForPane(p.target).length === 0 && (!p.target || !chat.connected)}
+              <!-- Guide card: nothing to talk to yet — not connected, or no conversation chosen. -->
+              <div class="mx-auto mt-6 flex w-full max-w-sm flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white/80 px-6 py-6 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900/70">
+                <div class="grid h-10 w-10 place-items-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-300" aria-hidden="true">
+                  <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v5"/></svg>
+                </div>
+                {#if !chat.connected}
+                  <div class="text-sm font-semibold text-slate-800 dark:text-slate-100">aglink 본체에 연결되지 않았어요</div>
+                  <div class="text-[12.5px] leading-5 text-slate-500 dark:text-slate-400">본체가 꺼져 있거나 다시 시작하는 중일 수 있어요. 연결되면 대화를 바로 불러옵니다.</div>
+                  <div class="mt-1 flex gap-2">
+                    <button type="button" class="ui-btn ui-btn-primary" onclick={(event) => { event.stopPropagation(); requestSettings("connection"); }}>연결 상태 보기</button>
+                  </div>
+                {:else}
+                  <div class="text-sm font-semibold text-slate-800 dark:text-slate-100">AI 연결하기</div>
+                  <div class="text-[12.5px] leading-5 text-slate-500 dark:text-slate-400">왼쪽 목록에서 대화를 고르거나 새로 만들어 시작하세요. AI를 아직 연결하지 않았다면 설정에서 ①②③ 순서대로 채우면 됩니다.</div>
+                  <div class="mt-1 flex gap-2">
+                    <button type="button" class="ui-btn ui-btn-ghost" onclick={(event) => { event.stopPropagation(); requestNewConversation(); }}>새 대화</button>
+                    <button type="button" class="ui-btn ui-btn-primary" onclick={(event) => { event.stopPropagation(); requestSettings("settings"); }}>설정 열기 →</button>
+                  </div>
+                {/if}
+              </div>
+            {:else if messagesForPane(p.target).length === 0 && chat.loadingBuffers.has(targetKey(p.target))}
+              <div class="mt-6 flex items-center justify-center gap-2 text-sm text-slate-500 dark:text-slate-400" role="status">
+                <span class="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-blue-500 dark:border-slate-600 dark:border-t-blue-400"></span>
+                대화를 불러오는 중…
+              </div>
+            {:else if messagesForPane(p.target).length === 0}
               <div class="flex flex-col items-center gap-3 rounded-xl border border-dashed border-slate-300 dark:border-slate-600 bg-white/60 dark:bg-slate-900/60 px-6 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
                 <div>메시지가 없습니다. 첫 요청을 보내 보세요.</div>
                 {#if p.target}
@@ -804,6 +984,11 @@
                       >{starter.label}</button>
                     {/each}
                   </div>
+                  <button
+                    type="button"
+                    class="text-[11.5px] text-slate-400 underline-offset-2 hover:text-blue-600 hover:underline dark:text-slate-500 dark:hover:text-blue-300"
+                    onclick={(event) => { event.stopPropagation(); requestSettings("settings"); }}
+                  >답이 오지 않나요? AI 연결 설정 열기</button>
                 {/if}
               </div>
             {/if}
@@ -825,7 +1010,7 @@
               {@const startsGroup = msgGroupStart(messagesForPane(p.target), mIndex)}
               <div
                 data-msg-index={mIndex}
-                class={`msg-enter group/msg flex w-full ${side === "user" ? "flex-row-reverse" : "flex-row"} ${side === "system" ? "justify-center" : "items-start gap-2"} ${startsGroup && mIndex > 0 ? "mt-1.5" : ""}`}
+                class={`msg-enter group/msg flex w-full ${side === "user" ? "flex-row-reverse" : "flex-row"} ${side === "system" ? "justify-center" : "items-start gap-2"} ${startsGroup && mIndex > 0 ? "mt-1.5" : ""} ${chat.flashMessage?.paneId === p.id && chat.flashMessage.index === mIndex ? "msg-flash" : ""}`}
               >
                 {#if side !== "system"}
                   {#if startsGroup && message.role !== "narration"}
@@ -900,6 +1085,17 @@
                             <span class="copy-icon grid">{@render iconCopy()}</span>
                             <span class="check-icon hidden text-emerald-500">{@render iconCheck()}</span>
                           </button>
+                          {#if p.target}
+                            {@const starred = isBookmarked(p.target, message)}
+                            <button
+                              type="button"
+                              class={`msg-action-btn ${starred ? "text-amber-500 dark:text-amber-400" : ""}`}
+                              onclick={(event) => { event.stopPropagation(); showToast(toggleBookmark(p.target, message, mIndex) ? "북마크에 넣었습니다 (Ctrl+Shift+F → 북마크)" : "북마크에서 뺐습니다"); }}
+                              title={starred ? "북마크 지우기" : "북마크 — 나중에 이 메시지로 바로 돌아오기"}
+                              aria-label={starred ? "북마크 지우기" : "북마크"}
+                              aria-pressed={starred}
+                            ><span class="text-[13px] leading-none" aria-hidden="true">{starred ? "★" : "☆"}</span></button>
+                          {/if}
                           {#if message.role === "user"}
                             <button
                               type="button"
@@ -1027,7 +1223,42 @@
       {/if}
 
       <div class="shrink-0 border-t border-slate-200/80 dark:border-slate-700/80 bg-white/92 dark:bg-slate-900/92 px-4 py-1.5 backdrop-blur relative">
-        {#if mentionCandidatesForPane(p).length}
+        {#if snippetMenuFor(p)}
+          {@const snippetMenu = snippetMenuFor(p)}
+          <div
+            class="absolute bottom-full left-4 right-4 z-30 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg"
+            role="listbox"
+            aria-label="상용구"
+          >
+            <div class="flex items-center gap-2 border-b border-slate-100 px-3 py-1 text-[11px] text-slate-400 dark:border-slate-800 dark:text-slate-500">
+              <span class="min-w-0 flex-1 truncate">상용구 · Tab/Enter 넣기 · Esc 닫기</span>
+              <button
+                type="button"
+                class="shrink-0 font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => { snippetHiddenFor = p.composerText; openSnippetManager(); }}
+              >관리…</button>
+            </div>
+            {#each snippetMenu.list as item, sIndex (item.id)}
+              <button
+                type="button"
+                class={`flex w-full items-baseline gap-3 px-3 py-2 text-left ${sIndex === Math.min(snippetIndex, snippetMenu.list.length - 1) ? "bg-blue-50 dark:bg-blue-950/40" : "hover:bg-slate-50 dark:hover:bg-slate-800"}`}
+                role="option"
+                aria-selected={sIndex === Math.min(snippetIndex, snippetMenu.list.length - 1)}
+                onmouseenter={() => (snippetIndex = sIndex)}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => insertSnippet(p, item)}
+              >
+                <span class="shrink-0 font-mono text-[13px] font-semibold text-blue-700 dark:text-blue-300">/{item.name}</span>
+                <span class="min-w-0 flex-1 truncate text-[12px] text-slate-500 dark:text-slate-400">{item.text}</span>
+              </button>
+            {:else}
+              <div class="px-3 py-2.5 text-[12px] text-slate-500 dark:text-slate-400">
+                아직 상용구가 없어요. 자주 쓰는 요청을 저장해 두면 <span class="font-mono">/이름</span>으로 바로 넣을 수 있어요.
+              </div>
+            {/each}
+          </div>
+        {:else if mentionCandidatesForPane(p).length}
           <div
             class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg"
             role="listbox"
@@ -1067,6 +1298,15 @@
                 <span class="min-w-0 flex-1 truncate text-[12px] text-slate-500 dark:text-slate-400">{command.desc}</span>
               </button>
             {/each}
+          </div>
+        {/if}
+
+        {#if longPaste && longPaste.paneId === p.id}
+          <div class="mb-1 flex flex-wrap items-center gap-2 rounded-md border border-blue-300 bg-blue-50 px-2 py-1.5 text-[12px] text-slate-700 dark:border-blue-700 dark:bg-blue-950/40 dark:text-slate-300" role="dialog" aria-label="긴 텍스트 붙여넣기">
+            <span class="min-w-0 flex-1">긴 텍스트예요 ({longPaste.chars.toLocaleString("ko-KR")}자 · {longPaste.lines}줄). 파일로 첨부하면 입력창이 깔끔해요.</span>
+            <button type="button" class="ui-btn ui-btn-primary" disabled={longPaste.busy} onclick={() => pasteAsFile(p)}>{longPaste.busy ? "첨부 중…" : "파일로 첨부"}</button>
+            <button type="button" class="ui-btn ui-btn-ghost" disabled={longPaste.busy} onclick={() => pasteInline(p)}>그대로 넣기</button>
+            <button type="button" class="ui-btn ui-btn-ghost" disabled={longPaste.busy} onclick={() => (longPaste = null)}>취소</button>
           </div>
         {/if}
 
@@ -1132,8 +1372,9 @@
           <button
             class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${voice.paneId === p.id && voice.phase === "listening" ? "border-red-500 bg-red-500 text-white shadow-[0_0_0_3px_rgba(239,68,68,0.3)] animate-pulse dark:border-red-400 dark:bg-red-500" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
             onclick={() => toggleVoiceInput(p.id)}
+            oncontextmenu={(event) => { event.preventDefault(); requestSettings("voice"); }}
             disabled={!p.target || (voice.phase !== "idle" && voice.paneId !== p.id) || (voice.paneId === p.id && voice.phase === "transcribing")}
-            title={voice.paneId === p.id && voice.phase === "listening" ? "듣기 끄기 — 보내지 않고 취소 (Ctrl+M)" : "말로 입력 (Ctrl+M)"}
+            title={voice.paneId === p.id && voice.phase === "listening" ? "듣기 끄기 — 보내지 않고 취소 (Ctrl+M)" : "말로 입력 (Ctrl+M) · 우클릭: 음성 설정"}
             aria-label="음성 입력"
           >
             {#if voice.paneId === p.id && voice.phase === "transcribing"}
@@ -1146,8 +1387,9 @@
           <button
             class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${voice.convPaneId === p.id ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_0_0_3px_rgba(16,185,129,0.3)] dark:border-emerald-400 dark:bg-emerald-500" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
             onclick={() => toggleConversation(p.id)}
+            oncontextmenu={(event) => { event.preventDefault(); requestSettings("voice"); }}
             disabled={!p.target || (voice.convPaneId !== p.id && voice.phase !== "idle")}
-            title={voice.convPaneId === p.id ? "음성 대화 끝내기" : "음성 대화 (Ctrl+Shift+M) — 답변을 읽어 주고 끝나면 다시 듣습니다"}
+            title={voice.convPaneId === p.id ? "음성 대화 끝내기 · 우클릭: 음성 설정" : "음성 대화 (Ctrl+Shift+M) — 답변을 읽어 주고 끝나면 다시 듣습니다 · 우클릭: 음성 설정"}
             aria-label="음성 대화"
             aria-pressed={voice.convPaneId === p.id}
           >
@@ -1181,7 +1423,7 @@
           <textarea
             use:registerPaneTextarea={p.id}
             class="min-h-[34px] flex-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-sm leading-5 text-slate-900 dark:text-slate-100 shadow-sm outline-none placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-900/30 disabled:bg-slate-100 dark:disabled:bg-slate-800"
-            placeholder={p.target ? "메시지 또는 !명령을 입력하세요" : "먼저 대화를 선택하세요"}
+            placeholder={p.target ? "메시지, !명령, /상용구를 입력하세요" : "먼저 대화를 선택하세요"}
             value={p.composerText}
             disabled={!p.target}
             rows="1"
@@ -1198,6 +1440,8 @@
                 void toggleVoiceInput(p.id);
                 return;
               }
+              if (event.altKey && !event.ctrlKey && event.key === "ArrowDown") return; // App: next unread conversation
+              if (handleSnippetKeydown(p, event)) return;
               if (event.key === "Enter" && !event.shiftKey && !event.isComposing && p.attachments.length === 0 && isTypedCommand(p.composerText)) {
                 event.preventDefault();
                 const text = p.composerText;
@@ -1207,9 +1451,12 @@
               }
               handleComposerKeydown(p.id, event);
             }}
-            onpaste={(event) => handleComposerPaste(p.id, event)}
+            onpaste={(event) => handlePaste(p, event)}
             onfocus={() => focusPane(p.id)}
           ></textarea>
+          {#if composerStats(p.composerText)}
+            <span class="pointer-events-none shrink-0 self-center whitespace-nowrap text-[10.5px] tabular-nums text-slate-400 dark:text-slate-500" title="입력한 글자 수와 줄 수">{composerStats(p.composerText)}</span>
+          {/if}
 
           <button
             class={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-md border text-sm transition-colors ${voice.speakEnabled ? "border-blue-400 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-950/40 dark:text-blue-300" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"}`}
@@ -1247,6 +1494,14 @@
 {/if}
 
 <style>
+  /* A message just opened from search / a bookmark: a soft ring that fades. */
+  :global(.msg-flash .bubble), :global(.msg-flash > div > div) {
+    animation: msg-flash 2.4s ease-out;
+  }
+  @keyframes msg-flash {
+    0%, 35% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.65); }
+    100% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0); }
+  }
   /* Message body text: 13px × the user's text size (Ctrl+= / Ctrl+-), with a
      roomier line height than the old 16px so long answers are easier to read. */
   :global(.msg-text) {

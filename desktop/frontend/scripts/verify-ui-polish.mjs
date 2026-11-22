@@ -35,7 +35,7 @@ assert(store.includes("export function rememberSentHistory(key, text)"), "rememb
 assert(!store.includes("let sentHistory") && !store.includes("let historyIndex"), "there must be no single global sentHistory/historyIndex shared across every conversation");
 assert(store.includes('event.key === "ArrowUp"'), "composer must recall sent history on ArrowUp");
 assert(store.includes("function handleComposerPaste"), "composer must handle pasted clipboard images");
-assert(pane.includes("onpaste={(event) => handleComposerPaste(p.id, event)}"), "composer textarea must wire the clipboard paste handler");
+assert(pane.includes("onpaste={(event) => handlePaste(p, event)}") && pane.includes("handleComposerPaste(p.id, event)"), "composer textarea must wire the clipboard paste handler (long text is offered as a .txt attachment first)");
 assert(store.includes("ControlService.SaveClipboardImage"), "clipboard image paste must persist the image through the desktop service");
 assert(store.includes("ControlService.StageAttachment"), "picked files must be staged into aglink attachments before upload");
 assert(store.includes("attachments: []"), "each pane must keep its own multiple attachments");
@@ -178,7 +178,8 @@ assert(store.includes("export async function setTargetBackend"), "pane headers m
 assert(store.includes("ControlService.SetChannelBackend"), "the shared backend setter must call the desktop control service");
 assert(store.includes("export function togglePaneBackendMenu") && store.includes("export function closePaneBackendMenu"), "pane header backend menus must support toggle and click-away close");
 assert(pane.includes("data-pane-backend-menu"), "pane headers must wrap the backend badge/menu in a click-away scope");
-assert(pane.includes("togglePaneBackendMenu(p.id)") && pane.includes("setTargetBackend(p.target, \"claude\")") && pane.includes("setTargetBackend(p.target, \"codex\")"), "pane backend badge must expose Claude and Codex choices");
+assert(pane.includes("togglePaneBackendMenu(p.id)") && pane.includes("setTargetBackend(p.target, choice.id)") && /BACKEND_CHOICES = \[[\s\S]*?"claude"[\s\S]*?"codex"/.test(pane), "pane backend badge must expose Claude and Codex choices");
+assert(pane.includes("aria-checked={currentBackend === choice.id}") && app.includes("aria-checked={backendChoice(conv.backend) === choice.id}") && app.includes("aria-checked={backendChoice(chat.telegram.backend) === choice.id}"), "backend menus must mark the current choice");
 assert(pane.includes("event.preventDefault(); event.stopPropagation(); togglePaneBackendMenu(p.id);"), "pane backend badge must open from mousedown so the draggable header cannot swallow the click");
 assert(pane.includes("relative z-30 flex h-10"), "pane headers must stack above message logs so the backend menu is visible");
 assert(app.includes('if (!target.closest("[data-pane-backend-menu]")) closePaneBackendMenu();'), "clicking outside a pane backend menu must close it");
@@ -249,7 +250,36 @@ assert(pane.includes("{#snippet voiceBadge()}") && pane.includes('aria-label="�
 assert(header.includes('aria-label="더보기"') && header.includes('aria-haspopup="menu"') && header.includes("aria-expanded={moreMenuOpen}"), "header must expose an accessible 더보기 menu trigger");
 assert(header.includes('role="menu"') && (header.match(/role="menuitem"/g) || []).length >= 3, "더보기 menu must hold (at least) the meeting / meeting list / theme items");
 assert(header.includes('aria-label={voice.meeting ? "회의 모드 끝내기" : "회의 모드 시작"}') && header.includes('aria-label="회의 목록"') && header.includes('aria-label="테마 전환"'), "moved header actions must keep their aria-labels");
-assert(header.includes('aria-label="설정"') && header.includes('aria-label="화면 분할 추가"') && header.includes('aria-label="연결 / aglink"'), "frequent header actions must stay directly visible");
+// ⚙ opens the settings screen, whose tabs hold 설정 / 연결 / 음성 — one button, plus "?" for the shortcut help.
+assert(header.includes('aria-label="설정"') && header.includes('aria-label="화면 분할 추가"') && header.includes('aria-label="단축키 도움말"'), "frequent header actions must stay directly visible");
+assert(!header.includes('onclick={() => openSettings("connection")}'), "the connection screen is reached from the settings tabs or the connection badge, not a duplicate header button");
+assert(header.includes("openSettings(\"voice\")") && header.includes("voiceChip.label"), "header must show the voice status chip that opens the voice settings");
+
+// Unsaved settings ask before leaving; dialogs focus themselves; Enter ignores IME composition.
+assert(app.includes("async function confirmLeaveSettings()") && app.includes("if (!(await confirmLeaveSettings())) return"), "leaving settings with unsaved edits must ask first");
+assert(app.includes("use:autofocus={true}") && app.includes("!event.isComposing && event.keyCode !== 229"), "name prompt must autofocus and ignore Enter while composing Korean");
+assert(!/\b(?:window\.)?(?:confirm|alert|prompt)\(/.test(app), "no browser alert/confirm/prompt in the app shell");
+
+// Pinned conversations, "/" snippets, palette actions.
+assert(store.includes("export function setConversationPinned") && store.includes("!isConversationPinned(conv.id)"), "pinned conversations must be listed once, in the pinned section");
+assert(pane.includes("handleSnippetKeydown(p, event)") && pane.includes("snippetMenuFor(p)"), "composer must offer the / snippet picker");
+assert(app.includes("<QuickSwitcher actions={paletteActions} bind:helpOpen />"), "Ctrl+K must also run app commands");
+
+// Round 2: search every conversation, bookmarks, color labels, Ctrl+Tab, long paste, .md export.
+{
+  const search = readFileSync(join(root, "src", "search.svelte.js"), "utf8");
+  const panel = readFileSync(join(root, "src", "SearchPanel.svelte"), "utf8");
+  const recent = readFileSync(join(root, "src", "RecentSwitcher.svelte"), "utf8");
+  assert(search.includes("export async function searchAll") && search.includes("ControlService.GetHistory") && search.includes("historyMessages("), "all-conversation search must read histories through the same mapping the panes use");
+  assert(store.includes("export async function jumpToMessage") && store.includes("export function findMessageIndex"), "search hits and bookmarks must jump to the message itself");
+  assert(panel.includes("jumpToMessage(item.target") && app.includes("<SearchPanel />") && app.includes('openSearchPanel("search")'), "Ctrl+Shift+F must open the search panel");
+  assert(search.includes("export function toggleBookmark") && pane.includes("toggleBookmark(p.target, message, mIndex)"), "message actions must offer a bookmark");
+  assert(store.includes("export function setConversationLabel") && app.includes("labelFilter") && app.includes("filteredWebConvs()"), "conversations must take a color label and the sidebar must filter by it");
+  assert(recent.includes('event.key === "Tab" && event.ctrlKey') && app.includes("rememberRecentTarget(target)"), "Ctrl+Tab must cycle recent conversations");
+  assert(pane.includes("ControlService.SaveTextAttachment") && pane.includes("LONG_PASTE_CHARS"), "a long paste must be offered as a .txt attachment");
+  assert(pane.includes("ControlService.SaveMarkdownFile"), "a conversation must be savable as a .md file");
+  assert(![search, panel, recent].some((src) => /\b(?:window\.)?(?:confirm|alert|prompt)\(/.test(src)), "no browser dialogs in the round-2 components");
+}
 assert(app.includes('if (!target.closest("[data-more-menu]")) closeMoreMenu();') && app.includes("closeMoreMenu(true)"), "더보기 menu must close on outside click and return focus on Esc");
 
 // "list" settings fields (approvals.allow / approvals.tools) render as chips + add input,

@@ -30,6 +30,7 @@ export const chat = $state({
   connected: false,
   telegram: null,
   webConvs: [],
+  convsLoaded: false, // the conversation list has been fetched at least once (vs. "still loading")
   backendModels: {},
   defaultBackend: "", // the host's own backend, for conversations without one of their own
   lightboxSrc: null, // when set, a full-screen image viewer overlays everything
@@ -55,6 +56,10 @@ export const chat = $state({
   webGroups: [],
   webGroupOf: new Map(),
   archivedConvs: new Set(),
+  pinnedConvs: [], // conversation ids pinned to the top of the sidebar, in pin order
+  convLabels: new Map(), // conversation id → color label id (CONV_LABELS)
+  flashMessage: null, // { paneId, index }: a message just jumped to (search / bookmark), briefly highlighted
+  recentTargets: [], // most-recently focused conversations (targets), newest first, for Ctrl+Tab
   dragOverGroupId: "",
   draggingGroupId: null,
   dragOverGroupReorder: null,
@@ -293,11 +298,126 @@ export function handleGroupHeaderDrop(event, groupId) {
 }
 
 export function webConvsInGroup(groupId) {
-  return chat.webConvs.filter((conv) => !chat.archivedConvs.has(String(conv.id)) && chat.webGroupOf.get(conv.id) === groupId);
+  return chat.webConvs.filter((conv) => !chat.archivedConvs.has(String(conv.id)) && !isConversationPinned(conv.id) && chat.webGroupOf.get(conv.id) === groupId);
 }
 
 export function ungroupedWebConvs() {
-  return chat.webConvs.filter((conv) => !chat.archivedConvs.has(String(conv.id)) && !chat.webGroupOf.has(conv.id));
+  return chat.webConvs.filter((conv) => !chat.archivedConvs.has(String(conv.id)) && !isConversationPinned(conv.id) && !chat.webGroupOf.has(conv.id));
+}
+
+// ---- pin: keeps a conversation at the top of the sidebar ("고정됨"), in the
+// order it was pinned. Client-side only, like groups and the archive; a pinned
+// conversation keeps its group so unpinning puts it back where it was. An
+// archived conversation is listed in the archive, not among the pinned. ----
+
+const PINNED_STORAGE_KEY = "aglink-desktop:pinnedConvs";
+
+function loadPinnedFromStorage() {
+  try {
+    const raw = localStorage.getItem(PINNED_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data)) chat.pinnedConvs = [...new Set(data.map(String))];
+  } catch {
+    // Corrupt storage just starts with nothing pinned.
+  }
+}
+
+loadPinnedFromStorage();
+
+export function isConversationPinned(convId) {
+  const id = String(convId);
+  return chat.pinnedConvs.includes(id) && !chat.archivedConvs.has(id);
+}
+
+export function setConversationPinned(convId, pinned) {
+  const id = String(convId);
+  const rest = chat.pinnedConvs.filter((item) => item !== id);
+  chat.pinnedConvs = pinned ? [...rest, id] : rest;
+  try {
+    localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(chat.pinnedConvs));
+  } catch {
+    // Ignore quota errors; the pin just won't persist.
+  }
+}
+
+// ---- color labels: one of a few colors per local conversation, shown as a
+// dot in the sidebar and usable as a filter. Client-side only, like pins. ----
+
+export const CONV_LABELS = [
+  { id: "red", name: "빨강", dot: "bg-rose-500" },
+  { id: "orange", name: "주황", dot: "bg-orange-500" },
+  { id: "yellow", name: "노랑", dot: "bg-amber-400" },
+  { id: "green", name: "초록", dot: "bg-emerald-500" },
+  { id: "blue", name: "파랑", dot: "bg-blue-500" },
+  { id: "purple", name: "보라", dot: "bg-violet-500" },
+];
+const LABELS_STORAGE_KEY = "aglink-desktop:convLabels";
+
+function loadLabelsFromStorage() {
+  try {
+    const raw = localStorage.getItem(LABELS_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data && typeof data === "object") {
+      const known = new Set(CONV_LABELS.map((label) => label.id));
+      chat.convLabels = new Map(Object.entries(data).filter(([, v]) => known.has(v)));
+    }
+  } catch {
+    // Corrupt storage just starts without labels.
+  }
+}
+
+loadLabelsFromStorage();
+
+export function convLabel(convId) {
+  const id = chat.convLabels.get(String(convId));
+  return id ? CONV_LABELS.find((label) => label.id === id) || null : null;
+}
+
+export function setConversationLabel(convId, labelId) {
+  const next = new Map(chat.convLabels);
+  if (labelId && CONV_LABELS.some((label) => label.id === labelId)) next.set(String(convId), labelId);
+  else next.delete(String(convId));
+  chat.convLabels = next;
+  try {
+    localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(Object.fromEntries(next)));
+  } catch {
+    // Ignore quota errors; the label just won't persist.
+  }
+}
+
+// ---- recent conversations (Ctrl+Tab): App records each newly focused
+// conversation; kept in memory and localStorage, newest first. ----
+
+const RECENT_STORAGE_KEY = "aglink-desktop:recentTargets";
+const MAX_RECENT = 12;
+try {
+  const saved = JSON.parse(localStorage.getItem(RECENT_STORAGE_KEY) || "[]");
+  if (Array.isArray(saved)) chat.recentTargets = saved.filter((t) => t && (t.kind === "telegram" || (t.kind === "web" && t.id))).slice(0, MAX_RECENT);
+} catch {
+  // start empty
+}
+
+export function rememberRecentTarget(rawTarget) {
+  if (!rawTarget) return;
+  const target = normalizeTarget(rawTarget);
+  const key = targetKey(target);
+  if (chat.recentTargets[0] && targetKey(chat.recentTargets[0]) === key) return;
+  chat.recentTargets = [{ kind: target.kind, ...(target.id ? { id: target.id } : {}) }, ...chat.recentTargets.filter((t) => targetKey(t) !== key)].slice(0, MAX_RECENT);
+  try {
+    localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(chat.recentTargets));
+  } catch {
+    // memory only
+  }
+}
+
+export function pinnedWebConvs() {
+  const byId = new Map(chat.webConvs.map((conv) => [String(conv.id), conv]));
+  return chat.pinnedConvs
+    .filter((id) => !chat.archivedConvs.has(id))
+    .map((id) => byId.get(id))
+    .filter(Boolean);
 }
 
 // ---- archive: hides a conversation from the sidebar list without deleting
@@ -542,7 +662,7 @@ export async function setTargetBackend(target, backend) {
       { ok: false },
     );
     if (!reply.ok) {
-      chat.statusNote = `Backend 설정 실패: ${reply.error || "알 수 없는 오류"}`;
+      chat.statusNote = `AI를 바꾸지 못했습니다: ${reply.error || "알 수 없는 오류"}`;
       return false;
     }
     chat.statusNote = "";
@@ -550,7 +670,7 @@ export async function setTargetBackend(target, backend) {
     await loadConversations({ forceReloadCurrent: false });
     return true;
   } catch (error) {
-    chat.statusNote = `Backend 설정 실패: ${error}`;
+    chat.statusNote = `AI를 바꾸지 못했습니다: ${error}`;
     return false;
   }
 }
@@ -1306,20 +1426,7 @@ export async function selectTargetInPane(paneId, rawTarget) {
 
   try {
     const raw = await ControlService.GetHistory(normalized.kind, normalized.id || "");
-    const data = parseJSON(raw, { turns: [] });
-    const history = Array.isArray(data.turns)
-      ? data.turns.map((turn) =>
-          turn.role === "user"
-            ? { ...userMessage(turn.text), image: turn.image || turn.data || "", at: turn.at || 0 }
-            : {
-                role: turn.role || "assistant",
-                text: turn.text || "",
-                image: turn.image || turn.data || "",
-                at: turn.at || 0,
-                changes: turn.changes || null,
-              },
-        )
-      : [];
+    const history = historyMessages(parseJSON(raw, { turns: [] }));
     const flushed = flushBufferedFrames(key, history);
     chat.messagesByKey = new Map(chat.messagesByKey).set(key, flushed);
     await tick();
@@ -1330,6 +1437,68 @@ export async function selectTargetInPane(paneId, rawTarget) {
     chat.loadingBuffers = nextLoading;
     chat.messagesByKey = new Map(chat.messagesByKey).set(key, [{ role: "system", text: `히스토리를 불러오지 못했습니다: ${error}` }]);
   }
+}
+
+// historyMessages turns a get_history reply into the messages the panes show
+// (also used by the all-conversations search, so its hits match the bubbles).
+export function historyMessages(data) {
+  return Array.isArray(data?.turns)
+    ? data.turns.map((turn) =>
+        turn.role === "user"
+          ? { ...userMessage(turn.text), image: turn.image || turn.data || "", at: turn.at || 0 }
+          : {
+              role: turn.role || "assistant",
+              text: turn.text || "",
+              image: turn.image || turn.data || "",
+              at: turn.at || 0,
+              changes: turn.changes || null,
+            },
+      )
+    : [];
+}
+
+// findMessageIndex locates a message from a search hit / bookmark: by its time
+// and opening text first, then by text alone, then the remembered index.
+export function findMessageIndex(messages, { at = 0, text = "", index = -1 } = {}) {
+  const snip = String(text || "").slice(0, 120);
+  if (at) {
+    const i = messages.findIndex((m) => m.at === at && (!snip || (m.text || "").startsWith(snip)));
+    if (i >= 0) return i;
+  }
+  if (snip) {
+    const i = messages.findIndex((m) => (m.text || "").startsWith(snip));
+    if (i >= 0) return i;
+  }
+  return Number.isInteger(index) && index >= 0 && index < messages.length ? index : -1;
+}
+
+let flashTimer = 0;
+// jumpToMessage opens the conversation (in the pane already showing it, else
+// the focused pane), scrolls to the message and highlights it briefly.
+export async function jumpToMessage(rawTarget, hint = {}) {
+  const target = normalizeTarget(rawTarget);
+  const key = targetKey(target);
+  let p = chat.panes.find((item) => item.target && targetKey(item.target) === key);
+  if (p) focusPane(p.id);
+  else {
+    p = focusedPane();
+    if (!p) return false;
+    await selectTargetInPane(p.id, target);
+  }
+  const index = findMessageIndex(chat.messagesByKey.get(key) || [], hint);
+  if (index < 0) {
+    showToast("메시지를 찾지 못했습니다 (지워졌거나 정리된 대화일 수 있어요)");
+    return false;
+  }
+  const paneId = p.id;
+  chat.flashMessage = { paneId, index };
+  await tick();
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-pane-id="${paneId}"] [data-msg-index="${index}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  });
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => (chat.flashMessage = null), 2600);
+  return true;
 }
 
 export function selectTargetFromSidebar(target) {
@@ -1373,6 +1542,7 @@ export async function loadConversations(options = {}) {
     chat.telegram = data.telegram || null;
     chat.webConvs = Array.isArray(data.webConvs) ? data.webConvs : [];
     chat.backendModels = data.backendModels && typeof data.backendModels === "object" ? data.backendModels : {};
+    chat.convsLoaded = true;
 
     for (const item of chat.panes) {
       if (!item.target) {
@@ -1789,7 +1959,7 @@ export async function handleComposerPaste(paneId, event) {
     }
     chat.statusNote = "";
   } catch (error) {
-    chat.statusNote = `Clipboard image paste failed: ${error}`;
+    chat.statusNote = `클립보드 이미지를 붙여넣지 못했습니다: ${error}`;
   }
 }
 

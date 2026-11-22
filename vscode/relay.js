@@ -191,15 +191,36 @@ function daemonExe(target) {
 
 // healthy reports whether an aglink server answers on port: /health must say
 // "ok", so some other program that happens to hold the port does not pass.
+// It always settles within about a second: an answer cut off after its
+// headers fires neither "end" nor the request's "error", and a health check
+// left pending would hold startDaemon (and every request waiting on it).
 function healthy(port) {
   return new Promise((resolve) => {
-    const r = http.get({ host: "127.0.0.1", port, path: "/health", timeout: 500 }, (res) => {
+    let done = false;
+    const settle = (v) => {
+      if (!done) {
+        done = true;
+        clearTimeout(cap);
+        resolve(v);
+      }
+    };
+    const r = http.get({ host: "127.0.0.1", port, path: "/health", timeout: 500, agent: false }, (res) => {
       let body = "";
       res.setEncoding("utf8");
-      res.on("data", (c) => (body += c));
-      res.on("end", () => resolve(res.statusCode === 200 && body.trim() === "ok"));
+      res.on("data", (c) => {
+        body += c;
+        if (body.length > 64) r.destroy(); // not an aglink /health answer
+      });
+      res.on("end", () => settle(res.statusCode === 200 && body.trim() === "ok"));
+      res.on("error", () => settle(false));
+      res.on("close", () => settle(false));
     });
-    r.on("error", () => resolve(false));
+    const cap = setTimeout(() => {
+      r.destroy();
+      settle(false);
+    }, 1000);
+    r.on("error", () => settle(false));
+    r.on("close", () => settle(false));
     r.on("timeout", () => r.destroy());
   });
 }
@@ -289,8 +310,11 @@ function startDaemon(target, readPort, d = deps, webStartupPort = 0) {
     for (let i = 0; i < 50; i++) {
       await d.sleep(100);
       if (await d.healthy(portNow())) return { ok: true };
-      if (died) return { ok: false, reason: died };
+      // A child that exits at once usually lost the port to a server that is
+      // itself (re)starting: give that one the rest of the time to answer.
+      if (died && i >= 20) return { ok: false, reason: died };
     }
+    if (died) return { ok: false, reason: died };
     return { ok: false, reason: `${name} started but 127.0.0.1:${portNow()}/health did not answer "ok" within 5s` };
   })().finally(() => {
     delete starting[target];
@@ -321,9 +345,18 @@ async function relay(req, readPort, d = deps, webStartupPort = 0) {
     return errorResult(e.message); // e.g. the screen token could not be kept
   }
   if (res.refused && managed) {
-    const st = await startDaemon(req.target, readPort, d, webStartupPort);
+    // A refused connection is often a server in the middle of a restart: give
+    // it a moment before starting a second one next to it.
+    let back = false;
+    for (let i = 0; i < 4 && !back; i++) {
+      await d.sleep(250);
+      back = await d.healthy(req.target === "web" ? readPort() : 48220);
+    }
+    const st = back ? { ok: true } : await startDaemon(req.target, readPort, d, webStartupPort);
     res = st.ok
-      ? await d.relayOnce(req, readPort).catch((e) => errorResult(e.message))
+      ? await Promise.resolve()
+          .then(() => d.relayOnce(req, readPort))
+          .catch((e) => errorResult(e.message))
       : errorResult(`${req.target} is not running on this PC and could not be started: ${st.reason}`);
   }
   if (res.status === 401 && managed) {
@@ -338,6 +371,9 @@ async function relay(req, readPort, d = deps, webStartupPort = 0) {
   const { refused, ...out } = res; // eslint-disable-line no-unused-vars
   return out;
 }
+
+// MAX_ANSWER caps one answer from the PC's server.
+const MAX_ANSWER = 64 << 20;
 
 function relayOnce(req, readPort) {
   const dst = destination(req, readPort);
@@ -356,11 +392,26 @@ function relayOnce(req, readPort) {
     };
     const fail = (msg, refused) =>
       finish({ status: 502, contentType: "application/json", body: Buffer.from(JSON.stringify({ error: `aglink relay: ${msg}` })).toString("base64"), refused });
+    // A fresh connection each time (agent: false): a pooled keep-alive socket
+    // the server has just closed would fail with a reset that looks like a
+    // call cut off mid-answer, when the call never left.
     const r = http.request(
-      { host: "127.0.0.1", port: dst.port, path: req.path || "/", method: req.method || "POST", headers, timeout: 600000 },
+      { host: "127.0.0.1", port: dst.port, path: req.path || "/", method: req.method || "POST", headers, timeout: 600000, agent: false },
       (res) => {
         const chunks = [];
-        res.on("data", (c) => chunks.push(c));
+        let size = 0;
+        res.on("data", (c) => {
+          size += c.length;
+          // Bounded like the request: past this the answer would be copied
+          // three times over (base64, RPC JSON) and block the window's channel.
+          if (size > MAX_ANSWER) {
+            chunks.length = 0;
+            fail(`${req.target} answered with more than ${MAX_ANSWER >> 20} MB; ask for less (a smaller region, fewer items)`);
+            r.destroy();
+            return;
+          }
+          chunks.push(c);
+        });
         res.on("end", () =>
           finish({ status: res.statusCode, contentType: res.headers["content-type"] || "", body: Buffer.concat(chunks).toString("base64") })
         );
@@ -373,7 +424,20 @@ function relayOnce(req, readPort) {
         });
       }
     );
-    r.on("error", (e) => fail(`${req.target} (127.0.0.1:${dst.port}) is not reachable on this PC: ${e.message}`, e.code === "ECONNREFUSED"));
+    // Only a failure before the connection was made means the server never
+    // saw the call. Once connected the request is on its way and may have
+    // run (a click), so a reset, hang-up or timeout after that is reported as
+    // "mid-answer" and the clients do not send it again.
+    let connected = false;
+    r.on("socket", (s) => {
+      if (!s.connecting) connected = true;
+      else s.once("connect", () => (connected = true));
+    });
+    r.on("error", (e) =>
+      connected
+        ? fail(`${req.target} (127.0.0.1:${dst.port}) lost the connection mid-answer (the call may have run): ${e.message}`)
+        : fail(`${req.target} (127.0.0.1:${dst.port}) is not reachable on this PC: ${e.message}`, e.code === "ECONNREFUSED")
+    );
     r.on("timeout", () => r.destroy(new Error("timed out")));
     r.end(body);
   });

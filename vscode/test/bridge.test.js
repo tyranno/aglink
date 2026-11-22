@@ -49,6 +49,29 @@ test("bridge relays only requests carrying the window token", async () => {
   }
 });
 
+test("bridge reopens on the port it had, waiting briefly while it is still held", async () => {
+  const vscode = { commands: { executeCommand: async () => ({ status: 200, body: "" }) } };
+  const first = await serve(vscode, "web", "t", () => {});
+  const port = first.address().port;
+  // The old extension host lets go of the port a moment after the new one starts.
+  setTimeout(() => first.close(), 300);
+  const again = await serve(vscode, "web", "t", () => {}, port, { tries: 20, delay: 50 });
+  try {
+    assert.strictEqual(again.address().port, port);
+  } finally {
+    again.close();
+  }
+  // Held for good (another window): a new port instead of failing.
+  const holder = await serve(vscode, "web", "t", () => {});
+  const other = await serve(vscode, "web", "t", () => {}, holder.address().port, { tries: 2, delay: 10 });
+  try {
+    assert.notStrictEqual(other.address().port, holder.address().port);
+  } finally {
+    holder.close();
+    other.close();
+  }
+});
+
 test("refreshCodexNotify points our notify line at a node that runs, and leaves the rest alone", () => {
   const { refreshCodexNotify } = require("../bridge/extension");
   const fs = require("fs");

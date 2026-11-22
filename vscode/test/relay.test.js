@@ -29,7 +29,8 @@ function fakeDeps({ exe = "C:\\aglink\\aglink-screen.exe", upAfter = 2, child, r
       c.unref = () => {};
       return c;
     },
-    healthy: async () => ++d.polls >= upAfter,
+    // Nothing answers before a daemon is spawned (a refusal really means down).
+    healthy: async () => d.spawned.length > 0 && ++d.polls >= upAfter,
     sleep: async () => {},
     relayOnce: async () => relayResults[Math.min(d.relayCalls++, relayResults.length - 1)],
   };
@@ -68,10 +69,10 @@ test("web readiness follows the port file as the daemon rewrites it", async () =
 test("web relay spawns and probes the configured port", async () => {
   const d = fakeDeps({ relayResults: [refused, ok200] });
   const checked = [];
-  d.healthy = async (port) => { checked.push(port); return true; };
+  d.healthy = async (port) => { checked.push(port); return d.spawned.length > 0; };
   assert.strictEqual((await relay({ target: "web" }, () => 48299, d, 48299)).status, 200);
   assert.strictEqual(d.spawned[0].opts.env.AGLINK_WEB_PORT, "48299");
-  assert.deepStrictEqual(checked, [48299]);
+  assert.ok(checked.length > 0 && checked.every((p) => p === 48299), String(checked));
 });
 
 test("bridge installation is based on the current SSH server", async (t) => {
@@ -458,4 +459,20 @@ test("a server closing the connection mid-answer ends the relayed call with a 50
   assert.strictEqual(res.status, 502);
   assert.match(Buffer.from(res.body, "base64").toString(), /closed the connection mid-answer/);
   assert.ok(!res.refused, "not retried as if nothing were running");
+});
+
+test("a server dropping the call after it was sent is reported mid-answer, not as unreachable", async (t) => {
+  const http = require("http");
+  const srv = http.createServer((req) => {
+    req.resume();
+    req.on("end", () => req.socket.destroy()); // got the whole call, then died before answering
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  t.after(() => srv.close());
+  const port = srv.address().port;
+  const res = await relay({ target: "web", path: "/call", method: "POST", body: Buffer.from("{}").toString("base64") }, () => port);
+  assert.strictEqual(res.status, 502);
+  const msg = Buffer.from(res.body, "base64").toString();
+  assert.match(msg, /mid-answer/);
+  assert.doesNotMatch(msg, /not reachable/);
 });

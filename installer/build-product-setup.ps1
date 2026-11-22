@@ -74,7 +74,17 @@ function Invoke-Makensis([string] $nsi, [string] $stage, [string] $outFile) {
 function Build-Web {
     Write-Host '== aglink-web =='
     $stage = New-Stage 'web'
-    Build-Go 'web' (Join-Path $stage 'aglink-web.exe')
+    Push-Location (Join-Path $root 'web')
+    try {
+        $env:GOWORK = 'off'
+        $env:GOFLAGS = '-mod=readonly'
+        & go build -ldflags "-X main.buildCommit=$hash" -o (Join-Path $stage 'aglink-web.exe') .
+        if ($LASTEXITCODE -ne 0) { throw "go build failed in web" }
+    } finally {
+        Remove-Item Env:GOWORK -ErrorAction SilentlyContinue
+        Remove-Item Env:GOFLAGS -ErrorAction SilentlyContinue
+        Pop-Location
+    }
 
     # Chrome extension, minus its tests.
     $ext = Join-Path $stage 'chrome-extension'
@@ -82,6 +92,11 @@ function Build-Web {
     Get-ChildItem (Join-Path $root 'web\extension') -File |
         Where-Object { $_.Name -notlike '*.test.js' } |
         Copy-Item -Destination $ext
+    # Same commit hash as the daemon above, so a stale cached service worker
+    # can detect the mismatch and reload itself. Staged copy only.
+    $extManifest = Join-Path $ext 'manifest.json'
+    (Get-Content -Raw $extManifest) -replace '"version_name":\s*"dev"', "`"version_name`": `"$hash`"" |
+        Set-Content -Path $extManifest -Encoding UTF8 -NoNewline
 
     Copy-Item (Join-Path $here 'start-web-daemon.vbs') $stage
     Copy-Item (Join-Path $here 'web-guide.html') (Join-Path $stage 'guide.html')

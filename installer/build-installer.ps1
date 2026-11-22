@@ -56,7 +56,7 @@ Pop-Location
 Write-Host "  built desktop frontend"
 Build-GoHelper "chat" "aglink-chat.exe"
 Build-GoHelper "screen" "aglink-screen.exe"
-Build-GoHelper "web" "aglink-web.exe"
+Build-GoHelper "web" "aglink-web.exe" "-X main.buildCommit=$hash"
 # Plain go build leaves out the icon and manifest that wails build adds, so
 # the installed app showed the blank default icon on the taskbar and in
 # shortcuts. Compile them into a .syso that go build picks up, then remove it.
@@ -81,6 +81,13 @@ New-Item -ItemType Directory -Path $ext | Out-Null
 Get-ChildItem (Join-Path $root "web\extension") -File |
   Where-Object { $_.Name -notlike "*.test.js" } |
   Copy-Item -Destination $ext
+# Stamp the staged copy's version_name with the same commit hash the daemon
+# was just built with, so background.js can tell the daemon its real build —
+# a mismatch means Chrome is still running an old cached service worker and
+# needs chrome.runtime.reload(). Only the staged file is touched, not the repo.
+$extManifest = Join-Path $ext "manifest.json"
+(Get-Content -Raw $extManifest) -replace '"version_name":\s*"dev"', "`"version_name`": `"$hash`"" |
+  Set-Content -Path $extManifest -Encoding UTF8 -NoNewline
 
 Write-Host "[3/3] makensis..."
 $makensis = @((Join-Path $env:USERPROFILE '.aglink\tools\nsis-3.11\makensis.exe'),'C:\Program Files (x86)\NSIS\makensis.exe') | Where-Object { (Test-Path $_) -and ((& $_ -VERSION) -match '^v3') } | Select-Object -First 1

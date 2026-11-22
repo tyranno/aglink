@@ -15,7 +15,8 @@
 // the environment they inherit; ~/.claude.json does not name the ports.
 //
 // Every listener is loopback, but the server may be shared, so loopback is not
-// proof of who is calling: each window also makes a random AGLINK_BRIDGE_TOKEN,
+// proof of who is calling: each window also has a random AGLINK_BRIDGE_TOKEN
+// (kept with its ports across reloads in the workspace state),
 // exported next to the ports, and a request without it is refused before it
 // reaches the PC. The clients send it as "Authorization: Bearer <token>".
 "use strict";
@@ -25,7 +26,13 @@ const http = require("http");
 
 const TARGETS = { web: "AGLINK_WEB_PORT", screen: "AGLINK_SCREEN_PORT", voice: "AGLINK_VOICE_PORT" };
 const TOKEN_ENV = "AGLINK_BRIDGE_TOKEN";
+// Set when a listener could not be opened, so clients report the real cause.
+const ERROR_ENV = "AGLINK_BRIDGE_ERROR";
+const STATE_KEY = "aglink.bridge.channel";
 const MAX_BODY = 64 << 20;
+// RELAY_WAIT bounds one call through the window, a little past the PC relay's
+// own 600s limit so its answer (or its timeout) wins when it comes.
+const RELAY_WAIT = 620000;
 
 // authorized reports whether req carries this window's bridge token.
 function authorized(req, token) {
@@ -96,7 +103,7 @@ function ensureStopHook(log) {
     return;
   }
   const { spawnSync } = require("child_process");
-  const found = (spawnSync("sh", ["-lc", "command -v node"], { encoding: "utf8" }).stdout || "").trim();
+  const found = (spawnSync("sh", ["-lc", "command -v node"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).stdout || "").trim();
   const node = found.startsWith("/") ? found : process.execPath;
   s.hooks = s.hooks || {};
   s.hooks.Stop = s.hooks.Stop || [];
@@ -106,7 +113,26 @@ function ensureStopHook(log) {
   log(`voice Stop hook added to ${sp}`);
 }
 
-function serve(vscode, target, token, log) {
+// serve opens target's listener, on port when it is given and free (the port
+// this window had before a reload), else on a free one. Right after a reload
+// the old extension host may still hold the port for a moment, so a busy port
+// is tried again briefly before giving it up.
+async function serve(vscode, target, token, log, port = 0, d = { tries: 8, delay: 250 }) {
+  if (port) {
+    for (let i = 0; i < d.tries; i++) {
+      try {
+        return await listen(vscode, target, token, log, port);
+      } catch (e) {
+        if (e.code !== "EADDRINUSE") break;
+        await new Promise((r) => setTimeout(r, d.delay));
+      }
+    }
+    log(`${target}: previous port ${port} is taken, using a new one`);
+  }
+  return listen(vscode, target, token, log, 0);
+}
+
+function listen(vscode, target, token, log, port) {
   return new Promise((resolve, reject) => {
     const srv = http.createServer((req, res) => {
       if (!authorized(req, token)) {
@@ -126,25 +152,61 @@ function serve(vscode, target, token, log) {
         if (size <= MAX_BODY) chunks.push(c);
       });
       req.on("end", async () => {
+        if (size > MAX_BODY) {
+          // Relaying the cut-off part would hand the PC broken JSON.
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `aglink-bridge: request body is ${size} bytes, over the ${MAX_BODY}-byte limit` }));
+          return;
+        }
+        // Bounded: while the window is reconnecting (a laptop asleep) the call
+        // would otherwise wait for hours, holding the client and its body.
+        let timer;
+        const cap = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`no answer from the PC within ${RELAY_WAIT / 60000} minutes`)), RELAY_WAIT);
+        });
         try {
-          const r = await vscode.commands.executeCommand("aglink.relay", {
+          const r = await Promise.race([cap, vscode.commands.executeCommand("aglink.relay", {
             target,
             method: req.method,
             path: req.url,
             headers: { "content-type": req.headers["content-type"] || "", accept: req.headers["accept"] || "" },
             body: Buffer.concat(chunks).toString("base64"),
-          });
+          })]);
+          chunks.length = 0;
+          if (res.destroyed) return; // the client gave up meanwhile
           res.writeHead(r.status, { "Content-Type": r.contentType || "application/json" });
           res.end(Buffer.from(r.body || "", "base64"));
         } catch (e) {
-          log(`${target} ${req.method} ${req.url}: ${e && e.message ? e.message : e}`);
+          const m = e && e.message ? e.message : String(e);
+          log(`${target} ${req.method} ${req.url}: ${m}`);
+          if (res.destroyed) return;
           res.writeHead(502, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: `aglink-bridge: ${e && e.message ? e.message : e}` }));
+          // "command not found": the PC half (aglink-vscode) is not there yet,
+          // so nothing was sent and the client may try again. Any other
+          // failure can come after the PC already got the call (the window
+          // dropped mid-call), so it is reported as mid-answer: not retried.
+          const notSent = /not found|no handler/i.test(m);
+          res.end(
+            JSON.stringify({
+              error: notSent
+                ? `aglink-bridge: the PC side is not reachable yet (${m})`
+                : `aglink-bridge: the link to the PC dropped mid-answer (the call may have run): ${m}`,
+            })
+          );
+        } finally {
+          clearTimeout(timer);
+          chunks.length = 0;
         }
       });
     });
     srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => resolve(srv));
+    srv.listen(port, "127.0.0.1", () => {
+      // From here on an error (out of file handles, say) is logged; a second
+      // one would otherwise go unhandled and take the extension host down.
+      srv.off("error", reject);
+      srv.on("error", (e) => log(`${target}: server error: ${e.message}`));
+      resolve(srv);
+    });
   });
 }
 
@@ -155,21 +217,70 @@ async function activate(context) {
   const log = (s) => out.appendLine(`[${new Date().toISOString()}] ${s}`);
   const env = context.environmentVariableCollection;
   env.persistent = false; // ports and token are per window and die with it
-  const token = crypto.randomBytes(24).toString("hex");
+  // The token and ports are kept in this workspace's state, so a window reload
+  // or reconnect comes back with the same ones: agents and terminals started
+  // before it keep working instead of getting 401 or "nothing answers".
+  const saved = context.workspaceState.get(STATE_KEY) || {};
+  const token = typeof saved.token === "string" && /^[0-9a-f]{48}$/.test(saved.token) ? saved.token : crypto.randomBytes(24).toString("hex");
+  const ports = {};
+  const failed = [];
+  // After a reload the old ports are put in place at once, so an agent or
+  // terminal started while the listeners are still coming up (a busy port is
+  // retried for up to 2s) is not left without one; a port that then had to
+  // change is corrected below.
+  if (saved.token === token) {
+    process.env[TOKEN_ENV] = token;
+    env.replace(TOKEN_ENV, token);
+    for (const [target, name] of Object.entries(TARGETS)) {
+      const old = Number((saved.ports || {})[target]) || 0;
+      if (old) {
+        process.env[name] = String(old);
+        env.replace(name, String(old));
+      }
+    }
+  }
+  await Promise.all(
+    Object.entries(TARGETS).map(async ([target]) => {
+      try {
+        const srv = await serve(vscode, target, token, log, Number((saved.ports || {})[target]) || 0);
+        servers.push(srv);
+        ports[target] = srv.address().port;
+        log(`${target} -> 127.0.0.1:${ports[target]}`);
+      } catch (e) {
+        failed.push(`${target}: ${e.message}`);
+        log(`${target}: listen failed: ${e.message}`);
+      }
+    })
+  );
+  // The token goes in with the ports, not before them: an agent started in
+  // between would see a bridge session with no port and give up for good.
   process.env[TOKEN_ENV] = token;
   env.replace(TOKEN_ENV, token);
   for (const [target, name] of Object.entries(TARGETS)) {
-    try {
-      const srv = await serve(vscode, target, token, log);
-      servers.push(srv);
-      const port = String(srv.address().port);
-      process.env[name] = port;
-      env.replace(name, port);
-      log(`${target} -> 127.0.0.1:${port}`);
-    } catch (e) {
-      log(`${target}: listen failed: ${e.message}`);
+    if (ports[target]) {
+      process.env[name] = String(ports[target]);
+      env.replace(name, String(ports[target]));
+    } else {
+      delete process.env[name];
+      env.delete(name);
     }
   }
+  // A port that had to change leaves agents and terminals started before the
+  // reload pointing at nothing; say so instead of letting them time out.
+  const moved = Object.keys(ports).filter((t) => (saved.ports || {})[t] && Number(saved.ports[t]) !== ports[t]);
+  if (moved.length) {
+    vscode.window.showWarningMessage(
+      `aglink bridge: the ${moved.join(", ")} port changed after the reload. Restart Claude Code / Codex and open a new terminal in this window so they use the new port.`
+    );
+  }
+  // The clients name this instead of a bare "port is not set".
+  if (failed.length) {
+    process.env[ERROR_ENV] = failed.join("; ");
+    env.replace(ERROR_ENV, failed.join("; "));
+  } else {
+    delete process.env[ERROR_ENV];
+  }
+  context.workspaceState.update(STATE_KEY, { token, ports: { ...(saved.ports || {}), ...ports } }).then(undefined, (e) => log(`saving ports: ${e.message}`));
   try {
     ensureStopHook(log);
   } catch (e) {
@@ -265,7 +376,10 @@ function onPath(name, env) {
 }
 
 function deactivate() {
-  for (const s of servers) s.close();
+  for (const s of servers) {
+    s.close();
+    if (s.closeAllConnections) s.closeAllConnections();
+  }
   servers = [];
 }
 

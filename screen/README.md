@@ -8,7 +8,10 @@ LLM 에이전트가 Windows 화면(UIA/Win32/GDI)을 직접 조작하게 해주�
 teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 이 실행파일을 자식
 프로세스로 호출만 하고, 실제 화면 조작 로직은 여기 전부 들어있다.
 
-- **UIA 우선** — `snapshot`/`invoke`/`set_value`/`get_value`/`get_text`로 대부분의 네이티브 앱을 좌표 없이 조작
+- **UIA 우선** — `snapshot`/`invoke`/`set_value`/`get_value`/`get_text`/`set_state`로 대부분의 네이티브 앱을 좌표 없이 조작
+  - `snapshot`: 문서 순서 + 포함 관계 들여쓰기, 상태 플래그(`[checked]`/`[unchecked]`/`[mixed]`, `[expanded]`/`[collapsed]`, `[selected]`, 슬라이더 `[value=N]`), 화면 사각형 `@x,y,w×h`. 트리 전체를 CacheRequest 한 번으로 읽어 예전보다 빠르다. `element_at`도 같은 정보
+  - `set_state`: `checked`/`expanded`/`selected`/`value`(RangeValue)/`scroll_into_view`/`select_item`(콤보박스 펼침→항목 선택→접기). 현재 상태를 읽고 다를 때만 바꾸며 `before→after`를 보고(멱등)
+  - 선택자: `invoke`/`set_value`/`get_value`/`get_text`/`wait_for_control`/`set_state`에 `control_type`(Button, Edit, CheckBox, ComboBox, ListItem, MenuItem, TreeItem, TabItem, Hyperlink, Text …) · `nth`(1부터) · `match`(`exact` 기본, `contains`/`prefix`는 대소문자 무시). 여러 개가 맞으면 첫 번째를 쓰고 `matched N; used 1st (use nth …)`라고 알려 주며, 하나도 없으면 가까운 이름 최대 5개를 제안
 - **읽기 출력 상한(토큰 절약)** — 도구 결과는 같은 턴의 이후 API 왕복마다 재전송되므로, 읽기 도구는 기본 상한과 이어읽기(`offset`)를 둔다. 잘리면 응답 끝에 `…[잘림: 전체 N자 중 a–b 표시. 이어 읽으려면 offset=b …]` 형태로 다음 offset을 알려준다.
   - `get_text`: `offset`(음수면 끝에서부터 tail, 예: `-3000`) · `max_chars`(기본 8000, 최대 50000)
   - `snapshot`: `offset`(요소 인덱스) · `max_elements`(기본 150, 최대 1000; 구 이름 `max`도 허용) · `max_chars`(기본 10000, 최대 50000) · 요소별 내용 미리보기 120자
@@ -18,13 +21,14 @@ teleclaude 본체("대화 감독" — 라우팅/스케줄러/텔레그램)는 �
 - **Win32 자식창 폴백** — `win_controls`/`click_control`, UIA가 비어도 정확한 좌표 확보
 - **번호 표시(Set-of-Mark)** — `show_numbers`/`click_number`, 음성 액세스의 "번호 표시"처럼 조작 가능한 요소에 번호를 붙이고 번호로 클릭 (아래 "번호 표시와 OCR")
 - **내장 OCR** — `ocr`/`click_text`, UIA가 아무것도 안 주는 창(게임·원격 데스크톱·캔버스)의 글자를 Windows OCR로 읽고 글자로 클릭
-- **GDI 캡처** — `screenshot`/`capture_window`/`capture_region`, 비전 다운스케일을 피해 정확한 좌표 매핑
-- **입력** — `click`/`double_click`/`triple_click`/`drag`/`move`/`type`/`key`(hold_ms 지원)/`scroll` (+ modifier 조합), `get_cursor_position`으로 현재 좌표 확인
+- **GDI 캡처** — `screenshot`(`monitor`=1부터, 1=주 모니터)/`capture_window`/`capture_region`. 캡션에 `origin`·`size`·`scale`이 들어가 이미지 좌표를 `screen_x = origin_x + img_x/scale`로 되돌릴 수 있다
+- **입력** — `click`/`double_click`/`triple_click`/`drag`(`hold_ms`·`steps`)/`move`/`type`/`key`(hold_ms 지원)/`scroll` (+ modifier 조합), `get_cursor_position`으로 현재 좌표 확인
 - **가상 데스크톱 인식** — `focus_window`/`return_desktop`이 데스크톱 경계를 넘나듦
-- **대기 프리미티브** — `wait_for_window`(창), `wait_for_control`(UIA 요소), 뜰 때까지 수동 폴링할 필요 없음
+- **대기 프리미티브** — `wait_for_window`(창), `wait_for_control`(UIA 요소; `until`=`appear`(기본)/`disappear`/`enabled`/`value`(+`value` 정확히 또는 `contains`)), 수동 폴링할 필요 없음
+- **클립보드** — `clipboard_get`(텍스트, `offset`/`max_chars`로 잘라 읽기) / `clipboard_set` (+ `key("ctrl+v")`로 긴·비ASCII 텍스트를 한 번에 붙여넣기)
 - **창 배치** — `move_window`(정확한 좌표/크기), `window_state`(최소화/최대화/복원), `get_window_rect`(현재 위치/크기/상태 확인), `close_window`(특정 창을 정확히 지정해서 닫기 — foreground에 의존하는 `key("alt+f4")`보다 안전)
 - **좌표 프리셋** — `preset_save`/`preset_click`/`preset_list`
-- **관리자 권한 대상 앱** — UIPI 감지 + 경고 (`screen_control.elevated`로 우회)
+- **관리자 권한 대상 앱** — UIPI 감지. 대상이 관리자 권한임이 확실하면 클릭/드래그/타이핑/키 입력은 보내기 전에 바로 실패(무음 무시 대신), 확실치 않으면 경고 (`screen_control.elevated`로 우회)
 - **보안 경고 자동 통과** — `launch_app`(`elevated`/`unblock`) + `pass_security_prompts` (아래 "보안 경고 통과")
 
 Windows 전용 (`GOOS=windows` 빌드 태그). 다른 OS에서는 스텁이 명확한 에러를 반환한다.
@@ -79,8 +83,11 @@ run_sequence  step_delay_ms=150  steps=
 - 단계 사이 기본 대기: `step_delay_ms`, 없으면 `AGLINK_SCREEN_STEP_DELAY_MS`
   (설치 프로그램 `/STEPDELAY=` 가 MCP 등록에 넣는다). 한 번의 대기는 60초로 제한.
 - Electron/Wails 창과 웹 페이지는 aglink-web 의 `run_steps` 가 좌표 대신 선택자로 한다.
-- `invoke`/`set_value`/`wait_for_control` 단계에 `window` 를 주면 백그라운드로, `click_control` 은
+- `invoke`/`set_value`/`set_state`/`wait_for_control` 단계에 `window` 를 주면 백그라운드로, `click_control` 은
   `background:false` 로 예전 경로. `note{text}` 는 아무것도 안 하는 표시용 단계.
+- `set_state`·`clipboard_get`·`clipboard_set` 단계도 있고, UIA 단계는 `control_type`/`nth`(1부터)/`match` 를
+  받는다(`click_control` 의 `nth` 는 예전대로 0부터). `drag` 는 `hold_ms`/`steps`, `wait_for_control` 은
+  `until`/`value`/`contains`.
 
 ## 녹화와 플로우 — `record_workflow` · `flow_*`
 
@@ -323,6 +330,8 @@ teleclaude와 같은 폴더에 두면(예: `..\Teleclaude\aglink-screen.exe`) �
 ## 관리자 권한 대상 앱
 
 대상 앱이 관리자(High integrity)로 떠 있으면 Windows UIPI가 일반 권한 프로세스의
-합성 입력(클릭 등)을 무음 차단한다. `click_control`/`invoke` 결과에 UIPI 경고가
+합성 입력(클릭 등)을 무음 차단한다. 대상 프로세스가 관리자 권한임을 확인할 수 있으면
+`click`/`double_click`/`triple_click`/`drag`/`type`/`key` 는 입력을 보내지 않고 바로 오류를 낸다
+(미디어 키·Win 조합 제외; 확인할 수 없으면 예전처럼 경고만). `click_control`/`invoke` 결과에 UIPI 경고가
 붙으면, teleclaude 쪽 `screen_control.elevated: true`로 전체 프로세스 체인
 (teleclaude → claude worker → aglink-screen)을 관리자 권한으로 재기동해야 한다.

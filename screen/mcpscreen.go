@@ -288,19 +288,34 @@ func newScreenMCPServer() *server.MCPServer {
 	// a moment after the action that triggers it), instead of a manual
 	// snapshot-polling loop.
 	s.AddTool(
-		mcp.NewTool("wait_for_control",
-			mcp.WithDescription("Block until an element (by Name or AutomationId from snapshot) appears in the foreground window's UIA tree (or in 'window' when given); times out after 'timeout_ms' (default 8000). Checks tree existence, not visual visibility, so a re-shown WinUI/XAML flyout may return immediately."),
+		mcp.NewTool("wait_for_control", withSelectorParams(
+			mcp.WithDescription("Block until an element (by Name or AutomationId from snapshot) in the foreground window's UIA tree (or in 'window' when given) reaches a condition: 'until' = appear (default), disappear (e.g. a progress dialog closed), enabled (a button became clickable), or value (its Value/Text equals 'value' or contains 'contains'). Times out after 'timeout_ms' (default 8000) reporting the last observed state. Checks the UIA tree, not visual visibility, so a re-shown WinUI/XAML flyout may count as present immediately."),
 			mcp.WithString("name", mcp.Description("The element Name or AutomationId to wait for."), mcp.Required()),
+			mcp.WithString("until", mcp.Description("appear (default) | disappear | enabled | value. Giving value/contains alone implies value."), mcp.Enum(untilAppear, untilDisappear, untilEnabled, untilValue)),
+			mcp.WithString("value", mcp.Description("until=value: the exact value to wait for.")),
+			mcp.WithString("contains", mcp.Description("until=value: wait until the value contains this (case-insensitive).")),
 			mcp.WithNumber("timeout_ms", mcp.Description("Max time to wait in milliseconds (default 8000).")),
 			mcp.WithString("window", mcp.Description(windowParamDesc)),
-		),
+		)...),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
+			sel, err := selectorFrom(req, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			value, valueSet := "", false
+			if v, ok := req.GetArguments()["value"]; ok && v != nil {
+				value, valueSet = fmt.Sprint(v), true // a number is compared as its text
+			}
+			cond, err := newWaitCond(req.GetString("until", ""), value, valueSet, req.GetString("contains", ""))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			timeoutMs := req.GetInt("timeout_ms", 8000)
-			result, err := uiaWaitForControlIn(req.GetString("window", ""), name, timeoutMs)
+			result, err := uiaWaitForControlIn(req.GetString("window", ""), sel, cond, timeoutMs)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("wait_for_control failed", err), nil
 			}
@@ -443,9 +458,12 @@ func newScreenMCPServer() *server.MCPServer {
 	// scale=1.0 to force full resolution, or an explicit 0.1–1.0 factor.
 	s.AddTool(
 		mcp.NewTool("screenshot",
-			mcp.WithDescription(fmt.Sprintf("Capture the entire screen and return it as a PNG image. Use this to see what is currently on screen. To SAVE TOKENS the image is downscaled by default to at most %dpx on its longer edge (readable, and clicking is unaffected — click coordinates come from win_controls/snapshot, not this image). Pass scale=1.0 for full resolution, or an explicit 0.1–1.0 downscale factor. "+screenToolPreference, maxScreenshotLongEdge)),
+			mcp.WithDescription(fmt.Sprintf("Capture the entire screen (all monitors, or one with 'monitor') and return it as a PNG image. Use this to see what is currently on screen. To SAVE TOKENS the image is downscaled by default to at most %dpx on its longer edge. The caption gives origin, size and scale, so image pixel (img_x,img_y) maps to screen_x = origin_x + img_x/scale, screen_y = origin_y + img_y/scale (prefer snapshot/element_at coordinates for small targets). Pass scale=1.0 for full resolution, or an explicit 0.1–1.0 downscale factor. "+screenToolPreference, maxScreenshotLongEdge)),
 			mcp.WithNumber("scale",
 				mcp.Description("Optional downscale factor between 0.1 and 1.0. Omit for the default token-saving downscale; pass 1.0 for full resolution."),
+			),
+			mcp.WithNumber("monitor",
+				mcp.Description("Optional 1-based monitor to capture alone (1 = primary, then left to right). Omit for the whole virtual screen. A wrong number lists the monitors."),
 			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -456,20 +474,28 @@ func newScreenMCPServer() *server.MCPServer {
 			if scale != 0 && (scale < 0.1 || scale > 1.0) {
 				return mcp.NewToolResultError("scale must be between 0.1 and 1.0"), nil
 			}
-			var (
-				png []byte
-				err error
-			)
-			if scale == 0 {
-				png, err = captureScreenCapped(maxScreenshotLongEdge)
-			} else {
-				png, err = captureScreenScaled(scale)
+			ensureDPIAware()
+			vr := virtualScreenRect()
+			x, y, w, h := vr.L, vr.T, vr.R-vr.L, vr.B-vr.T
+			what := "the whole screen"
+			if n := req.GetInt("monitor", 0); n != 0 {
+				ms, err := listMonitors()
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("screenshot failed", err), nil
+				}
+				if n < 1 || n > len(ms) {
+					return mcp.NewToolResultError(fmt.Sprintf("monitor must be 1–%d: %s", len(ms), describeMonitors(ms))), nil
+				}
+				r := ms[n-1].Rect
+				x, y, w, h = int(r.Left), int(r.Top), int(r.Right-r.Left), int(r.Bottom-r.Top)
+				what = fmt.Sprintf("monitor %d of %d", n, len(ms))
 			}
+			png, m, err := captureRectImage(x, y, w, h, scale, maxScreenshotLongEdge)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("screenshot failed", err), nil
 			}
 			b64 := base64.StdEncoding.EncodeToString(png)
-			return mcp.NewToolResultImage("Screenshot of the current screen.", b64, "image/png"), nil
+			return mcp.NewToolResultImage(fmt.Sprintf("Screenshot of %s. %s", what, m.caption()), b64, "image/png"), nil
 		},
 	)
 
@@ -478,7 +504,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// returned caption gives the origin to map image pixels to screen coords.
 	s.AddTool(
 		mcp.NewTool("capture_window",
-			mcp.WithDescription(fmt.Sprintf("Capture ONLY the given window (cropped to its rectangle) as a PNG. Prefer this over the full screenshot. A window under %dpx on its longer edge comes back untouched — sharp, and its pixels map exactly to screen coordinates, so the caption gives the origin and an in-image pixel (ix,iy) maps to click(x=left+ix, y=top+iy). A bigger window is capped to %dpx (the vision layer would downscale it anyway); the caption then says so and the click mapping does NOT hold. To READ content even more cheaply, pass scale (0.1–1.0) — reading only, do not compute clicks from it. Even a capped window still costs ~1800 vision tokens and is re-sent on every later request, so reach for snapshot/get_text first.", visionLongEdgeCap, visionLongEdgeCap)),
+			mcp.WithDescription(fmt.Sprintf("Capture ONLY the given window (cropped to its rectangle) as a PNG. Prefer this over the full screenshot. A window under %dpx on its longer edge comes back untouched — sharp, and its pixels map exactly to screen coordinates: image pixel (ix,iy) is click(x=origin_x+ix, y=origin_y+iy). A bigger window is capped to %dpx (the vision layer would downscale it anyway). Every caption gives origin, size and scale, so a scaled image still maps back via screen_x = origin_x + img_x/scale (approximate — prefer snapshot/element_at for small targets). To READ content even more cheaply, pass scale (0.1–1.0). Even a capped window still costs ~1800 vision tokens and is re-sent on every later request, so reach for snapshot/get_text first.", visionLongEdgeCap, visionLongEdgeCap)),
 			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
 			mcp.WithNumber("scale", mcp.Description(fmt.Sprintf("Optional downscale factor 0.1–1.0 for READING only (fewer vision tokens). Omit for the default %dpx long-edge cap; pass 1.0 to force the raw grab with exact click mapping.", visionLongEdgeCap))),
 		),
@@ -495,38 +521,29 @@ func newScreenMCPServer() *server.MCPServer {
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("capture_window failed", err), nil
 			}
-			// Full resolution (default): keep the exact 1:1 image→screen click mapping.
-			caption := fmt.Sprintf("Window %q. Screen origin (left=%d, top=%d), size %dx%d. "+
-				"To click an element at image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).",
-				window, left, top, w, h, left, top)
+			// Full resolution (default): the exact 1:1 image→screen click mapping.
+			m := captureMapping{OriginX: left, OriginY: top, W: w, H: h, ImgW: w, ImgH: h}
+			label := fmt.Sprintf("Window %q.", window)
 			switch {
 			case scale != 0 && scale < 1.0:
-				var iw, ih int
-				png, iw, ih, err = scaleReadingPNG(png, scale)
+				png, m.ImgW, m.ImgH, err = scaleReadingPNG(png, scale)
 				if err != nil {
 					return mcp.NewToolResultErrorFromErr("capture_window downscale failed", err), nil
 				}
-				// Downscaled: the 1:1 mapping no longer holds, so steer clicks to the
-				// reliable path instead of offering error-prone scaled arithmetic.
-				caption = fmt.Sprintf("Window %q, downscaled to %dx%d for reading (from %dx%d). "+
-					"Read-only: do NOT compute click coordinates from this image — use snapshot/win_controls, "+
-					"or re-capture without scale for pixel-accurate clicking.", window, iw, ih, w, h)
+				label = fmt.Sprintf("Window %q, downscaled for reading.", window)
 			case scale == 0:
 				// Default: cap the long edge. scale=1.0 skips this and returns the raw grab.
-				var iw, ih int
 				var capped bool
-				png, iw, ih, capped, err = capVisionLongEdge(png)
+				png, m.ImgW, m.ImgH, capped, err = capVisionLongEdge(png)
 				if err != nil {
 					return mcp.NewToolResultErrorFromErr("capture_window cap failed", err), nil
 				}
 				if capped {
-					caption = fmt.Sprintf("Window %q, capped to %dx%d (from %dx%d) — past %dpx the vision layer "+
-						"downscales anyway, so the extra pixels only cost transcript bytes. "+
-						"The 1:1 click mapping does NOT hold here: take coordinates from snapshot/win_controls, "+
-						"capture_region a sub-rectangle for an exact-mapping image, or pass scale=1.0 for the raw grab.",
-						window, iw, ih, w, h, visionLongEdgeCap)
+					label = fmt.Sprintf("Window %q, capped to %dpx on its long edge (the vision layer downscales past that anyway; "+
+						"capture_region a sub-rectangle for an exact-mapping image, or pass scale=1.0 for the raw grab).", window, visionLongEdgeCap)
 				}
 			}
+			caption := label + " " + m.caption()
 			b64 := base64.StdEncoding.EncodeToString(png)
 			return mcp.NewToolResultImage(caption, b64, "image/png"), nil
 		},
@@ -537,7 +554,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// given (which also switches to that window's virtual desktop first).
 	s.AddTool(
 		mcp.NewTool("capture_region",
-			mcp.WithDescription(fmt.Sprintf("Capture an arbitrary rectangle as a PNG — the cheapest way to look at just the part you need. (x,y) is the top-left; width/height the size. (x,y) are ABSOLUTE screen pixels, or RELATIVE to 'window' when given (switches to its desktop first). A rectangle under %dpx on its longer edge is returned untouched and the caption reports the absolute origin, so image pixel (ix,iy) maps to click(x=origin+ix, y=origin+iy); a bigger one is capped to %dpx and loses that mapping (the caption says so). Pass scale (0.1–1.0) to downscale further for READING only, or scale=1.0 to force the raw grab.", visionLongEdgeCap, visionLongEdgeCap)),
+			mcp.WithDescription(fmt.Sprintf("Capture an arbitrary rectangle as a PNG — the cheapest way to look at just the part you need. (x,y) is the top-left; width/height the size. (x,y) are ABSOLUTE screen pixels, or RELATIVE to 'window' when given (switches to its desktop first). A rectangle under %dpx on its longer edge is returned untouched, so image pixel (ix,iy) maps to click(x=origin_x+ix, y=origin_y+iy); a bigger one is capped to %dpx. The caption always gives origin, size and scale (screen_x = origin_x + img_x/scale). Pass scale (0.1–1.0) to downscale further for reading, or scale=1.0 to force the raw grab.", visionLongEdgeCap, visionLongEdgeCap)),
 			mcp.WithNumber("x", mcp.Description("Left of the rectangle: absolute screen X, or window-relative X if 'window' is set."), mcp.Required()),
 			mcp.WithNumber("y", mcp.Description("Top of the rectangle: absolute screen Y, or window-relative Y if 'window' is set."), mcp.Required()),
 			mcp.WithNumber("width", mcp.Description("Rectangle width in pixels (>0)."), mcp.Required()),
@@ -571,42 +588,31 @@ func newScreenMCPServer() *server.MCPServer {
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("capture_region failed", err), nil
 			}
-			var caption string
+			m := captureMapping{OriginX: absX, OriginY: absY, W: w, H: h, ImgW: w, ImgH: h}
+			label := "Screen region."
 			if strings.TrimSpace(window) != "" {
-				caption = fmt.Sprintf("Region of window %q at window-relative (%d,%d), size %dx%d — screen origin (%d,%d). "+
-					"To click image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).", window, x, y, w, h, absX, absY, absX, absY)
-			} else {
-				caption = fmt.Sprintf("Screen region at (%d,%d), size %dx%d. "+
-					"To click image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).", absX, absY, w, h, absX, absY)
+				label = fmt.Sprintf("Region of window %q at window-relative (%d,%d).", window, x, y)
 			}
-			// Downscaled: same rule as capture_window — the 1:1 image→screen mapping is
-			// gone, so send clicks back through the reliable path instead of scaled math.
 			switch {
 			case scale != 0 && scale < 1.0:
-				var iw, ih int
-				png, iw, ih, err = scaleReadingPNG(png, scale)
+				png, m.ImgW, m.ImgH, err = scaleReadingPNG(png, scale)
 				if err != nil {
 					return mcp.NewToolResultErrorFromErr("capture_region downscale failed", err), nil
 				}
-				caption = fmt.Sprintf("Region at screen origin (%d,%d), downscaled to %dx%d for reading (from %dx%d). "+
-					"Read-only: do NOT compute click coordinates from this image — use snapshot/win_controls, "+
-					"or re-capture without scale for pixel-accurate clicking.", absX, absY, iw, ih, w, h)
+				label += " Downscaled for reading."
 			case scale == 0:
 				// Default: cap the long edge. scale=1.0 skips this and returns the raw grab.
-				var iw, ih int
 				var capped bool
-				png, iw, ih, capped, err = capVisionLongEdge(png)
+				png, m.ImgW, m.ImgH, capped, err = capVisionLongEdge(png)
 				if err != nil {
 					return mcp.NewToolResultErrorFromErr("capture_region cap failed", err), nil
 				}
 				if capped {
-					caption = fmt.Sprintf("Region at screen origin (%d,%d), capped to %dx%d (from %dx%d) — past %dpx the "+
-						"vision layer downscales anyway, so the extra pixels only cost transcript bytes. "+
-						"The 1:1 click mapping does NOT hold here: take coordinates from snapshot/win_controls, "+
-						"re-capture a smaller rectangle for an exact-mapping image, or pass scale=1.0 for the raw grab.",
-						absX, absY, iw, ih, w, h, visionLongEdgeCap)
+					label += fmt.Sprintf(" Capped to %dpx on its long edge (the vision layer downscales past that anyway; "+
+						"capture a smaller rectangle for an exact-mapping image, or pass scale=1.0 for the raw grab).", visionLongEdgeCap)
 				}
 			}
+			caption := label + " " + m.caption()
 			b64 := base64.StdEncoding.EncodeToString(png)
 			return mcp.NewToolResultImage(caption, b64, "image/png"), nil
 		},
@@ -664,12 +670,14 @@ func newScreenMCPServer() *server.MCPServer {
 	// drag — press at (x1,y1), move to (x2,y2), release (rubber-band/slider/drag-drop).
 	s.AddTool(
 		mcp.NewTool("drag",
-			mcp.WithDescription("Press a mouse button at (x1,y1), drag to (x2,y2) through intermediate steps, then release. Use for rubber-band multi-select, sliders, drag & drop, and text selection. button is left (default), right, or middle."),
+			mcp.WithDescription("Press a mouse button at (x1,y1), drag to (x2,y2) through intermediate steps, then release. Use for rubber-band multi-select, sliders, drag & drop, and text selection. button is left (default), right, or middle. For apps that only start a drag after a long-press or ignore fast moves, raise hold_ms and/or steps. For a slider with a RangeValue, set_state value=N is exact and needs no coordinates."),
 			mcp.WithNumber("x1", mcp.Description("Start X pixel."), mcp.Required()),
 			mcp.WithNumber("y1", mcp.Description("Start Y pixel."), mcp.Required()),
 			mcp.WithNumber("x2", mcp.Description("End X pixel."), mcp.Required()),
 			mcp.WithNumber("y2", mcp.Description("End Y pixel."), mcp.Required()),
 			mcp.WithString("button", mcp.Description("Mouse button: left (default), right, or middle.")),
+			mcp.WithNumber("hold_ms", mcp.Description("Pause after pressing the button, before moving (default 15, max 10000).")),
+			mcp.WithNumber("steps", mcp.Description("Number of intermediate moves (default 12, max 500; more = slower, smoother).")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			x1, err := req.RequireInt("x1")
@@ -689,7 +697,7 @@ func newScreenMCPServer() *server.MCPServer {
 				return mcp.NewToolResultError("missing required argument 'y2'"), nil
 			}
 			button := req.GetString("button", "left")
-			if err := mouseDrag(x1, y1, x2, y2, button); err != nil {
+			if err := mouseDrag(x1, y1, x2, y2, button, req.GetInt("hold_ms", 0), req.GetInt("steps", 0)); err != nil {
 				return mcp.NewToolResultErrorFromErr("drag failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("ok: %s-dragged (%d,%d) -> (%d,%d)", button, x1, y1, x2, y2)), nil
@@ -1040,7 +1048,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// snapshot — read the foreground window's UIA element tree as text.
 	s.AddTool(
 		mcp.NewTool("snapshot",
-			mcp.WithDescription(fmt.Sprintf("Read the foreground window's (or, with 'window', any window's — no focus change) UI Automation element tree as compact text: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), and a short inlined content preview (= \"…\") for fields/editors that carry text. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page. "+screenToolPreference, defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
+			mcp.WithDescription(fmt.Sprintf("Read the foreground window's (or, with 'window', any window's — no focus change) UI Automation element tree as compact text in document order, indented by containment: control type, name, automation id, capabilities ([invokable]/[editable]/[text]/[disabled]), state ([checked]/[unchecked]/[mixed], [expanded]/[collapsed], [selected], [value=N] for sliders), the screen rectangle @x,y,w×h, and a short inlined content preview (= \"…\") for fields/editors that carry text. Change a state with set_state. Prefer this over a screenshot — it is cheap and reliable for native apps and shows both structure AND a content preview in one call. For the FULL text of an element or document, follow up with get_text (or get_value for a single field). Output is paged to save tokens: at most max_elements (default %d) elements / max_chars (default %d) chars per call; when cut, the reply ends with a note giving the offset=N to pass for the next page. "+screenToolPreference, defaultSnapshotMaxElements, defaultSnapshotMaxChars)),
 			mcp.WithNumber("max_elements",
 				mcp.Description(fmt.Sprintf("Max elements to show (default %d, max %d).", defaultSnapshotMaxElements, ceilingSnapshotMaxElements)),
 			),
@@ -1073,7 +1081,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// click_control instead of a raw coordinate click.
 	s.AddTool(
 		mcp.NewTool("element_at",
-			mcp.WithDescription("Resolve the UI Automation element at an absolute screen point (x,y) — same info as one snapshot line: control type, name, automation id, capabilities. Use this after spotting something in a screenshot but before acting on it: get its name here, then drive it with invoke/set_value/click_control (far more reliable than a raw coordinate click, which can silently land on the wrong control)."),
+			mcp.WithDescription("Resolve the UI Automation element at an absolute screen point (x,y) — same info as one snapshot line: control type, name, automation id, capabilities, state and screen rectangle. Use this after spotting something in a screenshot but before acting on it: get its name here, then drive it with invoke/set_value/click_control (far more reliable than a raw coordinate click, which can silently land on the wrong control)."),
 			mcp.WithNumber("x", mcp.Description("Absolute screen X pixel."), mcp.Required()),
 			mcp.WithNumber("y", mcp.Description("Absolute screen Y pixel."), mcp.Required()),
 		),
@@ -1096,33 +1104,38 @@ func newScreenMCPServer() *server.MCPServer {
 
 	// invoke — activate an element found by name (or automation id).
 	s.AddTool(
-		mcp.NewTool("invoke",
-			mcp.WithDescription("Find an element by its Name (or AutomationId) in the foreground window — or in 'window', in the background without focusing it — and activate it (button/menu item/tree item/checkbox). Use a name reported by snapshot. Preferred over click(x,y)."),
+		mcp.NewTool("invoke", withSelectorParams(
+			mcp.WithDescription("Find an element by its Name (or AutomationId) in the foreground window — or in 'window', in the background without focusing it — and activate it (button/menu item/tree item/checkbox). Use a name reported by snapshot; narrow with control_type/nth/match when several share it. Preferred over click(x,y). To put a checkbox/expander/list item into a specific state (not just flip it), use set_state."),
 			mcp.WithString("name",
 				mcp.Description("The element Name or AutomationId to invoke."),
 				mcp.Required(),
 			),
 			mcp.WithString("window", mcp.Description(windowParamDesc)),
-		),
+		)...),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
+			sel, err := selectorFrom(req, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("invoke failed", err), nil
 			}
-			if err := uiaInvokeIn(hwnd, name); err != nil {
+			note, err := uiaInvokeIn(hwnd, sel)
+			if err != nil {
 				return mcp.NewToolResultErrorFromErr("invoke failed", err), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("ok: invoked %q%s", name, backgroundSuffix(hwnd))), nil
+			return mcp.NewToolResultText(withNote(fmt.Sprintf("ok: invoked %q%s", name, backgroundSuffix(hwnd)), note)), nil
 		},
 	)
 
 	// set_value — set the text of an editable element found by name.
 	s.AddTool(
-		mcp.NewTool("set_value",
+		mcp.NewTool("set_value", withSelectorParams(
 			mcp.WithDescription("Find an editable element by its Name (or AutomationId) in the foreground window — or in 'window', in the background without focusing it — and set its text via the UIA Value pattern. Preferred over click+type for known input fields."),
 			mcp.WithString("name",
 				mcp.Description("The element Name or AutomationId of the input field."),
@@ -1133,7 +1146,7 @@ func newScreenMCPServer() *server.MCPServer {
 				mcp.Required(),
 			),
 			mcp.WithString("window", mcp.Description(windowParamDesc)),
-		),
+		)...),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
 			if err != nil {
@@ -1143,14 +1156,19 @@ func newScreenMCPServer() *server.MCPServer {
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'text'"), nil
 			}
+			sel, err := selectorFrom(req, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("set_value failed", err), nil
 			}
-			if err := uiaSetValueIn(hwnd, name, text); err != nil {
+			note, err := uiaSetValueIn(hwnd, sel, text)
+			if err != nil {
 				return mcp.NewToolResultErrorFromErr("set_value failed", err), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("ok: set %q = %q%s", name, text, backgroundSuffix(hwnd))), nil
+			return mcp.NewToolResultText(withNote(fmt.Sprintf("ok: set %q = %q%s", name, text, backgroundSuffix(hwnd)), note)), nil
 		},
 	)
 
@@ -1160,28 +1178,35 @@ func newScreenMCPServer() *server.MCPServer {
 	// calculated field may have updated, etc.) rather than guessing from
 	// snapshot's truncated label.
 	s.AddTool(
-		mcp.NewTool("get_value",
+		mcp.NewTool("get_value", withSelectorParams(
 			mcp.WithDescription(fmt.Sprintf("Find an editable element by its Name (or AutomationId) in the foreground window (or 'window', no focus change) and read its CURRENT text via the UIA Value pattern. The read-side counterpart to set_value — use this to confirm what a field actually holds now (e.g. after autocomplete rewrote it, or a calculated field updated) instead of guessing from snapshot's truncated label. Returns at most %d chars; for longer content use get_text (offset/max_chars).", maxFieldValueChars)),
 			mcp.WithString("name",
 				mcp.Description("The element Name or AutomationId of the input field."),
 				mcp.Required(),
 			),
 			mcp.WithString("window", mcp.Description(windowParamDesc)),
-		),
+		)...),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
+			sel, err := selectorFrom(req, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
 			}
-			value, totalKnown, err := uiaGetValueIn(hwnd, name)
+			value, totalKnown, selNote, err := uiaGetValueIn(hwnd, sel)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_value failed", err), nil
 			}
 			value, note := clampFieldValue(value, totalKnown)
+			if selNote != "" {
+				note += "\n[" + selNote + "]"
+			}
 			return mcp.NewToolResultText(fmt.Sprintf("%q = %q%s", name, value, note)), nil
 		},
 	)
@@ -1195,7 +1220,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// offset/max_chars (same naming as web's get_page_text) because a tool result
 	// is re-sent on every later round-trip of the turn.
 	s.AddTool(
-		mcp.NewTool("get_text",
+		mcp.NewTool("get_text", withSelectorParams(
 			mcp.WithDescription(fmt.Sprintf("Read a window/control's TEXT content by handle (UIA Text pattern, Value fallback) — use this to READ a document, editor, log pane, article, or read-only text area instead of a screenshot. Give 'name' (element Name/AutomationId from snapshot) to read one element; omit it to read the foreground window's document text ('window' reads another window instead, without focusing it). Returns at most max_chars (default %d) characters starting at 'offset'; when cut, the reply ends with a note '…[잘림: 전체 N자 중 a–b 표시. 이어 읽으려면 offset=b …]' — pass that offset to read the next part. A NEGATIVE offset reads from the END (tail): offset=-3000 = the last 3000 chars (newest log lines). Prefer this and snapshot over capture_window for reading text; capture only for genuinely visual content.", defaultTextMaxChars)),
 			mcp.WithString("name",
 				mcp.Description("Optional element Name/AutomationId to read. Omit to read the foreground window's own text content."),
@@ -1207,16 +1232,20 @@ func newScreenMCPServer() *server.MCPServer {
 				mcp.Description(fmt.Sprintf("Max characters to return (default %d, max %d). Raise only when you truly need a bigger chunk.", defaultTextMaxChars, ceilingTextMaxChars)),
 			),
 			mcp.WithString("window", mcp.Description(windowParamDesc)),
-		),
+		)...),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name := req.GetString("name", "")
 			offset := req.GetInt("offset", 0)
 			maxChars := clampLimit(req.GetInt("max_chars", 0), defaultTextMaxChars, ceilingTextMaxChars)
+			sel, err := selectorFrom(req, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_text failed", err), nil
 			}
-			text, err := uiaGetTextIn(hwnd, name, offset, maxChars)
+			text, err := uiaGetTextIn(hwnd, sel, offset, maxChars)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("get_text failed", err), nil
 			}
@@ -1224,6 +1253,107 @@ func newScreenMCPServer() *server.MCPServer {
 				return mcp.NewToolResultText("(no text content)"), nil
 			}
 			return mcp.NewToolResultText(text), nil
+		},
+	)
+
+	// set_state — put an element into a wanted state (idempotent) instead of
+	// invoke's blind "activate": a second call with the same args changes nothing.
+	s.AddTool(
+		mcp.NewTool("set_state", withSelectorParams(
+			mcp.WithDescription("Put a UIA element into a specific STATE, idempotently: reads the current state, changes it only if different, and reports before→after. checked (checkbox/toggle button: Toggle pattern, toggled until it matches), expanded (tree item/expander/combo box: ExpandCollapse), selected (list/tab/tree item, radio button: SelectionItem), value (slider/spinner: RangeValue), scroll_into_view (ScrollItem, list/tree items scrolled out of view), select_item (choose the named item inside a combo box — expanded, item selected, collapsed again — or inside a list/tab control). Several may be combined in one call. Finds the element like invoke (name + control_type/nth/match; 'window' for background use). Snapshot shows the current states ([checked], [collapsed], [selected], [value=N])."),
+			mcp.WithString("name", mcp.Description("The element Name or AutomationId (the checkbox, tree item, slider, combo box, …)."), mcp.Required()),
+			mcp.WithBoolean("checked", mcp.Description("Wanted toggle state: true = checked/on, false = unchecked/off.")),
+			mcp.WithBoolean("expanded", mcp.Description("true = expand, false = collapse.")),
+			mcp.WithBoolean("selected", mcp.Description("true = select this item, false = remove it from the selection (multi-select lists).")),
+			mcp.WithNumber("value", mcp.Description("Wanted RangeValue (slider/spinner position), within its min–max.")),
+			mcp.WithBoolean("scroll_into_view", mcp.Description("true = scroll the item into view if it is offscreen.")),
+			mcp.WithString("select_item", mcp.Description("Name of the item to choose inside this combo box / list / tab control (exact, else case-insensitive prefix/substring).")),
+			mcp.WithString("window", mcp.Description(windowParamDesc)),
+		)...),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			sel, err := selectorFrom(req, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			sr := stateRequest{
+				ScrollIntoView: req.GetBool("scroll_into_view", false),
+				SelectItem:     req.GetString("select_item", ""),
+			}
+			args := req.GetArguments()
+			for key, dst := range map[string]**bool{"checked": &sr.Checked, "expanded": &sr.Expanded, "selected": &sr.Selected} {
+				b, ok, err := optBool(args, key)
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				if ok {
+					*dst = &b
+				}
+			}
+			f, ok, err := optFloat(args, "value")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if ok {
+				sr.Value = &f
+			}
+			if sr.empty() {
+				return mcp.NewToolResultError("set_state needs one of checked, expanded, selected, value, scroll_into_view, select_item"), nil
+			}
+			hwnd, err := resolveTargetWindow(req.GetString("window", ""))
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("set_state failed", err), nil
+			}
+			out, err := uiaSetStateIn(hwnd, sel, sr)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("set_state failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: " + out + backgroundSuffix(hwnd)), nil
+		},
+	)
+
+	// clipboard_get / clipboard_set — the clipboard as text. clipboard_set +
+	// key("ctrl+v") pastes long or non-ASCII text in one go (type sends it a
+	// character at a time); clipboard_get reads what a "Copy" button produced.
+	s.AddTool(
+		mcp.NewTool("clipboard_get",
+			mcp.WithDescription(fmt.Sprintf("Read the Windows clipboard as text (CF_UNICODETEXT) — e.g. after an app's Copy button or ctrl+c. Returns at most max_chars (default %d) starting at 'offset' (negative = from the end), with a continuation note when cut. Says so when the clipboard holds no text (empty, an image, files).", defaultTextMaxChars)),
+			mcp.WithNumber("offset", mcp.Description("Start character offset (default 0); negative reads the tail.")),
+			mcp.WithNumber("max_chars", mcp.Description(fmt.Sprintf("Max characters to return (default %d, max %d).", defaultTextMaxChars, ceilingTextMaxChars))),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			text, ok, err := clipboardGetText()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("clipboard_get failed", err), nil
+			}
+			if !ok {
+				return mcp.NewToolResultText("(clipboard holds no text)"), nil
+			}
+			if text == "" {
+				return mcp.NewToolResultText("(clipboard text is empty)"), nil
+			}
+			maxChars := clampLimit(req.GetInt("max_chars", 0), defaultTextMaxChars, ceilingTextMaxChars)
+			body, note := runeWindow(text, req.GetInt("offset", 0), maxChars, true)
+			return mcp.NewToolResultText(body + note), nil
+		},
+	)
+	s.AddTool(
+		mcp.NewTool("clipboard_set",
+			mcp.WithDescription("Replace the Windows clipboard content with text (CF_UNICODETEXT). Follow with key(\"ctrl+v\") to paste it into the focused field — faster and more faithful than type for long or non-ASCII text. Overwrites whatever the user had copied."),
+			mcp.WithString("text", mcp.Description("The text to put on the clipboard."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			text, err := req.RequireString("text")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'text'"), nil
+			}
+			if err := clipboardSetText(text); err != nil {
+				return mcp.NewToolResultErrorFromErr("clipboard_set failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: clipboard set (%d characters)", len([]rune(text)))), nil
 		},
 	)
 
@@ -1261,7 +1391,7 @@ func newScreenMCPServer() *server.MCPServer {
 	// or may not appear) belong outside the batch, split at that point.
 	s.AddTool(
 		mcp.NewTool("run_sequence",
-			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,timeout_ms?,window?}, wait_for_window{window,timeout_ms?}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?}, wait{ms}, note{text} (no-op placeholder). Giving "window" to invoke/set_value/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
+			mcp.WithDescription(`Execute a batch of screen actions in one call instead of one round-trip per step. Actions (same params as each own tool): click{x,y,button?,modifiers?}, double_click{x,y}, triple_click{x,y}, type{text}, key{combo,hold_ms?}, invoke{name,window?}, set_value{name,text,window?}, set_state{name,checked?,expanded?,selected?,value?,scroll_into_view?,select_item?,window?}, click_control{window,text,nth?,background?}, wait_for_control{name,until?,value?,contains?,timeout_ms?,window?}, wait_for_window{window,timeout_ms?}, clipboard_set{text}, clipboard_get{}, scroll{dx?,dy?}, drag{x,y,x2,y2,button?,hold_ms?,steps?}, wait{ms}, note{text} (no-op placeholder). invoke/set_value/set_state/wait_for_control also take control_type/nth (1-based)/match like their tools; click_control's nth stays 0-based. Giving "window" to invoke/set_value/set_state/wait_for_control runs them in the background, without focusing that window. Any step may add "wait_ms" to pause after it — for a screen that slides in or a window that takes a moment after a click; prefer wait_for_control/wait_for_window when there is something to wait FOR. Stops at the first failed step and reports how far it got. Use only for steps whose targets you already know; keep any final destructive/committing action (send, delete, confirm) out of the batch and issue it separately after verifying state. For an Electron/Wails window or a web page, aglink-web's run_steps does the same by selector instead of coordinates, which survives layout changes.`),
 			mcp.WithString("steps", mcp.Description(`JSON array of step objects, each with an "action" field plus that action's params. Example: [{"action":"click","x":100,"y":200,"wait_ms":300},{"action":"type","text":"hello"},{"action":"key","combo":"tab"}]`), mcp.Required()),
 			mcp.WithNumber("step_delay_ms", mcp.Description("Pause between every two steps, in ms (default from AGLINK_SCREEN_STEP_DELAY_MS, else 0).")),
 			mcp.WithString("save_as", mcp.Description("Optional flow name: once every step succeeded, store these steps under it for flow_run (letters, digits, - _ .).")),
@@ -1413,4 +1543,61 @@ func saveFlowStable(flows *FlowStore, name, steps string) (n int, kept string, e
 		kept = "\nwindow handles saved as titles so the flow survives a restart: " + strings.Join(notes, ", ")
 	}
 	return n, kept, nil
+}
+
+// withSelectorParams appends the optional selector arguments shared by the
+// by-name UIA tools (invoke, set_value, get_value, get_text, wait_for_control,
+// set_state) to a tool's options.
+func withSelectorParams(opts ...mcp.ToolOption) []mcp.ToolOption {
+	return append(opts,
+		mcp.WithString("control_type", mcp.Description("Optional control type to narrow the match: Button, Edit, CheckBox, RadioButton, ComboBox, List, ListItem, Menu, MenuItem, Tree, TreeItem, Tab, TabItem, Hyperlink, Text, Slider, Document, … (snapshot's type labels work too).")),
+		mcp.WithNumber("nth", mcp.Description("Optional 1-based pick when several elements match (document order, as in snapshot). Without it the first match is used and the reply says how many matched.")),
+		mcp.WithString("match", mcp.Description("How 'name' matches: exact (default, case-sensitive), contains or prefix (both case-insensitive)."), mcp.Enum(matchExact, matchContains, matchPrefix)),
+	)
+}
+
+// selectorFrom reads a tool call's selector arguments.
+func selectorFrom(req mcp.CallToolRequest, name string) (uiaSelector, error) {
+	return newSelector(name, req.GetString("control_type", ""), req.GetInt("nth", 0), req.GetString("match", ""))
+}
+
+// optBool reads an optional boolean argument, telling "absent" from false.
+// Accepts a JSON bool or "true"/"false".
+func optBool(args map[string]any, key string) (val, ok bool, err error) {
+	v, present := args[key]
+	if !present || v == nil {
+		return false, false, nil
+	}
+	switch t := v.(type) {
+	case bool:
+		return t, true, nil
+	case string:
+		b, perr := strconv.ParseBool(strings.TrimSpace(t))
+		if perr != nil {
+			return false, false, fmt.Errorf("%s must be true or false, got %q", key, t)
+		}
+		return b, true, nil
+	}
+	return false, false, fmt.Errorf("%s must be true or false", key)
+}
+
+// optFloat reads an optional numeric argument (a JSON number or numeric string).
+func optFloat(args map[string]any, key string) (val float64, ok bool, err error) {
+	v, present := args[key]
+	if !present || v == nil {
+		return 0, false, nil
+	}
+	switch t := v.(type) {
+	case float64:
+		return t, true, nil
+	case int:
+		return float64(t), true, nil
+	case string:
+		f, perr := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		if perr != nil {
+			return 0, false, fmt.Errorf("%s must be a number, got %q", key, t)
+		}
+		return f, true, nil
+	}
+	return 0, false, fmt.Errorf("%s must be a number", key)
 }

@@ -35,6 +35,61 @@ type seqStep struct {
 	WaitMs    int    `json:"wait_ms,omitempty"` // any step: pause after it (screen transitions, animations)
 	// Background is click_control's opt-out (nil = default true).
 	Background *bool `json:"background,omitempty"`
+	Steps      int   `json:"steps,omitempty"` // drag: interpolated moves
+
+	// UIA selector extras (invoke / set_value / wait_for_control / set_state).
+	// Nth above is 1-based for these, 0-based for click_control (its own tool's
+	// convention).
+	ControlType string `json:"control_type,omitempty"`
+	Match       string `json:"match,omitempty"`
+
+	// wait_for_control conditions; Value is a string there and a number for
+	// set_state, so it is decoded per action.
+	Until    string          `json:"until,omitempty"`
+	Contains string          `json:"contains,omitempty"`
+	Value    json.RawMessage `json:"value,omitempty"`
+
+	// set_state.
+	Checked        *bool  `json:"checked,omitempty"`
+	Expanded       *bool  `json:"expanded,omitempty"`
+	Selected       *bool  `json:"selected,omitempty"`
+	ScrollIntoView bool   `json:"scroll_into_view,omitempty"`
+	SelectItem     string `json:"select_item,omitempty"`
+}
+
+// selector is the step's UIA selector.
+func (st seqStep) selector() (uiaSelector, error) {
+	return newSelector(st.Name, st.ControlType, st.Nth, st.Match)
+}
+
+// valueString decodes "value" as text (a JSON number is taken verbatim);
+// set=false when absent.
+func (st seqStep) valueString() (v string, set bool, err error) {
+	if len(st.Value) == 0 || string(st.Value) == "null" {
+		return "", false, nil
+	}
+	if err := json.Unmarshal(st.Value, &v); err == nil {
+		return v, true, nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(st.Value, &n); err == nil {
+		return n.String(), true, nil
+	}
+	return "", false, fmt.Errorf("\"value\" must be a string or number")
+}
+
+// valueNumber decodes "value" as a number (a numeric string is accepted); nil
+// when absent.
+func (st seqStep) valueNumber() (*float64, error) {
+	s, set, err := st.valueString()
+	if err != nil || !set {
+		return nil, err
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return nil, fmt.Errorf("\"value\" must be a number for set_state, got %q", s)
+	}
+	return &f, nil
 }
 
 // maxSeqWait caps any single pause so a typo (60000 for 600) cannot stall a
@@ -152,27 +207,84 @@ func runOneStep(st seqStep) (string, error) {
 		}
 		return fmt.Sprintf("pressed %q", st.Combo), nil
 	case "invoke":
+		sel, err := st.selector()
+		if err != nil {
+			return "", err
+		}
 		hwnd, err := resolveTargetWindow(st.Window)
 		if err != nil {
 			return "", err
 		}
-		if err := uiaInvokeIn(hwnd, st.Name); err != nil {
+		note, err := uiaInvokeIn(hwnd, sel)
+		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("invoked %q%s", st.Name, backgroundSuffix(hwnd)), nil
+		return withNote(fmt.Sprintf("invoked %q%s", st.Name, backgroundSuffix(hwnd)), note), nil
 	case "set_value":
+		sel, err := st.selector()
+		if err != nil {
+			return "", err
+		}
 		hwnd, err := resolveTargetWindow(st.Window)
 		if err != nil {
 			return "", err
 		}
-		if err := uiaSetValueIn(hwnd, st.Name, st.Text); err != nil {
+		note, err := uiaSetValueIn(hwnd, sel, st.Text)
+		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("set %q = %q%s", st.Name, st.Text, backgroundSuffix(hwnd)), nil
+		return withNote(fmt.Sprintf("set %q = %q%s", st.Name, st.Text, backgroundSuffix(hwnd)), note), nil
+	case "set_state":
+		sel, err := st.selector()
+		if err != nil {
+			return "", err
+		}
+		val, err := st.valueNumber()
+		if err != nil {
+			return "", err
+		}
+		hwnd, err := resolveTargetWindow(st.Window)
+		if err != nil {
+			return "", err
+		}
+		out, err := uiaSetStateIn(hwnd, sel, stateRequest{
+			Checked: st.Checked, Expanded: st.Expanded, Selected: st.Selected, Value: val,
+			ScrollIntoView: st.ScrollIntoView, SelectItem: st.SelectItem,
+		})
+		if err != nil {
+			return "", err
+		}
+		return out + backgroundSuffix(hwnd), nil
 	case "click_control":
 		return clickControl(st.Window, st.Text, st.Nth, st.Background == nil || *st.Background)
 	case "wait_for_control":
-		return uiaWaitForControlIn(st.Window, st.Name, st.TimeoutMs)
+		sel, err := st.selector()
+		if err != nil {
+			return "", err
+		}
+		v, set, err := st.valueString()
+		if err != nil {
+			return "", err
+		}
+		cond, err := newWaitCond(st.Until, v, set, st.Contains)
+		if err != nil {
+			return "", err
+		}
+		return uiaWaitForControlIn(st.Window, sel, cond, st.TimeoutMs)
+	case "clipboard_set":
+		if err := clipboardSetText(st.Text); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("clipboard set (%d character(s))", len([]rune(st.Text))), nil
+	case "clipboard_get":
+		text, ok, err := clipboardGetText()
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "clipboard holds no text", nil
+		}
+		return fmt.Sprintf("clipboard = %q", onelinePreview(text, snapshotPreviewChars*2)), nil
 	case "note":
 		// A placeholder left by record_workflow (e.g. a skipped password); no-op.
 		return "note: " + st.Text, nil
@@ -191,11 +303,11 @@ func runOneStep(st seqStep) (string, error) {
 		if button == "" {
 			button = "left"
 		}
-		if err := mouseDrag(st.X, st.Y, st.X2, st.Y2, button); err != nil {
+		if err := mouseDrag(st.X, st.Y, st.X2, st.Y2, button, st.HoldMs, st.Steps); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("%s-dragged (%d,%d) -> (%d,%d)", button, st.X, st.Y, st.X2, st.Y2), nil
 	default:
-		return "", fmt.Errorf("unknown action %q (supported: click, double_click, triple_click, type, key, invoke, set_value, click_control, wait_for_control, wait_for_window, scroll, drag, wait, note)", st.Action)
+		return "", fmt.Errorf("unknown action %q (supported: click, double_click, triple_click, type, key, invoke, set_value, set_state, click_control, wait_for_control, wait_for_window, clipboard_get, clipboard_set, scroll, drag, wait, note)", st.Action)
 	}
 }

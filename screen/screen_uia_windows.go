@@ -4,8 +4,8 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,16 +40,42 @@ var iidIUIAutomation = ole.NewGUID("{30cbe57d-d9d0-452a-ab13-7ac5ac4825ee}")
 
 const (
 	// Property IDs.
-	uiaNamePropertyId         = 30005
-	uiaAutomationIdPropertyId = 30011
+	uiaBoundingRectanglePropertyId = 30001
+	uiaControlTypePropertyId       = 30003
+	uiaNamePropertyId              = 30005
+	uiaIsEnabledPropertyId         = 30010
+	uiaAutomationIdPropertyId      = 30011
+
+	// Is<Pattern>PatternAvailable property IDs (VT_BOOL) — read from a cache
+	// instead of a GetCurrentPattern round trip per pattern per element.
+	uiaIsExpandCollapseAvailablePropertyId = 30028
+	uiaIsInvokeAvailablePropertyId         = 30031
+	uiaIsRangeValueAvailablePropertyId     = 30033
+	uiaIsSelectionItemAvailablePropertyId  = 30036
+	uiaIsTextAvailablePropertyId           = 30040
+	uiaIsToggleAvailablePropertyId         = 30041
+	uiaIsValueAvailablePropertyId          = 30043
+
+	// Pattern state property IDs.
+	uiaValueValuePropertyId              = 30045 // VT_BSTR
+	uiaRangeValueValuePropertyId         = 30047 // VT_R8
+	uiaRangeValueIsReadOnlyPropertyId    = 30048 // VT_BOOL
+	uiaRangeValueMinimumPropertyId       = 30049 // VT_R8
+	uiaRangeValueMaximumPropertyId       = 30050 // VT_R8
+	uiaExpandCollapseStatePropertyId     = 30070 // VT_I4 ExpandCollapseState
+	uiaSelectionItemIsSelectedPropertyId = 30079 // VT_BOOL
+	uiaToggleToggleStatePropertyId       = 30086 // VT_I4 ToggleState
 
 	// Control pattern IDs.
 	uiaInvokePatternId         = 10000
+	uiaSelectionPatternId      = 10001
 	uiaValuePatternId          = 10002
+	uiaRangeValuePatternId     = 10003
 	uiaTextPatternId           = 10014
 	uiaTogglePatternId         = 10015
 	uiaSelectionItemPatternId  = 10010
 	uiaExpandCollapsePatternId = 10005
+	uiaScrollItemPatternId     = 10017
 
 	// TreeScope flags.
 	treeScopeElement     = 1
@@ -60,12 +86,22 @@ const (
 
 // ---- IUIAutomation vtable slot indices (incl. IUnknown 0,1,2) ----
 const (
-	uiaGetRootElement          = 5 // GetRootElement(out **IUIAutomationElement)
-	uiaElementFromHandle       = 6 // ElementFromHandle(HWND, out **IUIAutomationElement)
-	uiaElementFromPoint        = 7 // ElementFromPoint(POINT, out **IUIAutomationElement)
-	uiaGetFocusedElement       = 8 // GetFocusedElement(out **IUIAutomationElement)
+	uiaGetRootElement          = 5  // GetRootElement(out **IUIAutomationElement)
+	uiaElementFromHandle       = 6  // ElementFromHandle(HWND, out **IUIAutomationElement)
+	uiaElementFromPoint        = 7  // ElementFromPoint(POINT, out **IUIAutomationElement)
+	uiaGetFocusedElement       = 8  // GetFocusedElement(out **IUIAutomationElement)
+	uiaCreateCacheRequest      = 20 // CreateCacheRequest(out **IUIAutomationCacheRequest)
 	uiaCreateTrueCondition     = 21
 	uiaCreatePropertyCondition = 23 // CreatePropertyCondition(PROPERTYID, VARIANT, out **IUIAutomationCondition)
+)
+
+// ---- IUIAutomationCacheRequest vtable slot indices (incl. IUnknown 0,1,2) ----
+// UIAutomationClient.h order: AddProperty, AddPattern, Clone, get_TreeScope,
+// put_TreeScope, get_TreeFilter, put_TreeFilter, get/put_AutomationElementMode.
+const (
+	cacheAddProperty   = 3 // AddProperty(PROPERTYID)
+	cachePutTreeScope  = 7 // put_TreeScope(TreeScope)
+	cachePutTreeFilter = 9 // put_TreeFilter(*IUIAutomationCondition)
 )
 
 // ---- IUIAutomationElement vtable slot indices (incl. IUnknown 0,1,2) ----
@@ -73,13 +109,26 @@ const (
 	elemSetFocus               = 3
 	elemFindFirst              = 5  // FindFirst(scope, *cond, out **elem)
 	elemFindAll                = 6  // FindAll(scope, *cond, out **IUIAutomationElementArray)
+	elemFindAllBuildCache      = 8  // FindAllBuildCache(scope, *cond, *cacheRequest, out **IUIAutomationElementArray)
+	elemBuildUpdatedCache      = 9  // BuildUpdatedCache(*cacheRequest, out **elem)
+	elemGetCurrentPropertyVal  = 10 // GetCurrentPropertyValue(PROPERTYID, out *VARIANT)
+	elemGetCachedPropertyVal   = 12 // GetCachedPropertyValue(PROPERTYID, out *VARIANT)
 	elemGetCurrentPattern      = 16 // GetCurrentPattern(patternId, out **IUnknown)
+	elemGetCachedChildren      = 19 // GetCachedChildren(out **IUIAutomationElementArray)
 	elemGetCurrentControlType  = 21 // -> *int32 (CONTROLTYPEID)
 	elemGetCurrentName         = 23 // -> *BSTR
 	elemGetCurrentIsEnabled    = 28 // -> *BOOL(int32)
 	elemGetCurrentAutomationId = 29 // -> *BSTR
 	elemGetCurrentIsPassword   = 35 // -> *BOOL(int32)
 	elemGetCurrentBoundingRect = 43 // -> *RECT
+
+	// The get_Cached* getters (slots 52–83) mirror the 32 get_Current* ones
+	// (20–51) in the same order, so each sits exactly 32 slots later.
+	elemGetCachedControlType  = elemGetCurrentControlType + 32  // 53
+	elemGetCachedName         = elemGetCurrentName + 32         // 55
+	elemGetCachedIsEnabled    = elemGetCurrentIsEnabled + 32    // 60
+	elemGetCachedAutomationId = elemGetCurrentAutomationId + 32 // 61
+	elemGetCachedBoundingRect = elemGetCurrentBoundingRect + 32 // 75
 )
 
 // ---- IUIAutomationElementArray vtable slot indices ----
@@ -98,6 +147,14 @@ const (
 	togglePatternToggle  = 3 // Toggle()
 	selectionItemSelect  = 3 // Select()
 	expandCollapseExpand = 3 // Expand()
+
+	// set_state. Pattern STATE is read through the property IDs above
+	// (GetCurrentPropertyValue), so only each pattern's leading action methods
+	// are called — the slots least likely to be miscounted.
+	expandCollapseCollapse   = 4 // Collapse()  (Expand, Collapse, get_CurrentExpandCollapseState, …)
+	selectionItemRemove      = 5 // RemoveFromSelection()  (Select, AddToSelection, RemoveFromSelection, …)
+	rangeValueSetValue       = 3 // SetValue(double)
+	scrollItemScrollIntoView = 3 // ScrollIntoView()
 
 	// IUIAutomationTextPattern: get_DocumentRange returns a TextRange spanning the
 	// whole control; IUIAutomationTextRange.GetText(maxLength, *BSTR) reads it.
@@ -400,18 +457,188 @@ func getPattern(elem *ole.IUnknown, patternId int) *ole.IUnknown {
 	return pat
 }
 
+// ---- VARIANT property reads ----
+
+// VARIANT type tags read back from GetCurrent/CachedPropertyValue.
+const (
+	vtI4   = 3
+	vtR8   = 5
+	vtBSTR = 8
+	vtBool = 11
+)
+
+// elemPropVariant reads property propId through slot (elemGetCurrentPropertyVal
+// or elemGetCachedPropertyVal). The caller must ole.VariantClear the result.
+// A property the provider does not support comes back as VT_EMPTY or UIA's
+// "not supported" VT_UNKNOWN sentinel, which the typed readers below reject.
+func elemPropVariant(el *ole.IUnknown, slot, propId int) (ole.VARIANT, bool) {
+	var v ole.VARIANT
+	ole.VariantInit(&v)
+	if hr := vcall(el, slot, uintptr(propId), uintptr(unsafe.Pointer(&v))); failed(hr) {
+		return v, false
+	}
+	return v, true
+}
+
+// elemPropBool reads a VT_BOOL property; ok=false when absent/unsupported.
+func elemPropBool(el *ole.IUnknown, slot, propId int) (val, ok bool) {
+	v, got := elemPropVariant(el, slot, propId)
+	defer ole.VariantClear(&v)
+	if !got || v.VT != vtBool {
+		return false, false
+	}
+	return int16(v.Val) != 0, true // VARIANT_BOOL in the low 16 bits; TRUE = -1
+}
+
+// elemPropInt reads a VT_I4 property (enums such as ToggleState).
+func elemPropInt(el *ole.IUnknown, slot, propId int) (int32, bool) {
+	v, got := elemPropVariant(el, slot, propId)
+	defer ole.VariantClear(&v)
+	if !got || v.VT != vtI4 {
+		return 0, false
+	}
+	return int32(v.Val), true
+}
+
+// elemPropFloat reads a VT_R8 property (RangeValue value/min/max).
+func elemPropFloat(el *ole.IUnknown, slot, propId int) (float64, bool) {
+	v, got := elemPropVariant(el, slot, propId)
+	defer ole.VariantClear(&v)
+	if !got || v.VT != vtR8 {
+		return 0, false
+	}
+	return math.Float64frombits(uint64(v.Val)), true
+}
+
+// elemPropString reads a VT_BSTR property (ValueValue).
+func elemPropString(el *ole.IUnknown, slot, propId int) (string, bool) {
+	v, got := elemPropVariant(el, slot, propId)
+	defer ole.VariantClear(&v)
+	if !got || v.VT != vtBSTR {
+		return "", false
+	}
+	bstr := *(**uint16)(unsafe.Pointer(&v.Val))
+	if bstr == nil {
+		return "", true
+	}
+	return ole.BstrToString(bstr), true // VariantClear frees the BSTR
+}
+
+// ---- cache requests ----
+
+// newCacheRequest creates an IUIAutomationCacheRequest for props with the given
+// TreeScope. The tree filter is TrueCondition (the raw view, same elements a
+// FindAll(TrueCondition) walk sees) instead of the default control view.
+// Caller must release the result.
+func newCacheRequest(uia *ole.IUnknown, props []int, scope int) (*ole.IUnknown, error) {
+	var cr *ole.IUnknown
+	if hr := vcall(uia, uiaCreateCacheRequest, uintptr(unsafe.Pointer(&cr))); failed(hr) || cr == nil {
+		return nil, fmt.Errorf("UIA: CreateCacheRequest failed (hr=0x%x)", uint32(hr))
+	}
+	for _, p := range props {
+		if hr := vcall(cr, cacheAddProperty, uintptr(p)); failed(hr) {
+			release(cr)
+			return nil, fmt.Errorf("UIA: CacheRequest.AddProperty(%d) failed (hr=0x%x)", p, uint32(hr))
+		}
+	}
+	if scope != treeScopeElement {
+		if hr := vcall(cr, cachePutTreeScope, uintptr(scope)); failed(hr) {
+			release(cr)
+			return nil, fmt.Errorf("UIA: CacheRequest.put_TreeScope failed (hr=0x%x)", uint32(hr))
+		}
+	}
+	var cond *ole.IUnknown
+	if hr := vcall(uia, uiaCreateTrueCondition, uintptr(unsafe.Pointer(&cond))); !failed(hr) && cond != nil {
+		vcall(cr, cachePutTreeFilter, uintptr(unsafe.Pointer(cond)))
+		release(cond)
+	}
+	return cr, nil
+}
+
+// nodeCacheProps is everything readNode needs, so a cached read is one cross-
+// process call for the whole tree instead of ~10 per element.
+var nodeCacheProps = []int{
+	uiaNamePropertyId, uiaControlTypePropertyId, uiaAutomationIdPropertyId,
+	uiaIsEnabledPropertyId, uiaBoundingRectanglePropertyId,
+	uiaIsInvokeAvailablePropertyId, uiaIsValueAvailablePropertyId, uiaIsTextAvailablePropertyId,
+	uiaIsToggleAvailablePropertyId, uiaIsExpandCollapseAvailablePropertyId,
+	uiaIsSelectionItemAvailablePropertyId, uiaIsRangeValueAvailablePropertyId,
+	uiaValueValuePropertyId, uiaToggleToggleStatePropertyId, uiaExpandCollapseStatePropertyId,
+	uiaSelectionItemIsSelectedPropertyId, uiaRangeValueValuePropertyId,
+}
+
 // ---- snapshot ----
 
 type uiaNode struct {
-	name     string
-	ctrlType int32
-	autoId   string
-	enabled  bool
-	invoke   bool
-	value    bool
-	text     bool   // exposes the Text pattern (Document/read-only text area)
-	preview  string // short inlined content preview (see snapshotPreviewChars)
-	depth    int
+	name       string
+	ctrlType   int32
+	autoId     string
+	enabled    bool
+	invoke     bool
+	value      bool
+	text       bool   // exposes the Text pattern (Document/read-only text area)
+	valueText  string // ValueValue, when value
+	preview    string // short inlined content preview (see snapshotPreviewChars)
+	depth      int    // containment depth among SHOWN elements (indentation)
+	rect       rect   // screen bounding rectangle
+	toggle     int32  // ToggleState, stateNone when no Toggle pattern
+	expand     int32  // ExpandCollapseState, stateNone when no ExpandCollapse pattern
+	selectable bool   // SelectionItem pattern
+	selected   bool
+	hasRange   bool // RangeValue pattern with a readable value
+	rangeValue float64
+}
+
+// readNode reads an element's snapshot fields — from its cache (cached=true;
+// the element must come from a request built with nodeCacheProps) or live.
+func readNode(el *ole.IUnknown, cached bool) uiaNode {
+	nameSlot, typeSlot, idSlot := elemGetCurrentName, elemGetCurrentControlType, elemGetCurrentAutomationId
+	enSlot, rectSlot, propSlot := elemGetCurrentIsEnabled, elemGetCurrentBoundingRect, elemGetCurrentPropertyVal
+	if cached {
+		nameSlot, typeSlot, idSlot = elemGetCachedName, elemGetCachedControlType, elemGetCachedAutomationId
+		enSlot, rectSlot, propSlot = elemGetCachedIsEnabled, elemGetCachedBoundingRect, elemGetCachedPropertyVal
+	}
+	nd := uiaNode{
+		name:     elemString(el, nameSlot),
+		ctrlType: elemInt32(el, typeSlot),
+		autoId:   elemString(el, idSlot),
+		enabled:  elemInt32(el, enSlot) != 0,
+		toggle:   stateNone,
+		expand:   stateNone,
+	}
+	vcall(el, rectSlot, uintptr(unsafe.Pointer(&nd.rect)))
+	has := func(id int) bool { v, _ := elemPropBool(el, propSlot, id); return v }
+	nd.invoke = has(uiaIsInvokeAvailablePropertyId)
+	nd.value = has(uiaIsValueAvailablePropertyId)
+	nd.text = has(uiaIsTextAvailablePropertyId)
+	if has(uiaIsToggleAvailablePropertyId) {
+		if s, ok := elemPropInt(el, propSlot, uiaToggleToggleStatePropertyId); ok {
+			nd.toggle = s
+		}
+	}
+	if has(uiaIsExpandCollapseAvailablePropertyId) {
+		if s, ok := elemPropInt(el, propSlot, uiaExpandCollapseStatePropertyId); ok {
+			nd.expand = s
+		}
+	}
+	if has(uiaIsSelectionItemAvailablePropertyId) {
+		nd.selectable = true
+		nd.selected, _ = elemPropBool(el, propSlot, uiaSelectionItemIsSelectedPropertyId)
+	}
+	if has(uiaIsRangeValueAvailablePropertyId) {
+		nd.rangeValue, nd.hasRange = elemPropFloat(el, propSlot, uiaRangeValueValuePropertyId)
+	}
+	if nd.value {
+		nd.valueText, _ = elemPropString(el, propSlot, uiaValueValuePropertyId)
+	}
+	return nd
+}
+
+// anonymous reports a wholly anonymous, non-interactive, contentless node —
+// skipped from snapshot output to save tokens (its children still show).
+func (nd uiaNode) anonymous() bool {
+	return strings.TrimSpace(nd.name) == "" && nd.autoId == "" && !nd.invoke && !nd.value && !nd.text &&
+		nd.toggle == stateNone && !nd.hasRange
 }
 
 // snapshotPreviewChars bounds the per-element content preview inlined into a
@@ -435,24 +662,92 @@ func onelinePreview(s string, max int) string {
 	return s
 }
 
-// uiaSnapshotSparseThreshold is the FindAll element count below which
-// uiaSnapshot suspects the target hasn't finished building its accessibility
-// tree yet and retries once. Chromium/Electron apps (VS Code, Chrome) often
-// expose an empty or near-empty tree on the very first UIA query after gaining
-// focus — the query itself seems to be what triggers them to start building
-// it — and a second query a moment later sees the real tree. Native Win32/WPF
-// apps return hundreds of elements immediately, so this path essentially never
-// fires for them and costs nothing.
+// uiaSnapshotSparseThreshold is the element count below which uiaSnapshot
+// suspects the target hasn't finished building its accessibility tree yet and
+// retries once. Chromium/Electron apps (VS Code, Chrome) often expose an empty
+// or near-empty tree on the very first UIA query after gaining focus — the
+// query itself seems to be what triggers them to start building it — and a
+// second query a moment later sees the real tree. Native Win32/WPF apps return
+// hundreds of elements immediately, so this path essentially never fires for
+// them and costs nothing.
 const uiaSnapshotSparseThreshold = 10
 
 // uiaSnapshotRetryDelay is how long uiaSnapshot waits before its one retry.
 var uiaSnapshotRetryDelay = 250 * time.Millisecond
 
-// uiaSnapshot walks the foreground window's element subtree (FindAll order)
+// snapshotFlattenCap bounds how many elements one snapshot holds references
+// to; past it the tail is simply not listed (total says so).
+const snapshotFlattenCap = 100000
+
+// snapEl is one element of the flattened (document-order) tree; parent is the
+// index of its parent in the same slice, -1 for the root / a flat list.
+type snapEl struct {
+	el     *ole.IUnknown
+	parent int
+}
+
+// cachedTree fetches root's whole subtree with nodeCacheProps in ONE
+// cross-process call (BuildUpdatedCache, TreeScope_Subtree) and flattens it
+// depth-first, so the result is document order with parent links. hier=false
+// means that failed and the result is FindAllBuildCache's flat list (same
+// elements and order, no parents). Caller must release every el.
+func cachedTree(uia, root *ole.IUnknown) (els []snapEl, hier bool, err error) {
+	if cr, cerr := newCacheRequest(uia, nodeCacheProps, treeScopeSubtree); cerr == nil {
+		var croot *ole.IUnknown
+		hr := vcall(root, elemBuildUpdatedCache, uintptr(unsafe.Pointer(cr)), uintptr(unsafe.Pointer(&croot)))
+		release(cr)
+		if !failed(hr) && croot != nil {
+			var walk func(el *ole.IUnknown, parent int)
+			walk = func(el *ole.IUnknown, parent int) {
+				idx := len(els)
+				els = append(els, snapEl{el, parent})
+				var arr *ole.IUnknown
+				if hr := vcall(el, elemGetCachedChildren, uintptr(unsafe.Pointer(&arr))); failed(hr) || arr == nil {
+					return // no children (GetCachedChildren gives NULL for a leaf)
+				}
+				defer release(arr)
+				var n int32
+				vcall(arr, arrGetLength, uintptr(unsafe.Pointer(&n)))
+				for i := int32(0); i < n && len(els) < snapshotFlattenCap; i++ {
+					var c *ole.IUnknown
+					if hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&c))); failed(hr) || c == nil {
+						continue
+					}
+					walk(c, idx)
+				}
+			}
+			walk(croot, -1)
+			return els, true, nil
+		}
+	}
+	// Fallback: the same raw-view elements as a flat cached list.
+	arr, n, ferr := findAllCached(uia, root, 0, nodeCacheProps)
+	if ferr != nil {
+		return nil, false, ferr
+	}
+	defer release(arr)
+	for i := int32(0); i < n && len(els) < snapshotFlattenCap; i++ {
+		var c *ole.IUnknown
+		if hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&c))); failed(hr) || c == nil {
+			continue
+		}
+		els = append(els, snapEl{c, -1})
+	}
+	return els, false, nil
+}
+
+func releaseSnapEls(els []snapEl) {
+	for _, e := range els {
+		release(e.el)
+	}
+}
+
+// uiaSnapshot walks the foreground window's element subtree in document order
 // starting at raw element index offset and returns a compact textual listing of
 // up to maxElems shown elements / maxChars characters, ending with a
-// continuation note (offset=N) when the tree was not exhausted. Elements within
-// one page are sorted by control type then name.
+// continuation note (offset=N) when the tree was not exhausted. Lines are
+// indented by containment (depth among shown elements) and carry state flags
+// and the screen rectangle.
 func uiaSnapshot(offset, maxElems, maxChars int) (string, error) {
 	return uiaSnapshotIn(0, offset, maxElems, maxChars)
 }
@@ -468,45 +763,22 @@ func uiaSnapshotIn(hwnd uintptr, offset, maxElems, maxChars int) (string, error)
 		}
 		defer release(root)
 
-		// TrueCondition matches every element.
-		var cond *ole.IUnknown
-		hr := vcall(uia, uiaCreateTrueCondition, uintptr(unsafe.Pointer(&cond)))
-		if failed(hr) || cond == nil {
-			return "", fmt.Errorf("UIA: CreateTrueCondition failed (hr=0x%x)", uint32(hr))
-		}
-		defer release(cond)
-
-		// FindAll over the subtree (descendants + self). findAll is a closure so
-		// it can be called a second time (with a fresh COM array each time) if the
-		// first pass looks suspiciously sparse.
-		findAll := func() (*ole.IUnknown, int32, error) {
-			var arr *ole.IUnknown
-			hr := vcall(root, elemFindAll, uintptr(treeScopeSubtree),
-				uintptr(unsafe.Pointer(cond)), uintptr(unsafe.Pointer(&arr)))
-			if failed(hr) || arr == nil {
-				return nil, 0, fmt.Errorf("UIA: FindAll failed (hr=0x%x)", uint32(hr))
-			}
-			var l int32
-			vcall(arr, arrGetLength, uintptr(unsafe.Pointer(&l)))
-			return arr, l, nil
-		}
-
-		arr, length, err := findAll()
+		els, hier, err := cachedTree(uia, root)
 		if err != nil {
 			return "", err
 		}
-		if length < uiaSnapshotSparseThreshold {
+		if len(els) < uiaSnapshotSparseThreshold {
 			time.Sleep(uiaSnapshotRetryDelay)
-			if arr2, length2, err2 := findAll(); err2 == nil && length2 > length {
-				release(arr)
-				arr, length = arr2, length2
-			} else if arr2 != nil {
-				release(arr2) // retry didn't help; keep the first (possibly still-empty) result
+			if els2, hier2, err2 := cachedTree(uia, root); err2 == nil && len(els2) > len(els) {
+				releaseSnapEls(els)
+				els, hier = els2, hier2
+			} else {
+				releaseSnapEls(els2) // retry didn't help; keep the first (possibly still-empty) result
 			}
 		}
-		defer release(arr)
+		defer func() { releaseSnapEls(els) }()
 
-		total := int(length)
+		total := len(els)
 		start := offset
 		if start < 0 {
 			start = 0
@@ -514,20 +786,35 @@ func uiaSnapshotIn(hwnd uintptr, offset, maxElems, maxChars int) (string, error)
 		if start > total {
 			start = total
 		}
-		// Bound the COM walk too: anonymous/contentless elements are skipped from the
-		// output but still cost round-trips, so a page scans at most this many.
+		// Bound one page's walk too: anonymous/contentless elements are skipped
+		// from the output, so a page scans at most this many raw elements.
 		scanLimit := maxElems * snapshotScanFactor
 
-		type shown struct {
-			nd   uiaNode
-			line string
+		// shown/depth for every element up to the page end: a line's indentation
+		// counts its SHOWN ancestors, so skipped anonymous panes add none.
+		shown := make([]bool, 0, total)
+		depth := make([]int, 0, total)
+		place := func(i int, nd uiaNode) {
+			d := 0
+			if p := els[i].parent; p >= 0 {
+				d = depth[p]
+				if shown[p] {
+					d++
+				}
+			}
+			shown = append(shown, !nd.anonymous())
+			depth = append(depth, d)
 		}
-		var nodes []shown
+		for i := 0; i < start; i++ {
+			place(i, readNode(els[i].el, true))
+		}
+
+		var lines []string
 		chars := 0
 		next := start
 		reason := ""
 		for i := start; i < total; i++ {
-			if len(nodes) >= maxElems {
+			if len(lines) >= maxElems {
 				reason = fmt.Sprintf("max_elements=%d", maxElems)
 				break
 			}
@@ -535,76 +822,47 @@ func uiaSnapshotIn(hwnd uintptr, offset, maxElems, maxChars int) (string, error)
 				reason = "scan limit"
 				break
 			}
-			var el *ole.IUnknown
-			hr := vcall(arr, arrGetElement, uintptr(int32(i)), uintptr(unsafe.Pointer(&el)))
-			if failed(hr) || el == nil {
+			nd := readNode(els[i].el, true)
+			place(i, nd)
+			if !shown[i] {
 				next = i + 1
 				continue
 			}
-			name := elemString(el, elemGetCurrentName)
-			ct := elemInt32(el, elemGetCurrentControlType)
-			autoId := elemString(el, elemGetCurrentAutomationId)
-			enabled := elemInt32(el, elemGetCurrentIsEnabled) != 0
-			canInvoke := elemSupportsPattern(el, uiaInvokePatternId)
-			canValue := elemSupportsPattern(el, uiaValuePatternId)
-			canText := elemSupportsPattern(el, uiaTextPatternId)
+			nd.depth = depth[i]
 			// Inline a short content preview so one snapshot shows structure AND
 			// content — the model can read a form's field values / an editor's text
-			// without a screenshot or a get_value per field. Value first (edit/combo),
-			// then Text (documents/read-only areas). Bounded hard; full content is a
-			// get_value/get_text away. Read before release(el).
-			preview := ""
-			if canValue {
-				if s, ok := elemValue(el); ok {
+			// without a screenshot or a get_value per field. Value first (edit/combo,
+			// already cached), then Text (documents/read-only areas; one live call,
+			// only for shown elements). Bounded hard; full content is a
+			// get_value/get_text away.
+			preview := nd.valueText
+			if preview == "" && nd.text {
+				if s, ok := elemText(els[i].el, snapshotPreviewChars*2); ok {
 					preview = s
 				}
 			}
-			if preview == "" && canText {
-				if s, ok := elemText(el, snapshotPreviewChars*2); ok {
-					preview = s
-				}
-			}
-			release(el)
-
-			// Skip wholly anonymous, non-interactive, contentless nodes to save tokens.
-			if strings.TrimSpace(name) == "" && autoId == "" && !canInvoke && !canValue && !canText {
-				next = i + 1
-				continue
-			}
-			nd := uiaNode{
-				name:     name,
-				ctrlType: ct,
-				autoId:   autoId,
-				enabled:  enabled,
-				invoke:   canInvoke,
-				value:    canValue,
-				text:     canText,
-				preview:  onelinePreview(preview, snapshotPreviewChars),
-			}
+			nd.preview = onelinePreview(preview, snapshotPreviewChars)
 			line := snapshotLine(nd)
 			// Character budget: stop BEFORE the line that would overflow it (but
 			// always emit at least one line so a page makes progress).
-			if len(nodes) > 0 && chars+len([]rune(line))+1 > maxChars {
+			if len(lines) > 0 && chars+len([]rune(line))+1 > maxChars {
 				reason = fmt.Sprintf("max_chars=%d", maxChars)
 				break
 			}
-			nodes = append(nodes, shown{nd, line})
+			lines = append(lines, line)
 			chars += len([]rune(line)) + 1
 			next = i + 1
 		}
 
-		// Stable, readable order within the page: by control type then name.
-		sort.SliceStable(nodes, func(i, j int) bool {
-			if nodes[i].nd.ctrlType != nodes[j].nd.ctrlType {
-				return nodes[i].nd.ctrlType < nodes[j].nd.ctrlType
-			}
-			return nodes[i].nd.name < nodes[j].nd.name
-		})
-
 		var b strings.Builder
-		fmt.Fprintf(&b, "UIA elements of %s (%d shown; scanned %d–%d of %d):\n", uiaTargetLabel(hwnd), len(nodes), start, next, total)
-		for _, s := range nodes {
-			b.WriteString(s.line)
+		layout := "indented by containment"
+		if !hier {
+			layout = "flat — hierarchy unavailable"
+		}
+		fmt.Fprintf(&b, "UIA elements of %s (%d shown; scanned %d–%d of %d; document order, %s; @x,y,w×h = screen px):\n",
+			uiaTargetLabel(hwnd), len(lines), start, next, total, layout)
+		for _, l := range lines {
+			b.WriteString(l)
 			b.WriteString("\n")
 		}
 		b.WriteString(pageNote("elements", start, next, total, reason))
@@ -616,8 +874,18 @@ func uiaSnapshotIn(hwnd uintptr, offset, maxElems, maxChars int) (string, error)
 // as a multiple of max_elements (most skipped elements are anonymous panes).
 const snapshotScanFactor = 8
 
-// snapshotLine renders one snapshot element line.
+// snapshotLine renders one snapshot element line, indented by nd.depth.
 func snapshotLine(nd uiaNode) string {
+	d := nd.depth
+	if d > snapshotIndentCap {
+		d = snapshotIndentCap
+	}
+	return strings.Repeat("  ", d) + "- " + nodeDesc(nd)
+}
+
+// nodeDesc is an element's description shared by snapshot and element_at:
+// type | "name" | id=… [capabilities] [state] @x,y,w×h = "preview".
+func nodeDesc(nd uiaNode) string {
 	caps := ""
 	if nd.invoke {
 		caps += " [invokable]"
@@ -636,11 +904,13 @@ func snapshotLine(nd uiaNode) string {
 		name = "(unnamed)"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "- %s | %q", controlTypeName(nd.ctrlType), name)
+	fmt.Fprintf(&b, "%s | %q", controlTypeName(nd.ctrlType), name)
 	if nd.autoId != "" {
 		fmt.Fprintf(&b, " | id=%s", nd.autoId)
 	}
 	b.WriteString(caps)
+	b.WriteString(stateFlags(nd))
+	b.WriteString(rectSuffix(nd.rect))
 	if nd.preview != "" {
 		fmt.Fprintf(&b, " = %q", nd.preview)
 	}
@@ -661,38 +931,14 @@ func uiaElementAtPoint(x, y int32) (string, error) {
 		}
 		defer release(el)
 
-		name := elemString(el, elemGetCurrentName)
-		ct := elemInt32(el, elemGetCurrentControlType)
-		autoId := elemString(el, elemGetCurrentAutomationId)
-		enabled := elemInt32(el, elemGetCurrentIsEnabled) != 0
-		canInvoke := elemSupportsPattern(el, uiaInvokePatternId)
-		canValue := elemSupportsPattern(el, uiaValuePatternId)
-
-		caps := ""
-		if canInvoke {
-			caps += " [invokable]"
-		}
-		if canValue {
-			caps += " [editable]"
-		}
-		if !enabled {
-			caps += " [disabled]"
-		}
-		displayName := name
-		if displayName == "" {
-			displayName = "(unnamed)"
-		}
-
+		nd := readNodeOne(uia, el)
+		nd.preview = onelinePreview(nd.valueText, snapshotPreviewChars)
 		var b strings.Builder
-		fmt.Fprintf(&b, "%s | %q", controlTypeName(ct), displayName)
-		if autoId != "" {
-			fmt.Fprintf(&b, " | id=%s", autoId)
-		}
-		b.WriteString(caps)
-		if name != "" {
-			fmt.Fprintf(&b, "\nUse invoke/set_value/click_control with name %q to act on it (prefer name over automationId if both are set).", name)
-		} else if autoId != "" {
-			fmt.Fprintf(&b, "\nNo accessible name, but has an automationId — invoke/set_value also match against automationId, so try %q there.", autoId)
+		b.WriteString(nodeDesc(nd))
+		if nd.name != "" {
+			fmt.Fprintf(&b, "\nUse invoke/set_value/set_state/click_control with name %q to act on it (prefer name over automationId if both are set).", nd.name)
+		} else if nd.autoId != "" {
+			fmt.Fprintf(&b, "\nNo accessible name, but has an automationId — invoke/set_value also match against automationId, so try %q there.", nd.autoId)
 		} else {
 			b.WriteString("\nNo accessible name or automationId — this element can't be targeted by invoke/set_value/click_control; fall back to win_controls for a coordinate, or click(x,y) as a last resort.")
 		}
@@ -700,56 +946,37 @@ func uiaElementAtPoint(x, y int32) (string, error) {
 	})
 }
 
-// ---- find by name / automationId ----
-
-// findFirstByProp finds the first descendant whose property `propId` equals
-// `value` (a string). Caller must release the returned element.
-func findFirstByProp(uia *ole.IUnknown, root *ole.IUnknown, propId int, value string) (*ole.IUnknown, error) {
-	bstr := ole.SysAllocString(value)
-	if bstr == nil {
-		return nil, fmt.Errorf("SysAllocString failed")
+// readNodeOne reads one element's fields with a single cached round trip,
+// falling back to live per-property reads.
+func readNodeOne(uia, el *ole.IUnknown) uiaNode {
+	if cr, err := newCacheRequest(uia, nodeCacheProps, treeScopeElement); err == nil {
+		defer release(cr)
+		var cel *ole.IUnknown
+		if hr := vcall(el, elemBuildUpdatedCache, uintptr(unsafe.Pointer(cr)), uintptr(unsafe.Pointer(&cel))); !failed(hr) && cel != nil {
+			defer release(cel)
+			return readNode(cel, true)
+		}
 	}
-	defer ole.SysFreeString(bstr)
+	return readNode(el, false)
+}
 
-	// VARIANT for a BSTR: vt = VT_BSTR (8), value = pointer to BSTR data.
-	var v ole.VARIANT
-	v.VT = 8 // VT_BSTR
-	// Store the BSTR pointer into the VARIANT's value slot.
-	*(*uintptr)(unsafe.Pointer(&v.Val)) = uintptr(unsafe.Pointer(bstr))
+// ---- find by selector ----
 
+// propCondition creates a property condition for a VARIANT value. Caller must
+// release the result.
+func propCondition(uia *ole.IUnknown, propId int, v *ole.VARIANT) (*ole.IUnknown, error) {
 	var cond *ole.IUnknown
 	hr := vcall(uia, uiaCreatePropertyCondition,
 		uintptr(propId),
 		// VARIANT is passed by value (struct copy) across the ABI; on amd64 a
-		// 16-byte VARIANT is passed by reference to a hidden copy. go-ole's
-		// VARIANT is 16 bytes (VT + reserved + Val), matching the Win32 layout
-		// for the BSTR case, so we pass its address.
-		uintptr(unsafe.Pointer(&v)),
+		// VARIANT larger than 8 bytes is passed by reference to a hidden copy,
+		// so we pass its address.
+		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(&cond)))
 	if failed(hr) || cond == nil {
 		return nil, fmt.Errorf("CreatePropertyCondition failed (hr=0x%x)", uint32(hr))
 	}
-	defer release(cond)
-
-	var found *ole.IUnknown
-	hr = vcall(root, elemFindFirst, uintptr(treeScopeSubtree),
-		uintptr(unsafe.Pointer(cond)), uintptr(unsafe.Pointer(&found)))
-	if failed(hr) {
-		return nil, fmt.Errorf("FindFirst failed (hr=0x%x)", uint32(hr))
-	}
-	return found, nil // may be nil if not found
-}
-
-// findByName tries Name first, then AutomationId.
-func findByName(uia *ole.IUnknown, root *ole.IUnknown, name string) (*ole.IUnknown, error) {
-	el, err := findFirstByProp(uia, root, uiaNamePropertyId, name)
-	if err == nil && el != nil {
-		return el, nil
-	}
-	if el != nil {
-		release(el)
-	}
-	return findFirstByProp(uia, root, uiaAutomationIdPropertyId, name)
+	return cond, nil
 }
 
 // findAllByProp finds every descendant whose property `propId` equals `value`
@@ -762,20 +989,18 @@ func findAllByProp(uia *ole.IUnknown, root *ole.IUnknown, propId int, value stri
 	}
 	defer ole.SysFreeString(bstr)
 
+	// VARIANT for a BSTR: vt = VT_BSTR (8), value = pointer to BSTR data.
 	var v ole.VARIANT
-	v.VT = 8 // VT_BSTR
+	v.VT = vtBSTR
 	*(*uintptr)(unsafe.Pointer(&v.Val)) = uintptr(unsafe.Pointer(bstr))
-
-	var cond *ole.IUnknown
-	hr := vcall(uia, uiaCreatePropertyCondition,
-		uintptr(propId), uintptr(unsafe.Pointer(&v)), uintptr(unsafe.Pointer(&cond)))
-	if failed(hr) || cond == nil {
-		return nil, 0, fmt.Errorf("CreatePropertyCondition failed (hr=0x%x)", uint32(hr))
+	cond, err := propCondition(uia, propId, &v)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer release(cond)
 
 	var arr *ole.IUnknown
-	hr = vcall(root, elemFindAll, uintptr(treeScopeSubtree),
+	hr := vcall(root, elemFindAll, uintptr(treeScopeSubtree),
 		uintptr(unsafe.Pointer(cond)), uintptr(unsafe.Pointer(&arr)))
 	if failed(hr) || arr == nil {
 		return nil, 0, fmt.Errorf("FindAll failed (hr=0x%x)", uint32(hr))
@@ -785,57 +1010,198 @@ func findAllByProp(uia *ole.IUnknown, root *ole.IUnknown, propId int, value stri
 	return arr, l, nil
 }
 
-// firstMatchWhere returns the first element among all descendants whose
-// property `propId` equals `value` that satisfies `pred`, or nil if none do.
-// Non-matching elements (and the array) are released; the caller owns the
-// returned element and must release it.
-func firstMatchWhere(uia *ole.IUnknown, root *ole.IUnknown, propId int, value string, pred func(*ole.IUnknown) bool) *ole.IUnknown {
-	arr, length, err := findAllByProp(uia, root, propId, value)
-	if err != nil || arr == nil {
+// findAllCached returns every element of root's subtree (only control type
+// ctrlType when != 0) with props cached, in one call. Caller must release the
+// array.
+func findAllCached(uia, root *ole.IUnknown, ctrlType int32, props []int) (*ole.IUnknown, int32, error) {
+	var cond *ole.IUnknown
+	if ctrlType != 0 {
+		var v ole.VARIANT
+		v.VT = vtI4
+		v.Val = int64(ctrlType)
+		c, err := propCondition(uia, uiaControlTypePropertyId, &v)
+		if err != nil {
+			return nil, 0, err
+		}
+		cond = c
+	} else if hr := vcall(uia, uiaCreateTrueCondition, uintptr(unsafe.Pointer(&cond))); failed(hr) || cond == nil {
+		return nil, 0, fmt.Errorf("UIA: CreateTrueCondition failed (hr=0x%x)", uint32(hr))
+	}
+	defer release(cond)
+	cr, err := newCacheRequest(uia, props, treeScopeElement)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer release(cr)
+	var arr *ole.IUnknown
+	hr := vcall(root, elemFindAllBuildCache, uintptr(treeScopeSubtree),
+		uintptr(unsafe.Pointer(cond)), uintptr(unsafe.Pointer(cr)), uintptr(unsafe.Pointer(&arr)))
+	if failed(hr) || arr == nil {
+		return nil, 0, fmt.Errorf("UIA: FindAllBuildCache failed (hr=0x%x)", uint32(hr))
+	}
+	var l int32
+	vcall(arr, arrGetLength, uintptr(unsafe.Pointer(&l)))
+	return arr, l, nil
+}
+
+// maxSelectorCandidates bounds how many matches one lookup holds (a contains
+// match on "a" can hit most of a tree); nth beyond it is not reachable.
+const maxSelectorCandidates = 500
+
+// findCandidates returns every element matching sel in document order — Name
+// matches, or AutomationId matches when no Name matched. Caller must release
+// each element.
+//
+// exact uses UIA's own property condition (fast, provider-side match);
+// contains/prefix fetch every name once (cached, narrowed by control type) and
+// compare here, since UIA's substring flag is not available on older Windows.
+func findCandidates(uia, root *ole.IUnknown, sel uiaSelector) ([]*ole.IUnknown, error) {
+	if sel.Match == matchExact || sel.Match == "" {
+		for _, prop := range []int{uiaNamePropertyId, uiaAutomationIdPropertyId} {
+			arr, n, err := findAllByProp(uia, root, prop, sel.Name)
+			if err != nil {
+				return nil, err
+			}
+			var got []*ole.IUnknown
+			for i := int32(0); i < n && len(got) < maxSelectorCandidates; i++ {
+				var el *ole.IUnknown
+				if hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&el))); failed(hr) || el == nil {
+					continue
+				}
+				if sel.ControlType != 0 && elemInt32(el, elemGetCurrentControlType) != sel.ControlType {
+					release(el)
+					continue
+				}
+				got = append(got, el)
+			}
+			release(arr)
+			if len(got) > 0 {
+				return got, nil
+			}
+		}
+		return nil, nil
+	}
+
+	arr, n, err := findAllCached(uia, root, sel.ControlType, []int{uiaNamePropertyId, uiaAutomationIdPropertyId})
+	if err != nil {
+		return nil, err
+	}
+	defer release(arr)
+	var byName, byID []*ole.IUnknown
+	for i := int32(0); i < n && len(byName) < maxSelectorCandidates; i++ {
+		var el *ole.IUnknown
+		if hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&el))); failed(hr) || el == nil {
+			continue
+		}
+		switch {
+		case sel.matches(elemString(el, elemGetCachedName)):
+			byName = append(byName, el)
+		case len(byName) == 0 && len(byID) < maxSelectorCandidates && sel.matches(elemString(el, elemGetCachedAutomationId)):
+			byID = append(byID, el)
+		default:
+			release(el)
+		}
+	}
+	if len(byName) > 0 {
+		releaseAll(byID)
+		return byName, nil
+	}
+	return byID, nil
+}
+
+func releaseAll(els []*ole.IUnknown) {
+	for _, e := range els {
+		release(e)
+	}
+}
+
+// nameHints lists up to 5 names/automation ids under root closest to sel.Name
+// — the "did you mean" part of a not-found error. Searches every control type
+// (a wrong control_type is a common miss) and tags each hint with its type.
+func nameHints(uia, root *ole.IUnknown, sel uiaSelector) []string {
+	arr, n, err := findAllCached(uia, root, 0, []int{uiaNamePropertyId, uiaAutomationIdPropertyId, uiaControlTypePropertyId})
+	if err != nil {
 		return nil
 	}
 	defer release(arr)
-	for i := int32(0); i < length; i++ {
+	var pool []string
+	typeOf := map[string]int32{}
+	for i := int32(0); i < n; i++ {
 		var el *ole.IUnknown
-		hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&el)))
-		if failed(hr) || el == nil {
+		if hr := vcall(arr, arrGetElement, uintptr(i), uintptr(unsafe.Pointer(&el))); failed(hr) || el == nil {
 			continue
 		}
-		if pred(el) {
-			return el
+		ct := elemInt32(el, elemGetCachedControlType)
+		for _, s := range []string{elemString(el, elemGetCachedName), elemString(el, elemGetCachedAutomationId)} {
+			if s = strings.TrimSpace(s); s != "" {
+				if _, dup := typeOf[s]; !dup {
+					typeOf[s] = ct
+					pool = append(pool, s)
+				}
+			}
 		}
 		release(el)
 	}
-	return nil
+	hints := closestNames(sel.Name, pool, 5)
+	for i, h := range hints {
+		hints[i] = fmt.Sprintf("%s (%s)", h, controlTypeName(typeOf[h]))
+	}
+	return hints
 }
 
-// findByNamePreferring is like findByName but, when several elements share the
-// same Name/AutomationId, prefers one satisfying `pred` over the bare
-// document-order first match. This matters because some apps (e.g. Outlook's
-// compose window) give a field's static label the EXACT same caption as its
-// associated edit control — "제목(U)" names both the "Subject:" label text and
-// the subject edit box — so a plain FindFirst can land on the inert label and
-// the caller (which wanted the control behind that label) fails with a
-// confusing "unsupported pattern" error even though the field is genuinely
-// editable/invokable. Falls back to findByName (preserving its error) if no
-// same-named element satisfies pred.
-func findByNamePreferring(uia *ole.IUnknown, root *ole.IUnknown, name string, pred func(*ole.IUnknown) bool) (*ole.IUnknown, error) {
-	if pred != nil {
-		if el := firstMatchWhere(uia, root, uiaNamePropertyId, name, pred); el != nil {
-			return el, nil
-		}
-		if el := firstMatchWhere(uia, root, uiaAutomationIdPropertyId, name, pred); el != nil {
-			return el, nil
+// findElement resolves sel under root to one element. pred (may be nil) marks
+// the candidates that support what the caller is about to do: without nth the
+// first such candidate wins over the bare document-order first match. This
+// matters because some apps (e.g. Outlook's compose window) give a field's
+// static label the EXACT same caption as its edit control — "제목(U)" names
+// both the "Subject:" label text and the subject edit box — so a plain first
+// match can land on the inert label. note reports multiple matches ("matched
+// 3; used 1st (use nth …)"); a miss lists the closest names. Caller must
+// release the element.
+func findElement(uia, root *ole.IUnknown, sel uiaSelector, pred func(*ole.IUnknown) bool) (*ole.IUnknown, string, error) {
+	cands, err := findCandidates(uia, root, sel)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(cands) == 0 {
+		return nil, "", notFoundError(sel, nameHints(uia, root, sel))
+	}
+	return pickCandidate(cands, sel, pred)
+}
+
+// pickCandidate keeps the selected candidate and releases the rest.
+func pickCandidate(cands []*ole.IUnknown, sel uiaSelector, pred func(*ole.IUnknown) bool) (*ole.IUnknown, string, error) {
+	preferred := -1
+	if pred != nil && sel.Nth == 0 && len(cands) > 1 {
+		for i, c := range cands {
+			if pred(c) {
+				preferred = i
+				break
+			}
 		}
 	}
-	return findByName(uia, root, name)
+	idx, note, err := pickMatch(len(cands), sel.Nth, preferred)
+	for i, c := range cands {
+		if i != idx {
+			release(c)
+		}
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %v", sel.describe(), err)
+	}
+	return cands[idx], note, nil
+}
+
+// exactSelector is the plain by-name selector of the pre-selector API.
+func exactSelector(name string) uiaSelector {
+	return uiaSelector{Name: name, Match: matchExact}
 }
 
 // ---- invoke ----
 
 // invokeCapable reports whether el supports any pattern uiaInvoke can act
 // through — used to disambiguate same-named elements in favor of the one
-// uiaInvoke can actually activate (see findByNamePreferring).
+// uiaInvoke can actually activate (see findElement).
 func invokeCapable(el *ole.IUnknown) bool {
 	return elemSupportsPattern(el, uiaInvokePatternId) ||
 		elemSupportsPattern(el, uiaSelectionItemPatternId) ||
@@ -845,7 +1211,7 @@ func invokeCapable(el *ole.IUnknown) bool {
 
 // valueCapable reports whether el supports the Value pattern — used to
 // disambiguate same-named elements in favor of the editable one (see
-// findByNamePreferring).
+// findElement).
 func valueCapable(el *ole.IUnknown) bool {
 	return elemSupportsPattern(el, uiaValuePatternId)
 }
@@ -855,6 +1221,12 @@ func valueCapable(el *ole.IUnknown) bool {
 // pattern). Lets us read "what does this say" by handle instead of a screenshot.
 func textCapable(el *ole.IUnknown) bool {
 	return elemSupportsPattern(el, uiaTextPatternId)
+}
+
+// readableCapable prefers an element that actually carries readable text (a
+// label and its edit box often share a caption; we want the one with content).
+func readableCapable(el *ole.IUnknown) bool {
+	return valueCapable(el) || textCapable(el)
 }
 
 // elemValue reads el's Value-pattern current text (the editable content of
@@ -910,41 +1282,40 @@ func elemText(el *ole.IUnknown, maxLen int) (string, bool) {
 // uiaInvoke finds an element by Name (or AutomationId) and activates it via the
 // most appropriate pattern (Invoke → SelectionItem → Toggle → ExpandCollapse).
 func uiaInvoke(name string) error {
-	return uiaInvokeIn(0, name)
+	_, err := uiaInvokeIn(0, exactSelector(name))
+	return err
 }
 
-// uiaInvokeIn is uiaInvoke rooted at window hwnd. With hwnd != 0 it runs in the
-// background: lease only (no user-idle wait, no focus change), and the agent
-// cursor marks the element afterwards.
-func uiaInvokeIn(hwnd uintptr, name string) error {
+// uiaInvokeIn is uiaInvoke for a selector, rooted at window hwnd. With hwnd != 0
+// it runs in the background: lease only (no user-idle wait, no focus change),
+// and the agent cursor marks the element afterwards. note is the selector's
+// multiple-match note ("" when unambiguous).
+func uiaInvokeIn(hwnd uintptr, sel uiaSelector) (note string, err error) {
 	if err := beginUIAOp(hwnd); err != nil {
-		return err
+		return "", err
 	}
 	cx, cy, marked := 0, 0, false
-	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
+	note, err = uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
 		defer release(root)
 
-		el, err := findByNamePreferring(uia, root, name, invokeCapable)
+		el, note, err := findElement(uia, root, sel, invokeCapable)
 		if err != nil {
 			return "", err
-		}
-		if el == nil {
-			return "", fmt.Errorf("no element named %q (try snapshot)", name)
 		}
 		defer release(el)
 		if hwnd != 0 {
 			cx, cy, marked = elemCenter(el)
 		}
-		return "", activateElement(el, name)
+		return note, activateElement(el, sel.Name)
 	})
 	if err == nil && marked {
 		showAgentCursor(cx, cy)
 	}
-	return err
+	return note, err
 }
 
 // activateElement drives el through the first pattern it supports
@@ -979,39 +1350,31 @@ func activateElement(el *ole.IUnknown, name string) error {
 			}
 			return "", nil
 		}
-		return "", fmt.Errorf("element %q supports no invokable pattern", name)
+		return "", fmt.Errorf("element %q supports no invokable pattern (for a checkbox/expander/list item, set_state is more precise)", name)
 	}()
 	return err
 }
 
 // ---- set_value ----
 
-// uiaSetValue finds an element by Name (or AutomationId) and sets its text via
-// the Value pattern.
-func uiaSetValue(name, text string) error {
-	return uiaSetValueIn(0, name, text)
-}
-
-// uiaSetValueIn is uiaSetValue rooted at window hwnd (background when != 0,
-// see uiaInvokeIn).
-func uiaSetValueIn(hwnd uintptr, name, text string) error {
+// uiaSetValueIn finds an element by selector (rooted at window hwnd;
+// background when != 0, see uiaInvokeIn) and sets its text via the Value
+// pattern.
+func uiaSetValueIn(hwnd uintptr, sel uiaSelector, text string) (note string, err error) {
 	if err := beginUIAOp(hwnd); err != nil {
-		return err
+		return "", err
 	}
 	cx, cy, marked := 0, 0, false
-	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
+	note, err = uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
 		defer release(root)
 
-		el, err := findByNamePreferring(uia, root, name, valueCapable)
+		el, note, err := findElement(uia, root, sel, valueCapable)
 		if err != nil {
 			return "", err
-		}
-		if el == nil {
-			return "", fmt.Errorf("no element named %q (try snapshot)", name)
 		}
 		defer release(el)
 		if hwnd != 0 {
@@ -1020,7 +1383,7 @@ func uiaSetValueIn(hwnd uintptr, name, text string) error {
 
 		p := getPattern(el, uiaValuePatternId)
 		if p == nil {
-			return "", fmt.Errorf("element %q does not support the Value pattern", name)
+			return "", fmt.Errorf("%s does not support the Value pattern", sel.describe())
 		}
 		defer release(p)
 
@@ -1033,67 +1396,57 @@ func uiaSetValueIn(hwnd uintptr, name, text string) error {
 		if hr := vcall(p, valuePatternSetValue, uintptr(unsafe.Pointer(bstr))); failed(hr) {
 			return "", fmt.Errorf("SetValue failed (hr=0x%x)", uint32(hr))
 		}
-		return "", nil
+		return note, nil
 	})
 	if err == nil && marked {
 		showAgentCursor(cx, cy)
 	}
-	return err
+	return note, err
 }
 
 // ---- get_value ----
 
-// uiaGetValue finds an element by Name (or AutomationId) and reads its
-// current text via the UIA Value pattern — the read-side counterpart to
-// uiaSetValue. Useful after set_value/type/invoke to confirm what a field
-// actually holds now (e.g. autocomplete rewrote it, a calculated total field
-// updated, or to check the current value before deciding what to set it to).
-// A pure read, not synthetic input, so unlike uiaSetValue this does not go
-// through beginSyntheticInput.
+// uiaGetValueIn finds an element by selector (rooted at window hwnd, 0 =
+// foreground) and reads its current text via the UIA Value pattern — the
+// read-side counterpart to uiaSetValueIn. Useful after set_value/type/invoke to
+// confirm what a field actually holds now (e.g. autocomplete rewrote it, a
+// calculated total field updated). A pure read, not synthetic input, so it
+// does not go through beginSyntheticInput.
 //
 // The value comes back raw (the caller bounds it with clampFieldValue). For the
 // Text-pattern fallback only maxFieldValueChars+1 units are fetched; totalKnown
 // reports false when that fetch was cut, so the note can say "N자 이상".
-func uiaGetValue(name string) (value string, totalKnown bool, err error) {
-	return uiaGetValueIn(0, name)
-}
-
-// uiaGetValueIn is uiaGetValue rooted at window hwnd (0 = foreground).
-func uiaGetValueIn(hwnd uintptr, name string) (value string, totalKnown bool, err error) {
+func uiaGetValueIn(hwnd uintptr, sel uiaSelector) (value string, totalKnown bool, note string, err error) {
 	totalKnown = true
-	value, err = uiaDo(func(uia *ole.IUnknown) (string, error) {
+	_, err = uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
 		defer release(root)
 
-		// Prefer a same-named element that actually carries readable text (a label
-		// and its edit box often share a caption; we want the one with content).
-		el, err := findByNamePreferring(uia, root, name, func(e *ole.IUnknown) bool {
-			return valueCapable(e) || textCapable(e)
-		})
+		el, n, err := findElement(uia, root, sel, readableCapable)
 		if err != nil {
 			return "", err
 		}
-		if el == nil {
-			return "", fmt.Errorf("no element named %q (try snapshot)", name)
-		}
 		defer release(el)
+		note = n
 
 		if s, ok := elemValue(el); ok {
-			return s, nil
+			value = s
+			return "", nil
 		}
 		// Documents / read-only text areas expose content via the Text pattern, not
 		// Value — fall back so get_value reads them too instead of erroring out and
 		// pushing the caller to a screenshot.
 		if s, ok := elemText(el, maxFieldValueChars+1); ok {
 			totalKnown = len(utf16.Encode([]rune(s))) <= maxFieldValueChars
-			return s, nil
+			value = s
+			return "", nil
 		}
-		return "", fmt.Errorf("element %q supports neither the Value nor Text pattern (nothing to read; try get_text or snapshot)", name)
+		return "", fmt.Errorf("%s supports neither the Value nor Text pattern (nothing to read; try get_text or snapshot)", sel.describe())
 	})
-	return value, totalKnown, err
+	return value, totalKnown, note, err
 }
 
 // ---- get_text ----
@@ -1115,11 +1468,12 @@ const textFetchCeiling = 1_000_000
 // continuation note when the text was cut — see runeWindow. Returns "" when the
 // element holds no text. A pure read — no synthetic input.
 func uiaGetText(name string, offset, maxChars int) (string, error) {
-	return uiaGetTextIn(0, name, offset, maxChars)
+	return uiaGetTextIn(0, exactSelector(name), offset, maxChars)
 }
 
-// uiaGetTextIn is uiaGetText rooted at window hwnd (0 = foreground).
-func uiaGetTextIn(hwnd uintptr, name string, offset, maxChars int) (string, error) {
+// uiaGetTextIn is uiaGetText for a selector, rooted at window hwnd (0 =
+// foreground). An empty sel.Name reads the root itself.
+func uiaGetTextIn(hwnd uintptr, sel uiaSelector, offset, maxChars int) (string, error) {
 	return uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
@@ -1127,19 +1481,14 @@ func uiaGetTextIn(hwnd uintptr, name string, offset, maxChars int) (string, erro
 		}
 		defer release(root)
 
-		target := root
-		if strings.TrimSpace(name) != "" {
-			found, ferr := findByNamePreferring(uia, root, name, func(e *ole.IUnknown) bool {
-				return textCapable(e) || valueCapable(e)
-			})
+		target, note := root, ""
+		if strings.TrimSpace(sel.Name) != "" {
+			found, n, ferr := findElement(uia, root, sel, readableCapable)
 			if ferr != nil {
 				return "", ferr
 			}
-			if found == nil {
-				return "", fmt.Errorf("no element named %q (try snapshot)", name)
-			}
 			defer release(found)
-			target = found
+			target, note = found, n
 		}
 
 		full, totalKnown, ok := "", true, false
@@ -1150,16 +1499,19 @@ func uiaGetTextIn(hwnd uintptr, name string, offset, maxChars int) (string, erro
 			full, ok = s, true
 		}
 		if !ok {
-			if strings.TrimSpace(name) == "" {
+			if strings.TrimSpace(sel.Name) == "" {
 				return "", fmt.Errorf("the %s exposes no Text pattern at its root; name a specific element from snapshot, or use capture_window as a last resort", uiaTargetLabel(hwnd))
 			}
-			return "", fmt.Errorf("element %q supports neither the Text nor Value pattern", name)
+			return "", fmt.Errorf("%s supports neither the Text nor Value pattern", sel.describe())
 		}
 		if strings.TrimSpace(full) == "" {
 			return "", nil
 		}
-		body, note := runeWindow(full, offset, maxChars, totalKnown)
-		return body + note, nil
+		body, tnote := runeWindow(full, offset, maxChars, totalKnown)
+		if note != "" {
+			tnote += "\n[" + note + "]"
+		}
+		return body + tnote, nil
 	})
 }
 
@@ -1169,29 +1521,57 @@ func uiaGetTextIn(hwnd uintptr, name string, offset, maxChars int) (string, erro
 // waiting. A var (not const) so tests can shrink it.
 var uiaWaitForControlPollEvery = 250 * time.Millisecond
 
-// uiaControlExistsProbe checks whether an element named `name` currently
-// exists in the foreground window's UIA tree. A package var (wrapping the
-// real uiaDo/findByName-based check) so uiaWaitForControl's polling loop is
-// unit-testable without a real UIA/COM worker thread — mirrors the
-// findTopWindowProbe pattern already used for waitForWindow's tests.
-var uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) {
-	found, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
+// probeOpts says what one wait_for_control observation should also read.
+type probeOpts struct {
+	Value bool // read the element's value (until=value)
+	Hints bool // on a miss, collect closest names (final poll only — it enumerates the tree)
+}
+
+// uiaControlProbe observes the element sel picks in window hwnd's UIA tree (0 =
+// foreground). A package var (wrapping the real uiaDo-based lookup) so
+// uiaWaitForControl's polling loop is unit-testable without a real UIA/COM
+// worker thread — mirrors the findTopWindowProbe pattern already used for
+// waitForWindow's tests.
+var uiaControlProbe = func(hwnd uintptr, sel uiaSelector, opts probeOpts) (uiaProbeResult, error) {
+	var res uiaProbeResult
+	_, err := uiaDo(func(uia *ole.IUnknown) (string, error) {
 		root, err := uiaRoot(uia, hwnd)
 		if err != nil {
 			return "", err
 		}
 		defer release(root)
-		el, err := findByName(uia, root, name)
+		cands, err := findCandidates(uia, root, sel)
 		if err != nil {
 			return "", err
 		}
-		if el == nil {
+		if len(cands) == 0 || sel.Nth > len(cands) {
+			releaseAll(cands)
+			if opts.Hints {
+				res.Hints = nameHints(uia, root, sel)
+			}
 			return "", nil
 		}
+		var pred func(*ole.IUnknown) bool
+		if opts.Value {
+			pred = readableCapable
+		}
+		el, _, err := pickCandidate(cands, sel, pred)
+		if err != nil {
+			return "", err
+		}
 		defer release(el)
-		return "found", nil
+		res.Found = true
+		res.Enabled = elemInt32(el, elemGetCurrentIsEnabled) != 0
+		if opts.Value {
+			if s, ok := elemValue(el); ok {
+				res.Value, res.HasValue = s, true
+			} else if s, ok := elemText(el, maxFieldValueChars); ok {
+				res.Value, res.HasValue = s, true
+			}
+		}
+		return "", nil
 	})
-	return err == nil && found == "found", err
+	return res, err
 }
 
 // uiaWaitForControl polls the foreground window's UIA tree until an element
@@ -1202,36 +1582,68 @@ var uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) {
 // loop for dialogs/controls that render a moment after the action that
 // triggers them (e.g. a "Save" dialog, a panel that appears after a click).
 func uiaWaitForControl(name string, timeoutMs int) (string, error) {
-	return uiaWaitForControlIn("", name, timeoutMs)
+	return uiaWaitForControlIn("", exactSelector(name), waitCond{Until: untilAppear}, timeoutMs)
 }
 
-// uiaWaitForControlIn is uiaWaitForControl searching the window matching
-// `window` (title substring/hwnd; "" = foreground). The window is re-resolved on
-// every poll, so it may itself appear during the wait.
-func uiaWaitForControlIn(window, name string, timeoutMs int) (string, error) {
+// uiaWaitForControlIn is uiaWaitForControl for a selector and condition
+// (appear / disappear / enabled / value), searching the window matching
+// `window` (title substring/hwnd; "" = foreground). The window is re-resolved
+// on every poll, so it may itself appear — or, for disappear, close — during
+// the wait.
+func uiaWaitForControlIn(window string, sel uiaSelector, cond waitCond, timeoutMs int) (string, error) {
 	if timeoutMs <= 0 {
 		timeoutMs = 8000
 	}
+	if cond.Until == "" {
+		cond.Until = untilAppear
+	}
 	window = strings.TrimSpace(window)
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	var last uiaProbeResult
 	for {
+		final := !time.Now().Before(deadline)
 		hwnd, ok := uintptr(0), true
 		if window != "" {
 			hwnd, ok = findTopWindowProbe(window)
 		}
 		if ok {
-			if found, _ := uiaControlExistsProbe(hwnd, name); found {
-				return fmt.Sprintf("ok: found %q", name), nil
+			p, err := uiaControlProbe(hwnd, sel, probeOpts{Value: cond.Until == untilValue, Hints: final && cond.Until == untilAppear})
+			if err == nil { // a failed probe (window closing mid-query) proves nothing either way
+				last = p
+				if cond.met(p) {
+					return waitSuccess(sel, cond, p), nil
+				}
 			}
+		} else if cond.Until == untilDisappear {
+			return fmt.Sprintf("ok: window %q is gone, and %s with it", window, sel.describe()), nil
 		}
-		if time.Now().After(deadline) {
-			if !ok {
+		if final {
+			switch {
+			case !ok:
 				return "", fmt.Errorf("timed out after %dms: no window matching %q", timeoutMs, window)
+			case cond.Until == untilAppear:
+				return "", fmt.Errorf("timed out after %dms: %v", timeoutMs, notFoundError(sel, last.Hints))
 			}
-			return "", fmt.Errorf("timed out after %dms waiting for an element named %q (try snapshot)", timeoutMs, name)
+			return "", fmt.Errorf("timed out after %dms waiting for %s %s (last: %s)", timeoutMs, sel.describe(), cond.describe(), cond.observed(last))
 		}
 		time.Sleep(uiaWaitForControlPollEvery)
 	}
+}
+
+// waitSuccess is wait_for_control's ok line.
+func waitSuccess(sel uiaSelector, cond waitCond, p uiaProbeResult) string {
+	switch cond.Until {
+	case untilDisappear:
+		return fmt.Sprintf("ok: %s is gone", sel.describe())
+	case untilEnabled:
+		return fmt.Sprintf("ok: %s is enabled", sel.describe())
+	case untilValue:
+		return fmt.Sprintf("ok: %s value = %q", sel.describe(), onelinePreview(p.Value, 200))
+	}
+	if sel.ControlType == 0 && (sel.Match == matchExact || sel.Match == "") {
+		return fmt.Sprintf("ok: found %q", sel.Name)
+	}
+	return "ok: found " + sel.describe()
 }
 
 // keep windows import referenced even if other helpers change.

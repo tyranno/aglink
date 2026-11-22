@@ -87,3 +87,76 @@ func TestSeqDelayFromEnv(t *testing.T) {
 		t.Fatalf("unset: %s", d)
 	}
 }
+
+// The new UIA steps validate their arguments before touching the desktop.
+func TestRunSequence_UIAStepArgErrors(t *testing.T) {
+	for _, steps := range []string{
+		`[{"action":"set_state","name":"Wrap","nth":-1,"checked":true}]`,
+		`[{"action":"set_state","name":"Vol","value":"loud"}]`,
+		`[{"action":"invoke","name":"OK","control_type":"Gizmo"}]`,
+		`[{"action":"wait_for_control","name":"OK","until":"vanish"}]`,
+		`[{"action":"wait_for_control","name":"OK","until":"value"}]`,
+		`[{"action":"set_value","name":"F","text":"x","match":"regex"}]`,
+	} {
+		if _, err := runSequence(steps, 0); err == nil {
+			t.Errorf("%s: expected an argument error", steps)
+		}
+	}
+}
+
+func TestSeqStepValue(t *testing.T) {
+	var st seqStep
+	if _, set, err := st.valueString(); set || err != nil {
+		t.Fatal("absent value must be unset")
+	}
+	if n, err := st.valueNumber(); n != nil || err != nil {
+		t.Fatal("absent number must be nil")
+	}
+	st.Value = []byte(`"100%"`)
+	if v, set, err := st.valueString(); !set || err != nil || v != "100%" {
+		t.Fatalf("string: %q %v %v", v, set, err)
+	}
+	st.Value = []byte(`42.5`)
+	if v, _, _ := st.valueString(); v != "42.5" {
+		t.Fatalf("number as string: %q", v)
+	}
+	if n, err := st.valueNumber(); err != nil || *n != 42.5 {
+		t.Fatalf("number: %v %v", n, err)
+	}
+	st.Value = []byte(`" 7 "`)
+	if n, err := st.valueNumber(); err != nil || *n != 7 {
+		t.Fatalf("numeric string: %v %v", n, err)
+	}
+	st.Value = []byte(`true`)
+	if _, _, err := st.valueString(); err == nil {
+		t.Fatal("bool value must fail")
+	}
+}
+
+func TestOptBoolFloat(t *testing.T) {
+	args := map[string]any{"a": true, "b": "false", "c": 3.5, "d": "2", "e": "nope", "f": nil}
+	if v, ok, err := optBool(args, "a"); !v || !ok || err != nil {
+		t.Error("bool true")
+	}
+	if v, ok, err := optBool(args, "b"); v || !ok || err != nil {
+		t.Error("string false")
+	}
+	if _, ok, _ := optBool(args, "missing"); ok {
+		t.Error("missing bool must be absent")
+	}
+	if _, ok, _ := optBool(args, "f"); ok {
+		t.Error("null bool must be absent")
+	}
+	if _, _, err := optBool(args, "e"); err == nil {
+		t.Error("bad bool must fail")
+	}
+	if v, ok, err := optFloat(args, "c"); v != 3.5 || !ok || err != nil {
+		t.Error("float")
+	}
+	if v, ok, err := optFloat(args, "d"); v != 2 || !ok || err != nil {
+		t.Error("numeric string")
+	}
+	if _, _, err := optFloat(args, "e"); err == nil {
+		t.Error("bad float must fail")
+	}
+}

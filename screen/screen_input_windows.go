@@ -283,6 +283,9 @@ func mouseMove(x, y int) error {
 // mouseClick moves to (x,y) then performs a down+up of the given button.
 // button is one of "left", "right", "middle" (default "left").
 func mouseClick(x, y int, button string) error {
+	if err := uipiCheckPoint(x, y, "click"); err != nil {
+		return err
+	}
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}
@@ -328,6 +331,9 @@ func resolveButton(button string) (down, up uint32, err error) {
 // ctrl/alt/shift/win) down — e.g. ctrl+click or shift+click for multi-select.
 // Keyboard and mouse events are sent as one ordered SendInput batch.
 func mouseClickMods(x, y int, button string, mods []string) error {
+	if err := uipiCheckPoint(x, y, "click"); err != nil {
+		return err
+	}
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}
@@ -372,10 +378,44 @@ func mouseClickMods(x, y int, button string, mods []string) error {
 	return sendInputs(buf, count)
 }
 
+// Drag defaults and bounds: the pause after the button goes down (before the
+// first move) and the number of interpolated moves.
+const (
+	dragHoldDefault  = 15 * time.Millisecond
+	dragHoldMax      = 10 * time.Second
+	dragStepsDefault = 12
+	dragStepsMax     = 500
+)
+
+// dragParams resolves drag's optional hold_ms / steps (<=0 = default) to the
+// pause after mouse-down and the move count, clamped to sane bounds.
+func dragParams(holdMs, steps int) (time.Duration, int) {
+	hold := dragHoldDefault
+	if holdMs > 0 {
+		hold = time.Duration(holdMs) * time.Millisecond
+		if hold > dragHoldMax {
+			hold = dragHoldMax
+		}
+	}
+	if steps <= 0 {
+		steps = dragStepsDefault
+	}
+	if steps > dragStepsMax {
+		steps = dragStepsMax
+	}
+	return hold, steps
+}
+
 // mouseDrag presses button at (x1,y1), moves through interpolated steps to
 // (x2,y2), then releases — for rubber-band selection, sliders, and drag & drop.
 // Small delays between phases make the gesture register reliably across apps.
-func mouseDrag(x1, y1, x2, y2 int, button string) error {
+// holdMs (pause after mouse-down, for apps that only start a drag after a
+// long-press) and steps (more = slower, smoother path) take their defaults
+// when <= 0.
+func mouseDrag(x1, y1, x2, y2 int, button string, holdMs, steps int) error {
+	if err := uipiCheckPoint(x1, y1, "drag"); err != nil {
+		return err
+	}
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}
@@ -394,9 +434,9 @@ func mouseDrag(x1, y1, x2, y2 int, button string) error {
 	if err := sendInputs(mouseEvent(ax1, ay1, 0, down|abs), 1); err != nil {
 		return err
 	}
-	time.Sleep(15 * time.Millisecond)
+	hold, steps := dragParams(holdMs, steps)
+	time.Sleep(hold)
 
-	const steps = 12
 	for i := 1; i <= steps; i++ {
 		xi := x1 + (x2-x1)*i/steps
 		yi := y1 + (y2-y1)*i/steps
@@ -414,6 +454,9 @@ func mouseDrag(x1, y1, x2, y2 int, button string) error {
 
 // mouseDouble performs a left double-click at (x,y).
 func mouseDouble(x, y int) error {
+	if err := uipiCheckPoint(x, y, "click"); err != nil {
+		return err
+	}
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}
@@ -435,6 +478,9 @@ func mouseDouble(x, y int) error {
 // double_click alone doesn't cover. Matches Anthropic's own computer-use
 // reference tool, which offers triple_click alongside double_click.
 func mouseTriple(x, y int) error {
+	if err := uipiCheckPoint(x, y, "click"); err != nil {
+		return err
+	}
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}
@@ -455,6 +501,9 @@ func mouseTriple(x, y int) error {
 // UTF-16 code unit. This bypasses the keyboard layout, so any printable rune
 // (including non-ASCII) is entered verbatim.
 func typeText(s string) error {
+	if err := uipiCheckForeground("keyboard"); err != nil {
+		return err
+	}
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}
@@ -532,6 +581,11 @@ const (
 // hold_key action. holdMs <= 0 is the original instant tap (down+up sent as
 // one SendInput batch, unchanged from before this was added).
 func keyComboHold(combo string, holdMs int) error {
+	if !uipiExemptCombo(combo) {
+		if err := uipiCheckForeground("keyboard"); err != nil {
+			return err
+		}
+	}
 	if err := beginSyntheticInput(); err != nil {
 		return err
 	}

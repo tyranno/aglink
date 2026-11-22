@@ -74,3 +74,18 @@ func TestManualCaptureWindowTiming(t *testing.T) {
 		t.Logf("run %d: captureWindow took %v, %d bytes PNG", i+1, elapsed, len(png))
 	}
 }
+
+// TestManualUIASnapshotSmoke prints the new snapshot format (indentation,
+// state flags, rectangles) for the current foreground window — read-only.
+// Run with:  AGLINK_MANUAL_UI=1 go test -run TestManualUIASnapshotSmoke -v
+func TestManualUIASnapshotSmoke(t *testing.T) {
+	if os.Getenv("AGLINK_MANUAL_UI") == "" {
+		t.Skip("set AGLINK_MANUAL_UI=1 to run against the real foreground window")
+	}
+	start := time.Now()
+	text, err := uiaSnapshot(0, 60, 6000)
+	if err != nil {
+		t.Fatalf("uiaSnapshot failed: %v", err)
+	}
+	t.Logf("took %v\n%s", time.Since(start), text)
+}

@@ -416,3 +416,41 @@ func cappedDims(w, h, maxLong int) (dw, dh int, doScale bool) {
 	}
 	return dw, dh, true
 }
+
+// captureRectImage captures the w×h screen rectangle at (x,y) with
+// screenshot's sizing rules — scale in (0,1) downscales by that factor, scale 0
+// caps the longer edge at maxLong (<=0: no cap), scale 1 keeps the raw grab —
+// and returns the PNG with the mapping its caption reports.
+func captureRectImage(x, y, w, h int, scale float64, maxLong int) ([]byte, captureMapping, error) {
+	ensureDPIAware()
+	m := captureMapping{OriginX: x, OriginY: y, W: w, H: h, ImgW: w, ImgH: h}
+	full, err := captureRegion(int32(x), int32(y), w, h)
+	if err != nil {
+		return nil, m, err
+	}
+	switch {
+	case scale > 0 && scale < 1:
+		out, iw, ih, err := scaleReadingPNG(full, scale)
+		if err != nil {
+			return nil, m, err
+		}
+		m.ImgW, m.ImgH = iw, ih
+		return out, m, nil
+	case scale == 0 && maxLong > 0:
+		dw, dh, doScale := cappedDims(w, h, maxLong)
+		if !doScale {
+			return full, m, nil
+		}
+		src, err := png.Decode(bytes.NewReader(full))
+		if err != nil {
+			return nil, m, fmt.Errorf("captureRectImage: decode: %w", err)
+		}
+		out, err := encodePNG(downscaleNearest(src, dw, dh))
+		if err != nil {
+			return nil, m, err
+		}
+		m.ImgW, m.ImgH = dw, dh
+		return out, m, nil
+	}
+	return full, m, nil
+}

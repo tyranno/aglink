@@ -12,18 +12,18 @@ import (
 // UIA-element case: the probe returns false a couple of times, then true —
 // uiaWaitForControl must keep retrying and return as soon as it succeeds.
 func TestUiaWaitForControlFindsItAfterPolling(t *testing.T) {
-	origProbe := uiaControlExistsProbe
+	origProbe := uiaControlProbe
 	origPoll := uiaWaitForControlPollEvery
 	t.Cleanup(func() {
-		uiaControlExistsProbe = origProbe
+		uiaControlProbe = origProbe
 		uiaWaitForControlPollEvery = origPoll
 	})
 	uiaWaitForControlPollEvery = 10 * time.Millisecond
 
 	calls := 0
-	uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) {
+	uiaControlProbe = func(hwnd uintptr, sel uiaSelector, _ probeOpts) (uiaProbeResult, error) {
 		calls++
-		return calls >= 3, nil
+		return uiaProbeResult{Found: calls >= 3}, nil
 	}
 
 	start := time.Now()
@@ -46,14 +46,14 @@ func TestUiaWaitForControlFindsItAfterPolling(t *testing.T) {
 // appears, uiaWaitForControl gives up after timeoutMs instead of blocking
 // forever.
 func TestUiaWaitForControlTimesOut(t *testing.T) {
-	origProbe := uiaControlExistsProbe
+	origProbe := uiaControlProbe
 	origPoll := uiaWaitForControlPollEvery
 	t.Cleanup(func() {
-		uiaControlExistsProbe = origProbe
+		uiaControlProbe = origProbe
 		uiaWaitForControlPollEvery = origPoll
 	})
 	uiaWaitForControlPollEvery = 10 * time.Millisecond
-	uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) { return false, nil }
+	uiaControlProbe = func(hwnd uintptr, sel uiaSelector, _ probeOpts) (uiaProbeResult, error) { return uiaProbeResult{}, nil }
 
 	start := time.Now()
 	_, err := uiaWaitForControl("NeverAppears", 100)

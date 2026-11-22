@@ -71,10 +71,10 @@ func TestBeginUIAOpBackgroundTakesOnlyLease(t *testing.T) {
 // wait_for_control with a window: the window is re-resolved every poll and its
 // handle reaches the UIA probe.
 func TestUiaWaitForControlInPassesWindow(t *testing.T) {
-	origProbe := uiaControlExistsProbe
+	origProbe := uiaControlProbe
 	origPoll := uiaWaitForControlPollEvery
 	t.Cleanup(func() {
-		uiaControlExistsProbe = origProbe
+		uiaControlProbe = origProbe
 		uiaWaitForControlPollEvery = origPoll
 	})
 	uiaWaitForControlPollEvery = 5 * time.Millisecond
@@ -88,37 +88,39 @@ func TestUiaWaitForControlInPassesWindow(t *testing.T) {
 		return 0xBEEF, polls >= 2 // window appears on the second poll
 	})
 	var gotHwnd uintptr
-	uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) {
+	uiaControlProbe = func(hwnd uintptr, sel uiaSelector, _ probeOpts) (uiaProbeResult, error) {
 		gotHwnd = hwnd
-		return name == "OK", nil
+		return uiaProbeResult{Found: sel.Name == "OK"}, nil
 	}
-	if _, err := uiaWaitForControlIn("Dialog", "OK", 1000); err != nil {
+	if _, err := uiaWaitForControlIn("Dialog", exactSelector("OK"), waitCond{}, 1000); err != nil {
 		t.Fatal(err)
 	}
 	if gotHwnd != 0xBEEF {
 		t.Errorf("probe got hwnd %x, want 0xBEEF", gotHwnd)
 	}
 
-	uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) { return true, nil }
+	uiaControlProbe = func(hwnd uintptr, sel uiaSelector, _ probeOpts) (uiaProbeResult, error) {
+		return uiaProbeResult{Found: true}, nil
+	}
 	stubFindTopWindow(t, func(string) (uintptr, bool) { return 0, false })
-	_, err := uiaWaitForControlIn("Gone", "OK", 30)
+	_, err := uiaWaitForControlIn("Gone", exactSelector("OK"), waitCond{}, 30)
 	if err == nil || !strings.Contains(err.Error(), "no window matching") {
 		t.Fatalf("missing window should time out naming the window, got %v", err)
 	}
 }
 
 func TestUiaWaitForControlForegroundUnchanged(t *testing.T) {
-	origProbe := uiaControlExistsProbe
-	t.Cleanup(func() { uiaControlExistsProbe = origProbe })
+	origProbe := uiaControlProbe
+	t.Cleanup(func() { uiaControlProbe = origProbe })
 	stubFindTopWindow(t, func(string) (uintptr, bool) {
 		t.Error("no window given: must not search windows")
 		return 0, false
 	})
-	uiaControlExistsProbe = func(hwnd uintptr, name string) (bool, error) {
+	uiaControlProbe = func(hwnd uintptr, sel uiaSelector, _ probeOpts) (uiaProbeResult, error) {
 		if hwnd != 0 {
 			t.Errorf("foreground search should pass hwnd 0, got %x", hwnd)
 		}
-		return true, nil
+		return uiaProbeResult{Found: true}, nil
 	}
 	if _, err := uiaWaitForControl("OK", 100); err != nil {
 		t.Fatal(err)

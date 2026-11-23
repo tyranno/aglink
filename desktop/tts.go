@@ -55,6 +55,11 @@ const ttsTimeout = 12 * time.Second
 // instead of trying again on every reply.
 const ttsRetryAfter = time.Minute
 
+// voiceServerIdleTimeout: speaker_server.py and turn_server.py sit on
+// ~1.1 GB combined once warmed. A voice conversation this quiet is over, so
+// they are stopped and restarted (a few seconds) on the next one.
+const voiceServerIdleTimeout = 10 * time.Minute
+
 var (
 	ttsMu     sync.Mutex // one request at a time; guards tts, ttsBadAt
 	tts       *ttsServer

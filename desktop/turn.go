@@ -24,12 +24,30 @@ import (
 )
 
 var (
-	turnMu      sync.Mutex // one request at a time; guards turnSrv
-	turnSrv     *ttsServer
-	turnWarming atomic.Bool
-	turnBadAt   time.Time // last failed start; guarded by turnMu
-	turnHangs   int       // stalls in a row; guarded by turnMu
+	turnMu        sync.Mutex // one request at a time; guards turnSrv
+	turnSrv       *ttsServer
+	turnWarming   atomic.Bool
+	turnBadAt     time.Time   // last failed start; guarded by turnMu
+	turnHangs     int         // stalls in a row; guarded by turnMu
+	turnIdleTimer *time.Timer // guarded by turnMu; stops turnSrv after voiceServerIdleTimeout unused
 )
+
+// armTurnIdleLocked restarts the idle countdown on start and on every use.
+// Callers hold turnMu.
+func armTurnIdleLocked() {
+	if turnIdleTimer != nil {
+		turnIdleTimer.Stop()
+	}
+	turnIdleTimer = time.AfterFunc(voiceServerIdleTimeout, func() {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+		if turnSrv == nil {
+			return
+		}
+		log.Printf("[turn] idle %s, stopping", voiceServerIdleTimeout)
+		stopTurnServerLocked()
+	})
+}
 
 // turnTimeout: a request takes well under 0.2 s; one this slow is stuck. Much
 // shorter than ttsTimeout, as the mic is waiting on it.
@@ -68,6 +86,7 @@ func warmTurn() {
 			return
 		}
 		turnSrv = s
+		armTurnIdleLocked()
 		log.Printf("[turn] ready in %s", time.Since(started).Round(time.Millisecond))
 	}()
 }
@@ -97,6 +116,7 @@ func turnRequest(req map[string]any) (json.RawMessage, error) {
 		}
 		return nil, fmt.Errorf("turn server not answering (op %v)", req["op"])
 	}
+	armTurnIdleLocked()
 	turnHangs = 0
 	var resp struct {
 		OK    bool   `json:"ok"`
@@ -136,6 +156,10 @@ func (v *VoiceService) TurnEnd(pcm string) (float64, error) {
 }
 
 func stopTurnServerLocked() {
+	if turnIdleTimer != nil {
+		turnIdleTimer.Stop()
+		turnIdleTimer = nil
+	}
 	if turnSrv == nil {
 		return
 	}

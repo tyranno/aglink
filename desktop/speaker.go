@@ -24,11 +24,33 @@ import (
 )
 
 var (
-	spkMu      sync.Mutex // one request at a time; guards spk
-	spk        *ttsServer
-	spkWarming atomic.Bool
-	spkBadAt   time.Time // last failed start; guarded by spkMu
+	spkMu        sync.Mutex // one request at a time; guards spk
+	spk          *ttsServer
+	spkWarming   atomic.Bool
+	spkBadAt     time.Time   // last failed start; guarded by spkMu
+	spkIdleTimer *time.Timer // guarded by spkMu; stops spk after voiceServerIdleTimeout unused
 )
+
+// armSpeakerIdleLocked restarts the idle countdown on start and on every use.
+// Callers hold spkMu.
+func armSpeakerIdleLocked() {
+	if spkIdleTimer != nil {
+		spkIdleTimer.Stop()
+	}
+	spkIdleTimer = time.AfterFunc(voiceServerIdleTimeout, func() {
+		spkMu.Lock()
+		defer spkMu.Unlock()
+		if spk == nil {
+			return
+		}
+		log.Printf("[speaker] idle %s, stopping", voiceServerIdleTimeout)
+		_ = spk.in.Close()
+		_ = spk.cmd.Process.Kill()
+		_ = spk.cmd.Wait()
+		spk = nil
+		spkIdleTimer = nil
+	})
+}
 
 func speakerInstalled(dir string) bool {
 	return dir != "" &&
@@ -76,6 +98,7 @@ func ensureSpeakerLocked(dir string) error {
 		return err
 	}
 	spk = s
+	armSpeakerIdleLocked()
 	log.Printf("[speaker] ready in %s", time.Since(started).Round(time.Millisecond))
 	return nil
 }
@@ -85,12 +108,17 @@ func ensureSpeakerLocked(dir string) error {
 func spkRequestLocked(req map[string]any) (float64, error) {
 	line, _ := json.Marshal(req)
 	if _, err := spk.in.Write(append(line, '\n')); err != nil || !scanWithin(spk.out, ttsTimeout) {
+		if spkIdleTimer != nil {
+			spkIdleTimer.Stop()
+			spkIdleTimer = nil
+		}
 		_ = spk.in.Close()
 		_ = spk.cmd.Process.Kill()
 		_ = spk.cmd.Wait()
 		spk = nil
 		return 0, errors.New("목소리 구별기가 응답하지 않습니다")
 	}
+	armSpeakerIdleLocked()
 	var resp struct {
 		OK      bool    `json:"ok"`
 		Error   string  `json:"error"`
@@ -226,6 +254,10 @@ func (v *VoiceService) SpeakerScore(b64 string) (float64, error) {
 func stopSpeakerServer() {
 	spkMu.Lock()
 	defer spkMu.Unlock()
+	if spkIdleTimer != nil {
+		spkIdleTimer.Stop()
+		spkIdleTimer = nil
+	}
 	if spk == nil {
 		return
 	}

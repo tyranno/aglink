@@ -30,7 +30,16 @@ namespace Supertonic
 
         readonly Dictionary<string, Stream> streams = new();
 
-        public Vad(string modelPath) => sess = new InferenceSession(modelPath);
+        // Silero is tiny (one 512-sample window ~1 ms): ONNX's default pool of a
+        // thread per core that spin-waits after every call burned about a whole
+        // core while the mic was open. One thread, no spinning.
+        public Vad(string modelPath)
+        {
+            var opts = new SessionOptions { IntraOpNumThreads = 1, InterOpNumThreads = 1 };
+            opts.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+            opts.AddSessionConfigEntry("session.inter_op.allow_spinning", "0");
+            sess = new InferenceSession(modelPath, opts);
+        }
 
         // Probs feeds s16 mono 16 kHz samples for stream id and returns the speech
         // probability of each 512-sample window that completed inside them. reset

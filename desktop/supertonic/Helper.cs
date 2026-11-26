@@ -678,7 +678,15 @@ namespace Supertonic
 
         public static TextToSpeech LoadTextToSpeech(string onnxDir, bool useGpu = false)
         {
-            var opts = new SessionOptions();
+            // Half the cores and no spin-waiting: with ONNX's defaults every core
+            // sat at 100% while a reply was read aloud, and the PC lagged.
+            var opts = new SessionOptions
+            {
+                IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2),
+                InterOpNumThreads = 1,
+            };
+            opts.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+            opts.AddSessionConfigEntry("session.inter_op.allow_spinning", "0");
             if (useGpu)
             {
                 throw new NotImplementedException("GPU mode is not supported yet");

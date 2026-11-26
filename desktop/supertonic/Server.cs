@@ -29,6 +29,9 @@ namespace Supertonic
                 else if (!a.StartsWith("--")) root = a;
             }
 
+            // Below normal so reading aloud never makes the foreground app stutter.
+            try { System.Diagnostics.Process.GetCurrentProcess().PriorityClass = System.Diagnostics.ProcessPriorityClass.BelowNormal; } catch { }
+
             var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
             Console.SetOut(Console.Error);
             var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));

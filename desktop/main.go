@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -87,7 +88,10 @@ func main() {
 	go cleanupStagedAttachments()
 
 	loadWindowState()
-	win := app.Window.NewWithOptions(mainWindowOptions())
+	if startInTray(os.Args[1:]) {
+		winState.Hidden = true
+	}
+	win :=app.Window.NewWithOptions(mainWindowOptions())
 	attentionWindow.Store(win)
 	// Persist the window size / position / maximised state so the window comes
 	// back as it was left. Save on resize, move and close (close covers the case
@@ -108,6 +112,12 @@ func main() {
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// startInTray reports whether the app was launched with --tray (used by the
+// logon Run entry) to start hidden in the notification area.
+func startInTray(args []string) bool {
+	return slices.Contains(args, "--tray")
 }
 
 // devtoolsArgs opens a Chrome DevTools Protocol port on the WebView2 window when

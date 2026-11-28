@@ -504,15 +504,16 @@ func (d *Daemon) callAsRoute(sess callSession, method string, params map[string]
 		}
 		params["tabId"] = navTab
 	}
-	// Tell the extension which session a new tab belongs to, so it can file it
-	// under that session's tab group. Copied: params may be the caller's map.
+	// Tell the extension to file a new tab under the shared "agent" tab group
+	// (one group for every session, not one per session/conversation). Copied:
+	// params may be the caller's map.
 	if method == "navigate" && sess.key != "" {
 		p := make(map[string]any, len(params)+2)
 		for k, v := range params {
 			p[k] = v
 		}
-		p["group"] = sess.key
-		p["groupTitle"] = sess.label
+		p["group"] = "agent"
+		p["groupTitle"] = "agent"
 		params = p
 	}
 

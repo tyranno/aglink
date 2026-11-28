@@ -190,7 +190,7 @@ func groupEcho(conn *websocket.Conn) {
 	}
 }
 
-func TestNavigateCarriesSessionGroup(t *testing.T) {
+func TestNavigateCarriesSharedGroup(t *testing.T) {
 	d := newDaemon("")
 	srv := httptest.NewServer(d.handler())
 	defer srv.Close()
@@ -199,8 +199,11 @@ func TestNavigateCarriesSessionGroup(t *testing.T) {
 	go groupEcho(c)
 	waitForProfile(t, d, "a@example.com")
 
-	if res := d.callAs(callSession{key: "k", label: "agent k"}, "navigate", map[string]any{"url": "u"}, ""); !strings.HasSuffix(res.Text, "k|agent k") {
-		t.Fatalf("navigate should carry the session group: %+v", res)
+	if res := d.callAs(callSession{key: "k", label: "agent k"}, "navigate", map[string]any{"url": "u"}, ""); !strings.HasSuffix(res.Text, "agent|agent") {
+		t.Fatalf("navigate should carry the shared agent group: %+v", res)
+	}
+	if res := d.callAs(callSession{key: "k2", label: "agent k2"}, "navigate", map[string]any{"url": "u"}, ""); !strings.HasSuffix(res.Text, "agent|agent") {
+		t.Fatalf("a different session should carry the same shared group: %+v", res)
 	}
 	if res := d.call("navigate", map[string]any{"url": "u"}, ""); !strings.HasSuffix(res.Text, "<nil>|<nil>") {
 		t.Fatalf("no session, no group: %+v", res)
